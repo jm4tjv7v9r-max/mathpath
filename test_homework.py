@@ -20,6 +20,7 @@ class HomeworkTests(unittest.TestCase):
         env.start()
         self.addCleanup(env.stop)
         self.app = server.Application(Path(self.tmp.name) / 'data')
+        self.app.safe_initialize()
         with self.app.db() as db:
             self.student = db.execute('SELECT * FROM users WHERE id=1').fetchone()
             self.teacher = db.execute('SELECT * FROM users WHERE id=2').fetchone()
@@ -546,7 +547,8 @@ class HomeworkTests(unittest.TestCase):
         legacy.commit()
         legacy.close()
         migrated = server.Application(legacy_dir)
-        server.Application(legacy_dir)
+        migrated.safe_initialize()
+        server.Application(legacy_dir).safe_initialize()
         with migrated.db() as db:
             self.assertEqual(db.execute('SELECT count(*) FROM users').fetchone()[0], 1)
             self.assertEqual(db.execute('SELECT count(*) FROM questions').fetchone()[0], 1)
@@ -563,6 +565,7 @@ class HomeworkTests(unittest.TestCase):
         self.attempt(aid)
         self.finalize(aid)
         again = server.Application(self.app.data_dir)
+        again.safe_initialize()
         result = again.dispatch('GET', f'/api/assignments/{aid}', {}, self.student, None, '127.0.0.1')[0]
         self.assertEqual(result['mySubmission']['status'], 'submitted')
         self.assertEqual(result['report']['score'], 6)
@@ -1210,7 +1213,8 @@ class HomeworkTests(unittest.TestCase):
         legacy.commit()
         legacy.close()
         migrated = server.Application(legacy_dir)
-        server.Application(legacy_dir)
+        migrated.safe_initialize()
+        server.Application(legacy_dir).safe_initialize()
         with migrated.db() as db:
             assignment_columns = {r['name'] for r in db.execute('PRAGMA table_info(assignments)')}
             self.assertIn('kind', assignment_columns)

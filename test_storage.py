@@ -72,7 +72,9 @@ class StorageTests(unittest.TestCase):
 
     def make_app(self, env=None):
         with patch.dict('os.environ', env or {}, clear=True):
-            return server.Application(Path(self.tmp.name) / 'data')
+            app = server.Application(Path(self.tmp.name) / 'data')
+            app.safe_initialize()
+            return app
 
     def r2_env(self, **overrides):
         env = {'R2_ACCOUNT_ID': 'abc123', 'R2_ACCESS_KEY_ID': 'key-id',

@@ -41,6 +41,10 @@ class APITests(unittest.TestCase):
         self.env.start()
         self.addCleanup(self.env.stop)
         self.app = server.Application(self.root / 'data', static_dir=self.root)
+        # 測試同步等待初始化完成（生產環境於背景執行緒跑）。
+        self.app.safe_initialize()
+        if self.app.init_error:
+            raise RuntimeError(f'初始化失敗：{self.app.init_error}')
         self.httpd = server.MathServer(('127.0.0.1', 0), self.app)
         self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
         self.thread.start()
@@ -486,11 +490,13 @@ class APITests(unittest.TestCase):
         # 已儲存設定優先於環境變數，且服務重啟後仍然生效。
         with patch.dict('os.environ', {'MATH_AI_BASE_URL': 'http://127.0.0.1:9/v1', 'MATH_AI_MODEL': 'env-model'}):
             restarted = server.Application(self.app.data_dir)
+            restarted.safe_initialize()
             self.assertEqual(restarted.ai.model, 'm')
             self.assertEqual(restarted.ai.source, 'saved')
         with self.app.db() as db:
             db.execute("UPDATE meta SET value='http://models.example.com/v1' WHERE key='ai_base_url'")
         restarted = server.Application(self.app.data_dir)
+        restarted.safe_initialize()
         self.assertFalse(restarted.ai.configured, '已損壞的設定應回退環境變數而不是讓服務無法啟動')
         self.assertTrue(restarted.ai.invalid_saved)
 
@@ -760,6 +766,7 @@ class APITests(unittest.TestCase):
             self.assertEqual(db.execute('SELECT count(*) FROM users').fetchone()[0], 2)
         with patch.dict('os.environ', {'MATH_STUDENT_PASSWORD': 'CustomStudent123!', 'MATH_TEACHER_PASSWORD': 'CustomTeacher123!'}):
             custom = server.Application(self.root / 'custom-data')
+            custom.safe_initialize()
             with custom.db() as db:
                 rows = db.execute('SELECT * FROM users ORDER BY id').fetchall()
                 self.assertTrue(server.password_matches('CustomStudent123!', rows[0]['password']))

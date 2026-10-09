@@ -605,7 +605,11 @@ class Application:
         self.dummy_hash = password_hash(secrets.token_urlsafe(24))
         self.homework = Homework(self, fail, fields, text, number, utc_now)
         self.mock = MockExams(self, self.homework, fail, fields, text, number, utc_now)
-        self.initialize()
+        # initialize() 必須由 main() 在背景執行緒呼叫，避免 Render 健康檢查 timeout。
+        # initialize() 完成前 /api/health 回 starting，其它端點會因 DB 未就緒回 503。
+        self.initialized = False
+        self.init_lock = threading.Lock()
+        self.init_error = None
 
     @contextmanager
     def db(self):
@@ -669,6 +673,16 @@ class Application:
             self.mock.migrate(db)
         os.chmod(self.db_path, 0o600)
         self.reload_ai()
+        self.initialized = True
+
+    def safe_initialize(self):
+        """背景執行緒用的初始化：失敗不致命，讓 server 仍在 listening，admin 可查 /api/health。"""
+        with self.init_lock:
+            try:
+                self.initialize()
+            except Exception as exc:
+                self.init_error = repr(exc)
+                print(f'[startup] 初始化失敗：{exc}', flush=True)
 
     def saved_ai_config(self):
         """讀取管理員在介面上儲存的端點設定；未儲存時回 None。"""
@@ -830,16 +844,29 @@ class Application:
     def notice(self, user):
         return DEMO_NOTICE if user and user['demo'] else ''
 
+    def _dispatch_health(self, headers):
+        # 供 Render 等平台健康檢查，也可用來確認 R2 是否已啟用。
+        # 啟動初期資料庫尚未就緒時，回 starting 而不是 5xx，避免 Render 健康檢查 timeout。
+        if not self.initialized:
+            payload = {'status': 'starting'}
+            if self.init_error:
+                payload['error'] = self.init_error
+            return payload, headers
+        with self.db() as db:
+            questions = db.execute('SELECT COUNT(*) FROM questions').fetchone()[0]
+        return {'status': 'ok', 'storage': self.storage.public(), 'ai': self.ai.public(),
+                'questions': questions}, headers
+
     def dispatch(self, method, path, body, user, token_hash, ip, query=''):
         headers = {}
+        # /api/health 即使 DB 還沒好也要能回應，讓 Render 健康檢查不會 timeout。
+        if method == 'GET' and path == '/api/health':
+            return self._dispatch_health(headers)
+        # 其它 API 在 DB 還沒就緒時回 503，前端會自動重試。
+        if not self.initialized:
+            fail(503, '伺服器正在初始化，請稍候再試。')
         if method == 'GET' and path == '/api/session':
             return {'user': self.user_public(user) if user else None, 'notice': self.notice(user)}, headers
-        if method == 'GET' and path == '/api/health':
-            # 供 Render 等平台健康檢查，也可用來確認 R2 是否已啟用。
-            with self.db() as db:
-                questions = db.execute('SELECT COUNT(*) FROM questions').fetchone()[0]
-            return {'status': 'ok', 'storage': self.storage.public(), 'ai': self.ai.public(),
-                    'questions': questions}, headers
         if method == 'POST' and path == '/api/login':
             fields(body, ('username', 'password', 'remember'), ('username', 'password'))
             remember = body.get('remember', False)
@@ -1543,7 +1570,9 @@ class Handler(BaseHTTPRequestHandler):
             self.respond(503, {'error': '本地資料庫暫時無法處理請求，請稍後再試。'})
         except (BrokenPipeError, ConnectionResetError, TimeoutError):
             self.close_connection = True
-        except Exception:
+        except Exception as exc:
+            import traceback as _tb
+            _tb.print_exc()
             self.respond(500, {'error': '伺服器暫時無法完成操作；沒有返回內部資料。'})
 
     do_GET = handle_route
@@ -1572,13 +1601,13 @@ def main():
             parser.error('host 必须是 localhost 或明确的 IPv4 地址。')
     try:
         app = Application(args.data_dir)
+        # 先綁 port（讓 Render 健康檢查即時通過，背景再跑 DB 初始化）。
         server = MathServer((args.host, args.port), app, os.environ.get('MATH_PUBLIC_ORIGIN'))
     except (ValueError, OSError, sqlite3.Error) as exc:
         parser.exit(1, f'后端初始化失败：{exc}\n')
-    print(f'MathPath 本地后端监听 {args.host}:{args.port}；AI 模式：{app.ai.mode}。')
-    with app.db() as db:
-        if db.execute('SELECT 1 FROM users WHERE demo=1').fetchone():
-            print(DEMO_NOTICE)
+    print(f'MathPath 本地后端监听 {args.host}:{args.port}；AI 模式：{app.ai.mode}。', flush=True)
+    threading.Thread(target=app.safe_initialize, daemon=True, name='mp-init').start()
+    print('[startup] 背景 DB 初始化已啟動；/api/health 此時回 starting。', flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
