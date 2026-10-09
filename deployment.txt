@@ -1,0 +1,79 @@
+MathPath 本地／内网部署
+
+双击 start.command，默认仅监听 127.0.0.1:8765；本地浏览器访问该地址。解释器优先使用 /Users/laokunleng/.workbuddy-ai/binaries/python/envs/default/bin/python（已安装 pypdf），其次使用 managed Python 3.13.12，最后回退 PATH 中的 python3。网站入口为 index.html，前端资源为 app.js、styles.css；无需互联网CDN即可使用。
+内网运行：./start.command --host 你的明确内网IPv4 --port 8765。不要将开发服务直接暴露到互联网，也不要使用通配地址。允许的 Host 随监听地址确定。
+生产建议 HTTPS 反向代理，保留客户端 Host，设置 MATH_PUBLIC_ORIGIN 为实际 HTTPS 站点的 origin（不含路径），浏览器非 GET 必须带同源 Origin 或 Referer。该配置启用 Secure cookie；通过 HTTPS 登录，不再使用直连 HTTP 登录。不要信任客户端伪造的转发头。
+
+首次启动自动建立 data/mathpath.sqlite3，SQLite WAL 持久化；data 目录不对外开放。备份使用 SQLite backup API 或停服后备份整个 data（含 WAL），不要仅复制正在写入的主数据库。
+演示账户：student / Math1234!；teacher / Teach1234!。登录弹窗与账户面板展示演示提示；在“设置与隐私”可更换密码。上线前必须换密。
+首次建库前可设置 MATH_STUDENT_PASSWORD / MATH_TEACHER_PASSWORD（至少10字）；已存在数据库不会重置密码。登录后 POST /api/change-password 更新密码并撤销其他会话。不要把环境变量或密钥写进前端、版本库或浏览器存储。
+校内独立学生帐号：教师登录后 GET /api/users 返回 {users:[{id,username,name,role}]}，含 username 便于管理，不含密码或哈希；POST /api/users 提交 {username,name,password}，返回 {user:{id,username,name,role}}。新帐号固定为 student，demo=0，密码以随机盐 scrypt 保存；不可提交 role、demo、id 或其他未知字段。username 限 ASCII 字母、数字、_ . -，长度3至40；name长度1至60且不能全为空白；password长度10至256且不能全为空白，原样保留。重复 username 返回409（大小写区分）；匿名返回401，学生访问这两个接口返回403。每名学生用自己的帐号登录，只能查看自己的作答和图片，教师可查看全部。
+教师登录后，在“设置与隐私”点击“管理独立学生账户”，可查看现有学生并建立新账户。填写学生称呼、登录账号及临时密码；请勿使用共享演示账号代替独立账号。临时密码经安全渠道交给对应学生，学生登录后在设置中换密。
+POST /api/users/bulk 提交 {students:[{username,name,password}]}（1至200筆）批次建立學生帳戶，返回 {count,users}。所有行先全部驗證，任何一行帳號格式錯誤、密碼不足10字、批次內重複或已存在（409）都不會建立任何帳戶；不接受 role 等額外欄位。前端在「設定與隱私 → 管理獨立學生帳戶」提供批次匯入：可「上傳名單檔案」（UTF-8 CSV/TXT，上限1MB）或直接貼上，每行「姓名,帳號,密碼」；標題行（如「姓名,帳號,密碼」）會自動略過；可省略密碼由瀏覽器自動產生（該密碼只顯示一次，請即時複製分發）。另有「下載名單範本」與「匯入後直接建立班級」選項，勾選後會以本批新帳戶一併建立班級，可直接佈置作業；若班級建立失敗，帳戶仍會保留並明確提示。
+POST /api/users 沿用全部 POST 的 Origin / Referer 同源校验，不提供跨源注册。
+限制：文件10 MB、文字总计80,000字；只支持 PNG/JPEG，PDF最多50页。学生只能看自己的作答和图片；教师可批阅全部作答。会话有效12小时，HttpOnly、SameSite=Lax；登录有限流。默认无外部连接。
+
+AI 端點可隨時在介面上更換（教師專頁「模型端點」），無需重新啟動，也不必改環境變數：
+GET /api/ai-config 回傳 {active:{configured,model,vision,mode,source},canEdit,tokenRequired,invalidSaved,env:{baseUrl,model,visionModel,keySet},saved:null|{...}}。**永不回傳金鑰內容**，只回傳 keySet 布林值。
+POST /api/ai-config 提交 {baseUrl,model,visionModel,apiKey?,clearKey?,adminToken?}：省略 apiKey 表示沿用已存金鑰；送出空的 baseUrl 與 model 表示取消 AI 並一併刪除已存金鑰。儲存後立即生效（不需重啟）。設定存於 meta 表（ai_base_url / ai_model / ai_vision_model / ai_api_key），**已儲存設定優先於環境變數**；若已存設定損壞，啟動時回退環境變數並以 invalidSaved 標示，不會讓服務無法啟動。
+POST /api/ai-config/test 提交 {baseUrl,model,visionModel?,apiKey?,vision?,adminToken?} 會**實際呼叫模型**驗證連線（vision:true 時附一張 2x2 PNG 測試圖片輸入）；成功回 {ok:true,mode,model,testedVision}，失敗回錯誤訊息。注意：通過測試只代表端點可連線並接受輸入，**不代表數學批改或辨識準確**。
+權限：這三個端點只限教師，且需通過管理員授權——設定了 MATH_ADMIN_TOKEN 時必須在 adminToken 提供相同權杖（常數時間比對）；未設定時只允許來自 loopback 的本機請求。外部位址仍必須 HTTPS，不可在 URL 內嵌憑證或查詢字串。
+安全：金鑰存於伺服器 SQLite（檔案權限 600），不會送到瀏覽器，也不寫入日誌。前端只顯示「已設定／未設定」。更換端點後可即時測試，但真實批改與辨識準確度仍須以實際學生手稿驗證，AI 輸出僅供教師覆核。
+
+AI 僅在 MATH_AI_BASE_URL 和 MATH_AI_MODEL 配置後可用；認證服務再配置 MATH_AI_API_KEY。BASE_URL 為 OpenAI 兼容接口前缀，程序追加 /chat/completions（也接受完整路径）。本机127.0.0.1／localhost可用 HTTP，其他模型服务必须 HTTPS，私网其他主机同样按非本机处理，提交个人作答必须 consentExternal:true。上述環境變數作為預設值；介面儲存的設定會覆蓋它們。
+照片／图片识别需要真实支持 vision 的模型，纯文本模型不能识别照片。图片试卷识别另设 MATH_AI_VISION_MODEL（也可与 MATH_AI_MODEL 相同，但须真实支持视觉）。图片作答可用视觉模型或支持视觉的主模型；不支持则返回错误，不伪造分数。
+解析外部文本试卷默认走规则，不自动上传；要用外部 AI，教师请求需额外 consentExternal:true。外部图片识别同样需明确同意。
+POST /api/questions/{id}/generate 接收 {kind:'similar'或'advanced',consentExternal:true}。非 loopback 的模型（包括其他私网主机）生成题目前，后端强制要求布尔值 consentExternal:true，缺失或 false 返回403、非布尔值返回400，均不调用模型；不能只依赖前端 confirm。本机模型可省略 consentExternal。只向模型发送已共享题库内容，不发送学生个人资料；来源标注“AI 生成 · 待核驗”，解析 method 为“AI 識別”或“規則拆題”。无模型时推荐真实库存，生成返回409。
+默认解释器已安装 pypdf，文字型 PDF 可直接抽文；备用解释器若未安装 pypdf，须在所用解释器中安装，否则返回422。扫描PDF没有文字时不会虚假识别，须配置视觉模型并转成逐页图片上传；规则识别支持换行题号，不处理复杂版面。
+纯文字无AI只核对严格等价最终答案，不批改过程。可提交多行推导，但仅当最后非空行以完整“最終答案：”“最终答案：”（中文标签也接受半角冒号）或“Final answer:”开头，才只核对该行冒号后的全部值，如“最終答案：x=2 或 x=3”。途中标签、任意子串标签或标签后续另有错误／其他文字均不能据此得分；不带末行标签仍按完整作答严格匹配；无法确认等价记0分并可请求教师复核；图片无AI一律待批阅。AI给出的步骤与分数仅为建议，不能直接用于正式考试，必须教师复核。
+统计由真实作答计算：completed为已评分提交数，accuracy为已评分得分／总分百分比，streak按UTC提交日期；minutes只按同日相邻提交不超过30分钟的间隔估算，不是精确计时。
+stdlib http.server适合受控内网试用；生产应加入反代限流、资源限制、审计、备份与监控。上传校验为格式／结构检查，不是完整图像解码或恶意PDF沙箱；仅接受受信任教师上传PDF，正式部署须隔离抽文进程。AI数学正确性无法保证，导入和生成均需教师核验。
+
+作业版使用：
+1. 教师登录“作业与成绩”，建立班级并选择已存在的独立学生账户。
+2. “布置作业”选题、班级、截止日期和是否允许迟交。仅有参考答案且非待审核题可选；最多30题，发布时保存题目与收件人快照。
+3. 学生“我的作业”逐题填写文字、手写或上传手稿，再正式提交整份作业。正式提交后锁定作答，教师仍可复核。
+4. 教师查看成绩表，按姓名、账户、提交或待批状态筛选，点击学生回馈查看逐题批阅。AI原建议分、规则原分与教师确认分分别保存。
+5. 统计仅采用每题最新作答。平均分只计算正式提交且全题已评者；确认平均只算全题教师确认者。未交/待批不当零分。部分已评得分不代表整卷总分。
+6. 每次作答生成“优点／需留意／下一步”建议。无AI时为明确标识的规则建议；接入模型后依据本次批改及本人最多5次同主题已评记录生成个别建议。外部传送前须同意。建议调用失败保留已评分结果。
+7. 草稿暂存在当前浏览器分页的sessionStorage；刷新后重新进入原题可恢复，提交或登出清除。关闭分页后不保证恢复，不跨设备同步；大图超出容量时显示错误。此功能不是服务器自动存档。
+8. 教师成绩页可按姓名/帐号与提交状态筛选，并可“匯出成績”下载 CSV（含 BOM，试算表可正常显示中文）。CSV 同时列出“已评得分／已评涵盖分值／卷面总分”，并注明部分评分不代表整卷总分；以 = + - @ 开头的单元格会加上前置单引号，避免试算表公式注入。
+9. 学生“我的作业”页显示“最需要鞏固”，按已批阅作答计算得分率最低的知识点，可一键跳转到该知识点的题库练习；未有已批阅作答时不作判断。
+10. 教师批注（在學生手寫照片上指出錯處）：POST /api/attempts/:id/annotation 提交 {image}（必须是 PNG dataURL，上限10MB），由作業所屬教師（或自由練習的教師）儲存為批註圖層；GET /api/attempts/:id/annotation 供作答本人及教師讀取，其他學生或其他教師一律404，未登入401。批註是另存圖層，不覆蓋學生原始手稿（原圖仍可用 GET /api/attempts/:id/image 取得），亦不改動分數與作答內容。前端教師在批閱視窗以紅筆、圈選、箭頭、螢光、文字批註及橡皮擦直接在學生手稿上標示，可撤銷、清除，按「儲存批註」後學生即可看到「教師批註」版本。批註圖以長邊上限1600像素壓縮後儲存，避免過大。無手寫圖片的作答不能加批註（400）。此功能不需 AI，屬教師人工標示。
+11. 訂正重做閉環：教師在「批閱與建議」視窗按「退回訂正」，填寫訂正說明並勾選需要重做的題目（預設已勾選得分未滿分的題目），POST /api/assignments/:id/return 提交 {studentId,note,questionIds?}（省略 questionIds 表示全部題目）。限制：只限作業所屬教師；學生必須已正式提交（否則400）；同一學生同時只可有一個進行中的訂正（否則409）；題目必須屬於該作業（否則400）；note 必填且不可全為空白。
+    學生在作業頁會看到「教師要求訂正（第 N 回合）」橫幅、教師說明，以及每題的「待訂正／已訂正待提交／不需訂正」狀態。訂正範圍內的題目可重新作答，範圍外的題目維持鎖定（否則403）。**教師要求的訂正不受截止時間限制**，且不會被標記為遲交。
+    重新提交仍用 POST /api/assignments/:id/submit；系統要求訂正範圍內每題都必須有「教師要求之後」的新作答（以 corrections.min_attempt_id 判斷，不允許沿用舊紀錄），否則400。成功後結案並可再次退回（回合數遞增）。
+    資料與計分：corrections 表記錄每回合的說明、範圍、要求時間與結案時間；assignment_recipients 新增 resubmitted_at 與 submit_count。**所有舊作答完整保留**作為稽核與對照，統計只採每題最新作答。**訂正進行中的學生不計入班級平均**（避免用未定稿分數代表學習成果），summary.correctionCount 顯示人數。學生的 mySubmission.correction 提供 {round,note,requestedAt,questionIds,minAttemptId}。
+12. AI 建議批註：POST /api/attempts/:id/ai-annotation 由作業所屬教師觸發，要求已配置 MATH_AI_VISION_MODEL（未配置回409，不產生任何批註），無手寫圖片回400，外部模型必須 consentExternal:true（否則403且不呼叫模型）。模型須回傳 {issues:[{x,y,label,comment}],summary}，其中 x、y 必須是 0 至 1 的相對座標；超出範圍、型別錯誤、欄位缺漏或超過20項一律回502且不保存，不做像素換算或猜測。另可用 {clear:true} 清除。
+    AI 批註以 JSON 座標保存於 ai_annotation 欄位，由前端在圖片上畫成編號圓標並列出說明，與教師的紅筆批註（annotation 圖層）完全分開：清除 AI 批註不影響教師批註，教師批註亦不覆蓋 AI 批註。學生與教師都會看到「AI 建議批註 · 未經教師確認」的明確標示。
+    教師可修正 AI 標錯的位置：在批閱視窗直接拖動圖上的編號圓標，再按「儲存調整後位置」送出 {marks:{issues:[{x,y,label,comment}],summary}}，座標沿用同一套 0 至 1 驗證（超範圍、欄位缺漏或型別錯誤一律 502 且不保存），保存後記為 adjusted:true。此調整不呼叫模型、不改動分數，亦不改變標籤與說明文字，只更新位置；學生端會看到調整後的座標。
+    重要限制：視覺模型對錯處座標的定位並不穩定，標記可能偏移，數學判斷亦可能出錯；AI 也可能漏報錯處（issues 為空不代表作答正確）。因此 AI 批註只可作教師覆核的提示，不可作為評分依據或直接給學生的結論。未接入模型時此功能不會產生任何假批註。
+
+13. 记住登入（免每次登入）：POST /api/login 接受 {username,password,remember:boolean}。remember=true 时 session 有效期 30 天（SESSION_SECONDS_LONG），false 时 12 小时；两者都以 Max-Age 写入 HttpOnly、SameSite=Lax 的 cookie，浏览器重开仍然有效。登入页默认勾选「记住我（30 天）」，并把上次成功登入的帐号记在浏览器 localStorage（mathpath_last_user），下次打开登入页会预填帐号并显示「已记住上次登入的帐号」；登入页会依上次身分自动选中「学生」或「教师」卡片。公用电脑应取消勾选，登出会即时删除该 session。
+14. 日历：GET /api/calendar?from=YYYY-MM-DD&to=YYYY-MM-DD 返回 {from,to,events:[{date,event:'published'|'due',kind:'homework'|'quiz',title,assignmentId,classId,className,dueAt,myStatus?,submittedCount?,studentCount?}]}。日期区间必须合法且 from<=to，未登入 401。教师只看自己发布的作业与测验；学生只看自己班级的。前端「日历」页以月历显示，有作业或测验的日子会分别标出「作业 N」「测验 N」标签，点选某天可看当天详情并直接开启该份作业。作业页标题旁也有「查看日历」按钮。
+15. 作业与测验类型：POST /api/assignments 接受 {kind:'homework'|'quiz'}（默认 homework，其他值 400），存入 assignments.kind；日历、作业列表与成绩表都依此区分显示。既有数据库以增量方式加 kind 栏（默认 homework），不重建旧表、不删除既有作业。
+16. 教师汇入题目两种方法：
+    (1) 上传试卷拆分：POST /api/papers/parse 接受文字或文字型 PDF（服务端以 pypdf 抽文字）或图片（需已配置视觉模型）。文字型 PDF 抽出文字后用规则拆题；扫描型 PDF 若无文字层会明确提示需要识别模型与逐页图片，不会假装成功。拆分结果一律为草稿，须教师逐题核对后再 POST /api/questions/import。
+    (2) 手动输入并绘制图形：前端「试卷拆题」页下半部可直接填写标题、分类、难度、分值、题目内容、参考答案与提示，并在方格画布上以画笔／橡皮擦绘制题目图形（可撤销、清除）。图形以 PNG dataURL 随题目一起提交，存入 questions.figure／figure_mime；GET /api/questions/:id/figure 供已登入使用者读取。题目图与题目内容一并保存，不画图也可直接加入。图片大小与类型沿用现有上传限制，并在汇入时验证。
+
+17. 题型分类（选择／填空／解答／证明）：每道题都有 qtype 栏，只能是 選擇題、填空題、解答題、證明題。规则判断 classify_type 依题面文字推断：出现「证明／求证／prove」→證明題；出现连续底线、空括号或「填充／填空／填入／空格」→填空題；出现两个以上选项标记（(A) (B) …）或「下列何者／以下何者／哪一個／選出／choose／which of the following」→選擇題；其余→解答題（不猜测）。未提供 qtype 时由服务端自动判断，若传入不在四种内则 400。题库可依题型筛选，题目卡显示题型标签。
+18. 全自动拆分并汇入：POST /api/papers/auto-import 一次完成拆分、题型分类、知识点分类并写入题库，全部加上「自動匯入 · 待核驗」标签，返回 {count,method,questions,notice}。教师限定；参数与 /api/papers/parse 相同。若已配置 AI 则用 AI 识别（图片须同时配置视觉模型），未配置时用本地规则，不会假装已用 AI。已核验的答案仍须教师在题库核对后才可布置给学生。
+19. 题目分析：题目带有 analysis 栏（最多 2000 字），说明本题考什么、解题关键或常见错误。未接 AI 时为规则分析（例如「規則分析：題型為選擇題，知識點為代數；參考答案留空，需教師核對。」）；接上 AI 后由模型生成。分析在拆题预览的草稿卡上以「題目分析」显示，供教师核验参考，不当作评分依据。
+
+20. 學生自助模擬測驗（限時、即時計分、提升建議）：學生可在「模擬測驗」頁自選知識點、難度、題型、題數（1至20）與時限（1至180分鐘），即時開始，不需要教師指派。
+    POST /api/mock {topic?,level?,qtype?,count,minutes} 建立並開始一場測驗：只從題庫中「答案已核驗」的題目抽選（待核驗的 AI 生成題不會被抽中），題目以快照保存，之後題庫改動不影響已開始的測驗；回傳 {exam,questions,notice}，學生版題目不包含答案與步驟。符合條件的題目不足時回 409 並說明可用題數，不會少給題目。
+    GET /api/mock 回傳 {exams,options,ai}：我的測驗紀錄與可選條件（topics／counts／minutes／qtypes／available）。GET /api/mock/:id 回傳 {exam,questions,attempts,report,notice}，exam 含 status、remainingSeconds、expired；未提交時 report 為 null。
+    POST /api/mock/:id/submit 提交並即時計分（冪等，重複提交不會重複計分）：回傳 {exam,report}，report 含 score／maxScore／scoredPoints／percent／pendingCount／topicStats／suggestion。待批閱題目不計入總分（不會當零分），percent 只覆蓋已評分的題目，suggestion 沿用「做得好的地方／需要留意／下一步練習」三段式規則建議（接入 AI 後由模型生成）。
+21. 模擬測驗的作答與計時：作答沿用 POST /api/attempts 並加上 mockId（不可同時帶 assignmentId）。逾時後伺服器拒絕新作答（403），但提交永遠允許，逾時提交會標記 expired:true。前端以伺服器回傳的 remainingSeconds 倒數，時間到自動提交並即時顯示成績與建議。教師無法開始或查看學生的模擬測驗（403／404），模擬測驗不計入正式成績。
+
+22. 物件儲存（Cloudflare R2，可選）：storage.py 提供檔案儲存層。預設 mode='db'，二進位存在 SQLite 的 BLOB 欄位（不寫入伺服器本機資料夾）；設定 R2_ACCOUNT_ID、R2_ACCESS_KEY_ID、R2_SECRET_ACCESS_KEY、R2_BUCKET 後 mode='r2'，上傳的作答圖片、教師批註、題目圖形改存 R2，資料庫只保留 key 字串（attempts.image_key／attempts.annotation_key／questions.figure_key），BLOB 欄位保持 NULL。可選 R2_PREFIX 設定 key 前綴；R2_ENDPOINT 可指向自訂 S3 相容端點（http 只允許 localhost，其餘必須 HTTPS）。四個必填變數只要少一個就自動退回資料庫後端並記錄原因，不會上傳到一半才失敗。簽名為 S3 SigV4，只用標準庫實作。讀取一律經由本服務 API，沿用原有登入與權限檢查，bucket 保持私有、不開放公開讀取。
+23. GET /api/health（不需登入）：回傳 {status,storage:{mode,bucket,configured,error},ai,questions}，供 Render 等平台健康檢查，也可用來確認 R2 是否已啟用。
+24. 免費部署架構與限制：詳見 deployment-cloud.md。要點：本專案是 Python 標準庫 + SQLite，不是 Node.js；Render 免費版無持久磁碟，SQLite 會隨重啟清空（檔案放 R2 可解決，資料庫仍需另想辦法或改 Postgres）；前端若與後端分屬不同網域，SameSite=Lax 的登入 cookie 會被瀏覽器擋掉，不建議拆分。學生手寫照片上傳第三方雲端屬個人資料傳輸，需另行告知與同意。
+
+网络与上线状态：
+当前代码可本地运行，但未部署互联网，未配置真实AI模型。现有标准库服务不能直接作为公网生产部署方案；正式上线须生产服务、HTTPS、独立账户、权限审计、恶意文件隔离、持续备份、模型预算与并发队列。单实例SQLite适合受控试用；多实例互联网版须持久数据库与私有文件存储。
+
+测试（使用临时数据库，不碰正式data）：
+"/Users/laokunleng/.workbuddy-ai/binaries/python/envs/default/bin/python" -B -m unittest discover -s "/Users/laokunleng/WorkBuddy AI/2026-10-08-13-04-13/outputs/mathpath" -p 'test_*.py' -v
+前端 test_ui.cjs 需隔离安装的 playwright 包与浏览器；使用固定API测试资料，不启动服务器、不读写正式学生成绩。
+本次服务测试共91项通过（题库与作业、日历与作业类型、题目图形、记住登入、订正闭环、AI 批注与教师调整标记等）；前端测试覆盖字级切换、登入页身分卡与记住帐号、日历标记与入口、手动输入题目并绘制图形、教师批注与 AI 批注调整位置、订正闭环、模型端点页与移动布局。真实AI数学正确性、多人生产负载及互联网上线尚未验收。

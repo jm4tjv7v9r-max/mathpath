@@ -1,0 +1,5 @@
+# 學生資料與帳戶都在資料庫裡，絕對不要上傳到 GitHub
+data/
+__pycache__/
+*.pyc
+.DS_Store
