@@ -1364,6 +1364,10 @@ class MathServer(ThreadingHTTPServer):
         if host in ('127.0.0.1', 'localhost'):
             hosts.update((f'127.0.0.1:{port}', f'localhost:{port}'))
         self.origins = {'http://' + h for h in hosts}
+        # 綁 0.0.0.0 對外服務、又沒有明確公開來源時，必須放行任何 Host，
+        # 否則 Render 的健康檢查（Host 是對外網址）會被 Host 白名單擋成 403，導致部署失敗。
+        self.wildcard_host = (host == '0.0.0.0')
+        self.wildcard_origin = self.wildcard_host and not public_origin
         if public_origin:
             parsed = urlsplit(public_origin)
             if parsed.scheme != 'https' or not parsed.hostname or parsed.username or parsed.password or parsed.path not in ('', '/') or parsed.query or parsed.fragment:
@@ -1372,6 +1376,8 @@ class MathServer(ThreadingHTTPServer):
             parsed.port
             self.origins.add(public_origin.rstrip('/').lower())
             hosts.add(parsed.netloc.lower())
+            # 有明確公開來源時就回到嚴格白名單，避免任意 Host 偽造。
+            self.wildcard_host = False
         self.hosts = hosts
         app.secure_cookie = bool(public_origin)
 
@@ -1435,6 +1441,10 @@ class Handler(BaseHTTPRequestHandler):
         origins = self.headers.get_all('Origin', [])
         if len(origins) > 1:
             fail(403, '同源驗證失敗。')
+        # wildcard_origin：Render 這類對外服務沒有事前可知的公開來源，
+        # 只做「不可有多個 Origin」的基本檢查，其餘交由瀏覽器同源政策與 CSRF token 保護。
+        if getattr(self.server, 'wildcard_origin', False):
+            return
         if origins:
             candidate = origins[0].lower()
             if candidate not in self.server.origins:
@@ -1486,7 +1496,8 @@ class Handler(BaseHTTPRequestHandler):
     def handle_route(self):
         try:
             hosts = self.headers.get_all('Host', [])
-            if len(hosts) != 1 or hosts[0].lower() not in self.server.hosts:
+            # wildcard_host：綁 0.0.0.0 對外服務（如 Render），放行任何 Host。
+            if not getattr(self.server, 'wildcard_host', False) and (len(hosts) != 1 or hosts[0].lower() not in self.server.hosts):
                 fail(403, '網站 Host 不在允許清單內。')
             parsed = urlsplit(self.path)
             if parsed.scheme or parsed.netloc or parsed.fragment or (parsed.query and parsed.path != '/api/calendar'):
@@ -1601,11 +1612,14 @@ def main():
             parser.error('host 必须是 localhost 或明确的 IPv4 地址。')
     try:
         app = Application(args.data_dir)
-        # 先綁 port（讓 Render 健康檢查即時通過，背景再跑 DB 初始化）。
-        server = MathServer((args.host, args.port), app, os.environ.get('MATH_PUBLIC_ORIGIN'))
+        # 對外部署時優先用明確公開網址（Render 會自動提供 RENDER_EXTERNAL_URL），
+        # 這樣就回到嚴格 Host/Origin 白名單並啟用 Secure cookie；拿不到時才退回 0.0.0.0 放行模式。
+        public_origin = os.environ.get('MATH_PUBLIC_ORIGIN') or os.environ.get('RENDER_EXTERNAL_URL')
+        server = MathServer((args.host, args.port), app, public_origin)
     except (ValueError, OSError, sqlite3.Error) as exc:
         parser.exit(1, f'后端初始化失败：{exc}\n')
     print(f'MathPath 本地后端监听 {args.host}:{args.port}；AI 模式：{app.ai.mode}。', flush=True)
+    print(f'[startup] 公開來源：{public_origin or "未設定（綁 0.0.0.0 放行模式）"}', flush=True)
     threading.Thread(target=app.safe_initialize, daemon=True, name='mp-init').start()
     print('[startup] 背景 DB 初始化已啟動；/api/health 此時回 starting。', flush=True)
     try:
