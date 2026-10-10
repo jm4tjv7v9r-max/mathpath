@@ -727,7 +727,7 @@ class HomeworkTests(unittest.TestCase):
         self.assertGreaterEqual(listing['options']['available'], 5)
 
     def test_mock_exam_time_limit_expiry_and_auto_submit(self):
-        started = self.mock(topic='幾何', count=3, minutes=15)
+        started = self.mock(topic='一元二次方程', count=3, minutes=15)
         eid, questions = started['exam']['id'], started['questions']
         # 逾時前先作答一题。
         self.answer_mock(eid, questions, only=questions[0]['id'], correct=False)
@@ -743,7 +743,7 @@ class HomeworkTests(unittest.TestCase):
         self.assertIsNotNone(result['report']['suggestion']['nextStep'])
 
     def test_mock_exam_rbac_ownership_and_question_scope(self):
-        started = self.mock(topic='統計', count=2, minutes=10)
+        started = self.mock(topic='集中趨勢與離差', count=2, minutes=10)
         eid, questions = started['exam']['id'], started['questions']
         # 教师不能开始或查看学生的模拟测验。
         self.error(403, 'POST', '/api/mock', {'count': 2, 'minutes': 10}, self.teacher)
@@ -789,7 +789,7 @@ class HomeworkTests(unittest.TestCase):
         self.assertEqual(report['percent'], 100.0, 'percent 只覆盖已评分的题目')
         self.assertIn('待批阅', report['suggestion']['notice'])
         # 快照不可变：之后修改题库答案，不影响已开始的测验评分。
-        started2 = self.mock(topic='統計', count=2, minutes=20)
+        started2 = self.mock(topic='集中趨勢與離差', count=2, minutes=20)
         eid2, questions2 = started2['exam']['id'], started2['questions']
         bank = self.bank_answers()
         target2 = questions2[0]

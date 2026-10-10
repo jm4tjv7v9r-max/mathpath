@@ -279,6 +279,32 @@ class APITests(unittest.TestCase):
             self.assertNotIn('answer', q)
             self.assertIn('qtype', q)
 
+    def test_two_level_topic_tree_validation(self):
+        # 兩層分類：主分類必須在樹內，子分類若填了必須屬於該主分類。
+        self.assertTrue(len(server.TOPIC_TREE) >= 20)
+        self.assertTrue(all(server.TOPIC_TREE.values()), '每個主分類都要有子分類')
+        # 主分類 + 正確子分類 → 成功
+        good = dict(self.draft, topic='圓', subtopic='圓周角定理', grade='中五')
+        _, body, _ = self.request('POST', '/api/questions/import', {'questions': [good]},
+                                  cookie=self.teacher, expect=200)
+        self.assertEqual(body['count'], 1)
+        # 子分類不屬於該主分類 → 400
+        self.request('POST', '/api/questions/import',
+                     {'questions': [dict(self.draft, topic='圓', subtopic='一元一次方程')]},
+                     cookie=self.teacher, expect=400)
+        # 子分類留空（選填）→ 成功
+        self.request('POST', '/api/questions/import',
+                     {'questions': [dict(self.draft, topic='圓', subtopic='')]},
+                     cookie=self.teacher, expect=200)
+        # 主分類不在樹內 → 400
+        self.request('POST', '/api/questions/import',
+                     {'questions': [dict(self.draft, topic='不存在的分類', subtopic='')]},
+                     cookie=self.teacher, expect=400)
+        # /api/state 回傳完整分類樹與年級
+        _, state, _ = self.request('GET', '/api/state', cookie=self.student, expect=200)
+        self.assertEqual(state['topicTree'], server.TOPIC_TREE)
+        self.assertEqual(state['grades'], server.GRADES)
+
     def test_import_atomic_validation(self):
         for invalid in [dict(self.draft, level=0), dict(self.draft, points=True), dict(self.draft, topic='任意'),
                         dict(self.draft, tags='abc'), dict(self.draft, steps=[1]), dict(self.draft, grade='小六'),

@@ -46,7 +46,7 @@ const HANDWRITING=makePng(400,300);
     if(url.pathname==='/api/attempts/9/image')return route.fulfill({contentType:'image/png',body:HANDWRITING});
     if(url.pathname==='/api/calendar/notes'&&route.request().method()==='POST'){noteCreated=route.request().postDataJSON();const created={id:41,date:noteCreated.date,title:noteCreated.title,note:noteCreated.note||'',kind:'reminder',createdAt:stamp};calendarNotes=calendarNotes.concat([created]);return route.fulfill({json:{note:created}});}
     if(url.pathname==='/api/calendar/notes/41/delete'){calendarNotes=calendarNotes.filter(n=>n.id!==41);return route.fulfill({json:{deleted:41}});}
-    if(url.pathname==='/api/mock'&&route.request().method()==='GET'){return route.fulfill({json:{exams:mockState&&mockState.submitted?[{id:7,topic:'幾何',level:1,qtype:'解答題',minutes:15,questionCount:1,createdAt:stamp,startedAt:stamp,expiresAt:stamp,submittedAt:stamp,expired:false,status:'submitted',score:5,maxScore:5,percent:100,pendingCount:0}]:[],options:{topics:['幾何','代數','統計'],counts:[5,10,15,20],minutes:[5,10,15,20,30,45,60],maxQuestions:20,maxMinutes:180,available:16,qtypes:['解答題']},ai}});}
+    if(url.pathname==='/api/mock'&&route.request().method()==='GET'){return route.fulfill({json:{exams:mockState&&mockState.submitted?[{id:7,topic:'幾何',level:1,qtype:'解答題',minutes:15,questionCount:1,createdAt:stamp,startedAt:stamp,expiresAt:stamp,submittedAt:stamp,expired:false,status:'submitted',score:5,maxScore:5,percent:100,pendingCount:0}]:[],options:{topics:['幾何','代數','統計'],subtopics:{'幾何':['勾股定理','相似'],'代數':['一元一次方程']},counts:[5,10,15,20],minutes:[5,10,15,20,30,45,60],maxQuestions:20,maxMinutes:180,available:16,qtypes:['解答題']},ai}});}
     if(url.pathname==='/api/mock'&&route.request().method()==='POST'){mockStarted=route.request().postDataJSON();mockState={submitted:false};return route.fulfill({json:{exam:mockExam(),questions:[mockQuestion],notice:'已開始計時。'}});}
     if(url.pathname==='/api/mock/7'&&route.request().method()==='GET'){return route.fulfill({json:{exam:mockExam(),questions:[mockQuestion],attempts:mockAttempt?[mockAttempt]:[],report:mockState&&mockState.submitted?mockReport():null,notice:'只供你本人查看。'}});}
     if(url.pathname==='/api/mock/7/submit'){mockState={submitted:true};return route.fulfill({json:{exam:mockExam(),report:mockReport(),notice:'已提交並即時計分。'}});}
@@ -440,13 +440,15 @@ const HANDWRITING=makePng(400,300);
   await page.locator('[data-page=mock]').first().click();
   await page.locator('#mock-start').waitFor();
   await page.locator('#mock-topic').selectOption('幾何');
+  // 兩層分類：選主分類後子分類應連動出現
+  await page.locator('#mock-subtopic').selectOption('勾股定理');
   await page.locator('#mock-count').selectOption('5');
   await page.locator('#mock-minutes').selectOption('15');
   await page.locator('#mock-start').click();
   await page.locator('.quiz-banner').waitFor();
   assert.match(await page.locator('.quiz-banner').innerText(),/模擬測驗進行中 · 限時 15 分鐘/);
   assert.match(await page.locator('.quiz-clock').innerText(),/^\d{2}:\d{2}$/,'應顯示倒數');
-  assert.equal(mockStarted.topic,'幾何');assert.equal(mockStarted.count,5);assert.equal(mockStarted.minutes,15);
+  assert.equal(mockStarted.topic,'幾何');assert.equal(mockStarted.subtopic,'勾股定理');assert.equal(mockStarted.count,5);assert.equal(mockStarted.minutes,15);
   assert.equal(await page.locator('#mock-submit').isDisabled(),true,'未作答不能提交');
   await page.locator('[data-mock-q]').first().click();
   await page.locator('[data-answer-mode=text]').click();
