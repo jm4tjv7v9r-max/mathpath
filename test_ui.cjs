@@ -28,7 +28,7 @@ const HANDWRITING=makePng(400,300);
   const stamp='2026-10-08T08:00:00Z';
   const graded=(id,questionId,topic,score,maxScore)=>({id,questionId,questionTitle:'測試題',topic,score,maxScore,status:'graded',feedback:'規則評分。',submittedAt:stamp,answerText:'x=2或3',gradingMethod:'rule-final',steps:[],teacherReviewed:false});
   const handwritten={id:9,questionId:1,questionTitle:'因式分解解二次方程',topic:'一元二次方程',score:null,maxScore:6,status:'pending',feedback:'手寫圖片尚未批閱，等待教師評分。',submittedAt:stamp,answerText:'',gradingMethod:'pending-teacher',steps:[],teacherReviewed:false,image:'/api/attempts/9/image',student:{id:1,name:'介面測試學生',username:'student'},suggestion:advice};
-  let annotated=false,studentSubmitted=false,aiMarked=false,aiAdjusted=null,autoImported=null,parsedSeen=null,savedKeySeen=null,aiConfigSaved=null,correction=null,returned=null,rememberSent=null,importedQuestions=null;
+  let annotated=false,studentSubmitted=false,aiMarked=false,aiAdjusted=null,autoImported=null,parsedSeen=null,savedKeySeen=null,aiConfigSaved=null,economySent=null,correction=null,returned=null,rememberSent=null,importedQuestions=null;
   let mockStarted=null,mockState=null,mockAttempt=null,mockAttemptBody=null;
   let calendarNotes=[],noteCreated=null;
   const mockQuestion={id:11,title:'模擬題：直角三角形',content:'直角三角形兩邊長為3 cm及4 cm，求斜邊長。',topic:'幾何',level:1,grade:'中三',points:5,qtype:'解答題',hint:'用畢氏定理',source:'校本題庫',tags:['幾何']};
@@ -71,6 +71,7 @@ const HANDWRITING=makePng(400,300);
     else if(url.pathname==='/api/state')data={user,questions:[role==='teacher'?q:{...q,answer:undefined,steps:undefined}],attempts:role==='teacher'?[]:[graded(1,1,'一元二次方程',6,6),graded(2,2,'幾何',0,5)],stats:{completed:2,accuracy:55,streak:1,minutes:10},ai,topics:['一元二次方程','幾何']};
     else if(url.pathname==='/api/homework')data={classes:[{id:1,name:'中三甲班',studentCount:2,studentIds:[1,3]}],assignments:[assignment,quizAssignment],students:role==='teacher'?[student]:undefined,ai};
     else if(url.pathname==='/api/ai-config'&&route.request().method()==='POST'){const sent=route.request().postDataJSON();savedKeySeen=sent.apiKey??null;aiConfigSaved=sent;const off=!sent.baseUrl&&!sent.model;return route.fulfill({json:{active:{configured:!off,model:off?'':'local-text',vision:off?'':'local-vision',mode:off?'off':'local',source:off?'none':'saved'},saved:off?null:{baseUrl:sent.baseUrl,model:sent.model,visionModel:sent.visionModel,keySet:true}}});}
+    else if(url.pathname==='/api/ai-config/economy'){const sent=route.request().postDataJSON();economySent=sent.economy;return route.fulfill({json:{active:{configured:true,model:'local-text',vision:'',mode:'local',source:'env',thinking:!sent.economy},economy:sent.economy}});}
     else if(url.pathname==='/api/ai-config/test'){const sent=route.request().postDataJSON();if(!sent.baseUrl||!sent.model)return route.fulfill({status:400,json:{error:'請提供端點與模型。'}});return route.fulfill({json:{ok:true,mode:'local',model:sent.model,testedVision:!!sent.vision}});}
     else if(url.pathname==='/api/ai-config')data={active:{configured:!!aiConfigSaved,model:aiConfigSaved?'local-text':'',vision:aiConfigSaved?'local-vision':'',mode:aiConfigSaved?'local':'off',source:aiConfigSaved?'saved':'none'},canEdit:true,tokenRequired:false,invalidSaved:false,env:{baseUrl:'',model:'',visionModel:'',keySet:false},saved:aiConfigSaved?{baseUrl:aiConfigSaved.baseUrl,model:aiConfigSaved.model,visionModel:aiConfigSaved.visionModel,keySet:true}:null};
     else if(url.pathname==='/api/calendar'){const from=url.searchParams.get('from')||'';const pre=from.slice(0,8);const teacher=role==='teacher';
@@ -358,6 +359,15 @@ const HANDWRITING=makePng(400,300);
   assert.equal(await page.locator('#ai-key').inputValue(),'','金鑰不得回讀到瀏覽器');
   assert.match(await page.locator('#ai-key').getAttribute('placeholder'),/已設定/);
   assert.ok(!(await page.locator('body').innerText()).includes('secret-key-123'),'金鑰不得顯示在頁面');
+  // 計費模式：勾選框必須反映生效狀態，切換後立即呼叫 economy 端點且不被重繪還原
+  assert.equal(await page.locator('#ai-thinking').isChecked(),true,'預設應為省錢模式（已勾選）');
+  await page.locator('#ai-thinking').click();
+  await page.waitForFunction(()=>document.querySelector('#ai-thinking')&&!document.querySelector('#ai-thinking').checked);
+  assert.equal(economySent,false,'取消勾選應送出 economy:false（精確模式）');
+  assert.equal(await page.locator('#ai-thinking').isChecked(),false,'切換後不得被重繪還原');
+  await page.locator('#ai-thinking').click();
+  await page.waitForFunction(()=>document.querySelector('#ai-thinking')&&document.querySelector('#ai-thinking').checked);
+  assert.equal(economySent,true,'重新勾選應送出 economy:true（省錢模式）');
   assert.match(await page.locator('.metric').first().innerText(),/本機模型/);
   assert.match(await page.locator('.capability-list').innerText(),/手寫辨識與 AI 建議批註/);
   await page.screenshot({path:path.join(__dirname,'..','MathPath-模型端点.png'),fullPage:true});

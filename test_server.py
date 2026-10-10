@@ -279,6 +279,35 @@ class APITests(unittest.TestCase):
             self.assertNotIn('answer', q)
             self.assertIn('qtype', q)
 
+    def test_ai_draft_coercion_tolerates_imperfect_model_output(self):
+        # AI 常有多餘欄位、型別不符、自創分類；這些都應該被寬容修正而不是整批失敗。
+        base = {'title': 'T', 'content': '解 x²−5x+6=0。', 'topic': '一元二次方程',
+                'level': 1, 'points': 5, 'answer': 'a', 'grade': '中三'}
+        # 多餘欄位 + level/points 是字串 + 自創子分類
+        messy = dict(base, level='2', points='6', subtopic='因式分解法求解', extra='x')
+        fixed = server.coerce_ai_draft(messy)
+        self.assertEqual(fixed['topic'], '一元二次方程')
+        self.assertEqual(fixed['subtopic'], '因式分解法', '應模糊對應到合法子分類')
+        self.assertEqual(fixed['level'], 2)
+        self.assertEqual(fixed['points'], 6)
+        self.assertNotIn('extra', fixed)
+        # AI 把子分類誤填到 topic
+        fixed2 = server.coerce_ai_draft(dict(base, topic='因式分解法'))
+        self.assertEqual(fixed2['topic'], '一元二次方程')
+        self.assertEqual(fixed2['subtopic'], '因式分解法')
+        # 完全自創的子分類 → 清空但保留主分類
+        fixed3 = server.coerce_ai_draft(dict(base, subtopic='神奇的解法'))
+        self.assertEqual(fixed3['subtopic'], '')
+        # answer 是數字、steps 是字串 → 型別修正
+        fixed4 = server.coerce_ai_draft(dict(base, answer=5, steps='分解'))
+        self.assertEqual(fixed4['answer'], '5')
+        self.assertEqual(fixed4['steps'], ['分解'])
+        # level 超範圍 → 回預設 1
+        self.assertEqual(server.coerce_ai_draft(dict(base, level=99))['level'], 1)
+        # 缺 title/content 或無法辨識分類 → None（跳過該題）
+        self.assertIsNone(server.coerce_ai_draft(dict(base, title='')))
+        self.assertIsNone(server.coerce_ai_draft(dict(base, topic='完全不相關的分類')))
+
     def test_two_level_topic_tree_validation(self):
         # 兩層分類：主分類必須在樹內，子分類若填了必須屬於該主分類。
         self.assertTrue(len(server.TOPIC_TREE) >= 20)

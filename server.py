@@ -329,11 +329,145 @@ def paper_drafts(app, name, body):
             fields(result, ('drafts',), ('drafts',))
             if not isinstance(result['drafts'], list) or not 1 <= len(result['drafts']) <= 100:
                 raise ValueError()
-            drafts = [question_valid(q) for q in result['drafts']]
         except (APIError, ValueError, KeyError, TypeError):
-            fail(502, 'AI 未識別出有效題目，未匯入。請貼上文字或重新上傳。')
+            fail(502, 'AI 回應格式不正確，未匯入。請重試或改貼純文字題目。')
+        # AI 常有多餘欄位或型別小瑕疵，逐題寬容修正；救不回來的題目跳過而不是整批失敗。
+        drafts, skipped = [], 0
+        for item in result['drafts']:
+            fixed = coerce_ai_draft(item)
+            if fixed is None:
+                skipped += 1
+                continue
+            try:
+                drafts.append(question_valid(fixed))
+            except APIError:
+                skipped += 1
+        if not drafts:
+            fail(502, 'AI 沒有辨識出可用的題目（可能是題目文字不足或格式不清）。'
+                      '請貼上含有編號的完整題目，或改用手動輸入。')
         return drafts, 'AI 識別'
     return rule_parse(name, value), '規則拆題'
+
+
+def match_topic(value):
+    """把 AI 回傳的分類名寬容對應到合法的第一層主分類；對不到回 None。"""
+    if not isinstance(value, str):
+        return None
+    v = value.strip()
+    if not v:
+        return None
+    if v in TOPICS:
+        return v
+    # AI 有時把子分類誤填到 topic，或加了「與…」等修飾，先做精確子分類比對。
+    for top, subs in TOPIC_TREE.items():
+        if v in subs:
+            return top
+    # 再嘗試包含比對（避免短字串誤配，需長度 >= 2）。
+    if len(v) >= 2:
+        for t in TOPICS:
+            if t in v or v in t:
+                return t
+    return None
+
+
+def match_subtopic(value, topic):
+    """把 AI 回傳的子分類寬容對應到該主分類下的合法子分類；對不到回空字串。"""
+    if not isinstance(value, str):
+        return ''
+    v = value.strip()
+    if not v:
+        return ''
+    subs = TOPIC_TREE.get(topic, ())
+    if v in subs:
+        return v
+    # AI 常加「的解法」「定理」等修飾，做包含比對（需長度 >= 2，避免短字誤配）。
+    if len(v) >= 2:
+        for s in subs:
+            if s in v or v in s:
+                return s
+    return ''
+
+
+def match_grade(value):
+    """年級寬容對應；對不到時預設中三（原題庫基準年級）。"""
+    if isinstance(value, str):
+        v = value.strip()
+        if v in GRADES:
+            return v
+        for g in GRADES:
+            if g in v:
+                return g
+    return '中三'
+
+
+def _as_int(value, low, high, default):
+    """把 AI 可能回傳的字串／浮點數寬容轉成範圍內的整數。"""
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, (int, float)):
+        n = int(value)
+    elif isinstance(value, str):
+        m = re.search(r'-?\d+', value)
+        if not m:
+            return default
+        n = int(m.group())
+    else:
+        return default
+    return n if low <= n <= high else default
+
+
+def _as_str_list(value, count=20, limit=2000):
+    """把 AI 回傳的清單／字串寬容轉成文字清單。"""
+    if isinstance(value, str):
+        value = [value] if value.strip() else []
+    if not isinstance(value, list):
+        return []
+    out = []
+    for item in value[:count]:
+        if isinstance(item, (str, int, float)) and not isinstance(item, bool):
+            s = str(item).strip()
+            if s and '\x00' not in s:
+                out.append(s[:limit])
+    return out
+
+
+def coerce_ai_draft(raw):
+    """把 AI 回傳的題目草稿寬容整理成可驗證的形狀；無法修正時回 None。
+
+    AI 常有多餘欄位、型別不符（level 是字串）、自創分類等情形。
+    這裡逐項修正，讓「能救的題目」不要因為一個小瑕疵整批失敗。
+    """
+    if not isinstance(raw, dict):
+        return None
+    allowed = ('title', 'content', 'topic', 'subtopic', 'level', 'grade', 'points',
+               'qtype', 'answer', 'steps', 'hint', 'analysis', 'source', 'tags')
+    d = {k: v for k, v in raw.items() if k in allowed}
+    topic_raw = d.get('topic')
+    topic = match_topic(topic_raw)
+    if not topic:
+        return None
+    d['topic'] = topic
+    # AI 有時把子分類誤填到 topic，順手搬回來，避免白白丟失分類。
+    sub_raw = d.get('subtopic')
+    if isinstance(topic_raw, str) and topic_raw.strip() in SUBTOPICS:
+        sub_raw = topic_raw
+    # 子分類對不到就清空（寧可少一層，也不要整題失敗）。
+    d['subtopic'] = match_subtopic(sub_raw, topic)
+    for key, low, high, default in (('level', 1, 3, 1), ('points', 1, 100, 5)):
+        d[key] = _as_int(d.get(key), low, high, default)
+    d['grade'] = match_grade(d.get('grade'))
+    # 文字欄位：非字串一律轉字串，避免型別不符導致整題失敗。
+    for key in ('title', 'content', 'answer', 'hint', 'analysis', 'source', 'qtype'):
+        if key in d and not isinstance(d[key], str):
+            d[key] = '' if d[key] is None else str(d[key])
+    d['title'] = (d.get('title') or '').strip()
+    d['content'] = (d.get('content') or '').strip()
+    if not d['title'] or not d['content']:
+        return None
+    d['qtype'] = d.get('qtype') if d.get('qtype') in QTYPES else classify_type(d['content'])
+    d['steps'] = _as_str_list(d.get('steps'), 40)
+    d['tags'] = _as_str_list(d.get('tags'), 20, 60)
+    return d
 
 
 def question_valid(raw):
@@ -1356,8 +1490,14 @@ class Application:
                                       {'reference': q, 'kind': body['kind']})
                 try:
                     fields(result, ('question',), ('question',))
-                    generated = question_valid(result['question'])
-                    if not generated['answer'] or generated['topic'] != q['topic']:
+                    fixed = coerce_ai_draft(result['question'])
+                    if fixed is None:
+                        raise ValueError()
+                    # 生成的題目必須與參考題同主分類、同子分類（保持知識點一致）。
+                    fixed['topic'] = q['topic']
+                    fixed['subtopic'] = q.get('subtopic', '')
+                    generated = question_valid(fixed)
+                    if not generated['answer']:
                         raise ValueError()
                     if generated['level'] != (q['level'] if body['kind'] == 'similar' else min(3, q['level'] + 1)):
                         raise ValueError()
