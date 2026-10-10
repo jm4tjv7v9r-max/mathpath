@@ -22,6 +22,7 @@ import re
 import secrets
 import sqlite3
 import struct
+import sys
 import threading
 import time
 import unicodedata
@@ -294,6 +295,70 @@ def validate_text_total(value, key='', depth=0):
     return 0
 
 
+PARSE_CHUNK_CHARS = 4000
+PARSE_MAX_CHUNKS = 8
+
+
+def paper_chunks(value, limit=PARSE_CHUNK_CHARS, max_chunks=PARSE_MAX_CHUNKS):
+    """把長試卷依題號邊界切塊，避免單次 AI 回應過長被截斷。
+
+    找不到題號時以換行為界硬切；塊數超過上限時把剩餘內容併入最後一塊（不丟資料）。
+    """
+    value = value or ''
+    if len(value) <= limit:
+        return [value]
+    starts = [m.start() for m in re.finditer(r'(?m)^[ \t]*(?:\d{1,2}[ \t]*[.、)）]|第[ \t]*\d{1,2}[ \t]*題)', value)]
+    bounds = sorted({0, len(value), *[s for s in starts if 0 < s < len(value)]})
+    chunks, current = [], bounds[0]
+    for point in bounds[1:]:
+        if point - current >= limit:
+            chunks.append(value[current:point])
+            current = point
+    chunks.append(value[current:])
+    chunks = [c for c in chunks if c.strip()]
+    if len(chunks) <= 1:
+        chunks, i = [], 0
+        while i < len(value):
+            end = min(len(value), i + limit)
+            if end < len(value):
+                newline = value.rfind('\n', i + max(1, limit // 2), end)
+                if newline > i:
+                    end = newline
+            chunks.append(value[i:end])
+            i = end
+        chunks = [c for c in chunks if c.strip()]
+    if len(chunks) > max_chunks:
+        chunks = chunks[:max_chunks - 1] + [''.join(chunks[max_chunks - 1:])]
+    return chunks or [value]
+
+
+def parse_instruction(total_chunks=1, index=0):
+    """拆題用的指令；長試卷分段時只處理本段，並要求精簡輸出以免被截斷。"""
+    prefix = ''
+    if total_chunks > 1:
+        prefix = (f'這是試卷的第 {index + 1} 段（共 {total_chunks} 段），'
+                  '只處理本段出現的題目，不要補充其他段落的題目。')
+    return (prefix +
+            '識別試卷中的所有題目，保持原文，不捏造缺失文字。'
+            '返回 {drafts:[{title,content,topic,subtopic,level,grade,points,qtype,options:[str],answer,steps:[str],hint,analysis,rubric:[{label:str,percent:number}],source,tags:[str]}]}。'
+            '選擇題必須把選項放進 options 陣列（2 至 10 項，依原順序對應 A、B、C…），'
+            '題幹 content 只保留問句、不要把選項文字貼在後面；answer 填正確選項的字母（例如 "B"）。'
+            '非選擇題 options 留空陣列。'
+            'answer：填空題填最終答案、解答題／證明題填完整結論（選擇題填字母）。'
+            'steps：詳解步驟，最多 5 步、每步不超過 40 字，要寫出關鍵式子。'
+            'analysis：詳細解釋，不超過 50 字，說明考點與常見錯誤。'
+            'rubric：評分標準 3 至 4 項，每項 {label:評分要點（不超過 14 字）, percent:佔分百分比}，'
+            '所有 percent 加總必須等於 100；選擇題可依「正確選項」與「推理依據」配分。'
+            'content、answer、steps、analysis、rubric 中的數學式一律用 LaTeX：行內用 $...$'
+            '（例如 $x^2-5x+6=0$、$\\frac{1}{2}$、$\\sqrt{3}$）；不要用圖片或純文字排版數學式。'
+            f'topic（主分類）只能是以下之一：{TOPIC_HINT}；'
+            'subtopic（子分類）必須是該 topic 子分類清單中的一項，不可自創；'
+            f'子分類清單：{json.dumps(TOPIC_TREE, ensure_ascii=False)}；'
+            f'qtype 只能是{"、".join(QTYPES)}；'
+            f'grade 只能是以下之一：{GRADE_HINT}，依題目難度與課程階段判斷。'
+            '無法確定的參考答案留空，不要捏造。')
+
+
 def paper_drafts(app, name, body):
     """把試卷解析成題目草稿：AI 可用時交給 AI，否則用規則。回傳 (drafts, method)。"""
     if ('text' in body) == ('dataUrl' in body):
@@ -322,47 +387,53 @@ def paper_drafts(app, name, body):
     # 未同意的外部文本使用規則處理，不默默上傳。
     if can_ai and (app.ai.mode != 'external' or body.get('consentExternal') is True or image):
         app.ai.consent(body.get('consentExternal'))
-        result = app.ai.call(
-            '識別試卷中的所有題目，保持原文，不捏造缺失文字。'
-            '返回 {drafts:[{title,content,topic,subtopic,level,grade,points,qtype,options:[str],answer,steps:[str],hint,analysis,rubric:[{label:str,percent:number}],source,tags:[str]}]}。'
-            '選擇題必須把選項放進 options 陣列（2 至 10 項，依原順序對應 A、B、C…），'
-            '題幹 content 只保留問句、不要把選項文字貼在後面；answer 填正確選項的字母（例如 "B"）。'
-            '非選擇題 options 留空陣列。'
-            'answer：填空題填最終答案、解答題／證明題填完整結論（選擇題填字母）。'
-            'steps：完整詳細解法，逐步寫出關鍵式子與理由，至少 2 步。'
-            'analysis：詳細解釋（二至四句），說明考點、解題思路與常見錯誤。'
-            'rubric：評分標準 3 至 6 項，每項 {label:評分要點, percent:佔分百分比}，'
-            '所有 percent 加總必須等於 100；選擇題可依「正確選項」與「推理依據」配分。'
-            'content、answer、steps、analysis、rubric 中的數學式一律用 LaTeX：行內用 $...$、獨立一行用 $$...$$'
-            '（例如 $x^2-5x+6=0$、$\\frac{1}{2}$、$\\sqrt{3}$）；不要用圖片或純文字排版數學式。'
-            f'topic（主分類）只能是以下之一：{TOPIC_HINT}；'
-            'subtopic（子分類）必須是該 topic 子分類清單中的一項，不可自創；'
-            f'子分類清單：{json.dumps(TOPIC_TREE, ensure_ascii=False)}；'
-            f'qtype 只能是{"、".join(QTYPES)}；'
-            f'grade 只能是以下之一：{GRADE_HINT}，依題目難度與課程階段判斷。'
-            '無法確定的參考答案留空，不要捏造。',
-            {'name': name, 'text': value}, image=image, model=app.ai.vision if image else None)
-        try:
-            fields(result, ('drafts',), ('drafts',))
-            if not isinstance(result['drafts'], list) or not 1 <= len(result['drafts']) <= 100:
-                raise ValueError()
-        except (APIError, ValueError, KeyError, TypeError):
-            fail(502, 'AI 回應格式不正確，未匯入。請重試或改貼純文字題目。')
-        # AI 常有多餘欄位或型別小瑕疵，逐題寬容修正；救不回來的題目跳過而不是整批失敗。
-        drafts, skipped = [], 0
-        for item in result['drafts']:
-            fixed = coerce_ai_draft(item)
-            if fixed is None:
-                skipped += 1
-                continue
+        # 長試卷分段處理：單次請求的輸出會隨題數暴增，容易超過模型輸出上限而被截斷。
+        chunks = [value] if image else paper_chunks(value)
+        drafts, skipped, failures, truncated = [], 0, 0, False
+        for index, chunk in enumerate(chunks):
             try:
-                drafts.append(question_valid(fixed))
-            except APIError:
-                skipped += 1
+                result = app.ai.call(parse_instruction(len(chunks), index),
+                                     {'name': name, 'text': chunk}, image=image,
+                                     model=app.ai.vision if image else None)
+            except APIError as exc:
+                if not drafts:
+                    raise
+                failures += 1
+                ai_log(f'parse chunk {index + 1}/{len(chunks)} failed: {exc.message}')
+                continue
+            if getattr(app.ai, 'truncated', False):
+                truncated = True
+            try:
+                fields(result, ('drafts',), ('drafts',))
+                items = result['drafts']
+                if not isinstance(items, list) or not 1 <= len(items) <= 100:
+                    raise ValueError()
+            except (APIError, ValueError, KeyError, TypeError):
+                if not drafts:
+                    fail(502, 'AI 回應格式不正確，未匯入。請重試或改貼純文字題目。')
+                failures += 1
+                continue
+            # AI 常有多餘欄位或型別小瑕疵，逐題寬容修正；救不回來的題目跳過而不是整批失敗。
+            for item in items:
+                fixed = coerce_ai_draft(item)
+                if fixed is None:
+                    skipped += 1
+                    continue
+                try:
+                    drafts.append(question_valid(fixed))
+                except APIError:
+                    skipped += 1
         if not drafts:
             fail(502, 'AI 沒有辨識出可用的題目（可能是題目文字不足或格式不清）。'
                       '請貼上含有編號的完整題目，或改用手動輸入。')
-        return drafts, 'AI 識別'
+        notes = []
+        if len(chunks) > 1:
+            notes.append(f'長試卷已分 {len(chunks)} 段拆分')
+        if truncated:
+            notes.append('AI 回應曾被截斷，已保留可讀取的題目；建議分批拆分')
+        if failures:
+            notes.append(f'有 {failures} 段未能處理，請檢查該段題目')
+        return drafts, 'AI 識別' + ('（' + '；'.join(notes) + '）' if notes else '')
     return rule_parse(name, value), '規則拆題'
 
 
@@ -997,6 +1068,73 @@ class NoRedirect(HTTPRedirectHandler):
         return None
 
 
+def ai_log(message):
+    """把 AI 連線問題寫到伺服器日誌（Render 的 Logs 看得到），方便診斷真實原因。"""
+    try:
+        print(f'[ai] {message}', file=sys.stderr, flush=True)
+    except Exception:
+        pass
+
+
+def ai_timeout():
+    """AI 請求逾時秒數；MATH_AI_TIMEOUT 可調整（預設 120 秒）。"""
+    try:
+        value = float(os.environ.get('MATH_AI_TIMEOUT', '') or 120)
+    except ValueError:
+        return 120.0
+    return min(600.0, max(10.0, value))
+
+
+def ai_max_tokens():
+    """選用的輸出上限；未設定時不帶此欄位，避免供應商不支援而回 400。"""
+    raw = (os.environ.get('MATH_AI_MAX_TOKENS', '') or '').strip()
+    if not raw:
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        return None
+    return value if 256 <= value <= 32000 else None
+
+
+def salvage_json(text, limit=40):
+    """從被截斷的 JSON 救回最後一個完整結構（AI 回應過長時仍可取回前面的題目）。
+
+    只做字串掃描與括號補齊，不執行任何內容；救不回時回 None。
+    """
+    if not isinstance(text, str) or not text:
+        return None
+    stack, in_str, escape, candidates = [], False, False, []
+    for i, ch in enumerate(text):
+        if in_str:
+            if escape:
+                escape = False
+            elif ch == '\\':
+                escape = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch in '[{':
+            stack.append(ch)
+        elif ch in ']}':
+            if not stack or '[{'.index(stack[-1]) != ']}'.index(ch):
+                return None
+            stack.pop()
+            if ch == '}':
+                candidates.append((i + 1, tuple(stack)))
+    if in_str:
+        return None
+    for cut, rest in reversed(candidates[-limit:]):
+        tail = ''.join(']' if c == '[' else '}' for c in reversed(rest))
+        try:
+            return json.loads(text[:cut] + tail)
+        except ValueError:
+            continue
+    return None
+
+
 def env_ai_config():
     # MATH_AI_THINKING：on=開啟思考模式（準確但貴）；off=關閉（省錢模式，預設）。
     # DeepSeek-V4 預設開思考，輸出 token 會多很多，輸出又比輸入貴，故預設關閉。
@@ -1052,6 +1190,7 @@ class AIClient:
         self.lock = threading.Lock()
         self.opener = build_opener(ProxyHandler({}), NoRedirect())
         self.slots = threading.BoundedSemaphore(4)
+        self.truncated = False
         self.configure(env_ai_config())
 
     def configure(self, values):
@@ -1089,6 +1228,7 @@ class AIClient:
             fail(409, '尚未設定 AI 模型；請設定伺服器環境變數後再試。')
         if not self.slots.acquire(blocking=False):
             fail(503, 'AI 工作繁忙，請稍後再試。')
+        self.truncated = False
         try:
             content = json.dumps(payload, ensure_ascii=False)
             if image:
@@ -1101,30 +1241,98 @@ class AIClient:
             used_model = (model or self.model or '').lower()
             if not self.thinking and ('deepseek' in self.base.lower() or 'deepseek' in used_model):
                 request['thinking'] = {'type': 'disabled'}
+            limit = ai_max_tokens()
+            if limit:
+                request['max_tokens'] = limit
             body = json.dumps(request, ensure_ascii=False).encode()
             headers = {'Content-Type': 'application/json', 'Accept': 'application/json'}
             if self.key:
                 headers['Authorization'] = 'Bearer ' + self.key
+            data = None
+            for attempt in range(2):
+                try:
+                    with self.opener.open(Request(self.endpoint, data=body, headers=headers),
+                                          timeout=ai_timeout()) as response:
+                        data = response.read(1_000_001)
+                    break
+                except HTTPError as exc:
+                    detail = ''
+                    try:
+                        detail = exc.read(600).decode('utf-8', 'replace').replace('\n', ' ')
+                    except Exception:
+                        detail = ''
+                    ai_log(f'HTTP {exc.code} {self.endpoint} {detail[:300]}')
+                    if exc.code == 401:
+                        fail(502, 'AI 金鑰無效或已失效（HTTP 401）；請在模型端點頁更新 API 金鑰。')
+                    if exc.code == 402:
+                        fail(502, 'AI 帳戶餘額不足（HTTP 402）；請先充值後再試。')
+                    if exc.code == 403:
+                        fail(502, 'AI 拒絕此次請求（HTTP 403）；請確認金鑰權限與模型名稱。')
+                    if exc.code == 404:
+                        fail(502, f'AI 端點或模型不存在（HTTP 404）；請確認端點網址與模型名稱（目前：{model or self.model}）。')
+                    if exc.code == 400:
+                        fail(502, 'AI 不接受此次請求（HTTP 400）；請確認端點網址、模型名稱與帳戶狀態。')
+                    if exc.code == 429:
+                        if attempt == 0:
+                            time.sleep(1.5)
+                            continue
+                        fail(502, 'AI 請求過於頻密（HTTP 429）；請稍後再試。')
+                    if exc.code >= 500 and attempt == 0:
+                        time.sleep(1.5)
+                        continue
+                    fail(502, f'AI 服務回應錯誤（HTTP {exc.code}）；請稍後再試。')
+                except (URLError, TimeoutError, OSError) as exc:
+                    ai_log(f'network {type(exc).__name__}: {exc!r}')
+                    if attempt == 0:
+                        time.sleep(1.0)
+                        continue
+                    fail(502, f'無法連線 AI 服務（{type(exc).__name__}，逾時 {ai_timeout():g} 秒）；'
+                              '請確認端點網址、網路與帳戶狀態後重試。')
+            if data is None:
+                fail(502, 'AI 服務連線失敗；請稍後重試。')
+            if len(data) > 1_000_000:
+                fail(502, 'AI 回應過長，未保存結果；請減少一次拆分的題目數量。')
             try:
-                with self.opener.open(Request(self.endpoint, data=body, headers=headers), timeout=60) as response:
-                    data = response.read(1_000_001)
-                if len(data) > 1_000_000:
-                    fail(502, 'AI 回應過長，未保存結果。')
                 result = json.loads(data)
-                raw = result['choices'][0]['message']['content']
-                if not isinstance(raw, str):
-                    raise ValueError()
-                raw = re.sub(r'^```(?:json)?\s*|\s*```$', '', raw.strip())
+            except ValueError:
+                ai_log(f'invalid envelope: {data[:300]!r}')
+                fail(502, 'AI 端點回傳的不是 JSON；請確認端點是 OpenAI 相容的 chat/completions。')
+            choices = result.get('choices') if isinstance(result, dict) else None
+            if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+                ai_log(f'no choices: {str(result)[:300]}')
+                fail(502, 'AI 沒有回傳結果；請確認模型名稱是否正確後重試。')
+            choice = choices[0]
+            finish = choice.get('finish_reason')
+            message = choice.get('message')
+            raw = message.get('content') if isinstance(message, dict) else None
+            if not isinstance(raw, str) or not raw.strip():
+                # 部分供應商在思考模式下把內容放在 reasoning_content，這裡退回取出其中的 JSON。
+                reasoning = message.get('reasoning_content') if isinstance(message, dict) else None
+                if isinstance(reasoning, str) and reasoning.strip():
+                    start, end = reasoning.find('{'), reasoning.rfind('}')
+                    if 0 <= start < end:
+                        raw = reasoning[start:end + 1]
+                        ai_log('content 為空，改由 reasoning_content 取回內容')
+            if not isinstance(raw, str) or not raw.strip():
+                ai_log(f'empty content (finish={finish}): {str(choice)[:300]}')
+                fail(502, 'AI 回傳了空白內容；請稍後重試，或改用其他模型。')
+            raw = re.sub(r'^```(?:json)?\s*|\s*```$', '', raw.strip())
+            try:
                 decoded = json.loads(raw, parse_constant=lambda _: fail(502, 'AI 回傳了無效數字。'))
-                if not isinstance(decoded, dict) or validate_text_total(decoded) > MAX_TEXT:
-                    raise ValueError()
-                return decoded
-            except APIError as exc:
-                if exc.status == 400:
-                    fail(502, 'AI 回應包含無效資料，未保存。')
+            except APIError:
                 raise
-            except (URLError, HTTPError, TimeoutError, OSError, ValueError, KeyError, TypeError, IndexError, RecursionError):
-                fail(502, 'AI 服務連線失敗或回應格式無效；未偽造評分或題目，請稍後重試。')
+            except ValueError:
+                decoded = salvage_json(raw)
+                if decoded is None:
+                    ai_log(f'json decode failed (finish={finish}): {raw[:400]!r}')
+                    if finish == 'length':
+                        fail(502, 'AI 回應因長度上限被截斷，未保存；請把試卷分成幾段分批拆分後重試。')
+                    fail(502, 'AI 回傳的內容不是有效 JSON，未保存；請重試或改用其他模型。')
+                self.truncated = True
+                ai_log(f'salvaged truncated response (finish={finish}, {len(raw)} chars)')
+            if not isinstance(decoded, dict) or validate_text_total(decoded) > MAX_TEXT:
+                raise ValueError()
+            return decoded
         finally:
             self.slots.release()
 

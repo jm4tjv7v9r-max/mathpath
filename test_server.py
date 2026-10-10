@@ -893,6 +893,54 @@ class APITests(unittest.TestCase):
         with self.app.db() as db:
             self.assertTrue(server.password_matches('Math1234!', db.execute('SELECT password FROM users WHERE id=1').fetchone()[0]))
 
+    def test_long_paper_is_chunked_merged_and_reported(self):
+        # 長試卷分段呼叫 AI：每段只處理本段題目，結果合併，並在拆分方式回報分段數。
+        self.app.ai.configured = True
+        self.app.ai.mode = 'local'
+        paper = '\n'.join(f'{i}. 第 {i} 題 ' + 'x' * 130 for i in range(1, 61))
+        seen = []
+
+        def fake_call(instruction, payload, image=None, model=None):
+            seen.append(instruction)
+            number = payload['text'].strip().split('\n')[0].split('.')[0]
+            return {'drafts': [{'title': f'第 {number} 題', 'content': '解 $x^2-1=0$。',
+                                'topic': '一元二次方程', 'level': 1, 'points': 5, 'answer': '$x=1$'}]}
+
+        with patch.object(self.app.ai, 'call', side_effect=fake_call):
+            _, body, _ = self.request('POST', '/api/papers/parse', {'name': '長卷', 'text': paper},
+                                      cookie=self.teacher, expect=200)
+        self.assertGreater(len(seen), 1, '長試卷應分段呼叫 AI')
+        self.assertEqual(len(body['drafts']), len(seen), '每段結果都應併入')
+        self.assertIn('長試卷已分', body['method'])
+        self.assertIn('第 2 段', seen[1], '第二段應提示只處理本段')
+
+    def test_parse_reports_truncation_and_keeps_earlier_chunks(self):
+        self.app.ai.configured = True
+        self.app.ai.mode = 'local'
+        paper = '\n'.join(f'{i}. 第 {i} 題 ' + 'y' * 130 for i in range(1, 61))
+        draft = {'title': '題', 'content': '解 $x^2-1=0$。', 'topic': '一元二次方程',
+                 'level': 1, 'points': 5, 'answer': '$x=1$'}
+        state = {'n': 0}
+
+        def flaky(instruction, payload, image=None, model=None):
+            state['n'] += 1
+            if state['n'] == 1:
+                self.app.ai.truncated = True
+                return {'drafts': [dict(draft, title='第一段題目')]}
+            raise server.APIError(502, 'AI 服務回應錯誤')
+
+        with patch.object(self.app.ai, 'call', side_effect=flaky):
+            _, body, _ = self.request('POST', '/api/papers/parse', {'name': '長卷', 'text': paper},
+                                      cookie=self.teacher, expect=200)
+        self.assertEqual([d['title'] for d in body['drafts']], ['第一段題目'], '應保留先前段落的結果')
+        self.assertIn('曾被截斷', body['method'])
+        self.assertIn('未能處理', body['method'])
+        # 第一段就失敗時，整批失敗（不假裝成功）
+        with patch.object(self.app.ai, 'call', side_effect=server.APIError(502, 'AI 服務回應錯誤')):
+            _, error, _ = self.request('POST', '/api/papers/parse', {'name': '長卷', 'text': paper},
+                                       cookie=self.teacher, expect=502)
+        self.assertIn('AI 服務回應錯誤', error['error'])
+
     def test_ai_answer_endpoint_generates_answer_and_rubric(self):
         # 教師新增題目時可請 AI 產生答案、詳解、詳細解釋與評分標準。
         canned = {'answer': '$x=2$ 或 $x=3$', 'steps': ['分解為 $(x-2)(x-3)=0$。', '得 $x=2$ 或 $x=3$。'],
@@ -1067,6 +1115,149 @@ class APITests(unittest.TestCase):
         with patch.object(self.app.ai, 'call', return_value={'drafts': [generated]}):
             _, parsed, _ = self.request('POST', '/api/papers/parse', {'name': '試卷', 'text': '1. 解方程'}, cookie=self.teacher, expect=200)
             self.assertEqual(parsed['method'], 'AI 識別')
+
+
+class AIFailureTests(unittest.TestCase):
+    """AI 連線／回應異常時的診斷訊息與救援行為。"""
+
+    def serve(self, handler):
+        srv = ThreadingHTTPServer(('127.0.0.1', 0), handler)
+        thread = threading.Thread(target=srv.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(srv.shutdown)
+        self.addCleanup(srv.server_close)
+        return srv
+
+    def client(self, srv, model='deepseek-flash'):
+        client = server.AIClient()
+        client.configure({'base_url': f'http://127.0.0.1:{srv.server_address[1]}/v1', 'model': model,
+                          'api_key': 'k', 'vision_model': '', 'thinking': False})
+        return client
+
+    @staticmethod
+    def reply(content=None, status=None, body=None, finish=None, calls=None):
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                self.rfile.read(int(self.headers.get('Content-Length', 0)))
+                if calls is not None:
+                    calls.append(self.path)
+                if status is not None:
+                    payload = body if isinstance(body, bytes) else json.dumps(body or {}).encode()
+                    self.send_response(status)
+                    self.send_header('Content-Type', 'application/json')
+                    self.send_header('Content-Length', str(len(payload)))
+                    self.end_headers()
+                    self.wfile.write(payload)
+                    return
+                out = json.dumps({'choices': [{'message': {'content': content}, 'finish_reason': finish}]}).encode()
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Content-Length', str(len(out)))
+                self.end_headers()
+                self.wfile.write(out)
+            def log_message(self, *a):
+                pass
+        return Handler
+
+    def message_for(self, handler, model='deepseek-flash'):
+        srv = self.serve(handler)
+        with self.assertRaises(server.APIError) as ctx:
+            self.client(srv, model).call('只回傳 {"ok":true}', {'probe': 'text'})
+        self.assertEqual(ctx.exception.status, 502)
+        return ctx.exception.message
+
+    def test_http_errors_map_to_actionable_messages(self):
+        self.assertIn('金鑰', self.message_for(self.reply(status=401, body={'error': 'Authentication Fails'})))
+        self.assertIn('餘額', self.message_for(self.reply(status=402, body={'error': 'Insufficient Balance'})))
+        self.assertIn('模型名稱', self.message_for(self.reply(status=404, body={'error': 'Model Not Exist'})))
+        self.assertIn('頻密', self.message_for(self.reply(status=429, body={'error': 'rate limit'})))
+        self.assertIn('HTTP 500', self.message_for(self.reply(status=500, body={'error': 'oops'})))
+        self.assertIn('HTTP 400', self.message_for(self.reply(status=400, body={'error': 'bad'})))
+
+    def test_server_errors_and_rate_limits_are_retried_once(self):
+        calls = []
+        self.message_for(self.reply(status=500, body={'error': 'oops'}, calls=calls))
+        self.assertEqual(len(calls), 2, '5xx 應重試一次')
+        calls2 = []
+        self.message_for(self.reply(status=429, body={'error': 'rate limit'}, calls=calls2))
+        self.assertEqual(len(calls2), 2, '429 應重試一次')
+        calls3 = []
+        self.message_for(self.reply(status=401, body={'error': 'bad key'}, calls=calls3))
+        self.assertEqual(len(calls3), 1, '401 不應重試')
+
+    def test_network_failure_message(self):
+        client = server.AIClient()
+        client.configure({'base_url': 'http://127.0.0.1:9/v1', 'model': 'm', 'api_key': 'k',
+                          'vision_model': '', 'thinking': False})
+        with self.assertRaises(server.APIError) as ctx:
+            client.call('x', {})
+        self.assertIn('無法連線 AI 服務', ctx.exception.message)
+
+    def test_invalid_or_empty_responses(self):
+        self.assertIn('空白內容', self.message_for(self.reply(content='   ')))
+        self.assertIn('不是 JSON', self.message_for(self.reply(status=200, body=b'<html>bad gateway</html>')))
+        self.assertIn('沒有回傳結果', self.message_for(self.reply(status=200, body={'choices': []})))
+        self.assertIn('不是有效 JSON',
+                      self.message_for(self.reply(content='這不是 JSON，只是一段說明文字。', finish='stop')))
+        # 尾端多一個逗號之類的小瑕疵會被救援，不應該整批失敗
+        srv = self.serve(self.reply(content='{"drafts":[{"title":"a"},]}', finish='stop'))
+        self.assertEqual(self.client(srv).call('x', {})['drafts'], [{'title': 'a'}])
+
+    def test_truncated_response_is_salvaged(self):
+        srv = self.serve(self.reply(content='```json\n{"drafts":[{"title":"a"},{"title":"b"}', finish='length'))
+        client = self.client(srv)
+        result = client.call('x', {})
+        self.assertEqual([d['title'] for d in result['drafts']], ['a', 'b'])
+        self.assertTrue(client.truncated, '被截斷時應標記 truncated')
+        # 完全無法救援時給出明確訊息
+        message = self.message_for(self.reply(content='{"drafts":[{"title":', finish='length'))
+        self.assertIn('長度上限被截斷', message)
+
+    def test_salvage_json_handles_strings_and_brackets(self):
+        self.assertEqual(server.salvage_json('{"drafts":[{"a":1},{"b":2}')['drafts'][1], {'b': 2})
+        self.assertEqual(server.salvage_json('{"drafts":[{"a":"}{"},{"b":2}]}')['drafts'][0]['a'], '}{')
+        self.assertEqual(server.salvage_json('{"drafts":[{"a":1},{"b":')['drafts'], [{'a': 1}])
+        self.assertIsNone(server.salvage_json('完全不是 JSON'))
+        self.assertIsNone(server.salvage_json('{"a": "未收尾'))
+
+    def test_paper_chunks_split_on_question_numbers_without_losing_text(self):
+        self.assertEqual(server.paper_chunks('1. 短題目'), ['1. 短題目'])
+        text = '\n'.join(f'{i}. 第 {i} 題 ' + 'x' * 120 for i in range(1, 61))
+        chunks = server.paper_chunks(text)
+        self.assertGreater(len(chunks), 1)
+        self.assertEqual(''.join(chunks), text, '分段不得遺漏任何文字')
+        self.assertTrue(all(c.lstrip().split('.')[0].isdigit() for c in chunks), '應在題號邊界切分')
+        # 超過上限時併入最後一塊，不丟資料
+        many = '\n'.join(f'{i}. 第 {i} 題 ' + 'y' * 900 for i in range(1, 41))
+        capped = server.paper_chunks(many)
+        self.assertLessEqual(len(capped), server.PARSE_MAX_CHUNKS)
+        self.assertEqual(''.join(capped), many)
+        # 沒有題號時以換行硬切，仍不丟資料
+        plain = ('沒有編號的長段落。' * 60 + '\n') * 20
+        hard = server.paper_chunks(plain)
+        self.assertEqual(''.join(hard), plain)
+
+    def test_parse_instruction_mentions_segment_and_compactness(self):
+        single = server.parse_instruction(1, 0)
+        self.assertNotIn('第 1 段', single)
+        self.assertIn('rubric', single)
+        self.assertIn('不超過 40 字', single)
+        second = server.parse_instruction(3, 1)
+        self.assertIn('第 2 段（共 3 段）', second)
+
+    def test_timeout_and_max_tokens_env(self):
+        with patch.dict('os.environ', {}, clear=True):
+            self.assertEqual(server.ai_timeout(), 120.0)
+            self.assertIsNone(server.ai_max_tokens())
+        with patch.dict('os.environ', {'MATH_AI_TIMEOUT': '30', 'MATH_AI_MAX_TOKENS': '4096'}, clear=True):
+            self.assertEqual(server.ai_timeout(), 30.0)
+            self.assertEqual(server.ai_max_tokens(), 4096)
+        with patch.dict('os.environ', {'MATH_AI_TIMEOUT': '99999', 'MATH_AI_MAX_TOKENS': '10'}, clear=True):
+            self.assertEqual(server.ai_timeout(), 600.0)
+            self.assertIsNone(server.ai_max_tokens())
+        with patch.dict('os.environ', {'MATH_AI_TIMEOUT': 'abc', 'MATH_AI_MAX_TOKENS': 'abc'}, clear=True):
+            self.assertEqual(server.ai_timeout(), 120.0)
+            self.assertIsNone(server.ai_max_tokens())
 
 
 class RubricTests(unittest.TestCase):
