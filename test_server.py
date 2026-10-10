@@ -281,7 +281,7 @@ class APITests(unittest.TestCase):
 
     def test_import_atomic_validation(self):
         for invalid in [dict(self.draft, level=0), dict(self.draft, points=True), dict(self.draft, topic='任意'),
-                        dict(self.draft, tags='abc'), dict(self.draft, steps=[1]), dict(self.draft, grade='中一'),
+                        dict(self.draft, tags='abc'), dict(self.draft, steps=[1]), dict(self.draft, grade='小六'),
                         dict(self.draft, title='<title>', unknown='x'), dict(self.draft, content=''),
                         dict(self.draft, level=1.5), dict(self.draft, answer=None)]:
             self.request('POST', '/api/questions/import', {'questions': [self.draft, invalid]}, cookie=self.teacher, expect=400)

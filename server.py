@@ -40,7 +40,27 @@ MAX_TEXT = 80_000
 MAX_BODY = 4 * ((MAX_FILE + 2) // 3) + MAX_TEXT * 12 + 10_000
 SESSION_SECONDS = 12 * 3600
 SESSION_SECONDS_LONG = 30 * 24 * 3600
-TOPICS = ['一元二次方程', '函數', '幾何', '概率', '代數', '統計']
+# 知識分類涵蓋香港中學（中一至中六）數學課程三大範疇＋延伸部分。
+# 保留原有六個分類，既有題目的分類篩選不會失效。
+TOPICS = [
+    # ── 數與代數 ──
+    '數與數系', '代數', '代數式與多項式', '因式分解',
+    '方程與不等式', '一元二次方程',
+    '函數', '函數圖像與變換', '指數與對數',
+    '數列與級數', '變分', '線性規劃',
+    # ── 度量、圖形與空間 ──
+    '幾何', '三角形', '四邊形與多邊形',
+    '圓', '立體圖形', '三角學', '坐標幾何',
+    '軌跡與幾何證明', '向量',
+    # ── 數據處理 ──
+    '統計', '集中趨勢與離差', '概率', '排列與組合',
+    # ── 微積分（延伸部分 M1／M2）──
+    '極限與微分', '積分',
+]
+# 年級：中一至中六（涵蓋初中與高中）。
+GRADES = ['中一', '中二', '中三', '中四', '中五', '中六']
+TOPIC_HINT = '、'.join(TOPICS)
+GRADE_HINT = '、'.join(GRADES)
 QTYPES = ['選擇題', '填空題', '解答題', '證明題']
 COOKIE = 'mathpath_session'
 DEMO_NOTICE = '演示帳戶：student / Math1234!、teacher / Teach1234!。上線前必須更換密碼。'
@@ -124,7 +144,9 @@ def paper_drafts(app, name, body):
         result = app.ai.call(
             '識別試卷中的所有題目，保持原文，不捏造缺失文字。'
             '返回 {drafts:[{title,content,topic,level,grade,points,qtype,answer,steps:[str],hint,analysis,source,tags:[str]}]}。'
-            'topic 只能是一元二次方程、函數、幾何、概率、代數、統計；qtype 只能是選擇題、填空題、解答題、證明題；grade為中三。'
+            f'topic 只能是以下之一：{TOPIC_HINT}；'
+            f'qtype 只能是{"、".join(QTYPES)}；'
+            f'grade 只能是以下之一：{GRADE_HINT}，依題目難度與課程階段判斷。'
             'analysis 用一至兩句說明本題考什麼、解題關鍵或常見錯誤；無法確定的參考答案留空。',
             {'name': name, 'text': value}, image=image, model=app.ai.vision if image else None)
         try:
@@ -146,12 +168,12 @@ def question_valid(raw):
         decode_figure(raw['figure'])
     q = {k: text(raw[k], k, limit) for k, limit in [('title', 200), ('content', MAX_TEXT), ('topic', 30)]}
     if q['topic'] not in TOPICS:
-        fail(400, '分類必須是題庫提供的六個主題之一。')
+        fail(400, f'分類必須是題庫提供的知識分類之一：{TOPIC_HINT}。')
     q['level'] = number(raw['level'], '難度', 1, 3, True)
     q['points'] = number(raw['points'], '分值', 1, 100, True)
-    q['grade'] = raw.get('grade', '中三')
-    if q['grade'] != '中三':
-        fail(400, '年級必須是中三。')
+    q['grade'] = raw.get('grade') or '中三'
+    if q['grade'] not in GRADES:
+        fail(400, f'年級必須是中一至中六之一：{GRADE_HINT}。')
     q['answer'] = text(raw['answer'], '參考答案', 4000, empty=True)
     q['qtype'] = raw.get('qtype') or classify_type(q['content'])
     if q['qtype'] not in QTYPES:
@@ -1122,7 +1144,7 @@ class Application:
                         attempt['student'] = dict(owner)
                 own = [r for r in rows if r['user_id'] == user['id']]
             return {'user': self.user_public(user), 'questions': questions, 'attempts': attempts,
-                    'stats': self.stats(own), 'ai': self.ai.public(), 'topics': TOPICS,
+                    'stats': self.stats(own), 'ai': self.ai.public(), 'topics': TOPICS, 'grades': GRADES,
                     'notice': self.notice(user), 'minutesNotice': '分鐘數僅按同日相鄰提交間隔估算，不是正式學習計時。'}, headers
         match = re.fullmatch(r'/api/questions/([1-9]\d{0,17})/(recommendations|generate)', path)
         if match:
@@ -1146,8 +1168,10 @@ class Application:
                 if body['kind'] == 'advanced' and q['level'] == 3:
                     fail(409, '此題已是最高難度，請選擇相似題。')
                 self.ai.consent(body.get('consentExternal'))
-                result = self.ai.call('根據參考題生成一題中三數學題。返回 {question:{title,content,topic,level,grade,points,answer,steps:[str],hint,source,tags:[str]}}。'
-                                      '必須自行核算答案和步驟；分類不變，相似題同難度，進階題難度提高但最高3。',
+                result = self.ai.call(f'根據參考題生成一題同年級（{q.get("grade", "中三")}）的數學題。'
+                                      '返回 {question:{title,content,topic,level,grade,points,answer,steps:[str],hint,source,tags:[str]}}。'
+                                      f'topic 必須與參考題相同：{q["topic"]}；grade 必須與參考題相同。'
+                                      '必須自行核算答案和步驟；相似題同難度，進階題難度提高但最高3。',
                                       {'reference': q, 'kind': body['kind']})
                 try:
                     fields(result, ('question',), ('question',))
