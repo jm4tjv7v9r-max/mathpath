@@ -11,6 +11,22 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: "3.13"
+      # --- AI 模型端點（可選，不填也能跑，AI 功能會停用）---
+      # 以 DeepSeek 為例：base_url=https://api.deepseek.com/v1、model/vision_model=deepseek-flash
+      - key: MATH_AI_BASE_URL
+        sync: false
+      - key: MATH_AI_MODEL
+        sync: false
+      - key: MATH_AI_VISION_MODEL
+        sync: false
+      - key: MATH_AI_API_KEY
+        sync: false
+      # 省錢模式：off=關閉思考（預設，輸出 token 少很多）；on=開啟思考（較準確但較貴）
+      - key: MATH_AI_THINKING
+        sync: false
+      # 強烈建議設定：鎖住「更換模型端點」頁面，避免任何人亂改 AI 設定
+      - key: MATH_ADMIN_TOKEN
+        sync: false
       - key: R2_ACCOUNT_ID
         sync: false
       - key: R2_ACCESS_KEY_ID

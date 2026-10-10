@@ -200,7 +200,7 @@ class APITests(unittest.TestCase):
         self.assertEqual(len(state['questions']), 16)
         self.assertEqual(state['attempts'], [])
         self.assertEqual(state['stats'], {'completed': 0, 'accuracy': 0, 'streak': 0, 'minutes': 0})
-        self.assertEqual(state['ai'], {'configured': False, 'model': '', 'vision': '', 'mode': 'off', 'source': 'none'})
+        self.assertEqual(state['ai'], {'configured': False, 'model': '', 'vision': '', 'mode': 'off', 'source': 'none', 'thinking': False})
         for q in state['questions']:
             self.assertNotIn('answer', q)
             self.assertNotIn('steps', q)
@@ -405,13 +405,49 @@ class APITests(unittest.TestCase):
         self.assertEqual(saved['status'], 'pending')
         self.assertEqual(saved['annotation'], path)
 
+    def test_deepseek_thinking_toggle_is_endpoint_safe(self):
+        # 省錢模式（thinking=False）只對 DeepSeek 帶上開關，其他供應商不帶，避免未知欄位造成 400。
+        captured = []
+
+        class Recorder(BaseHTTPRequestHandler):
+            def do_POST(self):
+                captured.append(json.loads(self.rfile.read(int(self.headers['Content-Length']))))
+                body = json.dumps({'choices': [{'message': {'content': '{"ok":true}'}}]}).encode()
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Content-Length', str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            def log_message(self, *a):
+                pass
+
+        httpd = ThreadingHTTPServer(('127.0.0.1', 0), Recorder)
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(httpd.shutdown)
+        base = f'http://127.0.0.1:{httpd.server_address[1]}/v1'
+        client = server.AIClient()
+        def send(model, thinking):
+            client.configure({'base_url': base, 'model': model, 'api_key': 'k',
+                              'vision_model': '', 'thinking': thinking})
+            client.call('只回傳 {"ok":true}', {'probe': 'text'})
+            return captured[-1].get('thinking')
+        self.assertEqual(send('deepseek-flash', False), {'type': 'disabled'})
+        self.assertIsNone(send('deepseek-flash', True))
+        self.assertIsNone(send('gpt-4o-mini', False))
+        # 環境變數：預設為省錢（關閉思考）
+        with patch.dict('os.environ', {}, clear=True):
+            self.assertFalse(server.env_ai_config()['thinking'])
+        with patch.dict('os.environ', {'MATH_AI_THINKING': 'on'}, clear=True):
+            self.assertTrue(server.env_ai_config()['thinking'])
+
     def test_ai_config_endpoint_management(self):
         path = '/api/ai-config'
         self.request('GET', path, cookie=self.student, expect=403)
         self.request('POST', path, {'baseUrl': 'http://127.0.0.1:11434/v1', 'model': 'm'},
                      cookie=self.student, expect=403)
         _, body, _ = self.request('GET', path, cookie=self.teacher, expect=200)
-        self.assertEqual(body['active'], {'configured': False, 'model': '', 'vision': '', 'mode': 'off', 'source': 'none'})
+        self.assertEqual(body['active'], {'configured': False, 'model': '', 'vision': '', 'mode': 'off', 'source': 'none', 'thinking': False})
         self.assertTrue(body['canEdit'], '本機且未設權杖時應可編輯')
         self.assertFalse(body['tokenRequired'])
         self.assertFalse(body['env']['keySet'])
