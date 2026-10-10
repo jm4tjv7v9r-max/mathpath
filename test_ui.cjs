@@ -28,7 +28,7 @@ const HANDWRITING=makePng(400,300);
   const stamp='2026-10-08T08:00:00Z';
   const graded=(id,questionId,topic,score,maxScore)=>({id,questionId,questionTitle:'測試題',topic,score,maxScore,status:'graded',feedback:'規則評分。',submittedAt:stamp,answerText:'x=2或3',gradingMethod:'rule-final',steps:[],teacherReviewed:false});
   const handwritten={id:9,questionId:1,questionTitle:'因式分解解二次方程',topic:'一元二次方程',score:null,maxScore:6,status:'pending',feedback:'手寫圖片尚未批閱，等待教師評分。',submittedAt:stamp,answerText:'',gradingMethod:'pending-teacher',steps:[],teacherReviewed:false,image:'/api/attempts/9/image',student:{id:1,name:'介面測試學生',username:'student'},suggestion:advice};
-  let annotated=false,studentSubmitted=false,aiMarked=false,aiAdjusted=null,autoImported=null,parsedSeen=null,savedKeySeen=null,aiConfigSaved=null,economySent=null,correction=null,returned=null,rememberSent=null,importedQuestions=null;
+  let annotated=false,studentSubmitted=false,aiMarked=false,aiAdjusted=null,autoImported=null,parsedSeen=null,savedKeySeen=null,aiConfigSaved=null,economySent=null,aiAnswerPayload=null,correction=null,returned=null,rememberSent=null,importedQuestions=null;
   let mockStarted=null,mockState=null,mockAttempt=null,mockAttemptBody=null;
   let calendarNotes=[],noteCreated=null;
   const mockQuestion={id:11,title:'模擬題：直角三角形',content:'直角三角形兩邊長為3 cm及4 cm，求斜邊長。',topic:'幾何',level:1,grade:'中三',points:5,qtype:'解答題',hint:'用畢氏定理',source:'校本題庫',tags:['幾何']};
@@ -73,6 +73,7 @@ const HANDWRITING=makePng(400,300);
     else if(url.pathname==='/api/state')data={user,questions:[role==='teacher'?q:{...q,answer:undefined,steps:undefined}],attempts:role==='teacher'?[]:[graded(1,1,'一元二次方程',6,6),graded(2,2,'幾何',0,5)],stats:{completed:2,accuracy:55,streak:1,minutes:10},ai,topics:['一元二次方程','幾何']};
     else if(url.pathname==='/api/homework')data={classes:[{id:1,name:'中三甲班',studentCount:2,studentIds:[1,3]}],assignments:[assignment,quizAssignment],students:role==='teacher'?[student]:undefined,ai};
     else if(url.pathname==='/api/ai-config'&&route.request().method()==='POST'){const sent=route.request().postDataJSON();savedKeySeen=sent.apiKey??null;aiConfigSaved=sent;const off=!sent.baseUrl&&!sent.model;return route.fulfill({json:{active:{configured:!off,model:off?'':'local-text',vision:off?'':'local-vision',mode:off?'off':'local',source:off?'none':'saved'},saved:off?null:{baseUrl:sent.baseUrl,model:sent.model,visionModel:sent.visionModel,keySet:true}}});}
+    else if(url.pathname==='/api/questions/ai-answer'){aiAnswerPayload=route.request().postDataJSON();return route.fulfill({json:{answer:'$x=2$ 或 $x=3$',steps:['寫成標準形式 $x^2-5x+6=0$。','分解為 $(x-2)(x-3)=0$。','得 $x=2$ 或 $x=3$。'],analysis:'考因式分解法；常見錯誤是符號處理不當。',rubric:[{label:'正確列式',percent:30},{label:'因式分解正確',percent:40},{label:'寫出兩個根',percent:30}],qtype:'解答題',options:[],method:'AI 生成'}});}
     else if(url.pathname==='/api/ai-config/economy'){const sent=route.request().postDataJSON();economySent=sent.economy;return route.fulfill({json:{active:{configured:true,model:'local-text',vision:'',mode:'local',source:'env',thinking:!sent.economy},economy:sent.economy}});}
     else if(url.pathname==='/api/ai-config/test'){const sent=route.request().postDataJSON();if(!sent.baseUrl||!sent.model)return route.fulfill({status:400,json:{error:'請提供端點與模型。'}});return route.fulfill({json:{ok:true,mode:'local',model:sent.model,testedVision:!!sent.vision}});}
     else if(url.pathname==='/api/ai-config')data={active:{configured:!!aiConfigSaved,model:aiConfigSaved?'local-text':'',vision:aiConfigSaved?'local-vision':'',mode:aiConfigSaved?'local':'off',source:aiConfigSaved?'saved':'none'},canEdit:true,tokenRequired:false,invalidSaved:false,env:{baseUrl:'',model:'',visionModel:'',keySet:false},saved:aiConfigSaved?{baseUrl:aiConfigSaved.baseUrl,model:aiConfigSaved.model,visionModel:aiConfigSaved.visionModel,keySet:true}:null};
@@ -365,7 +366,9 @@ const HANDWRITING=makePng(400,300);
   await page.locator('#parse-paper').click();
   await page.locator('.draft-card').waitFor();
   assert.equal(await page.locator('[data-field=qtype]').inputValue(),'選擇題','草稿應帶入題型');
-  assert.match(await page.locator('.draft-analysis').innerText(),/題型為選擇題/,'應顯示題目分析');
+  assert.match(await page.locator('[data-field=analysis]').inputValue(),/題型為選擇題/,'應顯示題目分析');
+  assert.equal((await page.locator('.draft-card [data-field=steps]').inputValue()).split('\n').filter(Boolean).length,1,'應顯示詳解步驟');
+  assert.equal(await page.locator('.draft-card [data-rubric-label]').count(),0,'未提供評分標準時不應有項目');
   // 拆題編輯頁的表單欄位必須顯示「原始 LaTeX 文字」，不可把渲染後的 KaTeX HTML 塞進輸入框
   const draftTex = await page.locator('[data-field=content]').inputValue();
   assert.ok(draftTex.includes('$A=\\{x\\mid -1<x\\le 3\\}$'), `題目內容應為原始 LaTeX，實際：${draftTex.slice(0,80)}`);
@@ -401,6 +404,35 @@ const HANDWRITING=makePng(400,300);
   assert.equal(await page.locator('#manual-options [data-manual-option]').count(), 4, '可刪除選項');
   await page.locator('#manual-qtype').selectOption('解答題');
   assert.equal(await page.locator('#manual-options-field').isVisible(), false, '非選擇題應隱藏選項編輯');
+
+  // 評分標準編輯器：可增刪、即時顯示總和、總和不是 100% 會標示
+  assert.equal(await page.locator('[data-rubric-list="manual"] [data-rubric-label]').count(), 0, '預設沒有評分標準');
+  await page.locator('[data-rubric-add="manual"]').click();
+  await page.locator('[data-rubric-list="manual"] [data-rubric-label]').last().fill('正確列式');
+  await page.locator('[data-rubric-list="manual"] [data-rubric-percent]').last().fill('60');
+  assert.match(await page.locator('[data-rubric-total="manual"]').innerText(), /總和 60%/, '應即時顯示百分比總和');
+  assert.ok(await page.locator('[data-rubric-total="manual"]').evaluate(el=>el.classList.contains('bad')), '總和不是 100% 應標示為錯誤');
+  await page.locator('[data-rubric-add="manual"]').click();
+  await page.locator('[data-rubric-list="manual"] [data-rubric-label]').last().fill('求解正確');
+  await page.locator('[data-rubric-list="manual"] [data-rubric-percent]').last().fill('40');
+  assert.match(await page.locator('[data-rubric-total="manual"]').innerText(), /總和 100%/, '總和 100% 應顯示正確');
+  assert.equal(await page.locator('[data-rubric-total="manual"]').evaluate(el=>el.classList.contains('bad')), false, '總和 100% 不應標示錯誤');
+  await page.screenshot({path:path.join(__dirname,'..','MathPath-評分標準.png'),fullPage:true});
+
+  // AI 生成答案：填入答案、詳解、詳細解釋與評分標準（百分比）
+  await page.locator('#manual-answer').fill('');
+  await page.locator('#manual-ai-answer').click();
+  await page.locator('[data-rubric-list="manual"] [data-rubric-label]').first().waitFor({timeout:8000});
+  await page.waitForTimeout(200);
+  assert.equal(await page.locator('#manual-answer').inputValue(), '$x=2$ 或 $x=3$', 'AI 應填入參考答案');
+  assert.equal((await page.locator('#manual-steps').inputValue()).split('\n').filter(Boolean).length, 3, 'AI 應填入詳解步驟');
+  assert.match(await page.locator('#manual-analysis').inputValue(), /因式分解/, 'AI 應填入詳細解釋');
+  assert.equal(await page.locator('[data-rubric-list="manual"] [data-rubric-label]').count(), 3, 'AI 應填入 3 項評分標準');
+  assert.match(await page.locator('[data-rubric-total="manual"]').innerText(), /總和 100%/, 'AI 的評分標準應正規化為 100%');
+  assert.equal(aiAnswerPayload.consentExternal, true, '呼叫 AI 生成答案應帶外部上傳同意旗標');
+  await page.screenshot({path:path.join(__dirname,'..','MathPath-AI生成答案.png'),fullPage:true});
+
+  await page.locator('#figure-canvas').scrollIntoViewIfNeeded();
   const fbox=await page.locator('#figure-canvas').boundingBox();
   await page.locator('[data-fig-tool=pen]').click();
   await page.mouse.move(fbox.x+70,fbox.y+40);await page.mouse.down();await page.mouse.move(fbox.x+200,fbox.y+150,{steps:8});await page.mouse.up();
@@ -410,6 +442,19 @@ const HANDWRITING=makePng(400,300);
   await page.locator('#manual-add').click();
   await page.locator('.draft-card').first().waitFor();
   assert.equal(await page.locator('.draft-card').count(),2,'應保留先前拆分草稿並加入手動題目');
+  // 草稿卡保留 AI 產生的詳解、詳細解釋與評分標準；匯入前總和必須為 100%
+  const manualCard = page.locator('.draft-card').last();
+  assert.equal((await manualCard.locator('[data-field=steps]').inputValue()).split('\n').filter(Boolean).length, 3, '草稿卡應帶入詳解步驟');
+  assert.match(await manualCard.locator('[data-field=analysis]').inputValue(), /因式分解/, '草稿卡應帶入詳細解釋');
+  assert.equal(await manualCard.locator('[data-rubric-label]').count(), 3, '草稿卡應帶入 3 項評分標準');
+  await manualCard.locator('[data-rubric-percent]').first().fill('10');
+  await page.locator('#confirm-drafts').check();
+  await page.locator('#save-drafts').click();
+  await page.waitForTimeout(400);
+  assert.match(await page.locator('#import-error').innerText(), /總和必須等於 100/, '評分標準總和錯誤應擋下匯入');
+  await manualCard.locator('[data-rubric-percent]').first().fill('30');
+  await page.waitForTimeout(200);
+  assert.match(await manualCard.locator('[data-rubric-total]').innerText(), /總和 100%/, '修正後總和應為 100%');
   assert.match(await page.locator('.draft-figure img').getAttribute('src'),/^data:image\/png;base64,/,'草稿應顯示手繪圖形');
   await page.locator('#confirm-drafts').check();
   await page.locator('#save-drafts').click();

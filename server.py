@@ -239,6 +239,10 @@ GRADE_HINT = '、'.join(GRADES)
 QTYPES = ['選擇題', '填空題', '解答題', '證明題']
 # 選擇題選項標號：支援 4 個、5 個或更多選項（最多 10 個）。
 OPTION_LETTERS = 'ABCDEFGHIJ'
+# 評分標準（rubric）：每項含評分要點與佔分百分比，總和必須為 100。
+# AI 評分時會依這些百分比分配各項配分，再逐項評估學生達成率。
+RUBRIC_MAX = 12
+RUBRIC_LABEL_LIMIT = 200
 COOKIE = 'mathpath_session'
 DEMO_NOTICE = '演示帳戶：student / Math1234!、teacher / Teach1234!。上線前必須更換密碼。'
 
@@ -320,18 +324,23 @@ def paper_drafts(app, name, body):
         app.ai.consent(body.get('consentExternal'))
         result = app.ai.call(
             '識別試卷中的所有題目，保持原文，不捏造缺失文字。'
-            '返回 {drafts:[{title,content,topic,subtopic,level,grade,points,qtype,options:[str],answer,steps:[str],hint,analysis,source,tags:[str]}]}。'
+            '返回 {drafts:[{title,content,topic,subtopic,level,grade,points,qtype,options:[str],answer,steps:[str],hint,analysis,rubric:[{label:str,percent:number}],source,tags:[str]}]}。'
             '選擇題必須把選項放進 options 陣列（2 至 10 項，依原順序對應 A、B、C…），'
             '題幹 content 只保留問句、不要把選項文字貼在後面；answer 填正確選項的字母（例如 "B"）。'
             '非選擇題 options 留空陣列。'
-            'content 與 answer 中的數學式一律用 LaTeX：行內用 $...$、獨立一行用 $$...$$'
+            'answer：填空題填最終答案、解答題／證明題填完整結論（選擇題填字母）。'
+            'steps：完整詳細解法，逐步寫出關鍵式子與理由，至少 2 步。'
+            'analysis：詳細解釋（二至四句），說明考點、解題思路與常見錯誤。'
+            'rubric：評分標準 3 至 6 項，每項 {label:評分要點, percent:佔分百分比}，'
+            '所有 percent 加總必須等於 100；選擇題可依「正確選項」與「推理依據」配分。'
+            'content、answer、steps、analysis、rubric 中的數學式一律用 LaTeX：行內用 $...$、獨立一行用 $$...$$'
             '（例如 $x^2-5x+6=0$、$\\frac{1}{2}$、$\\sqrt{3}$）；不要用圖片或純文字排版數學式。'
             f'topic（主分類）只能是以下之一：{TOPIC_HINT}；'
             'subtopic（子分類）必須是該 topic 子分類清單中的一項，不可自創；'
             f'子分類清單：{json.dumps(TOPIC_TREE, ensure_ascii=False)}；'
             f'qtype 只能是{"、".join(QTYPES)}；'
             f'grade 只能是以下之一：{GRADE_HINT}，依題目難度與課程階段判斷。'
-            'analysis 用一至兩句說明本題考什麼、解題關鍵或常見錯誤；無法確定的參考答案留空。',
+            '無法確定的參考答案留空，不要捏造。',
             {'name': name, 'text': value}, image=image, model=app.ai.vision if image else None)
         try:
             fields(result, ('drafts',), ('drafts',))
@@ -355,6 +364,64 @@ def paper_drafts(app, name, body):
                       '請貼上含有編號的完整題目，或改用手動輸入。')
         return drafts, 'AI 識別'
     return rule_parse(name, value), '規則拆題'
+
+
+def coerce_ai_answer(result, qtype, options):
+    """整理 AI 生成的答案、詳解與評分標準；無法使用時回 None。"""
+    if not isinstance(result, dict):
+        return None
+    answer = result.get('answer')
+    if not isinstance(answer, str):
+        answer = '' if answer is None else str(answer)
+    answer = repair_katex_html(answer).strip()
+    steps = _as_str_list(result.get('steps'), 40)
+    analysis = result.get('analysis')
+    if not isinstance(analysis, str):
+        analysis = '' if analysis is None else str(analysis)
+    analysis = repair_katex_html(analysis).strip()
+    rubric = normalize_rubric(result.get('rubric'))
+    if not answer and not steps and not analysis and not rubric:
+        return None
+    if options:
+        answer = normalize_choice_answer(answer, options)
+    return {'answer': answer[:4000], 'steps': steps, 'analysis': analysis[:6000], 'rubric': rubric}
+
+
+def ai_answer_draft(app, body):
+    """請 AI 為單一題目生成參考答案、詳解步驟、詳細解釋與評分標準（百分比）。"""
+    if not app.ai.configured:
+        fail(409, '尚未設定 AI 模型；請先設定模型端點，或手動填寫答案。')
+    content = text(body['content'], '題目內容')
+    title = text(body.get('title', ''), '題目標題', 200, empty=True)
+    topic = body.get('topic') if body.get('topic') in TOPICS else ''
+    subtopic = body.get('subtopic') if isinstance(body.get('subtopic'), str) else ''
+    if subtopic and subtopic not in TOPIC_TREE.get(topic, ()):
+        subtopic = ''
+    qtype = body.get('qtype') if body.get('qtype') in QTYPES else classify_type(content)
+    points = number(body['points'], '分值', 1, 100, True) if 'points' in body else 5
+    raw_options = body.get('options')
+    options = [text(v, '選項', 600, empty=False) for v in raw_options] if isinstance(raw_options, list) else []
+    if options and not 2 <= len(options) <= len(OPTION_LETTERS):
+        options = []
+    app.ai.consent(body.get('consentExternal'))
+    letters = OPTION_LETTERS[:len(options)] if options else ''
+    instruction = (
+        '你是資深數學教師。請為以下題目產生正確答案、完整詳解、詳細解釋與評分標準。'
+        '返回 {answer:str,steps:[str],analysis:str,rubric:[{label:str,percent:number}]}。'
+        'answer：填空題填最終答案；解答題／證明題填完整結論；'
+        + (f'選擇題只能填正確選項的字母（{letters} 其中一個）。' if options else '')
+        + 'steps：完整詳細解法，逐步寫出關鍵式子與理由，至少 2 步。'
+        'analysis：詳細解釋（二至四句），說明考點、解題思路與常見錯誤。'
+        f'rubric：評分標準 3 至 6 項，每項 {{label:評分要點,percent:佔分百分比}}，全部 percent 加總必須等於 100。'
+        '數學式一律用 LaTeX：行內用 $...$、獨立一行用 $$...$$。'
+        '必須自行核算答案與步驟，不確定時寧可保守作答，不要捏造。')
+    result = app.ai.call(instruction, {'question': {'title': title, 'content': content, 'topic': topic,
+                                                    'subtopic': subtopic, 'qtype': qtype,
+                                                    'options': options, 'points': points}})
+    answer = coerce_ai_answer(result, qtype, options)
+    if answer is None:
+        fail(502, 'AI 沒有產生可用的答案；請確認題目內容完整後重試，或手動填寫。')
+    return {**answer, 'qtype': qtype, 'options': options, 'method': 'AI 生成'}
 
 
 def match_topic(value):
@@ -447,8 +514,21 @@ def coerce_ai_draft(raw):
     """
     if not isinstance(raw, dict):
         return None
+    # AI 常把「詳細解釋／詳細答案」換個名字回傳，先做欄位別名對應再過濾。
+    aliases = (('explanation', 'analysis'), ('detailedExplanation', 'analysis'), ('detailed_explanation', 'analysis'),
+               ('detailedAnswer', 'steps'), ('detailed_answer', 'steps'), ('solutionSteps', 'steps'),
+               ('solution_steps', 'steps'), ('gradingCriteria', 'rubric'), ('rubricItems', 'rubric'))
+    for alt, dest in aliases:
+        if not raw.get(dest) and raw.get(alt) not in (None, '', [], {}):
+            raw = {**raw, dest: raw[alt]}
+    if not raw.get('steps'):
+        alt = raw.get('solution')
+        if isinstance(alt, str) and alt.strip():
+            raw = {**raw, 'steps': [alt]}
+        elif isinstance(alt, list) and alt:
+            raw = {**raw, 'steps': alt}
     allowed = ('title', 'content', 'topic', 'subtopic', 'level', 'grade', 'points',
-               'qtype', 'answer', 'options', 'steps', 'hint', 'analysis', 'source', 'tags')
+               'qtype', 'answer', 'options', 'rubric', 'steps', 'hint', 'analysis', 'source', 'tags')
     d = {k: v for k, v in raw.items() if k in allowed}
     topic_raw = d.get('topic')
     topic = match_topic(topic_raw)
@@ -475,6 +555,8 @@ def coerce_ai_draft(raw):
     d['qtype'] = d.get('qtype') if d.get('qtype') in QTYPES else classify_type(d['content'])
     d['steps'] = _as_str_list(d.get('steps'), 40)
     d['tags'] = _as_str_list(d.get('tags'), 20, 60)
+    # 評分標準：AI 的百分比總和通常不精準，這裡按比例縮放到 100。
+    d['rubric'] = normalize_rubric(d.get('rubric'))
     # 選擇題選項：AI 有拆就沿用；沒拆但題幹裡有 (A)…(D) 就自動拆出來。
     options = _as_str_list(d.get('options'), len(OPTION_LETTERS), 600)
     if not options and d['qtype'] == '選擇題':
@@ -490,6 +572,112 @@ def coerce_ai_draft(raw):
             d['qtype'] = '選擇題'
         d['answer'] = normalize_choice_answer(d['answer'], options)
     return d
+
+
+def repair_rubric_html(value):
+    """評分標準的說明若混進 KaTeX HTML，逐項還原成 $LaTeX$。"""
+    if not isinstance(value, list):
+        return value
+    out = []
+    for item in value:
+        if isinstance(item, dict):
+            item = {k: (repair_katex_html(v) if k == 'label' and isinstance(v, str) else v)
+                    for k, v in item.items()}
+        out.append(item)
+    return out
+
+
+def _rubric_percent(value):
+    """把百分比欄位寬容轉成數字；無法解讀時回 None。"""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, str):
+        m = re.search(r'-?\d+(?:\.\d+)?', value)
+        value = float(m.group()) if m else None
+    if not isinstance(value, (int, float)) or not math.isfinite(value):
+        return None
+    return float(value)
+
+
+def normalize_rubric(value):
+    """寬容整理評分標準（AI 或介面輸入）；回傳 [{label, percent}]，總和為 100。
+
+    無法使用時回空清單。百分比會按比例重新縮放，四捨五入誤差補到最大的一項，
+    這樣 AI 回報 33/33/33 之類不精準的總和時仍能使用。
+    """
+    if isinstance(value, dict):
+        value = [{'label': k, 'percent': v} for k, v in value.items()]
+    if not isinstance(value, list):
+        return []
+    items = []
+    for raw in value[:RUBRIC_MAX]:
+        if isinstance(raw, (list, tuple)) and len(raw) == 2:
+            raw = {'label': raw[0], 'percent': raw[1]}
+        if not isinstance(raw, dict):
+            continue
+        label = raw.get('label', raw.get('criterion', raw.get('name', raw.get('title', raw.get('point')))))
+        if not isinstance(label, str):
+            continue
+        label = re.sub(r'\s+', ' ', label).strip()[:RUBRIC_LABEL_LIMIT]
+        if not label:
+            continue
+        percent = _rubric_percent(raw.get('percent', raw.get('weight', raw.get('value', raw.get('score')))))
+        if percent is None or percent <= 0:
+            continue
+        items.append({'label': label, 'percent': percent})
+    if not items:
+        return []
+    total = sum(i['percent'] for i in items)
+    scaled = [{'label': i['label'], 'percent': round(i['percent'] * 100 / total, 2)} for i in items]
+    diff = round(100 - sum(i['percent'] for i in scaled), 2)
+    if diff:
+        biggest = max(range(len(scaled)), key=lambda k: scaled[k]['percent'])
+        scaled[biggest]['percent'] = round(scaled[biggest]['percent'] + diff, 2)
+    return [i for i in scaled if i['percent'] > 0]
+
+
+def validate_rubric(raw):
+    """驗證教師輸入的評分標準：1–12 項、每項有說明與 0–100 的百分比、總和為 100。"""
+    if raw in (None, '', []):
+        return []
+    if not isinstance(raw, list):
+        fail(400, '評分標準必須是清單。')
+    if len(raw) > RUBRIC_MAX:
+        fail(400, f'評分標準最多 {RUBRIC_MAX} 項。')
+    items = []
+    for item in raw:
+        if not isinstance(item, dict):
+            fail(400, '評分標準每項必須包含「評分要點」與「百分比」。')
+        label = item.get('label')
+        if not isinstance(label, str) or not label.strip():
+            fail(400, '評分標準的評分要點不可留空。')
+        percent = item.get('percent')
+        if isinstance(percent, bool) or not isinstance(percent, (int, float)) or not math.isfinite(percent) \
+                or not 0 < percent <= 100:
+            fail(400, '評分標準的百分比必須是 0 至 100 的數字。')
+        items.append({'label': text(label, '評分要點', RUBRIC_LABEL_LIMIT),
+                      'percent': round(float(percent), 2)})
+    if not items:
+        return []
+    total = round(sum(i['percent'] for i in items), 2)
+    if abs(total - 100) > 0.01:
+        fail(400, f'評分標準的百分比總和必須等於 100（目前 {total:g}）。')
+    return items
+
+
+def rubric_steps(rubric, points):
+    """把百分比評分標準換算成各項配分；最後一項補足四捨五入誤差，總和恰等於 points。"""
+    if not rubric:
+        return []
+    steps, running = [], 0.0
+    for i, item in enumerate(rubric):
+        if i == len(rubric) - 1:
+            maximum = round(points - running, 2)
+        else:
+            maximum = round(points * item['percent'] / 100, 2)
+            running = round(running + maximum, 2)
+        steps.append({'label': item['label'], 'percent': item['percent'], 'max': maximum})
+    return steps
 
 
 def normalize_choice_answer(value, options):
@@ -510,6 +698,13 @@ def normalize_choice_answer(value, options):
     for i, option in enumerate(options):
         if plain and plain == latex_to_plain(option).strip():
             return letters[i]
+    # 「選項 B」「答案為 (C)」這類寫法：只在有明確標示時才取字母，避免誤判數學式。
+    marked = re.search(r'(?:選項|选项|答案|正確答案|正确答案|answer)\s*(?:是|為|为)?\s*[：:]?\s*[（(]?\s*([A-Ja-j])\s*[)）]?', raw, re.I)
+    if marked and marked.group(1).upper() in letters:
+        return marked.group(1).upper()
+    paren = re.search(r'[（(]\s*([A-Ja-j])\s*[)）]', raw)
+    if paren and paren.group(1).upper() in letters:
+        return paren.group(1).upper()
     return raw
 
 
@@ -554,12 +749,13 @@ def split_inline_options(content):
 
 
 def question_valid(raw):
-    allowed = ('title', 'content', 'topic', 'subtopic', 'level', 'grade', 'points', 'qtype', 'answer', 'options', 'steps', 'hint', 'analysis', 'source', 'tags', 'figure')
+    allowed = ('title', 'content', 'topic', 'subtopic', 'level', 'grade', 'points', 'qtype', 'answer', 'options', 'rubric', 'steps', 'hint', 'analysis', 'source', 'tags', 'figure')
     fields(raw, allowed, ('title', 'content', 'topic', 'level', 'points', 'answer'))
     # 前端若曾把 KaTeX 渲染後的 HTML 寫進表單欄位，這裡自動還原成 $LaTeX$，避免資料損壞。
     if isinstance(raw, dict):
         raw = {k: (repair_katex_html(v) if k in ('title', 'content', 'answer', 'hint', 'analysis', 'source') and isinstance(v, str)
                    else [repair_katex_html(x) for x in v] if k in ('steps', 'options') and isinstance(v, list)
+                   else repair_rubric_html(v) if k == 'rubric' and isinstance(v, list)
                    else v) for k, v in raw.items()}
     if 'figure' in raw:
         # 圖形只驗證，不交給 text()，也不進入題目 payload；二進位另行以欄位保存。
@@ -596,7 +792,9 @@ def question_valid(raw):
     if options:
         # 參考答案統一存成選項字母（A、B、C…），前端點選與規則評分都以此比對。
         q['answer'] = normalize_choice_answer(q['answer'], options)
-    q['analysis'] = text(raw.get('analysis', ''), '題目分析', 2000, empty=True)
+    q['analysis'] = text(raw.get('analysis', ''), '題目詳解', 6000, empty=True)
+    # 評分標準（百分比）供 AI 評分按比例配分；留空則沿用 AI 自由配分。
+    q['rubric'] = validate_rubric(raw.get('rubric'))
     for key, count, limit in [('steps', 40, 2000), ('tags', 20, 60)]:
         values = raw.get(key, [])
         if not isinstance(values, list) or len(values) > count:
@@ -1321,6 +1519,56 @@ class Application:
             fail(403, '更換模型端點需要管理員權杖（MATH_ADMIN_TOKEN），或在本機操作。'
                       if expected else '未設定 MATH_ADMIN_TOKEN 時，只可在伺服器本機更換模型端點。')
 
+    def ai_rubric_grade(self, q, rubric, answer, image):
+        """依題目的評分標準（百分比）請 AI 逐項評估學生達成率。
+
+        配分由伺服器按百分比換算（不信任模型自報分值），AI 只需回報每項達成百分比與評語，
+        這樣即使模型算術不穩，總分與各項配分仍然精確。回傳 (score, feedback, steps)。
+        """
+        planned = rubric_steps(rubric, q['points'])
+        result = self.ai.call(
+            '你是數學批改助手。請依題目、參考答案與評分標準逐項評估學生作答；無法讀清的步驟不可推測。'
+            '返回 {feedback:str,items:[{percent:number,comment:str}]}。'
+            'items 必須與輸入的 rubric 陣列一一對應（順序與數量完全相同，不可增加或減少）。'
+            'percent 是該評分標準學生達成的百分比（0 至 100 的數字）；comment 是該項一至兩句評語。'
+            'feedback 用二至四句說明整體表現與下一步改進方向。提醒僅供教師復核。',
+            {'question': q, 'rubric': planned, 'answerText': answer},
+            image=image, model=(self.ai.vision or self.ai.model) if image else None)
+        try:
+            if not isinstance(result, dict):
+                raise ValueError()
+            feedback_raw = result.get('feedback')
+            if not isinstance(feedback_raw, str) or not feedback_raw.strip():
+                raise ValueError()
+            feedback = text(feedback_raw, 'AI評語', 12000)
+            items = result.get('items')
+            if items is None:
+                items = result.get('steps')
+            if not isinstance(items, list) or len(items) != len(planned):
+                raise ValueError()
+            steps, total = [], 0.0
+            for plan, item in zip(planned, items):
+                if isinstance(item, dict):
+                    percent = _rubric_percent(item.get('percent', item.get('earned', item.get('rate'))))
+                    comment = item.get('comment', item.get('feedback', ''))
+                else:
+                    percent, comment = _rubric_percent(item), ''
+                if percent is None:
+                    raise ValueError()
+                percent = min(100.0, max(0.0, percent))
+                if not isinstance(comment, str):
+                    comment = '' if comment is None else str(comment)
+                earned = round(plan['max'] * percent / 100, 2)
+                total = round(total + earned, 2)
+                steps.append({'label': plan['label'], 'earned': earned, 'max': plan['max'],
+                              'comment': text(comment, '步驟評語', 2000, empty=True)})
+            if not math.isclose(sum(s['max'] for s in steps), q['points'], abs_tol=0.01):
+                raise ValueError()
+            score = min(float(q['points']), max(0.0, total))
+        except (APIError, ValueError, KeyError, TypeError):
+            fail(502, 'AI 評分格式或分值無效；未保存成績，請改用教師批閱。')
+        return score, 'AI 建議評分（依評分標準逐項評估），僅供教師復核，不可直接用於正式考試。\n' + feedback, steps
+
     def insert_question(self, db, q, figure=None, figure_mime=None):
         figure_key = None
         if figure is not None and self.storage.mode == 'r2':
@@ -1349,6 +1597,7 @@ class Application:
             q.pop('answer', None)
             q.pop('steps', None)
             q.pop('analysis', None)
+            q.pop('rubric', None)
         if has_figure:
             q['figure'] = f'/api/questions/{q["id"]}/figure'
         return q
@@ -1709,9 +1958,12 @@ class Application:
                     fail(409, '此題已是最高難度，請選擇相似題。')
                 self.ai.consent(body.get('consentExternal'))
                 result = self.ai.call(f'根據參考題生成一題同年級（{q.get("grade", "中三")}）的數學題。'
-                                      '返回 {question:{title,content,topic,level,grade,points,answer,steps:[str],hint,source,tags:[str]}}。'
+                                      '返回 {question:{title,content,topic,level,grade,points,answer,steps:[str],analysis,rubric:[{label:str,percent:number}],hint,source,tags:[str]}}。'
                                       f'topic 必須與參考題相同：{q["topic"]}；grade 必須與參考題相同。'
-                                      '必須自行核算答案和步驟；相似題同難度，進階題難度提高但最高3。',
+                                      'steps 為完整詳細解法；analysis 為二至四句詳細解釋（考點、思路、易錯處）；'
+                                      'rubric 為評分標準 3 至 6 項，percent 加總必須等於 100。'
+                                      '數學式用 LaTeX（行內 $...$）；必須自行核算答案和步驟；'
+                                      '相似題同難度，進階題難度提高但最高3。',
                                       {'reference': q, 'kind': body['kind']})
                 try:
                     fields(result, ('question',), ('question',))
@@ -1733,6 +1985,14 @@ class Application:
                 with self.db() as db:
                     saved = self.insert_question(db, generated)
                 return {'question': self.question_public(saved, user)}, headers
+        if method == 'POST' and path == '/api/questions/ai-answer':
+            # 教師新增題目時，請 AI 產生答案、詳解、詳細解釋與評分標準（百分比）。
+            self.teacher(user)
+            fields(body, ('title', 'content', 'topic', 'subtopic', 'qtype', 'options', 'points', 'consentExternal'),
+                   ('content',))
+            if 'consentExternal' in body and type(body['consentExternal']) is not bool:
+                fail(400, '外部上傳同意必須是布林值。')
+            return ai_answer_draft(self, body), headers
         if method == 'POST' and path == '/api/papers/parse':
             self.teacher(user)
             fields(body, ('name', 'text', 'dataUrl', 'mime', 'consentExternal'), ('name',))
@@ -1807,28 +2067,32 @@ class Application:
             feedback = '手寫圖片尚未批閱，等待教師評分；沒有產生 AI 成績。' if image else '此題尚無參考答案，等待教師批閱。'
             if self.ai.configured and body['useAi']:
                 self.ai.consent(body.get('consentExternal'))
-                result = self.ai.call('你是數學批改助手。依據題目及參考答案評估實際作答；無法讀清的步驟不可推測。'
-                                      '返回 {score:number,feedback:str,steps:[{label:str,earned:number,max:number,comment:str}]}。'
-                                      'score介乎0至points；各步max總和等於points，各步earned總和等於score。提醒僅供教師復核。',
-                                      {'question': q, 'answerText': answer}, image=body.get('image'),
-                                      model=(self.ai.vision or self.ai.model) if image else None)
-                try:
-                    fields(result, ('score', 'feedback', 'steps'), ('score', 'feedback', 'steps'))
-                    score = number(result['score'], 'AI分數', 0, q['points'])
-                    feedback = text(result['feedback'], 'AI評語', 12000)
-                    if not isinstance(result['steps'], list) or not 1 <= len(result['steps']) <= 40:
-                        raise ValueError()
-                    for step in result['steps']:
-                        fields(step, ('label', 'earned', 'max', 'comment'), ('label', 'earned', 'max', 'comment'))
-                        maximum = number(step['max'], '步驟分值', 0, q['points'])
-                        ai_steps.append({'label': text(step['label'], '步驟標籤', 200),
-                                         'earned': number(step['earned'], '步驟得分', 0, maximum), 'max': maximum,
-                                         'comment': text(step['comment'], '步驟評語', 2000, empty=True)})
-                    if not math.isclose(sum(s['max'] for s in ai_steps), q['points'], abs_tol=0.001) or not math.isclose(sum(s['earned'] for s in ai_steps), score, abs_tol=0.001):
-                        raise ValueError()
-                except (APIError, ValueError, KeyError, TypeError):
-                    fail(502, 'AI 評分格式或分值無效；未保存成績，請改用教師批閱。')
-                feedback = 'AI 建議評分，僅供教師復核，不可直接用於正式考試。\n' + feedback
+                rubric = q.get('rubric') or []
+                if rubric:
+                    score, feedback, ai_steps = self.ai_rubric_grade(q, rubric, answer, body.get('image'))
+                else:
+                    result = self.ai.call('你是數學批改助手。依據題目及參考答案評估實際作答；無法讀清的步驟不可推測。'
+                                          '返回 {score:number,feedback:str,steps:[{label:str,earned:number,max:number,comment:str}]}。'
+                                          'score介乎0至points；各步max總和等於points，各步earned總和等於score。提醒僅供教師復核。',
+                                          {'question': q, 'answerText': answer}, image=body.get('image'),
+                                          model=(self.ai.vision or self.ai.model) if image else None)
+                    try:
+                        fields(result, ('score', 'feedback', 'steps'), ('score', 'feedback', 'steps'))
+                        score = number(result['score'], 'AI分數', 0, q['points'])
+                        feedback = text(result['feedback'], 'AI評語', 12000)
+                        if not isinstance(result['steps'], list) or not 1 <= len(result['steps']) <= 40:
+                            raise ValueError()
+                        for step in result['steps']:
+                            fields(step, ('label', 'earned', 'max', 'comment'), ('label', 'earned', 'max', 'comment'))
+                            maximum = number(step['max'], '步驟分值', 0, q['points'])
+                            ai_steps.append({'label': text(step['label'], '步驟標籤', 200),
+                                             'earned': number(step['earned'], '步驟得分', 0, maximum), 'max': maximum,
+                                             'comment': text(step['comment'], '步驟評語', 2000, empty=True)})
+                        if not math.isclose(sum(s['max'] for s in ai_steps), q['points'], abs_tol=0.001) or not math.isclose(sum(s['earned'] for s in ai_steps), score, abs_tol=0.001):
+                            raise ValueError()
+                    except (APIError, ValueError, KeyError, TypeError):
+                        fail(502, 'AI 評分格式或分值無效；未保存成績，請改用教師批閱。')
+                    feedback = 'AI 建議評分，僅供教師復核，不可直接用於正式考試。\n' + feedback
                 status, method = 'graded', 'ai-advisory'
             elif image is None and q['answer'].strip():
                 correct = final_correct(answer, q['answer'])
@@ -1856,7 +2120,12 @@ class Application:
                 self.homework.ai_suggestion(q, row, body.get('consentExternal'))
             with self.db() as db:
                 attempt = self.attempt_public(db, db.execute('SELECT * FROM attempts WHERE id=?', (row['id'],)).fetchone())
-            return {'attempt': attempt}, headers
+            # 已批閱的作答附上參考答案與詳解，讓學生能對照學習（未批閱不揭露）。
+            solution = None
+            if status == 'graded':
+                solution = {'answer': q.get('answer', ''), 'steps': q.get('steps', []),
+                            'analysis': q.get('analysis', ''), 'rubric': q.get('rubric', [])}
+            return {'attempt': attempt, 'solution': solution}, headers
         match = re.fullmatch(r'/api/attempts/([1-9]\d{0,17})/ai-annotation', path)
         if method == 'POST' and match:
             self.teacher(user)

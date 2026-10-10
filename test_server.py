@@ -893,6 +893,104 @@ class APITests(unittest.TestCase):
         with self.app.db() as db:
             self.assertTrue(server.password_matches('Math1234!', db.execute('SELECT password FROM users WHERE id=1').fetchone()[0]))
 
+    def test_ai_answer_endpoint_generates_answer_and_rubric(self):
+        # 教師新增題目時可請 AI 產生答案、詳解、詳細解釋與評分標準。
+        canned = {'answer': '$x=2$ 或 $x=3$', 'steps': ['分解為 $(x-2)(x-3)=0$。', '得 $x=2$ 或 $x=3$。'],
+                  'analysis': '考因式分解法；常見錯誤是符號處理不當。',
+                  'rubric': [{'label': '因式分解正確', 'percent': 60}, {'label': '寫出兩個根', 'percent': 40}]}
+        payload = {'title': 'T', 'content': '解方程 $x^2-5x+6=0$。', 'qtype': '解答題', 'options': [],
+                   'points': 6, 'topic': '一元二次方程'}
+        self.app.ai.configured = True
+        with patch.object(self.app.ai, 'call', return_value=canned) as ai:
+            # 學生不可使用
+            self.request('POST', '/api/questions/ai-answer', payload, cookie=self.student, expect=403)
+            ai.assert_not_called()
+            _, body, _ = self.request('POST', '/api/questions/ai-answer', payload, cookie=self.teacher, expect=200)
+        self.assertEqual(body['answer'], '$x=2$ 或 $x=3$')
+        self.assertEqual(len(body['steps']), 2)
+        self.assertIn('因式分解', body['analysis'])
+        self.assertEqual(body['rubric'], [{'label': '因式分解正確', 'percent': 60.0},
+                                          {'label': '寫出兩個根', 'percent': 40.0}])
+        self.assertEqual(body['method'], 'AI 生成')
+        # 選擇題：答案必須落在選項字母範圍內
+        choice = dict(payload, qtype='選擇題', options=['$1$', '$2$', '$3$'])
+        with patch.object(self.app.ai, 'call', return_value=dict(canned, answer='選項 B 正確')):
+            _, body2, _ = self.request('POST', '/api/questions/ai-answer', choice, cookie=self.teacher, expect=200)
+        self.assertIn(body2['answer'], list('ABC'))
+        # AI 回不出可用內容 → 502
+        with patch.object(self.app.ai, 'call', return_value={'answer': '', 'steps': [], 'analysis': '', 'rubric': []}):
+            self.request('POST', '/api/questions/ai-answer', payload, cookie=self.teacher, expect=502)
+        # 未設定 AI → 409
+        self.app.ai.configured = False
+        self.request('POST', '/api/questions/ai-answer', payload, cookie=self.teacher, expect=409)
+
+    def test_ai_grading_follows_rubric_percentages(self):
+        # 有評分標準時，配分由伺服器按百分比計算；AI 只回報每項達成百分比與評語。
+        question = dict(self.draft, title='評分標準題', content='解方程 $x^2-5x+6=0$。', answer='$x=2$ 或 $x=3$',
+                        points=6, qtype='解答題', rubric=[{'label': '列出方程', 'percent': 30},
+                                                           {'label': '因式分解', 'percent': 40},
+                                                           {'label': '寫出兩個根', 'percent': 30}])
+        _, imported, _ = self.request('POST', '/api/questions/import', {'questions': [question]},
+                                      cookie=self.teacher, expect=200)
+        self.assertEqual(imported['count'], 1)
+        _, state, _ = self.request('GET', '/api/state', cookie=self.teacher, expect=200)
+        qid = [q['id'] for q in state['questions'] if q['title'] == '評分標準題'][0]
+        self.assertEqual([r['percent'] for r in state['questions'][-1]['rubric']], [30.0, 40.0, 30.0])
+
+        self.app.ai.configured = True
+        self.app.ai.mode = 'local'
+        graded = {'feedback': '整體不錯，但漏了一個根。',
+                  'items': [{'percent': 100, 'comment': '方程正確。'},
+                            {'percent': 100, 'comment': '分解正確。'},
+                            {'percent': 50, 'comment': '只寫出一個根。'}]}
+        with patch.object(self.app.ai, 'call', return_value=graded) as ai:
+            _, response, _ = self.request('POST', '/api/attempts',
+                                          {'questionId': qid, 'answerText': 'x=2', 'useAi': True},
+                                          cookie=self.student, expect=200)
+        attempt = response['attempt']
+        # 6 分 × 30/40/30% → 各項配分 1.8 / 2.4 / 1.8；達成 100/100/50% → 1.8 + 2.4 + 0.9 = 5.1
+        self.assertEqual(attempt['gradingMethod'], 'ai-advisory')
+        self.assertAlmostEqual(attempt['score'], 5.1, places=6)
+        self.assertEqual([s['label'] for s in attempt['steps']], ['列出方程', '因式分解', '寫出兩個根'])
+        self.assertEqual([s['max'] for s in attempt['steps']], [1.8, 2.4, 1.8])
+        self.assertAlmostEqual(sum(s['earned'] for s in attempt['steps']), 5.1, places=6)
+        self.assertIn('評分標準', attempt['feedback'])
+        # 提交後回傳參考答案與詳解
+        self.assertEqual(response['solution']['answer'], '$x=2$ 或 $x=3$')
+        self.assertEqual(len(response['solution']['rubric']), 3)
+        # 項目數不符 → 502，不保存成績
+        with patch.object(self.app.ai, 'call', return_value={'feedback': 'x', 'items': [{'percent': 50, 'comment': 'a'}]}):
+            self.request('POST', '/api/attempts', {'questionId': qid, 'answerText': 'x=2', 'useAi': True},
+                         cookie=self.student, expect=502)
+        # 百分比超範圍會被夾在 0–100
+        clamped = {'feedback': 'y', 'items': [{'percent': 999, 'comment': 'a'}, {'percent': -5, 'comment': 'b'},
+                                             {'percent': 50, 'comment': 'c'}]}
+        with patch.object(self.app.ai, 'call', return_value=clamped):
+            _, r2, _ = self.request('POST', '/api/attempts',
+                                    {'questionId': qid, 'answerText': 'x=2', 'useAi': True},
+                                    cookie=self.student, expect=200)
+        self.assertAlmostEqual(r2['attempt']['score'], 1.8 + 0 + 0.9, places=6)
+
+    def test_attempt_solution_only_when_graded_and_rubric_hidden_from_students(self):
+        # 未批閱的作答不揭露詳解
+        self.app.ai.configured = False
+        _, pending, _ = self.request('POST', '/api/attempts',
+                                     {'questionId': 1, 'answerText': '', 'image': png_url(), 'useAi': False},
+                                     cookie=self.student, expect=200)
+        self.assertEqual(pending['attempt']['status'], 'pending')
+        self.assertIsNone(pending['solution'])
+        # 學生看到的題目不包含答案、詳解與評分標準
+        self.request('POST', '/api/questions/import',
+                     {'questions': [dict(self.draft, title='隱藏測試', rubric=[{'label': 'A', 'percent': 100}])]},
+                     cookie=self.teacher, expect=200)
+        _, state, _ = self.request('GET', '/api/state', cookie=self.student, expect=200)
+        hidden = [q for q in state['questions'] if q['title'] == '隱藏測試'][0]
+        for key in ('answer', 'steps', 'analysis', 'rubric'):
+            self.assertNotIn(key, hidden)
+        _, tstate, _ = self.request('GET', '/api/state', cookie=self.teacher, expect=200)
+        visible = [q for q in tstate['questions'] if q['title'] == '隱藏測試'][0]
+        self.assertEqual(visible['rubric'], [{'label': 'A', 'percent': 100.0}])
+
     def test_external_consent_and_ai_grade_validation(self):
         self.app.ai.configured = True
         self.app.ai.mode = 'external'
@@ -969,6 +1067,86 @@ class APITests(unittest.TestCase):
         with patch.object(self.app.ai, 'call', return_value={'drafts': [generated]}):
             _, parsed, _ = self.request('POST', '/api/papers/parse', {'name': '試卷', 'text': '1. 解方程'}, cookie=self.teacher, expect=200)
             self.assertEqual(parsed['method'], 'AI 識別')
+
+
+class RubricTests(unittest.TestCase):
+    """評分標準（百分比）的整理、驗證與配分換算。"""
+
+    def test_normalize_rubric_rescales_to_100(self):
+        # AI 的總和常不精準，應按比例縮放到 100，並把四捨五入誤差補到最大項。
+        self.assertEqual(server.normalize_rubric([{'label': 'A', 'percent': 60}, {'label': 'B', 'percent': 40}]),
+                         [{'label': 'A', 'percent': 60.0}, {'label': 'B', 'percent': 40.0}])
+        three = server.normalize_rubric([{'label': 'A', 'percent': 33}, {'label': 'B', 'percent': 33},
+                                         {'label': 'C', 'percent': 33}])
+        self.assertEqual(round(sum(x['percent'] for x in three), 2), 100.0)
+        # 支援 dict、[label, percent] 陣列、別名欄位
+        self.assertEqual(server.normalize_rubric({'步驟一': 50, '步驟二': 50}),
+                         [{'label': '步驟一', 'percent': 50.0}, {'label': '步驟二', 'percent': 50.0}])
+        self.assertEqual(server.normalize_rubric([['列式', 30], ['求解', 70]]),
+                         [{'label': '列式', 'percent': 30.0}, {'label': '求解', 'percent': 70.0}])
+        self.assertEqual(server.normalize_rubric([{'criterion': '理解題意', 'weight': '100%'}]),
+                         [{'label': '理解題意', 'percent': 100.0}])
+        # 無法使用的情況回空清單
+        for bad in ('x', [], None, [{'label': '', 'percent': 50}], [{'label': 'A', 'percent': 0}]):
+            self.assertEqual(server.normalize_rubric(bad), [])
+
+    def test_validate_rubric_is_strict_for_teacher_input(self):
+        ok = server.validate_rubric([{'label': '列式', 'percent': 50}, {'label': '求解', 'percent': 50}])
+        self.assertEqual(ok, [{'label': '列式', 'percent': 50.0}, {'label': '求解', 'percent': 50.0}])
+        self.assertEqual(server.validate_rubric(None), [])
+        self.assertEqual(server.validate_rubric([]), [])
+        for bad in ([{'label': 'A', 'percent': 50}],                       # 總和 50
+                    [{'label': 'A', 'percent': 50}, {'label': 'B', 'percent': 60}],
+                    [{'label': '', 'percent': 100}],
+                    [{'label': 'A', 'percent': 0}],
+                    [{'label': 'A', 'percent': 101}],
+                    [{'label': 'A', 'percent': True}],
+                    'x', [{'label': 'A'}]):
+            with self.assertRaises(server.APIError):
+                server.validate_rubric(bad)
+        too_many = [{'label': f'第{i}項', 'percent': 100 / 13} for i in range(13)]
+        with self.assertRaises(server.APIError):
+            server.validate_rubric(too_many)
+
+    def test_rubric_steps_allocate_points_exactly(self):
+        for points in (1, 5, 6, 7, 100):
+            for rubric in ([{'label': 'A', 'percent': 30}, {'label': 'B', 'percent': 40}, {'label': 'C', 'percent': 30}],
+                           [{'label': 'A', 'percent': 33.34}, {'label': 'B', 'percent': 33.33}, {'label': 'C', 'percent': 33.33}],
+                           [{'label': 'A', 'percent': 100}]):
+                steps = server.rubric_steps(rubric, points)
+                self.assertAlmostEqual(sum(s['max'] for s in steps), points, places=6,
+                                       msg=f'{rubric} 於 {points} 分配分誤差')
+                self.assertTrue(all(s['max'] >= 0 for s in steps))
+        self.assertEqual(server.rubric_steps([], 5), [])
+
+    def test_question_valid_accepts_and_validates_rubric(self):
+        base = {'title': 'T', 'content': '解 $x^2-1=0$。', 'topic': '一元二次方程',
+                'level': 1, 'points': 6, 'answer': 'a'}
+        q = server.question_valid(dict(base, rubric=[{'label': '列式', 'percent': 50},
+                                                     {'label': '求解', 'percent': 50}]))
+        self.assertEqual(q['rubric'], [{'label': '列式', 'percent': 50.0}, {'label': '求解', 'percent': 50.0}])
+        self.assertEqual(server.question_valid(base)['rubric'], [])
+        with self.assertRaises(server.APIError):
+            server.question_valid(dict(base, rubric=[{'label': '只有一項', 'percent': 80}]))
+        # 混進 KaTeX HTML 的說明會被還原成 $LaTeX$
+        q2 = server.question_valid(dict(base, rubric=[{'label': '使用 <span class="katex">x</span>', 'percent': 100}]))
+        self.assertNotIn('<span', q2['rubric'][0]['label'])
+
+    def test_coerce_ai_draft_handles_rubric_and_field_aliases(self):
+        raw = {'title': 'T', 'content': '解 $x^2-1=0$。', 'topic': '一元二次方程', 'level': 1, 'points': 6,
+               'answer': 'a', 'qtype': '解答題',
+               'detailedAnswer': ['第一步', '第二步'],
+               'detailedExplanation': '這是詳細解釋。',
+               'gradingCriteria': [{'label': '列式', 'percent': 50}, {'label': '求解', 'percent': 50}]}
+        d = server.coerce_ai_draft(raw)
+        self.assertEqual(d['steps'], ['第一步', '第二步'])
+        self.assertEqual(d['analysis'], '這是詳細解釋。')
+        self.assertEqual(len(d['rubric']), 2)
+        self.assertEqual(round(sum(x['percent'] for x in d['rubric']), 2), 100.0)
+        # solution 是字串 → 當作單一步驟
+        d2 = server.coerce_ai_draft({'title': 'T', 'content': 'C', 'topic': '圓', 'level': 1,
+                                     'points': 5, 'answer': 'a', 'solution': '完整解法'})
+        self.assertEqual(d2['steps'], ['完整解法'])
 
 
 class PureTests(unittest.TestCase):

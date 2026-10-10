@@ -86,3 +86,34 @@ html[data-fs="large"]{--fs:1.12}html[data-fs="xlarge"]{--fs:1.25}.font-scale-wra
 .option-row{display:flex;gap:9px;align-items:center}
 .option-row input{flex:1 1 auto;min-width:0;border:1px solid var(--border);border-radius:7px;padding:9px 11px;font-size:calc(14px*var(--fs));background:#fff}
 .option-actions{display:flex;gap:12px;align-items:center;margin-top:8px;flex-wrap:wrap}
+
+/* ── 評分標準（百分比）── */
+.rubric-list{display:grid;gap:8px}
+.rubric-row{display:flex;gap:9px;align-items:center}
+.rubric-row .rubric-label{flex:1 1 auto;min-width:0;border:1px solid var(--border);border-radius:7px;
+  padding:9px 11px;font-size:calc(14px*var(--fs));background:#fff}
+.rubric-percent{flex:0 0 auto;display:inline-flex;align-items:center;gap:3px;border:1px solid var(--border);
+  border-radius:7px;padding:0 8px;background:#fff;font-size:calc(13px*var(--fs));color:#7c8f80}
+.rubric-percent input{width:calc(58px*var(--fs));border:0;padding:9px 0;font-size:calc(14px*var(--fs));
+  text-align:right;background:transparent;color:inherit}
+.rubric-actions{display:flex;gap:14px;align-items:center;margin-top:9px;flex-wrap:wrap}
+.rubric-total{font-size:calc(13px*var(--fs));color:#2f6b53;font-weight:600}
+.rubric-total.bad{color:#b4453b}
+.ai-answer-row{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin:4px 0 2px}
+.rubric-view{list-style:none;margin:8px 0 0;padding:0;display:grid;gap:5px}
+.rubric-view li{display:flex;gap:10px;justify-content:space-between;align-items:flex-start;
+  font-size:calc(13.5px*var(--fs));line-height:1.7;padding:5px 9px;background:#f7fbf6;
+  border:1px solid #e2ede4;border-radius:6px}
+.rubric-view-label{flex:1 1 auto;min-width:0;word-break:break-word}
+.rubric-view-percent{flex:0 0 auto;color:#2f6b53;font-weight:600;white-space:nowrap}
+.solution-box{margin:12px 0 0;border:1px solid var(--border);border-radius:9px;background:#fbfdfa;padding:0 14px}
+.solution-box[open]{padding-bottom:12px}
+.solution-box>summary{cursor:pointer;padding:11px 0;font-weight:600;color:#2f6b53;
+  font-size:calc(14px*var(--fs));list-style:none}
+.solution-box>summary::-webkit-details-marker{display:none}
+.solution-box>summary::before{content:'▸ ';color:#7c8f80}
+.solution-box[open]>summary::before{content:'▾ '}
+.solution-answer{margin:6px 0;font-size:calc(15px*var(--fs));line-height:1.9}
+.solution-steps{margin:8px 0 8px;padding-left:22px;font-size:calc(14.5px*var(--fs));line-height:1.95}
+.solution-steps li{margin:3px 0}
+.solution-analysis{margin:8px 0 4px;font-size:calc(14px*var(--fs));line-height:1.9;color:#4b5b4f}
