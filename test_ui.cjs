@@ -31,6 +31,7 @@ const HANDWRITING=makePng(400,300);
   let annotated=false,studentSubmitted=false,aiMarked=false,aiAdjusted=null,autoImported=null,parsedSeen=null,savedKeySeen=null,aiConfigSaved=null,economySent=null,aiAnswerPayload=null,correction=null,returned=null,rememberSent=null,importedQuestions=null;
   let mockStarted=null,mockState=null,mockAttempt=null,mockAttemptBody=null;
   let calendarNotes=[],noteCreated=null;
+  const assignmentQuestion={...q,qtype:'解答題',options:[]};
   const mockQuestion={id:11,title:'模擬題：直角三角形',content:'直角三角形兩邊長為3 cm及4 cm，求斜邊長。',topic:'幾何',level:1,grade:'中三',points:5,qtype:'解答題',hint:'用畢氏定理',source:'校本題庫',tags:['幾何']};
   const mockExam=()=>({id:7,topic:mockStarted&&mockStarted.topic||'幾何',level:null,qtype:'解答題',minutes:mockStarted?mockStarted.minutes:15,questionCount:1,createdAt:stamp,startedAt:stamp,expiresAt:stamp,submittedAt:mockState&&mockState.submitted?stamp:null,expired:false,status:mockState&&mockState.submitted?'submitted':'in_progress',remainingSeconds:mockState&&mockState.submitted?0:(mockStarted?mockStarted.minutes*60:900)});
   const mockReport=()=>({score:5,maxScore:5,percent:100,totalScoredPoints:5,pendingCount:0,confirmedScore:null,confirmedCount:0,aiScore:null,ruleScore:5,topicStats:[{topic:'幾何',scoredCount:1,totalCount:1,score:5,maxScore:5,percent:100}],suggestion:advice,answeredCount:1});
@@ -96,7 +97,7 @@ const HANDWRITING=makePng(400,300);
     else if(url.pathname==='/api/assignments/1/return'){returned=route.request().postDataJSON();correction={round:1,note:returned.note,requestedAt:stamp,questionIds:returned.questionIds,minAttemptId:9};return route.fulfill({json:{correction,report:{score:6,maxScore:6,totalScoredPoints:6,pendingCount:0,confirmedScore:null,confirmedCount:0,topicStats:[],suggestion:advice}}});}
     else if(url.pathname==='/api/assignments/1/submit'){correction=null;studentSubmitted=true;return route.fulfill({json:{report:{score:12,maxScore:12,totalScoredPoints:12,pendingCount:0,confirmedScore:null,confirmedCount:0,topicStats:[],suggestion:advice},mySubmission:{status:'submitted',submittedAt:stamp,resubmittedAt:stamp,submitCount:2,late:false,correction:null}}});}
     else if(url.pathname==='/api/assignments/1/results')data={assignment,students:[{...student,status:correction?'correction':'submitted',submittedAt:stamp,correction},{...student,id:3,name:'第二位測試學生',username:'second',status:'in_progress',pendingCount:1}],summary:{studentCount:2,submittedCount:1,correctionCount:correction?1:0,fullyGradedCount:0,pendingReviewCount:1,averageScore:null,confirmedAverage:null},topicStats:[]};
-    else if(url.pathname==='/api/assignments/1')data={assignment,questions:[q],attempts:[attemptFixture()],mySubmission:{status:correction?'correction':(studentSubmitted?'submitted':'not_started'),submittedAt:studentSubmitted?stamp:null,resubmittedAt:studentSubmitted?stamp:null,submitCount:studentSubmitted?2:0,late:false,correction},report:{score:null,maxScore:6,totalScoredPoints:0,pendingCount:0,confirmedScore:null,confirmedCount:0,topicStats:[],suggestion:advice}};
+    else if(url.pathname==='/api/assignments/1')data={assignment,questions:[assignmentQuestion],attempts:[attemptFixture()],mySubmission:{status:correction?'correction':(studentSubmitted?'submitted':'not_started'),submittedAt:studentSubmitted?stamp:null,resubmittedAt:studentSubmitted?stamp:null,submitCount:studentSubmitted?2:0,late:false,correction},report:{score:null,maxScore:6,totalScoredPoints:0,pendingCount:0,confirmedScore:null,confirmedCount:0,topicStats:[],suggestion:advice}};
     else return route.fulfill({status:404,json:{error:'未設定的測試路由'}});
     return route.fulfill({json:data});
   });
@@ -282,9 +283,11 @@ const HANDWRITING=makePng(400,300);
   await page.locator('#answer-area').waitFor({timeout:8000});
   await page.locator('#main .katex').first().waitFor({timeout:5000});
   assert.ok(await page.locator('#main .katex').count() > 0, '題目頁的數學式應以 KaTeX 渲染');
-  // 選擇題在練習頁應預設「點選作答」，可點選項並帶入最終答案
+  // 選擇題在練習頁只能點選作答：題目區不重複列選項、沒有模式頁籤、沒有數學鍵盤
   await page.locator('#choice-picker').waitFor({timeout:5000});
-  assert.match(await page.locator('.practice-tabs').innerText(), /點選作答/, '選擇題應有點選作答模式');
+  assert.equal(await page.locator('.practice-question .choice-options').count(), 0, '選擇題不應在題目區重複顯示選項清單');
+  assert.equal(await page.locator('.practice-tabs').count(), 0, '選擇題只有一種作答方式，不應顯示模式頁籤');
+  assert.equal(await page.locator('#math-keyboard').isVisible(), false, '選擇題不應出現數學鍵盤');
   assert.equal(await page.locator('.choice-option').count(), 4, '應有 4 個可點選項');
   await page.locator('.choice-option').nth(2).click();
   await page.waitForTimeout(200);
@@ -625,6 +628,51 @@ const HANDWRITING=makePng(400,300);
   await login('teacher');
   await page.setViewportSize({width:390,height:844});
   await page.locator('#menu-btn').click();await page.locator('[data-page=homework]').first().click();await page.locator('.assignment-card').first().waitFor();assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
+  // ── 填空題：只有手寫／文字作答，文字作答提供數學鍵盤與即時排版預覽 ──
+  await page.setViewportSize({width:1440,height:1000});
+  await page.locator('#account').click();await page.locator('#logout-btn').click();await page.locator('#homework-login').waitFor();
+  await login('student');
+  const blankQuestion={id:77,title:'填空題測試',content:'解方程 $x^2-9=0$，$x=$ ____。',topic:'一元二次方程',grade:'中三',
+    points:4,level:1,qtype:'填空題',source:'校本題庫',tags:[],hint:'',answer:'$x=\\pm 3$',steps:[],options:[]};
+  // 覆寫 /api/state：只回一題填空題（後註冊的路由優先）
+  await page.route('**/api/state', route => route.fulfill({json:{
+    user:{id:1,name:'介面測試學生',role:'student'},
+    questions:[blankQuestion],
+    attempts:[graded(1,1,'一元二次方程',6,6)],
+    stats:{completed:1,accuracy:100,streak:1,minutes:5},
+    ai:{configured:true,mode:'local'},
+    topics:['一元二次方程']
+  }}));
+  await page.reload({waitUntil:'networkidle'});
+  await page.locator('[data-page=bank]').first().click();
+  await page.locator('.question-card').first().waitFor({timeout:8000});
+  await page.locator('.question-card').first().locator('.practice-btn').click();
+  await page.locator('#answer-area').waitFor({timeout:8000});
+  assert.deepEqual((await page.locator('.practice-tabs button').allInnerTexts()).map(t=>t.trim()),
+    ['手寫解題','文字作答'], '填空題應只有手寫解題與文字作答');
+  await page.locator('[data-answer-mode=text]').click();
+  await page.locator('#math-keyboard').waitFor({state:'visible',timeout:5000});
+  assert.ok(await page.locator('.mk-key').count() >= 40, '數學鍵盤應提供多個符號鍵');
+  assert.ok(await page.locator('.mk-tab').count() >= 5, '數學鍵盤應有多個分類');
+  // 點「分數」插入 \frac{}{} 並把游標放進第一個大括號，補成 \frac{1}{2}
+  await page.locator('.mk-tab', {hasText:'分數'}).click();
+  await page.locator('.mk-key', {hasText:'分數'}).first().click();
+  assert.equal(await page.locator('#final-answer').inputValue(), '\\frac{}{}', '應插入分數語法');
+  const caret = await page.evaluate(() => { const i=document.querySelector('#final-answer'); const c=i.selectionStart;
+    return {before:i.value.slice(0,c), at:i.value[c]}; });
+  assert.equal(caret.before.endsWith('{'), true, '游標應落在第一個大括號內');
+  assert.equal(caret.at, '}', '游標應緊貼大括號右邊界之前');
+  await page.keyboard.type('1');
+  await page.locator('#final-answer').evaluate(el => { const i=el.value.lastIndexOf('{}'); el.setSelectionRange(i+1,i+1); });
+  await page.keyboard.type('2');
+  assert.equal(await page.locator('#final-answer').inputValue(), '\\frac{1}{2}', '應完成分數輸入');
+  assert.ok(await page.locator('#final-answer-preview .katex').count() > 0, '預覽應以 KaTeX 渲染輸入的數學式');
+  // 切換分類後可插入其他符號
+  await page.locator('.mk-tab', {hasText:'集合'}).click();
+  await page.locator('.mk-key', {hasText:'ℝ'}).click();
+  assert.match(await page.locator('#final-answer').inputValue(), /\\mathbb\{R\}/, '應插入實數符號');
+  await page.screenshot({path:path.join(__dirname,'..','MathPath-數學鍵盤.png'),fullPage:true});
+
   assert.deepEqual(errors,[]);await browser.close();
-  console.log('PASS: font scale switch (guest, persisted, 3 levels, no mobile overflow), login page (role cards, remember checked, remembered account), calendar (marks + entry from homework), question type (card badge, filter, draft qtype, rule analysis), full-auto split+import, homework, draft save/reload/restore, logout cleanup, weak-topic drill-down, results filters, CSV export, teacher annotation (pen/ellipse/arrow/highlight/undo/clear/save), AI suggested annotation with student read-back and teacher drag-to-adjust saved positions, correction loop (teacher return with note, student banner, pending guard, resubmit), self-serve mock exam (setup, countdown, per-question answer with mockId, submit + instant score + advice), AI endpoint page (test/save, key never read back), bulk account parse/errors/create, mobile layout, no JS errors. Fixture API only; no server started.');
+  console.log('PASS: answer modes (choice = click-only with single option list, fill-in = handwriting/text with math keyboard), font scale switch (guest, persisted, 3 levels, no mobile overflow), login page (role cards, remember checked, remembered account), calendar (marks + entry from homework), question type (card badge, filter, draft qtype, rule analysis), full-auto split+import, homework, draft save/reload/restore, logout cleanup, weak-topic drill-down, results filters, CSV export, teacher annotation (pen/ellipse/arrow/highlight/undo/clear/save), AI suggested annotation with student read-back and teacher drag-to-adjust saved positions, correction loop (teacher return with note, student banner, pending guard, resubmit), self-serve mock exam (setup, countdown, per-question answer with mockId, submit + instant score + advice), AI endpoint page (test/save, key never read back), bulk account parse/errors/create, mobile layout, no JS errors. Fixture API only; no server started.');
 })().catch(e=>{console.error(e);process.exit(1)});
