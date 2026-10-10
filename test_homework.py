@@ -174,7 +174,7 @@ class HomeworkTests(unittest.TestCase):
         detail = self.detail(aid)
         self.assertNotIn('answer', detail['questions'][0])
         self.assertNotIn('steps', detail['questions'][0])
-        self.assertEqual(self.detail(aid, self.teacher)['questions'][0]['answer'], 'x=2或3')
+        self.assertEqual(self.detail(aid, self.teacher)['questions'][0]['answer'], '$x=2$ 或 $x=3$')
         self.assertEqual(self.results(aid)['assignment']['totalPoints'], 6)
 
     def test_recipients_immutable_after_class_change(self):
@@ -506,7 +506,7 @@ class HomeworkTests(unittest.TestCase):
                           {'strength': '已评分', 'focus': '补两根', 'nextStep': '复查'}]) as ai:
             a = self.attempt(aid, useAi=True)
         reference = ai.call_args_list[0].args[1]['question']
-        self.assertEqual(reference['answer'], 'x=2或3')
+        self.assertEqual(reference['answer'], '$x=2$ 或 $x=3$')
         self.assertEqual(reference['points'], 6)
         self.assertEqual(a['maxScore'], 6)
 

@@ -206,7 +206,7 @@ class APITests(unittest.TestCase):
             self.assertNotIn('steps', q)
             self.assertEqual(q['grade'], '中三')
         _, state, _ = self.request('GET', '/api/state', cookie=self.teacher, expect=200)
-        self.assertEqual(state['questions'][0]['answer'], 'x=2或3')
+        self.assertEqual(state['questions'][0]['answer'], '$x=2$ 或 $x=3$')
         self.assertEqual(state['questions'][0]['points'], 6)
         self.assertEqual(sum(q['topic'] == '一元二次方程' for q in state['questions']), 5)
         _, recommendations, _ = self.request('GET', '/api/questions/1/recommendations', cookie=self.student, expect=200)
@@ -996,6 +996,32 @@ class PureTests(unittest.TestCase):
                                         check=True, capture_output=True, text=True)
                 self.assertEqual(result.stdout.splitlines(), [str(executable), str(directory / 'server.py'), '--port', '9876'])
                 executable.unlink()
+
+    def test_latex_answers_grade_against_plain_text(self):
+        # 參考答案可用 LaTeX 撰寫，規則評分仍要能與學生輸入的純文字對應。
+        cases = [
+            ('$x=2$ 或 $x=3$', 'x=2或3'),
+            ('$\\dfrac{1}{3}$', '1/3'),
+            ('$5\\text{ cm}$', '5 cm'),
+            ('$70^\\circ$', '70°'),
+            ('$36\\text{ cm}^2$', '36 cm²'),
+            ('$x=-3$ 或 $x=2$', 'x=-3或2'),
+            ('$k=2$', 'k=2'),
+        ]
+        for ref, student in cases:
+            self.assertTrue(server.final_correct(ref, student), f'{ref} 應等於 {student}')
+        # 單位不同仍不可互換
+        self.assertFalse(server.final_correct('$5\\text{ cm}$', '5 m'))
+        self.assertFalse(server.final_correct('$36\\text{ cm}^2$', '36 cm'))
+        # 非 LaTeX 的純文字不受影響：括號不平衡仍視為無效
+        self.assertFalse(server.final_correct('{2,3', 'x=2或3'))
+
+    def test_latex_to_plain_only_touches_latex_like_text(self):
+        self.assertEqual(server.latex_to_plain('x=2或3'), 'x=2或3', '純文字不應被改動')
+        self.assertEqual(server.latex_to_plain('{2,3'), '{2,3', '不平衡括號不應被清理')
+        self.assertEqual(server.latex_to_plain('$\\frac{1}{2}$'), '1/2')
+        self.assertEqual(server.latex_to_plain('$70^\\circ$'), '70°')
+        self.assertEqual(server.latex_to_plain('$3\\text{ cm}$'), '3 cm')
 
     def test_strict_equivalent_final_answers(self):
         for a, b in [('x=3或2', 'x=2或3'), ('{2,3}', 'x=2或3'), ('2/6', '1/3'),

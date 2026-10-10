@@ -19,7 +19,7 @@ const HANDWRITING=makePng(400,300);
   const errors=[];page.on('pageerror',e=>errors.push(e.message));page.on('dialog',d=>d.accept());
   await page.emulateMedia({reducedMotion:'reduce'});
   let role=null;
-  const q={id:1,title:'因式分解解二次方程',content:'解方程 x²−5x+6=0。',topic:'一元二次方程',grade:'中三',points:6,level:1,qtype:'選擇題',source:'校本題庫',tags:['因式分解'],hint:'利用零乘積性質。',answer:'x=2或3',steps:[]};
+  const q={id:1,title:'因式分解解二次方程',content:'解方程 $x^2-5x+6=0$。',topic:'一元二次方程',grade:'中三',points:6,level:1,qtype:'選擇題',source:'校本題庫',tags:['因式分解'],hint:'利用零乘積性質。',answer:'$x=2$ 或 $x=3$',steps:['分解為 $(x-2)(x-3)=0$。','概率為 $\\dfrac{1}{3}$，長度 $5\\text{ cm}$。']};
   const ai={configured:true,mode:'local',model:'test-vision'};
   const advice={source:'rules',strength:'本次一元二次方程已評分：6/6分。',focus:'推導步驟尚未批閱。',nextStep:'再做同知識點相似題。',recommended:[],notice:'測試資料，非真實成績。'};
   const assignment={id:1,title:'二次方程鞏固作業',classId:1,className:'中三甲班',questionCount:1,totalPoints:6,studentCount:2,submittedCount:0,gradedCount:0,dueAt:'2099-01-01T15:59:00Z',myStatus:'not_started',myScore:null,myConfirmedScore:null};
@@ -43,6 +43,8 @@ const HANDWRITING=makePng(400,300);
     const url=new URL(route.request().url());let data;
     if(url.pathname==='/'){return route.fulfill({contentType:'text/html',body:fs.readFileSync(path.join(__dirname,'index.html'),'utf8')});}
     if(['/app.js','/styles.css'].includes(url.pathname))return route.fulfill({contentType:url.pathname.endsWith('js')?'application/javascript':'text/css',body:fs.readFileSync(path.join(__dirname,url.pathname.slice(1)),'utf8')});
+    if(url.pathname.startsWith('/vendor/katex/')){const rel=url.pathname.slice(1);const mime=rel.endsWith('.js')?'application/javascript':rel.endsWith('.css')?'text/css':rel.endsWith('.woff2')?'font/woff2':'application/octet-stream';return route.fulfill({contentType:mime,body:fs.readFileSync(path.join(__dirname,rel))});}
+    if(url.pathname.startsWith('/vendor/katex/')){const rel=url.pathname.slice(1);const mime=rel.endsWith('.js')?'application/javascript':rel.endsWith('.css')?'text/css':rel.endsWith('.woff2')?'font/woff2':'application/octet-stream';return route.fulfill({contentType:mime,body:fs.readFileSync(path.join(__dirname,rel))});}
     if(url.pathname==='/api/attempts/9/image')return route.fulfill({contentType:'image/png',body:HANDWRITING});
     if(url.pathname==='/api/calendar/notes'&&route.request().method()==='POST'){noteCreated=route.request().postDataJSON();const created={id:41,date:noteCreated.date,title:noteCreated.title,note:noteCreated.note||'',kind:'reminder',createdAt:stamp};calendarNotes=calendarNotes.concat([created]);return route.fulfill({json:{note:created}});}
     if(url.pathname==='/api/calendar/notes/41/delete'){calendarNotes=calendarNotes.filter(n=>n.id!==41);return route.fulfill({json:{deleted:41}});}
@@ -267,6 +269,17 @@ const HANDWRITING=makePng(400,300);
   await page.locator('[data-topic="全部題目"]').click();
   await page.locator('.question-card').first().waitFor();
   assert.match(await page.locator('.question-card').first().innerText(),/選擇題/,'題目卡應顯示題型');
+  // 數學式子以 KaTeX 排版：$...$ 應被渲染，且頁面不得殘留原始 $ 標記
+  assert.ok(await page.locator('.question-card .katex').count() > 0, '題目卡的數學式應以 KaTeX 渲染');
+  assert.equal(await page.evaluate(() => /\$[^$]{1,60}\$/.test(document.querySelector('#question-list').innerText)), false, '不應殘留未渲染的 $ 數學標記');
+  assert.equal(await page.evaluate(() => !!(window.katex && window.katex.renderToString)), true, 'KaTeX 應已載入');
+  await page.locator('.question-card').first().click();
+  await page.locator('#main .katex').first().waitFor({timeout:5000});
+  assert.ok(await page.locator('#main .katex').count() > 0, '題目頁的數學式應以 KaTeX 渲染');
+  await page.screenshot({path:path.join(__dirname,'..','MathPath-數學式子.png'),fullPage:true});
+  await page.locator('[data-page=bank]').first().click();
+  await page.locator('.question-card').first().waitFor();
+
   assert.equal(await page.locator('.question-figure').count(),0,'沒有圖形的題目不應渲染圖形區塊（避免破圖）');
   await page.locator('#qtype-filter').selectOption('解答題');
   assert.equal(await page.locator('.question-card').count(),0,'依題型篩選應生效');

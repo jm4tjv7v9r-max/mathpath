@@ -61,3 +61,10 @@ html[data-fs="large"]{--fs:1.12}html[data-fs="xlarge"]{--fs:1.25}.font-scale-wra
 .subtopic-tab{flex-shrink:0;border:1px solid var(--border);background:#fbfdfa;color:#7c8f80;border-radius:999px;padding:5px 12px;font-size:calc(13px*var(--fs));white-space:nowrap}
 .subtopic-tab:hover{background:#f2f8f2}
 .subtopic-tab.active{background:var(--mint);border-color:#cce2d6;color:var(--green);font-weight:600}
+
+/* ── 數學式子排版（KaTeX）── */
+.katex{font-size:1.05em}
+.katex-display{margin:10px 0;padding:2px 0;overflow-x:auto;overflow-y:hidden}
+.katex-display>.katex{text-align:left}
+.math-fallback{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.92em;background:#f1f6f1;border:1px solid #e0eae1;border-radius:4px;padding:1px 5px;word-break:break-all}
+.answer-field .katex,.import-text .katex{font-size:1.05em}
