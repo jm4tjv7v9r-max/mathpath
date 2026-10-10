@@ -147,9 +147,9 @@ const HANDWRITING=makePng(400,300);
   assert.equal(rememberSent,true,'登入應預設勾選記住我');
   assert.equal(await page.evaluate(()=>localStorage.getItem('mathpath_last_user')),'student','應記住上次登入帳號');
   await page.locator('[data-assignment]').first().click();await page.locator('[data-assignment-q]').click();
-  await page.locator('[data-answer-mode=text]').click();await page.locator('#answer-process').fill('把二次式因式分解。');await page.locator('#final-answer').fill('x=2或3');
+  assert.equal(await page.locator('#hand-canvas').count(),1,'手寫解題應顯示書寫區');assert.equal(await page.locator('#math-keyboard').isVisible(),false,'手寫解題不應顯示數學鍵盤');await page.locator('[data-answer-mode=text]').click();assert.equal(await page.locator('#answer-process').count(),0,'文字作答不應再出現解題步驟輸入框');await page.locator('#final-answer').fill('x=2或3');
   await page.waitForFunction(()=>sessionStorage.getItem('mathpath_draft_1_1_1')?.includes('x=2或3'));
-  await page.reload();await page.locator('[data-assignment]').first().click();await page.locator('[data-assignment-q]').click();assert.equal(await page.locator('#final-answer').inputValue(),'x=2或3');assert.equal(await page.locator('#answer-process').inputValue(),'把二次式因式分解。');assert.match(await page.locator('#draft-status').innerText(),/已恢復本分頁草稿/);
+  await page.reload();await page.locator('[data-assignment]').first().click();await page.locator('[data-assignment-q]').click();assert.equal(await page.locator('#final-answer').inputValue(),'x=2或3');assert.equal(await page.locator('#answer-process').count(),0,'文字作答不應有解題步驟輸入框');assert.match(await page.locator('#draft-status').innerText(),/已恢復本分頁草稿/);
   await page.locator('#account').click();await page.locator('#logout-btn').click();await page.locator('#homework-login').waitFor();assert.equal(await page.evaluate(()=>sessionStorage.getItem('mathpath_draft_1_1_1')),null);
   await page.locator('#homework-login').click();
   await page.locator('.login-remembered').waitFor();
@@ -654,6 +654,15 @@ const HANDWRITING=makePng(400,300);
   await page.locator('#math-keyboard').waitFor({state:'visible',timeout:5000});
   assert.ok(await page.locator('.mk-key').count() >= 40, '數學鍵盤應提供多個符號鍵');
   assert.ok(await page.locator('.mk-tab').count() >= 5, '數學鍵盤應有多個分類');
+  // 數學鍵盤必須位於最終答案輸入框上方
+  const order = await page.evaluate(() => {
+    const kb = document.querySelector('#math-keyboard'), input = document.querySelector('#final-answer');
+    return kb.compareDocumentPosition(input) & Node.DOCUMENT_POSITION_FOLLOWING ? 'keyboard-first' : 'input-first';
+  });
+  assert.equal(order, 'keyboard-first', '數學鍵盤應出現在最終答案框上方');
+  // 希臘字母分類（MathType 式直觀輸入）
+  await page.locator('.mk-tab', {hasText:'希臘'}).click();
+  assert.ok(await page.locator('.mk-panel[data-mk-panel=greek] .mk-key').count() >= 30, '希臘字母分類應有完整字母表');
   // 點「分數」插入 \frac{}{} 並把游標放進第一個大括號，補成 \frac{1}{2}
   await page.locator('.mk-tab', {hasText:'分數'}).click();
   await page.locator('.mk-key', {hasText:'分數'}).first().click();

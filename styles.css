@@ -119,21 +119,23 @@ html[data-fs="large"]{--fs:1.12}html[data-fs="xlarge"]{--fs:1.25}.font-scale-wra
 .solution-analysis{margin:8px 0 4px;font-size:calc(14px*var(--fs));line-height:1.9;color:#4b5b4f}
 
 /* ── 數學鍵盤（MathType 式輸入）── */
-.math-keyboard{margin-top:10px;border:1px solid var(--border);border-radius:10px;background:#fbfdfa;padding:10px 12px}
+.math-keyboard{margin-bottom:12px;border:1px solid var(--border);border-radius:10px;background:#fbfdfa;padding:10px 12px}
 .math-keyboard[hidden]{display:none}
 .mk-head{display:flex;align-items:center;gap:8px;color:#2f6b53;font-size:calc(13px*var(--fs));margin-bottom:8px;flex-wrap:wrap}
 .mk-head svg{width:calc(15px*var(--fs));height:calc(15px*var(--fs))}
 .mk-title{font-weight:600}
-.mk-tabs{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px}
+.mk-tabs{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:9px}
 .mk-tab{border:1px solid var(--border);background:#fff;color:#5c6f62;border-radius:999px;
   padding:4px 11px;font-size:calc(12.5px*var(--fs));cursor:pointer;white-space:nowrap}
 .mk-tab:hover{background:#f2f8f2}
 .mk-tab.active{background:var(--mint);border-color:#cce2d6;color:var(--green);font-weight:600}
-.mk-panel{display:flex;flex-wrap:wrap;gap:6px}
+.mk-panel{display:grid;grid-template-columns:repeat(auto-fill,minmax(calc(62px*var(--fs)),1fr));gap:6px}
 .mk-panel[hidden]{display:none}
-.mk-key{min-width:calc(42px*var(--fs));border:1px solid var(--border);background:#fff;color:#2f4a3b;
-  border-radius:8px;padding:7px 10px;font-size:calc(13.5px*var(--fs));cursor:pointer;line-height:1.3}
+.mk-key{min-height:calc(38px*var(--fs));border:1px solid var(--border);background:#fff;color:#2f4a3b;
+  border-radius:8px;padding:5px 6px;font-size:calc(14px*var(--fs));cursor:pointer;line-height:1.25;
+  display:flex;align-items:center;justify-content:center;text-align:center}
 .mk-key:hover{background:#f2f8f2;border-color:#cce2d6}
-.mk-key:active{background:var(--mint)}
+.mk-key:active{background:var(--mint);transform:translateY(1px)}
+#final-answer{padding:12px;min-height:auto;font-size:calc(16px*var(--fs))}
 #final-answer-preview{margin-top:8px}
 #final-answer-preview[hidden]{display:none}
