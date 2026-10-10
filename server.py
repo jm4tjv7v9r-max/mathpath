@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 from fractions import Fraction
 import hashlib
 import hmac
+from html import unescape as html_unescape
 from http.cookies import CookieError, SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import io
@@ -475,6 +476,11 @@ def coerce_ai_draft(raw):
 def question_valid(raw):
     allowed = ('title', 'content', 'topic', 'subtopic', 'level', 'grade', 'points', 'qtype', 'answer', 'steps', 'hint', 'analysis', 'source', 'tags', 'figure')
     fields(raw, allowed, ('title', 'content', 'topic', 'level', 'points', 'answer'))
+    # 前端若曾把 KaTeX 渲染後的 HTML 寫進表單欄位，這裡自動還原成 $LaTeX$，避免資料損壞。
+    if isinstance(raw, dict):
+        raw = {k: (repair_katex_html(v) if k in ('title', 'content', 'answer', 'hint', 'analysis', 'source') and isinstance(v, str)
+                   else [repair_katex_html(x) for x in v] if k == 'steps' and isinstance(v, list)
+                   else v) for k, v in raw.items()}
     if 'figure' in raw:
         # 圖形只驗證，不交給 text()，也不進入題目 payload；二進位另行以欄位保存。
         decode_figure(raw['figure'])
@@ -823,6 +829,48 @@ class AIClient:
                 fail(502, 'AI 服務連線失敗或回應格式無效；未偽造評分或題目，請稍後重試。')
         finally:
             self.slots.release()
+
+
+def repair_katex_html(value):
+    """修復被誤存成 HTML 的數學式：把 KaTeX 產生的 HTML 還原回 $LaTeX$。
+
+    前端若把渲染後的 HTML 寫進表單欄位，內容會變成一大串 <span class="katex">…
+    這裡從 KaTeX 內嵌的 annotation（原始 TeX）還原，並移除所有標籤。
+    """
+    if 'class="katex' not in value and '<math' not in value:
+        return value
+    out, i, n = [], 0, len(value)
+    while i < n:
+        j = value.find('<span class="katex"', i)
+        if j < 0:
+            out.append(value[i:])
+            break
+        out.append(value[i:j])
+        # 以標籤深度找出這個 <span class="katex"> 的結尾，避免誤切巢狀結構。
+        k, depth = j, 0
+        while k < n:
+            if value.startswith('<span', k):
+                depth += 1
+                k = value.find('>', k)
+                if k < 0:
+                    break
+                k += 1
+            elif value.startswith('</span>', k):
+                depth -= 1
+                k += len('</span>')
+                if depth <= 0:
+                    break
+            else:
+                k += 1
+        block = value[j:k]
+        m = re.search(r'<annotation[^>]*>(.*?)</annotation>', block, re.S)
+        out.append('$' + m.group(1).strip() + '$' if m else '')
+        i = k
+    text = ''.join(out)
+    if '<' in text:                      # 清掉殘餘標籤（KaTeX 片段或半截 HTML）
+        text = re.sub(r'<[^>]*>', '', text)
+    text = re.sub(r'\$\$?\s*\$\$?', '', text).strip()
+    return html_unescape(text)
 
 
 def latex_to_plain(value):

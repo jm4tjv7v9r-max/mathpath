@@ -1016,6 +1016,25 @@ class PureTests(unittest.TestCase):
         # 非 LaTeX 的純文字不受影響：括號不平衡仍視為無效
         self.assertFalse(server.final_correct('{2,3', 'x=2或3'))
 
+    def test_repair_katex_html_restores_latex(self):
+        # 前端若誤把 KaTeX 渲染後的 HTML 存進題目欄位，應還原成 $LaTeX$ 而不是留下 HTML。
+        html = ('<span class="katex"><span class="katex-mathml"><math><semantics><mrow><mi>A</mi></mrow>'
+                '<annotation encoding="application/x-tex">A=\\{x\\mid -1&lt;x\\le 3\\}</annotation>'
+                '</semantics></math></span><span class="katex-html" aria-hidden="true">'
+                '<span class="base"><span class="mord">A</span></span></span></span>')
+        fixed = server.repair_katex_html('已知集合 ' + html + '，求元素個數。')
+        self.assertEqual(fixed, '已知集合 $A=\\{x\\mid -1<x\\le 3\\}$，求元素個數。')
+        self.assertNotIn('<span', fixed)
+        self.assertNotIn('&lt;', fixed)
+        # 未損壞的內容必須原樣保留
+        for text in ('解方程 $x^2-5x+6=0$。', '純文字題目', 'x²−5x+6=0', ''):
+            self.assertEqual(server.repair_katex_html(text), text)
+        # 經 question_valid 匯入時也會自動修復
+        q = server.question_valid({'title': 'T', 'content': '設 ' + html + '。', 'topic': '圓',
+                                   'level': 1, 'points': 5, 'answer': 'a', 'grade': '中三'})
+        self.assertNotIn('<span', q['content'])
+        self.assertIn('$A=', q['content'])
+
     def test_latex_to_plain_only_touches_latex_like_text(self):
         self.assertEqual(server.latex_to_plain('x=2或3'), 'x=2或3', '純文字不應被改動')
         self.assertEqual(server.latex_to_plain('{2,3'), '{2,3', '不平衡括號不應被清理')

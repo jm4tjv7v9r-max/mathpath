@@ -81,7 +81,7 @@ const HANDWRITING=makePng(400,300);
         {date:`${pre}15`,event:'due',kind:'homework',title:'二次方程鞏固作業',assignmentId:1,classId:1,className:'中三甲班',dueAt:stamp,...(teacher?{submittedCount:1,studentCount:2}:{myStatus:'not_started'})},
         {date:`${pre}20`,event:'published',kind:'quiz',title:'一元二次方程測驗',assignmentId:2,classId:1,className:'中三甲班',dueAt:stamp,...(teacher?{submittedCount:0,studentCount:2}:{myStatus:'not_started'})}
       ],notes:calendarNotes};}
-    else if(url.pathname==='/api/papers/parse'){parsedSeen=route.request().postDataJSON();data={method:'規則拆題',notice:'需要教師確認題目內容、分類、難度、分值和參考答案後才可匯入；識別不代表答案已核驗。',drafts:[{title:'自動卷 · 第1題',content:'下列何者正確？ (A) 1 (B) 2 (C) 3 (D) 4',topic:'代數',level:1,grade:'中三',qtype:'選擇題',points:6,answer:'',steps:[],hint:'',analysis:'規則分析：題型為選擇題，知識點為代數；參考答案留空，需教師核對。',source:'自動卷',tags:['教師待確認']}]};}
+    else if(url.pathname==='/api/papers/parse'){parsedSeen=route.request().postDataJSON();data={method:'規則拆題',notice:'需要教師確認題目內容、分類、難度、分值和參考答案後才可匯入；識別不代表答案已核驗。',drafts:[{title:'自動卷 · 第1題',content:'已知集合 $A=\\{x\\mid -1<x\\le 3\\}$，求元素個數。',topic:'代數',subtopic:'',level:1,grade:'中三',qtype:'選擇題',points:6,answer:'$3$',steps:['元素為 $0,1,2,3$。'],hint:'數一數。',analysis:'規則分析：題型為選擇題，知識點為代數；參考答案留空，需教師核對。',source:'自動卷',tags:['教師待確認']}]};}
     else if(url.pathname==='/api/papers/auto-import'){autoImported=route.request().postDataJSON();return route.fulfill({json:{count:2,method:'規則拆題',questions:[],notice:'已全自動拆分並匯入題庫，全部標示為「自動匯入 · 待核驗」；請在題庫核對題型、分類與參考答案。'}});}
     else if(url.pathname==='/api/assignments/2/start'){quizStartSeen++;quizStarted=true;return route.fulfill({json:{mySubmission:quizSub()}});}
     else if(url.pathname==='/api/assignments/2/submit'){quizSubmitted=true;return route.fulfill({json:{report:{score:6,maxScore:6,totalScoredPoints:6,pendingCount:0,confirmedScore:null,confirmedCount:0,gradedCount:1,questionCount:1,percent:100,aiScore:null,ruleScore:6,topicStats:[],suggestion:advice},mySubmission:quizSub()}});}
@@ -352,6 +352,18 @@ const HANDWRITING=makePng(400,300);
   await page.locator('.draft-card').waitFor();
   assert.equal(await page.locator('[data-field=qtype]').inputValue(),'選擇題','草稿應帶入題型');
   assert.match(await page.locator('.draft-analysis').innerText(),/題型為選擇題/,'應顯示題目分析');
+  // 拆題編輯頁的表單欄位必須顯示「原始 LaTeX 文字」，不可把渲染後的 KaTeX HTML 塞進輸入框
+  const draftTex = await page.locator('[data-field=content]').inputValue();
+  assert.ok(draftTex.includes('$A=\\{x\\mid -1<x\\le 3\\}$'), `題目內容應為原始 LaTeX，實際：${draftTex.slice(0,80)}`);
+  assert.equal(/<span|<math|class="katex/.test(draftTex), false, '題目內容不得含渲染後的 HTML');
+  assert.equal(await page.locator('[data-field=content] span').count(), 0, 'textarea 內不得有 KaTeX 元素');
+  assert.equal(await page.locator('[data-field=answer]').inputValue(), '$3$', '答案欄應為原始 LaTeX');
+  // 拆題編輯頁的表單欄位必須顯示「原始 LaTeX 文字」，不可把渲染後的 KaTeX HTML 塞進輸入框
+  const draftContent = await page.locator('[data-field=content]').inputValue();
+  assert.ok(draftContent.includes('$A=\\{x\\mid -1<x\\le 3\\}$'), `題目內容應為原始 LaTeX，實際：${draftContent.slice(0,80)}`);
+  assert.equal(/<span|<math|class="katex/.test(draftContent), false, '題目內容不得含渲染後的 HTML');
+  assert.equal(await page.locator('[data-field=content] span').count(), 0, 'textarea 內不得有 KaTeX 元素');
+  assert.equal(await page.locator('[data-field=answer]').inputValue(), '$3$', '答案欄應為原始 LaTeX');
   await page.screenshot({path:path.join(__dirname,'..','MathPath-題型分類.png'),fullPage:true});
   await page.locator('#back-import').click();
   await page.locator('#manual-title').waitFor();
