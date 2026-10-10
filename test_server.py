@@ -1016,6 +1016,65 @@ class PureTests(unittest.TestCase):
         # 非 LaTeX 的純文字不受影響：括號不平衡仍視為無效
         self.assertFalse(server.final_correct('{2,3', 'x=2或3'))
 
+    def test_choice_question_options_and_letter_answers(self):
+        # 選擇題：選項 2–10 個、只有選擇題可設選項、答案統一成字母
+        base = {'title': '選一題', 'content': '下列何者正確？', 'topic': '圓', 'level': 1,
+                'points': 5, 'qtype': '選擇題'}
+        q = server.question_valid(dict(base, options=['$1$', '$2$', '$3$', '$4$'], answer='C'))
+        self.assertEqual(q['options'], ['$1$', '$2$', '$3$', '$4$'])
+        self.assertEqual(q['answer'], 'C')
+        # 教師填選項內容或小寫也能正規化
+        self.assertEqual(server.question_valid(dict(base, options=['1', '2', '3'], answer='3'))['answer'], 'C')
+        self.assertEqual(server.question_valid(dict(base, options=['1', '2', '3'], answer='(b)'))['answer'], 'B')
+        # 只有一個選項、超過 10 個 → 拒絕
+        self.assertRaises(server.APIError, server.question_valid, dict(base, options=['1'], answer='A'))
+        self.assertRaises(server.APIError, server.question_valid,
+                          dict(base, options=[str(i) for i in range(11)], answer='A'))
+        # 非選擇題不可帶選項
+        self.assertRaises(server.APIError, server.question_valid,
+                          dict(base, qtype='解答題', options=['1', '2'], answer='A'))
+        # 沒帶 options 的一般題目不受影響
+        plain = server.question_valid(dict(base, qtype='解答題', answer='42'))
+        self.assertEqual(plain['options'], [])
+
+    def test_split_inline_options_from_content(self):
+        stem, opts = server.split_inline_options('下列何者正確？ (A) $x=1$ (B) $x=2$ (C) $x=3$ (D) $x=4$')
+        self.assertEqual(stem, '下列何者正確？')
+        self.assertEqual(opts, ['$x=1$', '$x=2$', '$x=3$', '$x=4$'])
+        # 五個選項
+        _, five = server.split_inline_options('選一項：A. 1 B. 2 C. 3 D. 4 E. 5')
+        self.assertEqual(five, ['1', '2', '3', '4', '5'])
+        # 沒有選項的文字原樣回傳
+        self.assertEqual(server.split_inline_options('解方程 $x^2-5x+6=0$。'), ('解方程 $x^2-5x+6=0$。', []))
+        # 只有一個標號不算選項
+        self.assertEqual(server.split_inline_options('選項 A 是對的。'), ('選項 A 是對的。', []))
+
+    def test_ai_draft_auto_splits_choice_options(self):
+        # AI 沒拆選項時，從題幹自動拆出來，並把答案轉成字母
+        d = server.coerce_ai_draft({'title': 'T', 'content': '下列何者正確？ (A) $x=1$ (B) $x=2$ (C) $x=3$ (D) $x=4$',
+                                    'topic': '一元二次方程', 'level': 1, 'points': 5, 'answer': '$x=3$',
+                                    'qtype': '選擇題'})
+        self.assertEqual(d['content'], '下列何者正確？')
+        self.assertEqual(d['options'], ['$x=1$', '$x=2$', '$x=3$', '$x=4$'])
+        self.assertEqual(d['answer'], 'C')
+        # AI 已拆好就直接沿用
+        d2 = server.coerce_ai_draft({'title': 'T', 'content': 'Q？', 'topic': '圓', 'level': 1, 'points': 5,
+                                     'answer': 'B', 'qtype': '選擇題', 'options': ['a', 'b', 'c']})
+        self.assertEqual(d2['options'], ['a', 'b', 'c'])
+        self.assertEqual(d2['answer'], 'B')
+
+    def test_choice_answer_grading(self):
+        # 學生點選字母即作答，與參考答案字母比對
+        self.assertTrue(server.final_correct('C', 'C'))
+        self.assertTrue(server.final_correct('c', 'C'))
+        self.assertFalse(server.final_correct('A', 'C'))
+        # 種子題庫的選擇題答案應為字母且選項齊全
+        seed = [q for q in server.seed_questions() if q.get('options')]
+        self.assertTrue(seed, '種子題庫應至少有一題選擇題示範')
+        for q in seed:
+            self.assertEqual(q['qtype'], '選擇題')
+            self.assertIn(q['answer'], server.OPTION_LETTERS[:len(q['options'])])
+
     def test_repair_katex_html_restores_latex(self):
         # 前端若誤把 KaTeX 渲染後的 HTML 存進題目欄位，應還原成 $LaTeX$ 而不是留下 HTML。
         html = ('<span class="katex"><span class="katex-mathml"><math><semantics><mrow><mi>A</mi></mrow>'

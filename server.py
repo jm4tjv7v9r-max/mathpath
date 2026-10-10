@@ -237,6 +237,8 @@ GRADES = ['中一', '中二', '中三', '中四', '中五', '中六']
 TOPIC_HINT = '、'.join(TOPICS)
 GRADE_HINT = '、'.join(GRADES)
 QTYPES = ['選擇題', '填空題', '解答題', '證明題']
+# 選擇題選項標號：支援 4 個、5 個或更多選項（最多 10 個）。
+OPTION_LETTERS = 'ABCDEFGHIJ'
 COOKIE = 'mathpath_session'
 DEMO_NOTICE = '演示帳戶：student / Math1234!、teacher / Teach1234!。上線前必須更換密碼。'
 
@@ -318,7 +320,10 @@ def paper_drafts(app, name, body):
         app.ai.consent(body.get('consentExternal'))
         result = app.ai.call(
             '識別試卷中的所有題目，保持原文，不捏造缺失文字。'
-            '返回 {drafts:[{title,content,topic,subtopic,level,grade,points,qtype,answer,steps:[str],hint,analysis,source,tags:[str]}]}。'
+            '返回 {drafts:[{title,content,topic,subtopic,level,grade,points,qtype,options:[str],answer,steps:[str],hint,analysis,source,tags:[str]}]}。'
+            '選擇題必須把選項放進 options 陣列（2 至 10 項，依原順序對應 A、B、C…），'
+            '題幹 content 只保留問句、不要把選項文字貼在後面；answer 填正確選項的字母（例如 "B"）。'
+            '非選擇題 options 留空陣列。'
             'content 與 answer 中的數學式一律用 LaTeX：行內用 $...$、獨立一行用 $$...$$'
             '（例如 $x^2-5x+6=0$、$\\frac{1}{2}$、$\\sqrt{3}$）；不要用圖片或純文字排版數學式。'
             f'topic（主分類）只能是以下之一：{TOPIC_HINT}；'
@@ -443,7 +448,7 @@ def coerce_ai_draft(raw):
     if not isinstance(raw, dict):
         return None
     allowed = ('title', 'content', 'topic', 'subtopic', 'level', 'grade', 'points',
-               'qtype', 'answer', 'steps', 'hint', 'analysis', 'source', 'tags')
+               'qtype', 'answer', 'options', 'steps', 'hint', 'analysis', 'source', 'tags')
     d = {k: v for k, v in raw.items() if k in allowed}
     topic_raw = d.get('topic')
     topic = match_topic(topic_raw)
@@ -470,16 +475,91 @@ def coerce_ai_draft(raw):
     d['qtype'] = d.get('qtype') if d.get('qtype') in QTYPES else classify_type(d['content'])
     d['steps'] = _as_str_list(d.get('steps'), 40)
     d['tags'] = _as_str_list(d.get('tags'), 20, 60)
+    # 選擇題選項：AI 有拆就沿用；沒拆但題幹裡有 (A)…(D) 就自動拆出來。
+    options = _as_str_list(d.get('options'), len(OPTION_LETTERS), 600)
+    if not options and d['qtype'] == '選擇題':
+        stem, inline = split_inline_options(d['content'])
+        if inline:
+            d['content'], options = stem, inline
+    if options and not 2 <= len(options) <= len(OPTION_LETTERS):
+        options = []
+    d['options'] = options
+    # 有選項時把答案統一成字母，方便前端點選與規則評分。
+    if options:
+        if d['qtype'] != '選擇題':
+            d['qtype'] = '選擇題'
+        d['answer'] = normalize_choice_answer(d['answer'], options)
     return d
 
 
+def normalize_choice_answer(value, options):
+    """把選擇題的參考答案統一成選項字母（A、B、C…）。
+
+    教師可能填「B」、「b」、「(B)」、或直接填選項內容；只要對得上就轉成字母。
+    """
+    raw = (value or '').strip()
+    if not raw:
+        return ''
+    letters = OPTION_LETTERS[:len(options)]
+    # 已是字母（可帶括號／點）
+    m = re.fullmatch(r'[（(]?\s*([A-Za-z])\s*[)）.、]?', raw)
+    if m and m[1].upper() in letters:
+        return m[1].upper()
+    # 填的是選項內容（含 LaTeX 前後空白差異）→ 對應回字母
+    plain = latex_to_plain(raw).strip()
+    for i, option in enumerate(options):
+        if plain and plain == latex_to_plain(option).strip():
+            return letters[i]
+    return raw
+
+
+def split_inline_options(content):
+    """把題目文字中「(A) … (B) … (C) … (D) …」形式的選項拆出來。
+
+    回傳 (題幹, 選項清單)。找不到可辨識的選項時，回傳 (原文字, [])。
+    只認 (A)／A.／A、／A） 這幾種常見寫法，且至少要 2 個連續標號才算。
+    """
+    text = content or ''
+    # 標號可出現在行首或空白之後；(?![0-9]) 避免把 "A4" 之類誤認成選項。
+    pattern = re.compile(r'[（(]?\s*([A-Ja-j])\s*[)）.、]\s*')
+    hits = [m for m in pattern.finditer(text)]
+    if len(hits) < 2:
+        return text, []
+    # 依字母順序 A、B、C… 連續出現才視為選項列
+    start = None
+    for i in range(len(hits) - 1):
+        letters = [hits[i][1].upper()]
+        j = i
+        while j + 1 < len(hits) and ord(hits[j + 1][1].upper()) == ord(letters[-1]) + 1:
+            letters.append(hits[j + 1][1].upper())
+            j += 1
+        if len(letters) >= 2:
+            start = (i, j)
+            break
+    if not start:
+        return text, []
+    i, j = start
+    first = hits[i]
+    # 題幹：第一個標號之前；若之前還有字母（例如 "A" 在句中），保守起見仍以標號為界。
+    stem = text[:first.start()].strip()
+    options = []
+    for k in range(i, j + 1):
+        begin = hits[k].end()
+        end = hits[k + 1].start() if k + 1 <= j else len(text)
+        piece = text[begin:end].strip().strip('；;，,、')
+        options.append(piece)
+    if len(options) < 2 or not stem:
+        return text, []
+    return stem, options
+
+
 def question_valid(raw):
-    allowed = ('title', 'content', 'topic', 'subtopic', 'level', 'grade', 'points', 'qtype', 'answer', 'steps', 'hint', 'analysis', 'source', 'tags', 'figure')
+    allowed = ('title', 'content', 'topic', 'subtopic', 'level', 'grade', 'points', 'qtype', 'answer', 'options', 'steps', 'hint', 'analysis', 'source', 'tags', 'figure')
     fields(raw, allowed, ('title', 'content', 'topic', 'level', 'points', 'answer'))
     # 前端若曾把 KaTeX 渲染後的 HTML 寫進表單欄位，這裡自動還原成 $LaTeX$，避免資料損壞。
     if isinstance(raw, dict):
         raw = {k: (repair_katex_html(v) if k in ('title', 'content', 'answer', 'hint', 'analysis', 'source') and isinstance(v, str)
-                   else [repair_katex_html(x) for x in v] if k == 'steps' and isinstance(v, list)
+                   else [repair_katex_html(x) for x in v] if k in ('steps', 'options') and isinstance(v, list)
                    else v) for k, v in raw.items()}
     if 'figure' in raw:
         # 圖形只驗證，不交給 text()，也不進入題目 payload；二進位另行以欄位保存。
@@ -500,6 +580,22 @@ def question_valid(raw):
     q['qtype'] = raw.get('qtype') or classify_type(q['content'])
     if q['qtype'] not in QTYPES:
         fail(400, '題型必須是選擇題、填空題、解答題或證明題。')
+    # 選擇題的選項：2–10 項；非選擇題不接受選項，避免出現無法作答的資料。
+    raw_options = raw.get('options')
+    if raw_options in (None, ''):
+        options = []
+    elif not isinstance(raw_options, list):
+        fail(400, '選項必須是文字清單。')
+    else:
+        options = [text(v, '選項', 600, empty=False) for v in raw_options]
+    if options and q['qtype'] != '選擇題':
+        fail(400, '只有選擇題可以設定選項。')
+    if options and not 2 <= len(options) <= len(OPTION_LETTERS):
+        fail(400, f'選擇題需要 2 至 {len(OPTION_LETTERS)} 個選項。')
+    q['options'] = options
+    if options:
+        # 參考答案統一存成選項字母（A、B、C…），前端點選與規則評分都以此比對。
+        q['answer'] = normalize_choice_answer(q['answer'], options)
     q['analysis'] = text(raw.get('analysis', ''), '題目分析', 2000, empty=True)
     for key, count, limit in [('steps', 40, 2000), ('tags', 20, 60)]:
         values = raw.get(key, [])
@@ -560,9 +656,10 @@ def seed_questions():
          ['正方形面積 $=$ 邊長 $\\times$ 邊長。', '$6\\times 6=36\\text{ cm}^2$。'],
          '面積單位須平方。', ['面積', '平方單位']),
         ('擲骰子的概率', '擲一枚公平六面骰子，求出現大於 $4$ 的點數之概率。', '概率', '古典概型', 1, 4,
-         '$\\dfrac{1}{3}$',
+         'B',
          ['可能結果共 $6$ 個。', '大於 $4$ 的結果為 $5$、$6$，共 $2$ 個。', '概率 $=\\dfrac{2}{6}=\\dfrac{1}{3}$。'],
-         '先數有利結果，再除以所有等可能結果數。', ['等可能事件', '概率']),
+         '先數有利結果，再除以所有等可能結果數。', ['等可能事件', '概率'],
+         ['$\\dfrac{1}{6}$', '$\\dfrac{1}{3}$', '$\\dfrac{1}{2}$', '$\\dfrac{2}{3}$']),
         ('不放回抽球', '袋中有 $3$ 個紅球及 $2$ 個藍球，隨機不放回抽兩球，求兩球都是紅球的概率。',
          '概率', '列舉法求概率', 3, 6, '$\\dfrac{3}{10}$',
          ['第一球為紅球的概率為 $\\dfrac{3}{5}$。',
@@ -580,9 +677,12 @@ def seed_questions():
          '先排序再找中間位置。', ['中位數', '排序']),
     ]
     result = []
-    for i, (title, content, topic, subtopic, level, points, answer, steps, hint, tags) in enumerate(rows):
+    for i, row in enumerate(rows):
+        title, content, topic, subtopic, level, points, answer, steps, hint, tags = row[:10]
+        options = row[10] if len(row) > 10 else []
         result.append(question_valid(dict(title=title, content=content, topic=topic, subtopic=subtopic,
                                           level=level, grade='中三', points=points, answer=answer, steps=steps,
+                                          options=options, qtype='選擇題' if options else '',
                                           hint=hint, source='中三數學·第一學期測驗' if i < 5 else '校本題庫', tags=tags)))
     return result
 

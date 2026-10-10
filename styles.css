@@ -68,3 +68,21 @@ html[data-fs="large"]{--fs:1.12}html[data-fs="xlarge"]{--fs:1.25}.font-scale-wra
 .katex-display>.katex{text-align:left}
 .math-fallback{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.92em;background:#f1f6f1;border:1px solid #e0eae1;border-radius:4px;padding:1px 5px;word-break:break-all}
 .answer-field .katex,.import-text .katex{font-size:1.05em}
+
+/* ── 選擇題選項 ── */
+.choice-options{list-style:none;margin:12px 0 0;padding:0;display:grid;gap:8px}
+.choice-options li{display:flex;gap:10px;align-items:flex-start;padding:9px 12px;border:1px solid var(--border);border-radius:8px;background:#fbfdfa;font-size:calc(15px*var(--fs));line-height:1.8}
+.option-letter{flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;width:calc(24px*var(--fs));height:calc(24px*var(--fs));border-radius:50%;background:#eaf3ec;color:#2f6b53;font-weight:600;font-size:calc(13px*var(--fs))}
+.option-text{flex:1 1 auto;min-width:0;word-break:break-word}
+.choice-picker{display:grid;gap:10px;margin:6px 0 0}
+.choice-option{display:flex;gap:12px;align-items:flex-start;text-align:left;width:100%;padding:12px 14px;border:1px solid var(--border);border-radius:9px;background:#fff;font-size:calc(15px*var(--fs));line-height:1.8;cursor:pointer}
+.choice-option:hover{background:#f5f9f2;border-color:#cce2d6}
+.choice-option.selected{background:var(--mint);border-color:#9dc9b2;box-shadow:0 0 0 1px #9dc9b2 inset}
+.choice-option.selected .option-letter{background:var(--green);color:#fff}
+.math-preview{margin-top:10px;padding:11px 13px;border:1px dashed #cfe0d4;border-radius:8px;background:#f7fbf6;font-size:calc(15px*var(--fs));line-height:1.9;min-height:20px;word-break:break-word}
+.math-preview:empty{display:none}
+.preview-option{display:flex;gap:9px;align-items:flex-start;margin:3px 0}
+.option-list{display:grid;gap:8px}
+.option-row{display:flex;gap:9px;align-items:center}
+.option-row input{flex:1 1 auto;min-width:0;border:1px solid var(--border);border-radius:7px;padding:9px 11px;font-size:calc(14px*var(--fs));background:#fff}
+.option-actions{display:flex;gap:12px;align-items:center;margin-top:8px;flex-wrap:wrap}
