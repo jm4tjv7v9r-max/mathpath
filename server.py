@@ -698,24 +698,43 @@ class Application:
                 print(f'[startup] 初始化失敗：{exc}', flush=True)
 
     def saved_ai_config(self):
-        """讀取管理員在介面上儲存的端點設定；未儲存時回 None。"""
+        """讀取管理員在介面上儲存的端點設定；端點不完整（例如只存了計費模式）時回 None。"""
         with self.db() as db:
             rows = db.execute("SELECT key,value FROM meta WHERE key LIKE 'ai\\_%' ESCAPE '\\'").fetchall()
         saved = {row['key']: row['value'] for row in rows}
-        if not saved:
+        if not saved.get('ai_base_url') or not saved.get('ai_model'):
             return None
         return {'base_url': saved.get('ai_base_url', ''), 'model': saved.get('ai_model', ''),
                 'api_key': saved.get('ai_api_key', ''), 'vision_model': saved.get('ai_vision_model', ''),
                 'thinking': saved.get('ai_thinking', 'off') == 'on',
                 'source': 'saved'}
 
+    def saved_thinking(self):
+        """單獨讀取已儲存的計費模式；未儲存時回 None（表示沿用環境變數）。"""
+        with self.db() as db:
+            row = db.execute("SELECT value FROM meta WHERE key='ai_thinking'").fetchone()
+        return None if row is None else row['value'] == 'on'
+
+    def set_economy(self, economy):
+        """只切換省錢模式，保留現有端點設定（已儲存或環境變數），不覆寫金鑰。"""
+        with self.db() as db:
+            db.execute('BEGIN IMMEDIATE')
+            db.execute("DELETE FROM meta WHERE key='ai_thinking'")
+            db.execute("INSERT INTO meta(key,value) VALUES('ai_thinking',?)", ('off' if economy else 'on',))
+        self.reload_ai()
+
     def reload_ai(self):
         """已儲存設定優先於環境變數；設定異常時回退環境變數並記錄，不讓服務無法啟動。"""
         saved = self.saved_ai_config()
+        env = env_ai_config()
+        # 計費模式可單獨儲存（教師在介面切換），不必連端點一起存；未存則沿用環境變數。
+        thinking = self.saved_thinking()
+        config = dict(saved if saved else env)
+        config['thinking'] = env['thinking'] if thinking is None else thinking
         try:
-            self.ai.configure(saved if saved else env_ai_config())
+            self.ai.configure(config)
         except ValueError:
-            self.ai.configure(env_ai_config())
+            self.ai.configure(env)
             self.ai.invalid_saved = True
             return False
         self.ai.invalid_saved = False
@@ -1078,6 +1097,15 @@ class Application:
             tester.probe(vision=bool(body.get('vision')))
             return {'ok': True, 'mode': tester.mode, 'model': tester.model,
                     'testedVision': bool(body.get('vision'))}, headers
+        if method == 'POST' and path == '/api/ai-config/economy':
+            # 計費模式只是成本偏好、不含任何憑證，因此任何教師都能切換，不需要管理員權杖。
+            # 這樣在 Render 等雲端環境即使沒設 MATH_ADMIN_TOKEN，教師仍能自行調整。
+            self.teacher(user)
+            fields(body, ('economy',), ('economy',))
+            if type(body['economy']) is not bool:
+                fail(400, 'economy 必須是布林值。')
+            self.set_economy(body['economy'])
+            return {'active': self.ai.public(), 'economy': not self.ai.thinking}, headers
         if method == 'GET' and path == '/api/state':
             with self.db() as db:
                 questions = [self.question_public(self.question_row(r), user) for r in db.execute('SELECT * FROM questions ORDER BY id')]

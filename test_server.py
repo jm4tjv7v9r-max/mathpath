@@ -405,6 +405,32 @@ class APITests(unittest.TestCase):
         self.assertEqual(saved['status'], 'pending')
         self.assertEqual(saved['annotation'], path)
 
+    def test_teacher_can_toggle_economy_mode_without_admin_token(self):
+        # 計費模式不含憑證，教師應能在沒有 MATH_ADMIN_TOKEN、且非本機的環境下切換。
+        with patch.dict('os.environ', {'MATH_AI_BASE_URL': 'https://api.deepseek.com/v1',
+                                       'MATH_AI_MODEL': 'deepseek-flash',
+                                       'MATH_AI_API_KEY': 'sk-test'}, clear=True):
+            self.app.reload_ai()
+            self.assertFalse(self.app.ai.thinking, '預設應為省錢模式')
+            # 學生不可切換
+            self.request('POST', '/api/ai-config/economy', {'economy': True},
+                         cookie=self.student, expect=403)
+            # 教師切換為精確模式
+            _, body, _ = self.request('POST', '/api/ai-config/economy', {'economy': False},
+                                      cookie=self.teacher, expect=200)
+            self.assertTrue(body['active']['thinking'])
+            self.assertFalse(body['economy'])
+            # 端點設定不能被覆寫掉
+            self.assertEqual(body['active']['model'], 'deepseek-flash')
+            # 切回省錢模式
+            _, body, _ = self.request('POST', '/api/ai-config/economy', {'economy': True},
+                                      cookie=self.teacher, expect=200)
+            self.assertFalse(body['active']['thinking'])
+            self.assertTrue(body['economy'])
+            # 非布林值應被拒
+            self.request('POST', '/api/ai-config/economy', {'economy': 'yes'},
+                         cookie=self.teacher, expect=400)
+
     def test_deepseek_thinking_toggle_is_endpoint_safe(self):
         # 省錢模式（thinking=False）只對 DeepSeek 帶上開關，其他供應商不帶，避免未知欄位造成 400。
         captured = []
