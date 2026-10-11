@@ -281,6 +281,26 @@ def fields(body, allowed, required=()):
         fail(400, '欄位缺漏或包含不支援的欄位。')
 
 
+SEAT_PATTERN = re.compile(r'[A-Za-z0-9\-]{1,20}')
+
+
+def seat_value(value, field='班內號'):
+    """班內號（座號）可省略；只接受英數與連字號，方便「3」「03」「3A」這類寫法。"""
+    if value is None or not str(value).strip():
+        return None
+    seat = text(value, field, 20)
+    if not SEAT_PATTERN.fullmatch(seat):
+        fail(400, f'{field}只接受 1 至 20 個英文字母、數字或連字號。')
+    return seat
+
+
+def student_name(value, username, field='姓名'):
+    """姓名可省略：只有學號的名單會以學號作為顯示名稱，不會出現空白姓名。"""
+    if value is None or not str(value).strip():
+        return username
+    return text(value, field, 60)
+
+
 def validate_text_total(value, key='', depth=0):
     if depth > 15:
         fail(400, '資料結構過深。')
@@ -1719,6 +1739,10 @@ class Application:
                               ('figure_key', 'ALTER TABLE questions ADD COLUMN figure_key TEXT')):
                 if name not in question_columns:
                     db.execute(sql)
+            # 學生帳號的班內號：增量加欄，舊帳戶為 NULL。沒有班內號時一切照舊運作。
+            user_columns = {r['name'] for r in db.execute('PRAGMA table_info(users)')}
+            if 'seat' not in user_columns:
+                db.execute('ALTER TABLE users ADD COLUMN seat TEXT')
             db.execute('BEGIN IMMEDIATE')
             if not db.execute('SELECT 1 FROM meta WHERE key=?', ('initialized',)).fetchone():
                 for username, role, default, env, name in [
@@ -1969,7 +1993,10 @@ class Application:
 
     @staticmethod
     def user_public(row):
-        return {k: row[k] for k in ('id', 'name', 'role')}
+        keys = row.keys()
+        result = {k: row[k] for k in ('id', 'name', 'role')}
+        result['seat'] = row['seat'] if 'seat' in keys else None
+        return result
 
     @staticmethod
     def question_row(row):
@@ -2177,26 +2204,29 @@ class Application:
             return {'user': self.user_public(user), 'notice': '密碼已更新，其他登入工作階段已失效。'}, headers
         if path == '/api/users' and method in ('GET', 'POST'):
             self.teacher(user)
-            public_fields = ('id', 'username', 'name', 'role')
+            public_fields = ('id', 'username', 'name', 'role', 'seat')
             if method == 'GET':
                 with self.db() as db:
                     users = [{k: row[k] for k in public_fields}
-                             for row in db.execute('SELECT id,username,name,role FROM users ORDER BY id')]
+                             for row in db.execute('SELECT id,username,name,role,seat FROM users ORDER BY id')]
                 return {'users': users}, headers
-            fields(body, ('username', 'name', 'password'), ('username', 'name', 'password'))
+            # 姓名可省略（只有學號的名單）：留空時以學號作為顯示名稱。
+            fields(body, ('username', 'name', 'password', 'seat'), ('username', 'password'))
             username = text(body['username'], '帳戶名稱', 40, strip=False)
             if not re.fullmatch(r'[A-Za-z0-9_.-]{3,40}', username):
                 fail(400, '帳戶名稱須為3至40個 ASCII 字母、數字或 _ . -。')
-            name = text(body['name'], '姓名', 60)
+            name = student_name(body.get('name'), username)
+            seat = seat_value(body.get('seat'))
             pw = text(body['password'], '密碼', 256, strip=False)
             if len(pw) < 10:
                 fail(400, '密碼必須至少10字。')
             encoded = password_hash(pw)
             try:
                 with self.db() as db:
-                    cur = db.execute('INSERT INTO users(username,name,role,password,demo) VALUES(?,?,?,?,?)',
-                                     (username, name, 'student', encoded, 0))
-                    created = {'id': cur.lastrowid, 'username': username, 'name': name, 'role': 'student'}
+                    cur = db.execute('INSERT INTO users(username,name,role,password,demo,seat) VALUES(?,?,?,?,?,?)',
+                                     (username, name, 'student', encoded, 0, seat))
+                    created = {'id': cur.lastrowid, 'username': username, 'name': name, 'role': 'student',
+                               'seat': seat}
             except sqlite3.IntegrityError as exc:
                 if exc.sqlite_errorcode == sqlite3.SQLITE_CONSTRAINT_UNIQUE:
                     fail(409, '帳戶名稱已存在。')
@@ -2210,19 +2240,21 @@ class Application:
                 fail(400, '每批必須包含1至200名學生。')
             prepared, seen = [], set()
             for index, item in enumerate(raw, 1):
-                if not isinstance(item, dict) or set(item) != {'username', 'name', 'password'}:
-                    fail(400, f'第 {index} 行欄位不正確，只接受帳戶名稱、姓名及密碼。')
+                if (not isinstance(item, dict) or set(item) - {'username', 'name', 'password', 'seat'}
+                        or not {'username', 'password'} <= set(item)):
+                    fail(400, f'第 {index} 行欄位不正確，只接受學號（帳戶名稱）、密碼，以及選填的姓名與班內號。')
                 username = text(item['username'], f'第 {index} 行帳戶名稱', 40, strip=False)
                 if not re.fullmatch(r'[A-Za-z0-9_.-]{3,40}', username):
                     fail(400, f'第 {index} 行帳戶名稱須為3至40個 ASCII 字母、數字或 _ . -。')
                 if username in seen:
                     fail(400, f'第 {index} 行帳戶名稱在本次批次中重複。')
                 seen.add(username)
-                name = text(item['name'], f'第 {index} 行姓名', 60)
+                name = student_name(item.get('name'), username, f'第 {index} 行姓名')
+                seat = seat_value(item.get('seat'), f'第 {index} 行班內號')
                 pw = text(item['password'], f'第 {index} 行密碼', 256, strip=False)
                 if len(pw) < 10:
                     fail(400, f'第 {index} 行密碼必須至少10字。')
-                prepared.append((username, name, password_hash(pw)))
+                prepared.append((username, name, seat, password_hash(pw)))
             # 先檢查全部帳戶名稱，再一次性寫入；任何一行有問題都不會建立部分帳戶。
             with self.db() as db:
                 db.execute('BEGIN IMMEDIATE')
@@ -2232,10 +2264,11 @@ class Application:
                 if existing:
                     fail(409, '帳戶名稱已存在：' + '、'.join(sorted(existing)[:5]))
                 created = []
-                for username, name, encoded in prepared:
-                    cur = db.execute('INSERT INTO users(username,name,role,password,demo) VALUES(?,?,?,?,?)',
-                                     (username, name, 'student', encoded, 0))
-                    created.append({'id': cur.lastrowid, 'username': username, 'name': name, 'role': 'student'})
+                for username, name, seat, encoded in prepared:
+                    cur = db.execute('INSERT INTO users(username,name,role,password,demo,seat) VALUES(?,?,?,?,?,?)',
+                                     (username, name, 'student', encoded, 0, seat))
+                    created.append({'id': cur.lastrowid, 'username': username, 'name': name, 'role': 'student',
+                                    'seat': seat})
             return {'count': len(created), 'users': created}, headers
         if path == '/api/ai-config' and method in ('GET', 'POST'):
             self.teacher(user)
@@ -2335,7 +2368,7 @@ class Application:
                 attempts = [self.attempt_public(db, r, user) for r in rows]
                 if user['role'] == 'teacher':
                     for attempt, row in zip(attempts, rows):
-                        owner = db.execute('SELECT id,name FROM users WHERE id=?', (row['user_id'],)).fetchone()
+                        owner = db.execute('SELECT id,name,username,seat FROM users WHERE id=?', (row['user_id'],)).fetchone()
                         attempt['student'] = dict(owner)
                 own = [r for r in rows if r['user_id'] == user['id']]
             return {'user': self.user_public(user), 'questions': questions, 'attempts': attempts,

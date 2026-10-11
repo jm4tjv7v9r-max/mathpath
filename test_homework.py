@@ -108,7 +108,7 @@ class HomeworkTests(unittest.TestCase):
         self.assertEqual(result['class']['studentIds'], [1])
         teacher = self.call('GET', '/api/homework', user=self.teacher)
         self.assertEqual(len(teacher['students']), 2)
-        self.assertEqual(set(teacher['students'][0]), {'id', 'name', 'username'})
+        self.assertEqual(set(teacher['students'][0]), {'id', 'name', 'username', 'seat'})
         student = self.call('GET', '/api/homework')
         self.assertNotIn('students', student)
         self.assertTrue(all(c['studentIds'] == [] for c in student['classes']))
@@ -1427,12 +1427,45 @@ class HomeworkTests(unittest.TestCase):
                    {'username': 'student', 'name': '己', 'password': 'BulkPass1234'}]),
             (400, [{'username': 's3a13', 'name': '庚', 'password': 'BulkPass1234', 'role': 'teacher'}]),
             (400, [{'username': 'ab', 'name': '辛', 'password': 'BulkPass1234'}]),
-            (400, [{'username': 's3a14', 'name': '   ', 'password': 'BulkPass1234'}]),
+            (400, [{'username': 's3a14', 'name': '壬', 'password': 'BulkPass1234', 'seat': '三號'}]),
+            (400, [{'username': 's3a15', 'name': '癸', 'password': 'BulkPass1234', 'seat': 'x' * 21}]),
+            (400, [{'username': 's3a16', 'password': 'BulkPass1234', 'unknown': 1}]),
             (400, []),
         ]:
             with self.subTest(payload=payload):
                 self.error(status, 'POST', '/api/users/bulk', {'students': payload}, self.teacher)
                 self.assertEqual(students(), 5)
+
+    def test_bulk_import_without_names_keeps_seat_and_orders_roster(self):
+        # 只有「學號、班內號、密碼」的名單：姓名省略時以學號作為顯示名稱。
+        rows = [{'username': f'p6-{i:02d}', 'password': 'NoNamePass12', 'seat': str(i)} for i in (3, 1, 2)]
+        result = self.call('POST', '/api/users/bulk', {'students': rows}, self.teacher)
+        self.assertEqual(result['count'], 3)
+        self.assertEqual([u['name'] for u in result['users']], ['p6-03', 'p6-01', 'p6-02'])
+        self.assertEqual([u['seat'] for u in result['users']], ['3', '1', '2'])
+        self.assertEqual([u['role'] for u in result['users']], ['student'] * 3)
+        # 班內號依數字排序，沒有班內號的帳戶排在最後（舊資料相容）。
+        listing = self.call('GET', '/api/homework', user=self.teacher)['students']
+        self.assertEqual([s['seat'] for s in listing[:3]], ['1', '2', '3'])
+        self.assertTrue(all(s['seat'] is None for s in listing[3:]))
+        self.assertEqual([s['name'] for s in listing[:3]], ['p6-01', 'p6-02', 'p6-03'])
+        # 沒帶班內號也能建立，而且可以正常登入。
+        created = self.call('POST', '/api/users/bulk', {'students': [
+            {'username': 'p6-09', 'password': 'NoNamePass12'}]}, self.teacher)
+        self.assertIsNone(created['users'][0]['seat'])
+        with self.app.db() as db:
+            stored = db.execute("SELECT name,password FROM users WHERE username='p6-09'").fetchone()
+        self.assertEqual(stored['name'], 'p6-09')
+        self.assertTrue(server.password_matches('NoNamePass12', stored['password']))
+        # 建立班級後，作業成績名單也帶上班內號。
+        ids = [u['id'] for u in self.call('GET', '/api/users', user=self.teacher)['users']
+               if u['username'].startswith('p6-')]
+        cid = self.call('POST', '/api/classes', {'name': '六甲', 'studentIds': ids},
+                        self.teacher)['class']['id']
+        aid = self.assignment((1,), classId=cid)
+        roster = self.call('GET', f'/api/assignments/{aid}/results', user=self.teacher)['students']
+        self.assertEqual([s['seat'] for s in roster], ['1', '2', '3', None])
+        self.assertEqual([s['name'] for s in roster][:3], ['p6-01', 'p6-02', 'p6-03'])
 
     def test_assignment_kind_validation_and_payload(self):
         base = {'title': '作業', 'classId': self.cid, 'questionIds': [1], 'dueAt': '2099-01-01T00:00:00Z'}

@@ -155,3 +155,8 @@ html[data-fs="large"]{--fs:1.12}html[data-fs="xlarge"]{--fs:1.25}.font-scale-wra
   .practice-setup,.panel-pad{padding:18px 16px}
   .practice-setup-actions .primary,.practice-setup-actions .secondary{flex:1 1 100%}
 }
+
+/* ── 學生名單：班內號標籤與批次匯入預覽表 ── */
+.seat-badge{display:inline-block;min-width:calc(24px*var(--fs));text-align:center;border-radius:5px;
+  background:#eef3ef;color:#3d5a4d;font-size:calc(12px*var(--fs));padding:1px 6px;margin-right:7px;vertical-align:middle}
+.bulk-table th,.bulk-table td{padding:9px 12px}

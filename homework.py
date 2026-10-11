@@ -353,9 +353,11 @@ class Homework:
         aid = assignment['id']
         questions = self.questions(db, aid)
         rows = self.latest(db, aid)
-        recipients = db.execute('SELECT u.id,u.name,u.username,r.submitted_at,r.late '
+        recipients = db.execute('SELECT u.id,u.name,u.username,u.seat,r.submitted_at,r.late '
                                 'FROM assignment_recipients r JOIN users u ON u.id=r.user_id '
-                                'WHERE r.assignment_id=? ORDER BY u.name,u.id', (aid,)).fetchall()
+                                'WHERE r.assignment_id=? ORDER BY '
+                                "CASE WHEN u.seat IS NULL OR trim(u.seat)='' THEN 1 ELSE 0 END, "
+                                'CAST(u.seat AS INTEGER), u.seat, u.name, u.id', (aid,)).fetchall()
         students, complete, confirmed, corrections = [], [], [], 0
         for recipient in recipients:
             own = [r for r in rows if r['user_id'] == recipient['id']]
@@ -370,6 +372,7 @@ class Homework:
                 if sums['confirmedCount'] == len(questions):
                     confirmed.append(sums['confirmedScore'])
             students.append({'id': recipient['id'], 'name': recipient['name'], 'username': recipient['username'],
+                             'seat': recipient['seat'],
                              **submission, 'answeredCount': len(own), 'pendingCount': sums['pendingCount'],
                              'score': sums['score'], 'totalPoints': sum(q['points'] for q in questions),
                              'scoredPoints': sums['totalScoredPoints'], 'confirmedScore': sums['confirmedScore'],
@@ -576,7 +579,10 @@ class Homework:
                 result = {'classes': [self.class_public(db, r, user) for r in classes],
                           'assignments': [self.assignment_public(db, r, user) for r in assignments], 'ai': self.app.ai.public()}
                 if user['role'] == 'teacher':
-                    result['students'] = [dict(r) for r in db.execute("SELECT id,name,username FROM users WHERE role='student' ORDER BY name,id")]
+                    result['students'] = [dict(r) for r in db.execute(
+                        "SELECT id,name,username,seat FROM users WHERE role='student' "
+                        "ORDER BY CASE WHEN seat IS NULL OR trim(seat)='' THEN 1 ELSE 0 END, "
+                        "CAST(seat AS INTEGER), seat, name, id")]
             return result
         if method == 'GET' and path == '/api/calendar':
             with self.app.db() as db:
@@ -757,14 +763,16 @@ class Homework:
                 assignment = self.get_assignment(db, aid, user)
                 questions = [self.app.question_public(q, user) for q in self.questions(db, aid)]
                 if user['role'] == 'teacher':
-                    rows = db.execute('SELECT a.*,u.name AS student_name,u.username AS student_username FROM attempts a '
+                    rows = db.execute('SELECT a.*,u.name AS student_name,u.username AS student_username,'
+                                      'u.seat AS student_seat FROM attempts a '
                                       'JOIN users u ON u.id=a.user_id WHERE a.assignment_id=? ORDER BY a.id DESC', (aid,)).fetchall()
                 else:
                     rows = db.execute('SELECT * FROM attempts WHERE assignment_id=? AND user_id=? ORDER BY id DESC', (aid, user['id'])).fetchall()
                 attempts = [self.app.attempt_public(db, r, user) for r in rows]
                 if user['role'] == 'teacher':
                     for attempt, row in zip(attempts, rows):
-                        attempt['student'] = {'id': row['user_id'], 'name': row['student_name'], 'username': row['student_username']}
+                        attempt['student'] = {'id': row['user_id'], 'name': row['student_name'],
+                                              'username': row['student_username'], 'seat': row['student_seat']}
                 result = {'assignment': self.assignment_public(db, assignment, user, True), 'questions': questions,
                           'attempts': attempts, 'report': None}
                 if user['role'] == 'student':

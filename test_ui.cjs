@@ -24,7 +24,7 @@ const HANDWRITING=makePng(400,300);
   const advice={source:'rules',strength:'本次一元二次方程已評分：6/6分。',focus:'推導步驟尚未批閱。',nextStep:'再做同知識點相似題。',recommended:[],notice:'測試資料，非真實成績。'};
   const assignment={id:1,title:'二次方程鞏固作業',classId:1,className:'中三甲班',questionCount:1,totalPoints:6,studentCount:2,submittedCount:0,gradedCount:0,dueAt:'2099-01-01T15:59:00Z',myStatus:'not_started',myScore:null,myConfirmedScore:null};
   const quizAssignment={id:2,title:'一元二次方程模擬測驗',kind:'quiz',durationMinutes:30,classId:1,className:'中三甲班',questionCount:1,totalPoints:6,studentCount:2,submittedCount:0,gradedCount:0,dueAt:'2099-01-01T15:59:00Z',myStatus:'not_started',myScore:null,myConfirmedScore:null};
-  const student={id:1,name:'介面測試學生',username:'student',status:'not_started',answeredCount:0,pendingCount:0,score:null,totalPoints:6,scoredPoints:0,confirmedScore:null,confirmedCount:0,aiScore:null,ruleScore:null,suggestion:advice};
+  const student={id:1,name:'介面測試學生',username:'student',seat:'1',status:'not_started',answeredCount:0,pendingCount:0,score:null,totalPoints:6,scoredPoints:0,confirmedScore:null,confirmedCount:0,aiScore:null,ruleScore:null,suggestion:advice};
   const stamp='2026-10-08T08:00:00Z';
   const graded=(id,questionId,topic,score,maxScore)=>({id,questionId,questionTitle:'測試題',topic,score,maxScore,status:'graded',feedback:'規則評分。',submittedAt:stamp,answerText:'x=2或3',gradingMethod:'rule-final',steps:[],teacherReviewed:false});
   const handwritten={id:9,questionId:1,questionTitle:'因式分解解二次方程',topic:'一元二次方程',score:null,maxScore:6,status:'pending',feedback:'手寫圖片尚未批閱，等待教師評分。',submittedAt:stamp,answerText:'',gradingMethod:'pending-teacher',steps:[],teacherReviewed:false,image:'/api/attempts/9/image',student:{id:1,name:'介面測試學生',username:'student'},suggestion:advice};
@@ -36,7 +36,7 @@ const HANDWRITING=makePng(400,300);
   const mockExam=()=>({id:7,topic:mockStarted&&mockStarted.topic||'幾何',level:null,qtype:'解答題',minutes:mockStarted?mockStarted.minutes:15,questionCount:1,createdAt:stamp,startedAt:stamp,expiresAt:stamp,submittedAt:mockState&&mockState.submitted?stamp:null,expired:false,status:mockState&&mockState.submitted?'submitted':'in_progress',remainingSeconds:mockState&&mockState.submitted?0:(mockStarted?mockStarted.minutes*60:900)});
   const mockReport=()=>({score:5,maxScore:5,percent:100,totalScoredPoints:5,pendingCount:0,confirmedScore:null,confirmedCount:0,aiScore:null,ruleScore:5,topicStats:[{topic:'幾何',scoredCount:1,totalCount:1,score:5,maxScore:5,percent:100}],suggestion:advice,answeredCount:1});
   let quizStarted=false,quizSubmitted=false,quizStartSeen=0,durationSent=null;
-  let reviewSent=null,aiReviewSent=null;
+  let reviewSent=null,aiReviewSent=null,bulkSent=null;
   const quizReport=()=>({score:quizSubmitted?6:null,maxScore:6,totalScoredPoints:quizSubmitted?6:0,pendingCount:0,confirmedScore:null,confirmedCount:0,gradedCount:quizSubmitted?1:0,questionCount:1,percent:quizSubmitted?100:null,aiScore:null,ruleScore:quizSubmitted?6:null,topicStats:[],suggestion:advice});
   const quizSub=()=>({status:quizSubmitted?'submitted':'not_started',submittedAt:quizSubmitted?stamp:null,resubmittedAt:null,submitCount:quizSubmitted?1:0,late:false,correction:null,startedAt:quizStarted?stamp:null,expiresAt:quizStarted?'2099-01-01T00:30:00Z':null,remainingSeconds:quizStarted?1800:null,timeUsedSeconds:quizStarted?0:null,expired:false});
   const AI_ISSUE={x:0.3,y:0.4,label:'符號錯誤',comment:'這裡應為負號'};
@@ -100,8 +100,8 @@ const HANDWRITING=makePng(400,300);
     else if(url.pathname==='/api/assignments/2')data={assignment:quizAssignment,questions:[q],attempts:quizStarted?[graded(21,1,'一元二次方程',6,6)]:[],mySubmission:quizSub(),report:quizReport()};
     else if(url.pathname==='/api/assignments'&&route.request().method()==='POST'){durationSent=route.request().postDataJSON();return route.fulfill({json:{assignment:quizAssignment}});}
     else if(url.pathname==='/api/questions/import'){importedQuestions=route.request().postDataJSON().questions;return route.fulfill({json:{count:importedQuestions.length}});}
-    else if(url.pathname==='/api/users')data={users:[{id:1,username:'student',name:'介面測試學生',role:'student'}]};
-    else if(url.pathname==='/api/users/bulk')data={count:2,users:[{id:5,username:'s3a01',name:'陳大文',role:'student'},{id:6,username:'s3a02',name:'李小美',role:'student'}]};
+    else if(url.pathname==='/api/users')data={users:[{id:1,username:'student',name:'介面測試學生',role:'student',seat:'1'}]};
+    else if(url.pathname==='/api/users/bulk'){bulkSent=route.request().postDataJSON();return route.fulfill({json:{count:bulkSent.students.length,users:bulkSent.students.map((st,i)=>({id:5+i,username:st.username,name:st.name||st.username,role:'student',seat:st.seat||null}))}});}
     else if(url.pathname==='/api/classes')data={class:{id:2,name:route.request().postDataJSON().name,studentCount:2,studentIds:[5,6]}};
     else if(url.pathname==='/api/questions/1/recommendations')data={similar:[],advanced:[]};
     else if(url.pathname==='/api/assignments/1/return'){returned=route.request().postDataJSON();correction={round:1,note:returned.note,requestedAt:stamp,questionIds:returned.questionIds,minAttemptId:9};return route.fulfill({json:{correction,report:{score:6,maxScore:6,totalScoredPoints:6,pendingCount:0,confirmedScore:null,confirmedCount:0,topicStats:[],suggestion:advice}}});}
@@ -521,6 +521,47 @@ const HANDWRITING=makePng(400,300);
   await page.locator('#bulk-submit').click();await page.locator('#bulk-result .code-block').waitFor();
   const result=await page.locator('#bulk-result').innerText();
   assert.match(result,/已建立 2 個帳戶/);assert.match(result,/s3a01/);assert.match(result,/密碼只會顯示這一次/);assert.match(result,/已同時建立班級「中三甲班」/);
+  assert.deepEqual(bulkSent.students.map(x=>x.username),['s3a01','s3a02'],'批次匯入應送出學號');
+  assert.deepEqual(bulkSent.students.map(x=>x.name),['陳大文','李小美'],'姓名應一併送出');
+
+  // ── 只有學號、班內號、密碼（不匯入名字）──
+  await page.locator('#bulk-order').selectOption('username_seat_password');
+  await page.locator('#bulk-students').fill('s3a11,11,MathPass1234\ns3a12,12,MathPass1234\ns3a13,13');
+  assert.equal(await page.locator('#bulk-error').innerText(),'','學號,班內號,密碼 不應有格式錯誤');
+  const preview=await page.locator('#bulk-preview').innerText();
+  assert.match(preview,/將建立 3 個帳戶/);
+  assert.match(preview,/學號 · 班內號 · 密碼/);
+  assert.match(preview,/3 個未填姓名（以學號顯示）/);
+  assert.match(preview,/1 個自動產生密碼/);
+  const previewRows=await page.locator('#bulk-preview-table tbody tr').allInnerTexts();
+  assert.equal(previewRows.length,3,'預覽表應列出三列');
+  assert.match(previewRows[0].replace(/\s+/g,' '),/s3a11 11 s3a11 已填/,'有班內號且未填姓名時，顯示名稱用學號');
+  assert.match(previewRows[2].replace(/\s+/g,' '),/s3a13 13 s3a13 自動產生/);
+  await page.screenshot({path:path.join(__dirname,'..','MathPath-學號班內號匯入.png'),fullPage:true});
+  // 班內號格式錯誤要擋下來
+  await page.locator('#bulk-students').fill('s3a41,四號,MathPass1234');
+  assert.match(await page.locator('#bulk-error').innerText(),/班內號/);
+  // 標題列會自動辨識欄位（自動判斷）
+  await page.locator('#bulk-order').selectOption('auto');
+  await page.locator('#bulk-students').fill('學號,班內號,密碼\ns3a21,21,MathPass1234\ns3a22,22');
+  assert.equal(await page.locator('#bulk-error').innerText(),'','標題列應被辨識並略過');
+  assert.match(await page.locator('#bulk-preview').innerText(),/將建立 2 個帳戶/);
+  // 沒有標題列也要能自動判斷出 學號,班內號,密碼
+  await page.locator('#bulk-students').fill('s3a31,31,MathPass1234');
+  assert.equal(await page.locator('#bulk-error').innerText(),'','三欄英數格式應自動判斷為學號,班內號,密碼');
+  assert.match(await page.locator('#bulk-preview').innerText(),/學號 · 班內號 · 密碼/);
+  // 實際送出：班內號要帶上，姓名留空由伺服器以學號補上
+  await page.locator('#bulk-order').selectOption('username_seat_password');
+  await page.locator('#bulk-students').fill('s3a11,11,MathPass1234\ns3a12,12');
+  await page.locator('#bulk-submit').click();
+  await page.waitForFunction(()=>document.querySelector('#bulk-result').innerText.includes('已建立 2 個帳戶'));
+  assert.deepEqual(bulkSent.students.map(x=>x.username),['s3a11','s3a12']);
+  assert.deepEqual(bulkSent.students.map(x=>x.seat),['11','12'],'班內號應一併送出');
+  assert.deepEqual(bulkSent.students.map(x=>x.name),['',''],'姓名留空時送空字串，由伺服器以學號補上');
+  const seatResult=await page.locator('#bulk-result').innerText();
+  assert.match(seatResult,/2 個未填姓名，以學號顯示/);
+  assert.match(seatResult,/學號\s+班內號\s+密碼/,'複製文字應含班內號欄');
+  assert.match(seatResult,/s3a11\s+11/);
 
   await page.locator('[data-action=close-modal]').click();
 
@@ -916,5 +957,5 @@ const HANDWRITING=makePng(400,300);
   await page.screenshot({path:path.join(__dirname,'..','MathPath-自主練習範圍.png'),fullPage:true});
 
   assert.deepEqual(errors,[]);await browser.close();
-  console.log('PASS: answer modes (choice = click-only with single option list, fill-in = handwriting/text with math keyboard + always-visible rendered preview), AI grading policy (self-practice = AI instant score recorded without teacher review, no student use-ai toggle; teacher checkbox on assign, student read-only hint, external consent; homework/quiz scores, AI results, solution and advice hidden until the teacher reviews), self-practice range picker (chapter + sub-chapter + question type, linked options, auto-widening, change-range keeps filters), teacher review with optional feedback, one-click AI review of a whole assignment (only for AI-enabled assignments), teacher sidebar without self-practice, calendar lower panel (centred divider label, panel content never flush to the card border, no horizontal overflow at 4 widths x 3 font scales), font scale switch (guest, persisted, 3 levels, no mobile overflow), login page (role cards, remember checked, remembered account), calendar (marks + entry from homework), question type (card badge, filter, draft qtype, rule analysis), full-auto split+import, homework, draft save/reload/restore, logout cleanup, weak-topic drill-down, results filters, CSV export, teacher annotation (pen/ellipse/arrow/highlight/undo/clear/save), AI suggested annotation with student read-back and teacher drag-to-adjust saved positions, correction loop (teacher return with note, student banner, pending guard, resubmit), self-serve mock exam (setup, countdown, per-question answer with mockId, submit + instant score + advice), AI endpoint page (test/save, key never read back), bulk account parse/errors/create, mobile layout, no JS errors. Fixture API only; no server started.');
+  console.log('PASS: answer modes (choice = click-only with single option list, fill-in = handwriting/text with math keyboard + always-visible rendered preview), AI grading policy (self-practice = AI instant score recorded without teacher review, no student use-ai toggle; teacher checkbox on assign, student read-only hint, external consent; homework/quiz scores, AI results, solution and advice hidden until the teacher reviews), self-practice range picker (chapter + sub-chapter + question type, linked options, auto-widening, change-range keeps filters), teacher review with optional feedback, one-click AI review of a whole assignment (only for AI-enabled assignments), teacher sidebar without self-practice, calendar lower panel (centred divider label, panel content never flush to the card border, no horizontal overflow at 4 widths x 3 font scales), font scale switch (guest, persisted, 3 levels, no mobile overflow), login page (role cards, remember checked, remembered account), calendar (marks + entry from homework), question type (card badge, filter, draft qtype, rule analysis), full-auto split+import, homework, draft save/reload/restore, logout cleanup, weak-topic drill-down, results filters, CSV export, teacher annotation (pen/ellipse/arrow/highlight/undo/clear/save), AI suggested annotation with student read-back and teacher drag-to-adjust saved positions, correction loop (teacher return with note, student banner, pending guard, resubmit), self-serve mock exam (setup, countdown, per-question answer with mockId, submit + instant score + advice), AI endpoint page (test/save, key never read back), bulk student import (column-order auto-detect + header row, student id only with seat number and no name, generated passwords, per-line errors, class creation), mobile layout, no JS errors. Fixture API only; no server started.');
 })().catch(e=>{console.error(e);process.exit(1)});

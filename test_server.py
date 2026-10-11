@@ -684,14 +684,15 @@ class APITests(unittest.TestCase):
             self.request('POST', '/api/users', body, cookie=cookie, expect=status)
         _, result, _ = self.request('POST', '/api/users', body, cookie=self.teacher, expect=200)
         created = result['user']
-        self.assertEqual(created, {'id': 3, 'username': body['username'], 'name': body['name'], 'role': 'student'})
+        self.assertEqual(created, {'id': 3, 'username': body['username'], 'name': body['name'],
+                                   'role': 'student', 'seat': None})
         self.request('POST', '/api/users', body, cookie=self.teacher, expect=409)
         self.request('POST', '/api/users', dict(body, username='student'), cookie=self.teacher, expect=409)
         _, listing, _ = self.request('GET', '/api/users', cookie=self.teacher, expect=200)
         self.assertEqual(set(listing), {'users'})
         self.assertEqual(listing['users'][-1], created)
         for user in listing['users']:
-            self.assertEqual(set(user), {'id', 'username', 'name', 'role'})
+            self.assertEqual(set(user), {'id', 'username', 'name', 'role', 'seat'})
         with self.app.db() as db:
             row = db.execute('SELECT * FROM users WHERE id=?', (created['id'],)).fetchone()
             self.assertEqual(row['demo'], 0)
@@ -703,7 +704,7 @@ class APITests(unittest.TestCase):
         self.request('POST', '/api/login', {'username': body['username'], 'password': 'WrongPass123!'}, expect=401)
         cookie = self.login(body['username'], body['password'])
         _, session, _ = self.request('GET', '/api/session', cookie=cookie, expect=200)
-        self.assertEqual(session['user'], {k: created[k] for k in ('id', 'name', 'role')})
+        self.assertEqual(session['user'], {k: created[k] for k in ('id', 'name', 'role', 'seat')})
         self.assertEqual(session['notice'], '')
         self.request('GET', '/api/users', cookie=cookie, expect=403)
         self.request('POST', '/api/users', dict(body, username='forbidden'), cookie=cookie, expect=403)
@@ -719,11 +720,12 @@ class APITests(unittest.TestCase):
         invalid = [dict(body, username=value) for value in (
             'ab', 'a' * 41, '學生123', 'ＡＢＣ', 'abc def', ' abc', 'abc ', 'abc/def', 'abc\\def',
             "abc' OR 1=1", '', None, 123, 'abc\x00')]
-        invalid += [dict(body, name=value) for value in ('', ' ', '名' * 61, None, [], '名\x00')]
+        invalid += [dict(body, name=value) for value in ('名' * 61, [], '名\x00')]
         invalid += [dict(body, password=value) for value in ('short1234', 'x' * 257, ' ' * 10, None, [], 'pass\x00word123')]
+        invalid += [dict(body, seat=value) for value in ('x' * 21, '三號', '3 號', '3/4', [], 'a\x00')]
         invalid += [dict(body, role=role) for role in ('teacher', 'student', 'admin', None)]
         invalid += [dict(body, id=99), dict(body, demo=1), dict(body, unknown=True),
-                    dict(body, password_hash='fake'), {k: v for k, v in body.items() if k != 'name'}]
+                    dict(body, password_hash='fake')]
         for candidate in invalid:
             with self.subTest(candidate=candidate):
                 self.request('POST', '/api/users', candidate, cookie=self.teacher, expect=400)
@@ -735,6 +737,18 @@ class APITests(unittest.TestCase):
             cookie = self.login(candidate['username'], candidate['password'])
             _, session, _ = self.request('GET', '/api/session', cookie=cookie, expect=200)
             self.assertEqual(session['user']['id'], 3 + i)
+        # 姓名與班內號都可省略：只有學號的名單會以學號作為顯示名稱。
+        _, minimal, _ = self.request('POST', '/api/users',
+                                     {'username': 'only-id-01', 'password': 'OnlyIdPass12'},
+                                     cookie=self.teacher, expect=200)
+        self.assertEqual(minimal['user']['name'], 'only-id-01')
+        self.assertIsNone(minimal['user']['seat'])
+        _, named, _ = self.request('POST', '/api/users',
+                                   {'username': 'only-id-02', 'password': 'OnlyIdPass12', 'name': '   ',
+                                    'seat': ' 07 '}, cookie=self.teacher, expect=200)
+        self.assertEqual(named['user']['name'], 'only-id-02')
+        self.assertEqual(named['user']['seat'], '07')
+        self.login('only-id-02', 'OnlyIdPass12')
 
     def test_users_same_origin_and_concurrent_unique_conflict(self):
         body = {'username': 'unique-user', 'name': '學生', 'password': 'UniquePass123!'}
