@@ -25,8 +25,8 @@ from urllib.parse import urlsplit
 from urllib.request import HTTPHandler, HTTPSHandler, ProxyHandler, Request, build_opener
 
 MAX_OBJECT = 12 * 1024 * 1024
-ALLOWED_MIME = ('image/png', 'image/jpeg')
-EXTENSIONS = {'image/png': 'png', 'image/jpeg': 'jpg'}
+ALLOWED_MIME = ('image/png', 'image/jpeg', 'image/webp')
+EXTENSIONS = {'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp'}
 
 
 class StorageError(Exception):
@@ -105,12 +105,17 @@ class Storage:
 
     @staticmethod
     def mime_from_key(key):
-        return 'image/jpeg' if key.lower().endswith(('.jpg', '.jpeg')) else 'image/png'
+        lowered = key.lower()
+        if lowered.endswith(('.jpg', '.jpeg')):
+            return 'image/jpeg'
+        if lowered.endswith('.webp'):
+            return 'image/webp'
+        return 'image/png'
 
     # ---------- 寫入 / 讀取 ----------
     def put(self, folder, data, mime):
         if mime not in ALLOWED_MIME:
-            self.fail(400, '只接受 PNG 或 JPEG 圖片。')
+            self.fail(400, '只接受 PNG、JPEG 或 WebP 圖片。')
         if len(data) > MAX_OBJECT:
             self.fail(400, '檔案過大。')
         key = self.new_key(folder, mime)

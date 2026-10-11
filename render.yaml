@@ -8,6 +8,26 @@ services:
     buildCommand: pip install -r requirements.txt
     startCommand: python -u server.py --host 0.0.0.0 --port $PORT
     healthCheckPath: /api/health
+    # --- 資料保存（重要）---
+    # Render 免費版的檔案系統是「暫時性」的：重新部署或重啟就清空，
+    # 而且免費方案**不支援**持久磁碟。也就是說免費版上的題庫、學生帳號與作答，
+    # 每次 push 觸發部署後都會消失（回到 2 個演示帳號 + 16 題種子題）。
+    #
+    # 要真的保存資料，兩種做法（見 deployment-cloud.md 的說明）：
+    #
+    # 做法 1（推薦，最省）：把圖片放 Cloudflare R2（填上面 4 個 R2_* 變數即可），
+    #   資料庫就會一直很小；再把整個 data/ 目錄定期用「設定與隱私 → 資料管理」
+    #   的「下載完整資料庫備份」帶回本機保存。
+    #
+    # 做法 2：升級到付費實例（Starter 以上）後，把下面 3 行的註解拿掉再 push。
+    #   掛載路徑必須是 data/ 的絕對路徑；Render 的 Python 服務原始碼在
+    #   /opt/render/project/src，所以資料庫會落在該目錄下的 data/。
+    #   注意：掛了磁碟之後重新部署會有數秒停機，且該服務不能同時跑多個實例。
+    #
+    # disk:
+    #   name: mathpath-data
+    #   mountPath: /opt/render/project/src/data
+    #   sizeGB: 10
     envVars:
       - key: PYTHON_VERSION
         value: "3.13"

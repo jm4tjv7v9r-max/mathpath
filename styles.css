@@ -160,3 +160,20 @@ html[data-fs="large"]{--fs:1.12}html[data-fs="xlarge"]{--fs:1.25}.font-scale-wra
 .seat-badge{display:inline-block;min-width:calc(24px*var(--fs));text-align:center;border-radius:5px;
   background:#eef3ef;color:#3d5a4d;font-size:calc(12px*var(--fs));padding:1px 6px;margin-right:7px;vertical-align:middle}
 .bulk-table th,.bulk-table td{padding:9px 12px}
+
+/* ── 設定：資料管理與學年重置 ── */
+.admin-actions{display:flex;flex-wrap:wrap;gap:10px;margin:16px 0 6px}
+.admin-actions .secondary,.admin-actions .text-button{font-size:calc(14px*var(--fs))}
+.admin-actions .secondary{padding:10px 14px}
+.danger-zone{margin-top:24px;border:1px solid #eccfc7;background:#fff7f4;border-radius:10px;padding:20px 22px}
+.danger-zone h3{margin:0 0 10px;font-size:calc(16px*var(--fs));color:#a4513c;display:flex;gap:8px;align-items:center}
+.danger-zone p{font-size:calc(14px*var(--fs));line-height:1.9;color:#7d6a62;margin:0 0 8px}
+.danger-zone .form-field{margin:14px 0 6px}
+button.danger{border:1px solid #c76a52;background:#c76a52;color:#fff;display:inline-flex;gap:8px;
+  align-items:center;justify-content:center;padding:11px 18px;border-radius:8px;font-size:calc(14px*var(--fs))}
+button.danger:hover{background:#a4513c}
+button.danger:disabled{opacity:.6}
+@media (max-width:640px){
+  .admin-actions .secondary{flex:1 1 100%}
+  .danger-zone{padding:16px}
+}

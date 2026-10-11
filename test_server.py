@@ -1,5 +1,6 @@
 """标准库 API 回归测试：所有服务器和 data 均位于临时目录及回环地址。"""
 import base64
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 import http.client
 import io
@@ -1648,6 +1649,46 @@ class PureTests(unittest.TestCase):
             worker.join(timeout=3)
         self.assertIsNone(server.NoRedirect().redirect_request(None, None, 302, None, None, 'https://untrusted.invalid'))
 
+    def test_webp_image_validation(self):
+        """WebP 是手寫圖的預設格式（比 PNG 小約三成）；驗證要能接受三種編碼並擋下壞檔。"""
+
+        def riff(*chunks):
+            body = b'WEBP' + b''.join(chunks)
+            return b'RIFF' + struct.pack('<I', len(body)) + body
+
+        def chunk(fourcc, payload):
+            return fourcc + struct.pack('<I', len(payload)) + payload + (b'\x00' if len(payload) % 2 else b'')
+
+        def data_url(raw, mime='image/webp'):
+            return 'data:%s;base64,%s' % (mime, base64.b64encode(raw).decode())
+
+        bits = (800 - 1) | ((600 - 1) << 14)
+        lossless = riff(chunk(b'VP8L', b'\x2f' + struct.pack('<I', bits)))
+        simple = riff(chunk(b'VP8 ', b'\x00\x00\x00\x9d\x01\x2a' + struct.pack('<HH', 640, 480)))
+        extended = riff(chunk(b'VP8X', b'\x00' * 4 + (1200 - 1).to_bytes(3, 'little')
+                             + (700 - 1).to_bytes(3, 'little')))
+        self.assertEqual(server.webp_size(lossless), (800, 600))
+        self.assertEqual(server.webp_size(simple), (640, 480))
+        self.assertEqual(server.webp_size(extended), (1200, 700))
+        for raw in (lossless, simple, extended):
+            data, mime = server.validate_image(data_url(raw))
+            self.assertEqual(mime, 'image/webp')
+            self.assertEqual(data, raw)
+        # 壞檔一律拒絕：RIFF 長度不符、截斷、把 PNG 標成 WebP、超過像素上限。
+        broken = bytearray(extended)
+        broken[4:8] = struct.pack('<I', 999_999)
+        huge = riff(chunk(b'VP8X', b'\x00' * 4 + (20000 - 1).to_bytes(3, 'little')
+                          + (20000 - 1).to_bytes(3, 'little')))
+        for raw in (bytes(broken), extended[:24], b'', huge):
+            with self.subTest(raw=raw[:16]):
+                with self.assertRaises(server.APIError):
+                    server.validate_image(data_url(raw))
+        with self.assertRaises(server.APIError):
+            server.validate_image(data_url(lossless, 'image/png'))
+        # 題目圖形也接受 WebP。
+        data, mime = server.decode_figure(data_url(extended))
+        self.assertEqual((len(data), mime), (len(extended), 'image/webp'))
+
     def test_ai_configuration_requires_https_external(self):
         for base in ('http://192.168.1.2/v1', 'http://external.invalid/v1', 'https://user:pass@external.invalid/v1',
                      'file:///tmp/model', 'https://external.invalid/v1?key=secret'):
@@ -1658,6 +1699,212 @@ class PureTests(unittest.TestCase):
             self.assertEqual(server.AIClient().mode, 'external')
         with patch.dict('os.environ', {}, clear=True):
             self.assertEqual(server.AIClient().mode, 'off')
+
+
+class DataAdminTests(unittest.TestCase):
+    """資料管理：用量統計、資料庫備份、題庫／學生作業歸檔、VACUUM 與學年重置。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix='mathpath-admin-')
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.env = patch.dict('os.environ', {}, clear=True)
+        self.env.start()
+        self.addCleanup(self.env.stop)
+        self.app = server.Application(self.root / 'data', static_dir=self.root)
+        self.app.safe_initialize()
+        if self.app.init_error:
+            raise RuntimeError(f'初始化失敗：{self.app.init_error}')
+        self.httpd = server.MathServer(('127.0.0.1', 0), self.app)
+        self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+        self.thread.start()
+        self.addCleanup(self.stop)
+        self.origin = f'http://127.0.0.1:{self.httpd.server_port}'
+        self.student = self.login('student', 'Math1234!')
+        self.teacher = self.login('teacher', 'Teach1234!')
+
+    def stop(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+        self.thread.join(timeout=3)
+
+    def request(self, method, path, body=None, cookie=None, expect=None):
+        conn = http.client.HTTPConnection('127.0.0.1', self.httpd.server_port, timeout=30)
+        headers = {'Content-Type': 'application/json', 'Origin': self.origin}
+        if cookie:
+            headers['Cookie'] = cookie
+        data = json.dumps(body, ensure_ascii=False).encode() if body is not None else None
+        try:
+            conn.request(method, path, data, headers)
+            response = conn.getresponse()
+            payload = response.read()
+            content_type = response.getheader('Content-Type', '')
+            result = json.loads(payload) if content_type.startswith('application/json') else payload
+            status, head = response.status, dict(response.getheaders())
+        finally:
+            conn.close()
+        if expect is not None:
+            self.assertEqual(status, expect, result)
+        return status, result, head
+
+    def login(self, username, password):
+        _, body, headers = self.request('POST', '/api/login',
+                                        {'username': username, 'password': password}, expect=200)
+        return headers['Set-Cookie'].split(';', 1)[0]
+
+    def scenario(self):
+        """建立班級、作業與一筆帶手寫圖的作答，回傳 (classId, assignmentId, studentIds)。"""
+        created = self.request('POST', '/api/users/bulk', {'students': [
+            {'username': 'y7a01', 'password': 'ArchivePass12', 'seat': '1'},
+            {'username': 'y7a02', 'password': 'ArchivePass12', 'seat': '2'}]},
+            cookie=self.teacher, expect=200)[1]
+        ids = [u['id'] for u in created['users']]
+        cid = self.request('POST', '/api/classes', {'name': '七甲', 'studentIds': ids},
+                           cookie=self.teacher, expect=200)[1]['class']['id']
+        aid = self.request('POST', '/api/assignments', {
+            'title': '歸檔測試作業', 'classId': cid, 'questionIds': [1, 2],
+            'dueAt': '2099-01-01T00:00:00Z', 'aiGrading': False},
+            cookie=self.teacher, expect=200)[1]['assignment']['id']
+        cookie = self.login('y7a01', 'ArchivePass12')
+        self.request('POST', '/api/attempts',
+                     {'questionId': 1, 'answerText': 'x=2或3', 'assignmentId': aid,
+                      'image': png_url()}, cookie=cookie, expect=200)
+        return cid, aid, ids
+
+    def test_admin_endpoints_require_teacher(self):
+        cases = [('GET', '/api/admin/storage', None),
+                 ('POST', '/api/admin/vacuum', {}),
+                 ('POST', '/api/admin/reset/students', {'confirm': 'RESET'}),
+                 ('GET', '/api/admin/backup/db', None),
+                 ('GET', '/api/admin/archive/questions', None),
+                 ('GET', '/api/admin/archive/students', None)]
+        for method, path, body in cases:
+            with self.subTest(path=path, role='student'):
+                self.request(method, path, body, cookie=self.student, expect=403)
+            with self.subTest(path=path, role='anonymous'):
+                self.request(method, path, body, cookie=None, expect=401)
+        with self.app.db() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM users').fetchone()[0], 2)
+
+    def test_storage_stats_and_vacuum(self):
+        self.scenario()
+        _, stats, _ = self.request('GET', '/api/admin/storage', cookie=self.teacher, expect=200)
+        self.assertEqual(stats['counts']['questions'], 16)
+        self.assertEqual(stats['counts']['attempts'], 1)
+        self.assertEqual(stats['counts']['users'], 4)
+        self.assertEqual(stats['images']['handwriting'], 1)
+        self.assertGreater(stats['images']['inDatabaseBytes'], 0)
+        self.assertEqual(stats['images']['storageMode'], 'db')
+        self.assertIsNone(stats['lastStudentReset'])
+        self.assertTrue(stats['questionBankKeptAcrossYears'])
+        self.assertGreater(stats['database']['bytes'], 0)
+        _, vacuum, _ = self.request('POST', '/api/admin/vacuum', {}, cookie=self.teacher, expect=200)
+        self.assertGreaterEqual(vacuum['beforeBytes'], vacuum['afterBytes'])
+        self.assertGreaterEqual(vacuum['savedBytes'], 0)
+        self.assertTrue(vacuum['at'])
+
+    def test_question_archive_is_importable(self):
+        _, payload, headers = self.request('GET', '/api/admin/archive/questions',
+                                           cookie=self.teacher, expect=200)
+        self.assertIn('attachment', headers['Content-Disposition'])
+        # 題庫歸檔是 application/json，測試輔助會直接解析成 dict。
+        doc = payload if isinstance(payload, dict) else json.loads(payload)
+        self.assertEqual(doc['format'], 'mathpath-question-archive')
+        self.assertEqual(doc['count'], 16)
+        self.assertEqual(len(doc['questions']), 16)
+        # 題庫歸檔不含學生資料，且題目形狀與題庫匯入完全相容（可直接餵回去）。
+        self.assertNotIn('students', doc)
+        item = doc['questions'][0]
+        self.request('POST', '/api/questions/import', {'questions': [item]},
+                     cookie=self.teacher, expect=200)
+        with self.app.db() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM questions').fetchone()[0], 17)
+
+    def test_student_archive_jsonl_images_toggle_and_no_password(self):
+        self.scenario()
+        _, payload, _ = self.request('GET', '/api/admin/archive/students',
+                                     cookie=self.teacher, expect=200)
+        rows = [json.loads(line) for line in payload.decode().strip().split('\n')]
+        head, items = rows[0], rows[1:]
+        self.assertEqual(head['format'], 'mathpath-student-archive')
+        self.assertEqual(head['counts']['attempts'], 1)
+        kinds = Counter(row['type'] for row in items)
+        self.assertEqual(kinds['student'], 4)
+        self.assertEqual(kinds['class'], 1)
+        self.assertEqual(kinds['attempt'], 1)
+        self.assertEqual(kinds['assignmentRecipient'], 2)
+        # 學生帳號的密碼雜湊絕不外流。
+        self.assertFalse(any('password' in row for row in items))
+        student = next(row for row in items if row['type'] == 'student' and row['username'] == 'y7a01')
+        self.assertEqual(student['seat'], '1')
+        attempt = next(row for row in items if row['type'] == 'attempt')
+        self.assertEqual(attempt['answer_text'], 'x=2或3')
+        self.assertTrue(attempt['image'].startswith('data:image/'))
+        # images=0 只匯出文字，檔案明顯較小且不含圖。
+        _, text_only, _ = self.request('GET', '/api/admin/archive/students?images=0',
+                                       cookie=self.teacher, expect=200)
+        rows2 = [json.loads(line) for line in text_only.decode().strip().split('\n')]
+        self.assertFalse(any('image' in row for row in rows2[1:]))
+        self.assertLess(len(text_only), len(payload))
+
+    def test_database_backup_is_valid_snapshot(self):
+        self.scenario()
+        before = set(Path(tempfile.gettempdir()).glob('mathpath-backup-*'))
+        _, payload, headers = self.request('GET', '/api/admin/backup/db',
+                                           cookie=self.teacher, expect=200)
+        self.assertIn('.sqlite3', headers['Content-Disposition'])
+        self.assertEqual(int(headers['Content-Length']), len(payload))
+        self.assertTrue(payload.startswith(b'SQLite format 3\x00'))
+        snapshot = self.root / 'snapshot.sqlite3'
+        snapshot.write_bytes(payload)
+        db = sqlite3.connect(snapshot)
+        try:
+            self.assertEqual(db.execute('SELECT count(*) FROM questions').fetchone()[0], 16)
+            self.assertEqual(db.execute('SELECT count(*) FROM attempts').fetchone()[0], 1)
+            self.assertEqual(db.execute('SELECT count(*) FROM users').fetchone()[0], 4)
+        finally:
+            db.close()
+        # 匯出後暫存檔必須清乾淨，不在伺服器留檔。
+        # 伺服器是在回應送出後才刪除暫存目錄，因此這裡輪詢等待而非立即斷言。
+        for _ in range(50):
+            if set(Path(tempfile.gettempdir()).glob('mathpath-backup-*')) == before:
+                break
+            time.sleep(0.1)
+        self.assertEqual(set(Path(tempfile.gettempdir()).glob('mathpath-backup-*')), before)
+
+    def test_reset_requires_phrase_and_keeps_question_bank(self):
+        self.scenario()
+        for bad in ('', 'RESET NOW', '重置', 'reset me'):
+            with self.subTest(confirm=bad):
+                self.request('POST', '/api/admin/reset/students', {'confirm': bad},
+                             cookie=self.teacher, expect=400)
+        with self.app.db() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM attempts').fetchone()[0], 1)
+        # 確認字串不分大小寫，小寫也接受（避免手機自動大寫造成困擾）。
+        _, result, _ = self.request('POST', '/api/admin/reset/students', {'confirm': ' reset '},
+                                    cookie=self.teacher, expect=200)
+        self.assertEqual(result['removed']['students'], 2)
+        self.assertEqual(result['removed']['attempts'], 1)
+        self.assertEqual(result['removed']['assignments'], 1)
+        self.assertEqual(result['removed']['classes'], 1)
+        self.assertEqual(result['kept']['questions'], 16)
+        self.assertEqual(result['kept']['teachers'], 1)
+        self.assertIn('vacuum', result)
+        with self.app.db() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM questions').fetchone()[0], 16)
+            self.assertEqual(db.execute('SELECT count(*) FROM attempts').fetchone()[0], 0)
+            self.assertEqual(db.execute('SELECT count(*) FROM assignments').fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT count(*) FROM users WHERE role='student'").fetchone()[0], 1)
+            self.assertEqual(db.execute('SELECT count(*) FROM users').fetchone()[0], 2)
+            self.assertEqual(db.execute("SELECT value FROM meta WHERE key='last_student_reset'").fetchone()[0],
+                             result['at'])
+        # 舊學生帳號不能再用；教師帳號不受影響。
+        self.request('POST', '/api/login', {'username': 'y7a01', 'password': 'ArchivePass12'}, expect=401)
+        self.request('GET', '/api/admin/storage', cookie=self.teacher, expect=200)
+        # 題庫仍在，新的學生可以重新匯入名單。
+        self.request('POST', '/api/users/bulk', {'students': [
+            {'username': 'y8a01', 'password': 'NextYear1234', 'seat': '1'}]},
+            cookie=self.teacher, expect=200)
 
 
 if __name__ == '__main__':

@@ -36,7 +36,7 @@ const HANDWRITING=makePng(400,300);
   const mockExam=()=>({id:7,topic:mockStarted&&mockStarted.topic||'幾何',level:null,qtype:'解答題',minutes:mockStarted?mockStarted.minutes:15,questionCount:1,createdAt:stamp,startedAt:stamp,expiresAt:stamp,submittedAt:mockState&&mockState.submitted?stamp:null,expired:false,status:mockState&&mockState.submitted?'submitted':'in_progress',remainingSeconds:mockState&&mockState.submitted?0:(mockStarted?mockStarted.minutes*60:900)});
   const mockReport=()=>({score:5,maxScore:5,percent:100,totalScoredPoints:5,pendingCount:0,confirmedScore:null,confirmedCount:0,aiScore:null,ruleScore:5,topicStats:[{topic:'幾何',scoredCount:1,totalCount:1,score:5,maxScore:5,percent:100}],suggestion:advice,answeredCount:1});
   let quizStarted=false,quizSubmitted=false,quizStartSeen=0,durationSent=null;
-  let reviewSent=null,aiReviewSent=null,bulkSent=null;
+  let reviewSent=null,aiReviewSent=null,bulkSent=null,resetSent=null,vacuumCalled=0;
   const quizReport=()=>({score:quizSubmitted?6:null,maxScore:6,totalScoredPoints:quizSubmitted?6:0,pendingCount:0,confirmedScore:null,confirmedCount:0,gradedCount:quizSubmitted?1:0,questionCount:1,percent:quizSubmitted?100:null,aiScore:null,ruleScore:quizSubmitted?6:null,topicStats:[],suggestion:advice});
   const quizSub=()=>({status:quizSubmitted?'submitted':'not_started',submittedAt:quizSubmitted?stamp:null,resubmittedAt:null,submitCount:quizSubmitted?1:0,late:false,correction:null,startedAt:quizStarted?stamp:null,expiresAt:quizStarted?'2099-01-01T00:30:00Z':null,remainingSeconds:quizStarted?1800:null,timeUsedSeconds:quizStarted?0:null,expired:false});
   const AI_ISSUE={x:0.3,y:0.4,label:'符號錯誤',comment:'這裡應為負號'};
@@ -76,7 +76,7 @@ const HANDWRITING=makePng(400,300);
       aiReviewSent=route.request().postDataJSON();
       return route.fulfill({json:{reviewed:2,failed:0,skipped:0,remaining:0,errors:[]}});
     }
-    if(url.pathname==='/api/attempts/9/annotation'&&route.request().method()==='POST'){const sent=route.request().postDataJSON();assert.ok(sent.image.startsWith('data:image/png;base64,'),'批註必須以 PNG 儲存');assert.ok(sent.image.length>2000,'批註圖應包含手稿與筆跡');annotated=true;return route.fulfill({json:{attempt:attemptFixture()}});}
+    if(url.pathname==='/api/attempts/9/annotation'&&route.request().method()==='POST'){const sent=route.request().postDataJSON();assert.ok(/^data:image\/(png|webp);base64,/.test(sent.image),'批註圖必須是 PNG 或 WebP');assert.ok(sent.image.length>2000,'批註圖應包含手稿與筆跡');annotated=true;return route.fulfill({json:{attempt:attemptFixture()}});}
     const user=role?{id:role==='teacher'?2:1,name:role==='teacher'?'介面測試教師':'介面測試學生',role}:null;
     if(url.pathname==='/api/session')data={user};
     else if(url.pathname==='/api/login'){const sent=route.request().postDataJSON();role=sent.username;rememberSent=sent.remember;data={user:{id:role==='teacher'?2:1,name:'介面測試',role}};}
@@ -101,6 +101,9 @@ const HANDWRITING=makePng(400,300);
     else if(url.pathname==='/api/assignments'&&route.request().method()==='POST'){durationSent=route.request().postDataJSON();return route.fulfill({json:{assignment:quizAssignment}});}
     else if(url.pathname==='/api/questions/import'){importedQuestions=route.request().postDataJSON().questions;return route.fulfill({json:{count:importedQuestions.length}});}
     else if(url.pathname==='/api/users')data={users:[{id:1,username:'student',name:'介面測試學生',role:'student',seat:'1'}]};
+    else if(url.pathname==='/api/admin/storage')data={database:{bytes:15728640,reclaimableBytes:1048576,walBytes:32768},counts:{questions:3000,attempts:2500,users:100,classes:3,assignments:5,mock_exams:0,calendar_notes:0,sessions:12},images:{handwriting:1500,annotation:300,questionFigure:40,inDatabaseBytes:45088768,inObjectStorage:0,storageMode:'db'},lastStudentReset:null,questionBankKeptAcrossYears:true};
+    else if(url.pathname==='/api/admin/vacuum'){vacuumCalled+=1;return route.fulfill({json:{beforeBytes:15728640,afterBytes:10485760,savedBytes:5242880,at:stamp}});}
+    else if(url.pathname==='/api/admin/reset/students'){resetSent=route.request().postDataJSON();return route.fulfill({json:{removed:{students:100,attempts:2500,classes:3,assignments:5,sessions:12},at:stamp,kept:{questions:3000,teachers:1,notice:'題庫、教師帳號、內建演示帳號與日曆提醒都保留。'},vacuum:{beforeBytes:15728640,afterBytes:1048576,savedBytes:14680064,at:stamp}}});}
     else if(url.pathname==='/api/users/bulk'){bulkSent=route.request().postDataJSON();return route.fulfill({json:{count:bulkSent.students.length,users:bulkSent.students.map((st,i)=>({id:5+i,username:st.username,name:st.name||st.username,role:'student',seat:st.seat||null}))}});}
     else if(url.pathname==='/api/classes')data={class:{id:2,name:route.request().postDataJSON().name,studentCount:2,studentIds:[5,6]}};
     else if(url.pathname==='/api/questions/1/recommendations')data={similar:[],advanced:[]};
@@ -497,7 +500,7 @@ const HANDWRITING=makePng(400,300);
   await manualCard.locator('[data-rubric-percent]').first().fill('30');
   await page.waitForTimeout(200);
   assert.match(await manualCard.locator('[data-rubric-total]').innerText(), /總和 100%/, '修正後總和應為 100%');
-  assert.match(await page.locator('.draft-figure img').getAttribute('src'),/^data:image\/png;base64,/,'草稿應顯示手繪圖形');
+  assert.match(await page.locator('.draft-figure img').getAttribute('src'),/^data:image\/(png|webp);base64,/,'草稿應顯示手繪圖形（PNG 或 WebP）');
   await page.locator('#confirm-drafts').check();
   await page.locator('#save-drafts').click();
   await page.locator('.success-panel').waitFor();
@@ -506,7 +509,7 @@ const HANDWRITING=makePng(400,300);
   assert.ok(manualQ,'應包含手動輸入的題目');
   assert.equal(manualQ.title,'直角三角形求斜邊');
   assert.equal(manualQ.qtype,'解答題','手動輸入應帶題型');
-  assert.ok(manualQ.figure.startsWith('data:image/png;base64,'),'匯入必須帶題目圖形');
+  assert.ok(/^data:image\/(png|webp);base64,/.test(manualQ.figure),'匯入必須帶題目圖形（PNG 或 WebP）');
   await page.locator('[data-page=settings]').first().click();await page.locator('#manage-users').click();  await page.locator('#bulk-students').fill('陳大文,s3a01\n李小美,s3a02\n黃志強,s3\n壞行');
   assert.match(await page.locator('#bulk-preview').innerText(),/將建立 2 個帳戶/);
   assert.match(await page.locator('#bulk-error').innerText(),/第 3 行/);assert.match(await page.locator('#bulk-error').innerText(),/第 4 行/);
@@ -554,7 +557,8 @@ const HANDWRITING=makePng(400,300);
   await page.locator('#bulk-order').selectOption('username_seat_password');
   await page.locator('#bulk-students').fill('s3a11,11,MathPass1234\ns3a12,12');
   await page.locator('#bulk-submit').click();
-  await page.waitForFunction(()=>document.querySelector('#bulk-result').innerText.includes('已建立 2 個帳戶'));
+  // 等第二次匯入的結果（用學號辨識，避免讀到第一次的舊結果）
+  await page.waitForFunction(()=>document.querySelector('#bulk-result').innerText.includes('s3a11'));
   assert.deepEqual(bulkSent.students.map(x=>x.username),['s3a11','s3a12']);
   assert.deepEqual(bulkSent.students.map(x=>x.seat),['11','12'],'班內號應一併送出');
   assert.deepEqual(bulkSent.students.map(x=>x.name),['',''],'姓名留空時送空字串，由伺服器以學號補上');
@@ -564,6 +568,44 @@ const HANDWRITING=makePng(400,300);
   assert.match(seatResult,/s3a11\s+11/);
 
   await page.locator('[data-action=close-modal]').click();
+
+  // ── 設定與隱私：資料管理（教師專用）──
+  await page.waitForFunction(()=>{const el=document.querySelector('#admin-stats');return el&&/3000 題/.test(el.innerText);});
+  const adminText=await page.locator('#admin-stats').innerText();
+  assert.match(adminText,/題庫題目/);assert.match(adminText,/3000 題/);
+  assert.match(adminText,/作答紀錄/);assert.match(adminText,/2500 筆/);
+  assert.match(adminText,/15\.0 MB/,'資料庫大小應以可讀單位呈現');
+  assert.match(adminText,/跨學年保留/);
+  const downloads=await page.locator('[data-admin-download]').evaluateAll(els=>els.map(e=>e.dataset.adminDownload));
+  assert.deepEqual(downloads,['/api/admin/backup/db','/api/admin/archive/questions',
+    '/api/admin/archive/students','/api/admin/archive/students?images=0'],'應有四個下載入口');
+  const dangerText=await page.locator('.danger-zone').innerText();
+  assert.match(dangerText,/學生帳號、班級、作業、所有作答與手寫圖、模擬測驗、訂正紀錄/);
+  assert.match(dangerText,/題庫（3000 題）、教師帳號、內建演示帳號、日曆提醒/,'要明講題庫保留');
+  await page.locator('#admin-vacuum').click();
+  await page.waitForFunction(()=>document.querySelector('#toast').textContent.includes('已壓實'));
+  assert.equal(vacuumCalled,1,'壓實資料庫應呼叫一次');
+  // 未輸入確認字串不可重置
+  await page.locator('#admin-reset').click();
+  assert.match(await page.locator('#reset-error').innerText(),/RESET/);
+  assert.equal(resetSent,null,'未輸入確認字串時不應送出重置請求');
+  // 輸入 RESET 後才送出（會再跳一次確認對話框，測試已自動接受）
+  await page.locator('#reset-confirm').fill('reset');
+  await page.locator('#admin-reset').click();
+  for(let i=0;i<50&&!resetSent;i++)await page.waitForTimeout(100);
+  assert.deepEqual(resetSent,{confirm:'reset'},'重置應送出確認字串');
+  await page.waitForFunction(()=>document.querySelector('#toast').textContent.includes('學年重置完成'));
+  await page.screenshot({path:path.join(__dirname,'..','MathPath-資料管理.png'),fullPage:true});
+
+  // 學生看不到資料管理區塊
+  await page.locator('#account').click();await page.locator('#logout-btn').click();await page.waitForSelector('#homework-login');
+  await login('student');
+  await page.locator('[data-page=settings]').first().click();
+  await page.locator('.settings-layout').waitFor();
+  assert.equal(await page.locator('#admin-reset').count(),0,'學生不應看到學年重置');
+  assert.equal(await page.locator('[data-admin-download]').count(),0,'學生不應看到歸檔下載');
+  await page.locator('#account').click();await page.locator('#logout-btn').click();await page.waitForSelector('#homework-login');
+  await login('teacher');
 
   // 模型端點頁面：可隨時更換並測試，金鑰不回讀到瀏覽器。
   await page.locator('[data-page=ai]').first().click();
@@ -957,5 +999,5 @@ const HANDWRITING=makePng(400,300);
   await page.screenshot({path:path.join(__dirname,'..','MathPath-自主練習範圍.png'),fullPage:true});
 
   assert.deepEqual(errors,[]);await browser.close();
-  console.log('PASS: answer modes (choice = click-only with single option list, fill-in = handwriting/text with math keyboard + always-visible rendered preview), AI grading policy (self-practice = AI instant score recorded without teacher review, no student use-ai toggle; teacher checkbox on assign, student read-only hint, external consent; homework/quiz scores, AI results, solution and advice hidden until the teacher reviews), self-practice range picker (chapter + sub-chapter + question type, linked options, auto-widening, change-range keeps filters), teacher review with optional feedback, one-click AI review of a whole assignment (only for AI-enabled assignments), teacher sidebar without self-practice, calendar lower panel (centred divider label, panel content never flush to the card border, no horizontal overflow at 4 widths x 3 font scales), font scale switch (guest, persisted, 3 levels, no mobile overflow), login page (role cards, remember checked, remembered account), calendar (marks + entry from homework), question type (card badge, filter, draft qtype, rule analysis), full-auto split+import, homework, draft save/reload/restore, logout cleanup, weak-topic drill-down, results filters, CSV export, teacher annotation (pen/ellipse/arrow/highlight/undo/clear/save), AI suggested annotation with student read-back and teacher drag-to-adjust saved positions, correction loop (teacher return with note, student banner, pending guard, resubmit), self-serve mock exam (setup, countdown, per-question answer with mockId, submit + instant score + advice), AI endpoint page (test/save, key never read back), bulk student import (column-order auto-detect + header row, student id only with seat number and no name, generated passwords, per-line errors, class creation), mobile layout, no JS errors. Fixture API only; no server started.');
+  console.log('PASS: answer modes (choice = click-only with single option list, fill-in = handwriting/text with math keyboard + always-visible rendered preview), AI grading policy (self-practice = AI instant score recorded without teacher review, no student use-ai toggle; teacher checkbox on assign, student read-only hint, external consent; homework/quiz scores, AI results, solution and advice hidden until the teacher reviews), self-practice range picker (chapter + sub-chapter + question type, linked options, auto-widening, change-range keeps filters), teacher review with optional feedback, one-click AI review of a whole assignment (only for AI-enabled assignments), teacher sidebar without self-practice, calendar lower panel (centred divider label, panel content never flush to the card border, no horizontal overflow at 4 widths x 3 font scales), font scale switch (guest, persisted, 3 levels, no mobile overflow), login page (role cards, remember checked, remembered account), calendar (marks + entry from homework), question type (card badge, filter, draft qtype, rule analysis), full-auto split+import, homework, draft save/reload/restore, logout cleanup, weak-topic drill-down, results filters, CSV export, teacher annotation (pen/ellipse/arrow/highlight/undo/clear/save), AI suggested annotation with student read-back and teacher drag-to-adjust saved positions, correction loop (teacher return with note, student banner, pending guard, resubmit), self-serve mock exam (setup, countdown, per-question answer with mockId, submit + instant score + advice), AI endpoint page (test/save, key never read back), bulk student import (column-order auto-detect + header row, student id only with seat number and no name, generated passwords, per-line errors, class creation), data management (usage cards, four download entries, vacuum, school-year reset gated by a typed confirmation and hidden from students), mobile layout, no JS errors. Fixture API only; no server started.');
 })().catch(e=>{console.error(e);process.exit(1)});

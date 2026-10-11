@@ -20,6 +20,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import shutil
 import sqlite3
 import struct
 import sys
@@ -31,6 +32,7 @@ from urllib.request import Request, build_opener, HTTPRedirectHandler, ProxyHand
 from urllib.error import URLError, HTTPError
 import zlib
 
+from dataadmin import DataAdmin
 from homework import Homework
 from mock import MockExams
 from storage import Storage
@@ -42,6 +44,11 @@ MAX_TEXT = 80_000
 MAX_BODY = 4 * ((MAX_FILE + 2) // 3) + MAX_TEXT * 12 + 10_000
 SESSION_SECONDS = 12 * 3600
 SESSION_SECONDS_LONG = 30 * 24 * 3600
+# 允許帶查詢參數的路徑（日曆區間、歸檔選項）。
+QUERY_PATHS = ('/api/calendar', '/api/admin/archive/students', '/api/admin/archive/questions')
+# 需要串流下載的教師端點（不經過一般 JSON 回應）。
+ADMIN_DOWNLOADS = ('/api/admin/backup/db', '/api/admin/archive/questions',
+                   '/api/admin/archive/students')
 # 教師「一鍵 AI 全部批閱」單次最多處理的作答數，避免一次請求過久；剩下的再按一次即可。
 AI_REVIEW_LIMIT = 40
 # ── 兩層知識分類：主分類 → 子分類 ──
@@ -1007,8 +1014,39 @@ def decode_data_url(value, allowed):
     return data, match[1]
 
 
+def webp_size(data):
+    """解析 WebP 的寬高，支援 VP8（有損）、VP8L（無損）與 VP8X（擴充）；格式不完整時回 None。
+
+    只做標頭層級的驗證，不解碼像素：先確認 RIFF/WEBP 外框與區塊長度一致，再讀尺寸欄位，
+    這樣既能把關「完整檔案」也能擋下超大尺寸的解壓縮炸彈。
+    """
+    if len(data) < 20 or data[:4] != b'RIFF' or data[8:12] != b'WEBP':
+        return None
+    if struct.unpack('<I', data[4:8])[0] + 8 != len(data):
+        return None
+    pos = 12
+    while pos + 8 <= len(data):
+        kind = data[pos:pos + 4]
+        length = struct.unpack('<I', data[pos + 4:pos + 8])[0]
+        start, end = pos + 8, pos + 8 + length
+        if end > len(data):
+            return None
+        payload = data[start:end]
+        if kind == b'VP8X' and len(payload) >= 10:
+            return (int.from_bytes(payload[4:7], 'little') + 1,
+                    int.from_bytes(payload[7:10], 'little') + 1)
+        if kind == b'VP8L' and len(payload) >= 5 and payload[0] == 0x2f:
+            bits = int.from_bytes(payload[1:5], 'little')
+            return ((bits & 0x3fff) + 1, ((bits >> 14) & 0x3fff) + 1)
+        if kind == b'VP8 ' and len(payload) >= 10 and payload[3:6] == b'\x9d\x01\x2a':
+            return (struct.unpack('<H', payload[6:8])[0] & 0x3fff,
+                    struct.unpack('<H', payload[8:10])[0] & 0x3fff)
+        pos = end + (length & 1)
+    return None
+
+
 def validate_image(value):
-    data, mime = decode_data_url(value, ('image/png', 'image/jpeg'))
+    data, mime = decode_data_url(value, ('image/png', 'image/jpeg', 'image/webp'))
     valid = False
     if mime == 'image/png' and data.startswith(b'\x89PNG\r\n\x1a\n'):
         pos, has_header, has_pixels = 8, False, False
@@ -1037,6 +1075,10 @@ def validate_image(value):
                 valid = size == 0 and end == len(data) and has_pixels
                 break
             pos = end
+    elif mime == 'image/webp':
+        dimensions = webp_size(data)
+        valid = bool(dimensions) and 0 < dimensions[0] <= 20000 and 0 < dimensions[1] <= 20000 \
+            and dimensions[0] * dimensions[1] <= 25_000_000
     elif mime == 'image/jpeg' and data.startswith(b'\xff\xd8') and data.endswith(b'\xff\xd9'):
         pos, has_frame = 2, False
         while pos + 4 <= len(data):
@@ -1067,19 +1109,19 @@ def validate_image(value):
                 break
             pos += size
     if not valid:
-        fail(400, '圖片內容或尺寸無效；僅接受完整 PNG / JPEG（最多二千五百萬像素）。')
+        fail(400, '圖片內容或尺寸無效；僅接受完整 PNG / JPEG / WebP（最多二千五百萬像素）。')
     return data, mime
 
 
 def decode_figure(value):
-    """題目圖形：可選的 PNG / JPEG dataURL，解碼後最多 2 MB；回傳 (bytes, mime) 或 (None, None)。"""
+    """題目圖形：可選的 PNG / JPEG / WebP dataURL，解碼後最多 2 MB；回傳 (bytes, mime) 或 (None, None)。"""
     if value is None:
         return None, None
     if not isinstance(value, str):
-        fail(400, '題目圖形必須是 PNG 或 JPEG 的 dataURL。')
+        fail(400, '題目圖形必須是 PNG、JPEG 或 WebP 的 dataURL。')
     if not value:
         return None, None
-    data, mime = decode_data_url(value, ('image/png', 'image/jpeg'))
+    data, mime = decode_data_url(value, ('image/png', 'image/jpeg', 'image/webp'))
     if len(data) > MAX_FIGURE:
         fail(400, '題目圖形不得超過 2 MB。')
     return data, mime
@@ -1690,6 +1732,7 @@ class Application:
         self.dummy_hash = password_hash(secrets.token_urlsafe(24))
         self.homework = Homework(self, fail, fields, text, number, utc_now)
         self.mock = MockExams(self, self.homework, fail, fields, text, number, utc_now, TOPIC_TREE)
+        self.dataadmin = DataAdmin(self, fail, text, utc_now)
         # initialize() 必須由 main() 在背景執行緒呼叫，避免 Render 健康檢查 timeout。
         # initialize() 完成前 /api/health 回 starting，其它端點會因 DB 未就緒回 503。
         self.initialized = False
@@ -2270,6 +2313,24 @@ class Application:
                     created.append({'id': cur.lastrowid, 'username': username, 'name': name, 'role': 'student',
                                     'seat': seat})
             return {'count': len(created), 'users': created}, headers
+        if path == '/api/admin/storage' and method == 'GET':
+            self.teacher(user)
+            with self.db() as db:
+                return self.dataadmin.stats(db), headers
+        if path == '/api/admin/vacuum' and method == 'POST':
+            self.teacher(user)
+            fields(body, (), ())
+            return self.dataadmin.vacuum(), headers
+        if path == '/api/admin/reset/students' and method == 'POST':
+            # 學年重置：清空學生資料與帳號，題庫與教師帳號一律保留。
+            self.teacher(user)
+            fields(body, ('confirm',), ('confirm',))
+            confirm = text(body['confirm'], '確認字串', 40, strip=False, empty=True)
+            with self.db() as db:
+                db.execute('BEGIN IMMEDIATE')
+                result = self.dataadmin.reset_students(db, confirm)
+            result['vacuum'] = self.dataadmin.vacuum()
+            return result, headers
         if path == '/api/ai-config' and method in ('GET', 'POST'):
             self.teacher(user)
             expected = bool(os.environ.get('MATH_ADMIN_TOKEN', '').strip())
@@ -2628,8 +2689,8 @@ class Application:
             self.teacher(user)
             fields(body, ('image',), ('image',))
             data, mime = validate_image(body['image'])
-            if mime != 'image/png':
-                fail(400, '批註圖片必須是 PNG。')
+            if mime not in ('image/png', 'image/webp'):
+                fail(400, '批註圖片必須是 PNG 或 WebP。')
             with self.db() as db:
                 db.execute('BEGIN IMMEDIATE')
                 row = db.execute('SELECT * FROM attempts WHERE id=?', (int(match[1]),)).fetchone()
@@ -2818,6 +2879,50 @@ class Handler(BaseHTTPRequestHandler):
         if self.command != 'HEAD':
             self.wfile.write(data)
 
+    def file_chunks(self, target, size=512 * 1024):
+        with open(target, 'rb') as handle:
+            while True:
+                chunk = handle.read(size)
+                if not chunk:
+                    break
+                yield chunk
+
+    def respond_stream(self, mime, filename, chunks, length=None):
+        """串流下載：資料庫備份用 Content-Length，歸檔用 chunked，兩者都不在伺服器留檔。
+
+        串流中途出錯時標頭已經送出，無法再回錯誤頁；此時只停止傳輸並記錄，讓瀏覽器顯示下載失敗。
+        """
+        self.send_response(200)
+        self.send_header('Content-Type', mime)
+        self.send_header('Content-Disposition', 'attachment; filename="%s"' % filename)
+        if length is None:
+            self.send_header('Transfer-Encoding', 'chunked')
+        else:
+            self.send_header('Content-Length', str(length))
+        self.send_header('Cache-Control', 'no-store')
+        self.send_header('X-Content-Type-Options', 'nosniff')
+        self.send_header('Referrer-Policy', 'same-origin')
+        self.send_header('X-Frame-Options', 'DENY')
+        self.send_header('Connection', 'close')
+        self.end_headers()
+        self.close_connection = True
+        if self.command == 'HEAD':
+            return
+        try:
+            for chunk in chunks:
+                if not chunk:
+                    continue
+                if length is None:
+                    self.wfile.write(b'%X\r\n' % len(chunk) + chunk + b'\r\n')
+                else:
+                    self.wfile.write(chunk)
+            if length is None:
+                self.wfile.write(b'0\r\n\r\n')
+        except (BrokenPipeError, ConnectionResetError, TimeoutError):
+            pass
+        except Exception as exc:
+            print('[export] 匯出中斷：%r' % (exc,), file=sys.stderr, flush=True)
+
     def same_origin(self):
         origins = self.headers.get_all('Origin', [])
         if len(origins) > 1:
@@ -2881,7 +2986,8 @@ class Handler(BaseHTTPRequestHandler):
             if not getattr(self.server, 'wildcard_host', False) and (len(hosts) != 1 or hosts[0].lower() not in self.server.hosts):
                 fail(403, '網站 Host 不在允許清單內。')
             parsed = urlsplit(self.path)
-            if parsed.scheme or parsed.netloc or parsed.fragment or (parsed.query and parsed.path != '/api/calendar'):
+            if (parsed.scheme or parsed.netloc or parsed.fragment
+                    or (parsed.query and parsed.path not in QUERY_PATHS)):
                 fail(400, '請使用本站的有效相對路徑，不支援查詢參數。')
             path = parsed.path
             body = {}
@@ -2938,6 +3044,33 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     data, mime = row['figure'], row['figure_mime']
                 self.respond(200, data, {'Content-Disposition': 'inline'}, row['figure_mime'])
+                return
+            if self.command == 'GET' and path in ADMIN_DOWNLOADS:
+                if user is None:
+                    fail(401, '請先登入。')
+                app.teacher(user)
+                stamp = time.strftime('%Y%m%d-%H%M%S')
+                if path == '/api/admin/backup/db':
+                    directory, target = app.dataadmin.backup_to_temp(stamp)
+                    try:
+                        self.respond_stream('application/vnd.sqlite3',
+                                            'mathpath-%s.sqlite3' % stamp,
+                                            self.file_chunks(target), length=os.path.getsize(target))
+                    finally:
+                        shutil.rmtree(directory, ignore_errors=True)
+                    return
+                if path == '/api/admin/archive/questions':
+                    with app.db() as db:
+                        self.respond_stream('application/json; charset=utf-8',
+                                            'mathpath-questions-%s.json' % stamp,
+                                            app.dataadmin.question_archive(db, stamp))
+                    return
+                with_images = 'images=0' not in parsed.query
+                # 兩種歸檔要給不同檔名，否則同一天下載會互相覆蓋。
+                filename = 'mathpath-students%s-%s.jsonl' % ('' if with_images else '-text', stamp)
+                with app.db() as db:
+                    self.respond_stream('application/x-ndjson; charset=utf-8', filename,
+                                        app.dataadmin.student_archive(db, stamp, with_images))
                 return
             if path.startswith('/api/'):
                 payload, headers = app.dispatch(self.command, path, body, user, token_hash, self.client_address[0], parsed.query)
