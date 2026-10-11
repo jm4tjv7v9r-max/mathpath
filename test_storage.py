@@ -102,7 +102,7 @@ class StorageTests(unittest.TestCase):
         # 未設定 R2 時，圖片照樣可用，只是存在資料庫（不寫入伺服器資料夾）。
         student, _ = self.users(app)
         attempt = self.call(app, 'POST', '/api/attempts',
-                            {'questionId': 1, 'answerText': '', 'image': PNG, 'useAi': False}, student)['attempt']
+                            {'questionId': 1, 'answerText': '', 'image': PNG}, student)['attempt']
         with app.db() as db:
             row = db.execute('SELECT image,image_key FROM attempts WHERE id=?', (attempt['id'],)).fetchone()
         self.assertIsNotNone(row['image'])
@@ -126,7 +126,7 @@ class StorageTests(unittest.TestCase):
         self.assertEqual(self.call(app, 'GET', '/api/health', {}, None)['storage']['bucket'], 'mathpath')
         student, teacher = self.users(app)
         attempt = self.call(app, 'POST', '/api/attempts',
-                            {'questionId': 1, 'answerText': '', 'image': PNG, 'useAi': False}, student)['attempt']
+                            {'questionId': 1, 'answerText': '', 'image': PNG}, student)['attempt']
         with app.db() as db:
             row = db.execute('SELECT image,image_key FROM attempts WHERE id=?', (attempt['id'],)).fetchone()
         # 資料庫只存 key，不存二進位。
@@ -162,7 +162,7 @@ class StorageTests(unittest.TestCase):
         # 教師批註同樣只存 key。
         student, _ = self.users(app)
         attempt = self.call(app, 'POST', '/api/attempts',
-                            {'questionId': 1, 'answerText': '', 'image': PNG, 'useAi': False}, student)['attempt']
+                            {'questionId': 1, 'answerText': '', 'image': PNG}, student)['attempt']
         self.call(app, 'POST', f"/api/attempts/{attempt['id']}/annotation", {'image': PNG}, teacher)
         with app.db() as db:
             ann = db.execute('SELECT annotation,annotation_key FROM attempts WHERE id=?', (attempt['id'],)).fetchone()
@@ -174,7 +174,7 @@ class StorageTests(unittest.TestCase):
         student, _ = self.users(app)
         with self.assertRaises(server.APIError) as context:
             self.call(app, 'POST', '/api/attempts',
-                      {'questionId': 1, 'answerText': '', 'image': PNG, 'useAi': False}, student)
+                      {'questionId': 1, 'answerText': '', 'image': PNG}, student)
         self.assertEqual(context.exception.status, 503)
         with app.db() as db:
             self.assertEqual(db.execute('SELECT COUNT(*) FROM attempts').fetchone()[0], 0)
@@ -183,7 +183,7 @@ class StorageTests(unittest.TestCase):
         app = self.make_app(self.r2_env(R2_PREFIX='school-a'))
         student, _ = self.users(app)
         attempt = self.call(app, 'POST', '/api/attempts',
-                            {'questionId': 1, 'answerText': '', 'image': PNG, 'useAi': False}, student)['attempt']
+                            {'questionId': 1, 'answerText': '', 'image': PNG}, student)['attempt']
         with app.db() as db:
             key = db.execute('SELECT image_key FROM attempts WHERE id=?', (attempt['id'],)).fetchone()['image_key']
         self.assertTrue(key.startswith('school-a/attempts/'))

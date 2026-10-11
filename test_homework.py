@@ -48,13 +48,17 @@ class HomeworkTests(unittest.TestCase):
         return self.call('POST', '/api/assignments', body, self.teacher)['assignment']['id']
 
     def attempt(self, aid=None, qid=1, answer='x=2或3', user=None, **kwargs):
-        body = {'questionId': qid, 'answerText': answer, 'useAi': False, **kwargs}
+        body = {'questionId': qid, 'answerText': answer, **kwargs}
         if aid is not None:
             body['assignmentId'] = aid
         return self.call('POST', '/api/attempts', body, user)['attempt']
 
     def detail(self, aid, user=None):
         return self.call('GET', f'/api/assignments/{aid}', user=user)
+
+    def ai_assignment(self, questions=(1,)):
+        """建立一份教師已啟用 AI 建議評分的作業（呼叫前需先 configure_ai）。"""
+        return self.assignment(questions, aiGrading=True)
 
     def calendar(self, frm, to, user=None):
         return self.app.dispatch('GET', '/api/calendar', {}, self.student if user is None else user,
@@ -115,7 +119,7 @@ class HomeworkTests(unittest.TestCase):
                 'dueAt': (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()}
         self.error(403, 'POST', '/api/assignments', body, self.teacher2)
         self.error(403, 'POST', '/api/assignments', body)
-        self.error(403, 'POST', '/api/attempts', {'assignmentId': aid, 'questionId': 1, 'answerText': '2', 'useAi': False}, self.teacher)
+        self.error(403, 'POST', '/api/attempts', {'assignmentId': aid, 'questionId': 1, 'answerText': '2'}, self.teacher)
         self.error(403, 'POST', f'/api/assignments/{aid}/submit', user=self.teacher)
         self.assertEqual(self.call('GET', '/api/homework', user=self.teacher2)['assignments'], [])
         self.assertEqual(self.call('GET', '/api/homework', user=self.teacher2)['classes'], [])
@@ -140,6 +144,24 @@ class HomeworkTests(unittest.TestCase):
             self.assertEqual(db.execute('SELECT count(*) FROM assignments').fetchone()[0], 0)
         aid = self.assignment((1,), title='x' * 200, description='x' * 4000)
         self.assertEqual(len(self.detail(aid)['assignment']['description']), 4000)
+
+    def test_ai_grading_is_decided_by_teacher_not_student(self):
+        # 只有教師可以決定是否使用 AI 建議評分；AI 未接入時不得啟用。
+        base = {'title': '作业', 'classId': self.cid, 'questionIds': [1], 'dueAt': '2099-01-01T00:00:00Z'}
+        self.error(409, 'POST', '/api/assignments', {**base, 'aiGrading': True}, self.teacher)
+        for bad in (1, 0, 'true', None, [], {}):
+            self.error(400, 'POST', '/api/assignments', {**base, 'aiGrading': bad}, self.teacher)
+        self.assertFalse(self.detail(self.assignment((1,)))['assignment']['aiGrading'])
+        self.configure_ai()
+        aid = self.ai_assignment((1,))
+        self.assertTrue(self.detail(aid)['assignment']['aiGrading'])
+        self.assertTrue(self.detail(aid, self.teacher)['assignment']['aiGrading'])
+        # 學生不得自行指定 useAi：不認識的欄位一律 400，不能繞過教師設定。
+        self.error(400, 'POST', '/api/attempts', {'assignmentId': aid, 'questionId': 1, 'answerText': 'x=2', 'useAi': True})
+        with patch.object(self.app.ai, 'call', return_value=self.ai_result()) as ai:
+            attempt = self.attempt(aid, answer='x=2')
+        self.assertEqual(attempt['gradingMethod'], 'ai-advisory')
+        self.assertTrue(ai.called)
 
     def test_deadlines_require_future_valid_timezone(self):
         for due in ('garbage', '2099-01-01', '2099-01-01T12:00:00', '2000-01-01T00:00:00Z',
@@ -190,15 +212,15 @@ class HomeworkTests(unittest.TestCase):
         self.attempt(aid)
         self.attempt(aid, user=self.other)
         self.error(403, 'GET', f'/api/assignments/{aid}', user=new)
-        self.error(403, 'POST', '/api/attempts', {'assignmentId': aid, 'questionId': 1, 'answerText': '2', 'useAi': False}, new)
+        self.error(403, 'POST', '/api/attempts', {'assignmentId': aid, 'questionId': 1, 'answerText': '2'}, new)
         self.assertEqual(self.call('GET', '/api/homework', user=new)['assignments'], [])
         self.assertEqual(len(self.results(aid)['students']), 2)
 
     def test_wrong_question_and_invalid_assignment_id(self):
         aid = self.assignment((1,))
-        self.error(403, 'POST', '/api/attempts', {'assignmentId': aid, 'questionId': 2, 'answerText': '3', 'useAi': False})
+        self.error(403, 'POST', '/api/attempts', {'assignmentId': aid, 'questionId': 2, 'answerText': '3'})
         for value in (True, None, '1', 0):
-            self.error(400, 'POST', '/api/attempts', {'assignmentId': value, 'questionId': 1, 'answerText': '2', 'useAi': False})
+            self.error(400, 'POST', '/api/attempts', {'assignmentId': value, 'questionId': 1, 'answerText': '2'})
         self.error(404, 'GET', '/api/assignments/999')
 
     def test_formal_incomplete_idempotent_and_finalized(self):
@@ -212,7 +234,7 @@ class HomeworkTests(unittest.TestCase):
         first = self.finalize(aid)
         self.assertEqual(first, self.finalize(aid))
         self.assertEqual(first['mySubmission']['status'], 'submitted')
-        self.error(403, 'POST', '/api/attempts', {'assignmentId': aid, 'questionId': 1, 'answerText': '2', 'useAi': False})
+        self.error(403, 'POST', '/api/attempts', {'assignmentId': aid, 'questionId': 1, 'answerText': '2'})
         with self.app.db() as db:
             self.assertEqual(db.execute('SELECT count(*) FROM assignment_recipients WHERE assignment_id=? AND submitted_at IS NOT NULL', (aid,)).fetchone()[0], 1)
             self.assertEqual(db.execute('SELECT count(*) FROM attempts').fetchone()[0], 2)
@@ -229,7 +251,7 @@ class HomeworkTests(unittest.TestCase):
         self.attempt(aid)
         self.expire(aid)
         self.error(403, 'POST', f'/api/assignments/{aid}/submit')
-        self.error(403, 'POST', '/api/attempts', {'assignmentId': aid, 'questionId': 1, 'answerText': '2', 'useAi': False})
+        self.error(403, 'POST', '/api/attempts', {'assignmentId': aid, 'questionId': 1, 'answerText': '2'})
         allowed = self.assignment((1,), allowLate=True)
         self.expire(allowed)
         self.attempt(allowed)
@@ -315,11 +337,11 @@ class HomeworkTests(unittest.TestCase):
         self.assertEqual(self.detail(aid)['report']['confirmedScore'], 3)
 
     def test_ai_suggestion_success_and_recommendation_validation(self):
-        aid = self.assignment((1,))
         self.configure_ai()
+        aid = self.ai_assignment((1,))
         suggestion = {'strength': '因式分解部分已获分', 'focus': '补充两根', 'nextStep': '检验两根', 'recommendedIds': [99999, 2, 2]}
         with patch.object(self.app.ai, 'call', side_effect=[self.ai_result(), suggestion]) as ai:
-            a = self.attempt(aid, answer='x=2', useAi=True)
+            a = self.attempt(aid, answer='x=2')
         self.assertEqual(ai.call_count, 2)
         self.assertEqual(a['suggestion']['source'], 'ai')
         self.assertEqual(a['suggestion']['recommended'], [{'id': 2, 'title': '相似題：整數根', 'kind': 'similar'}])
@@ -334,10 +356,11 @@ class HomeworkTests(unittest.TestCase):
 
     def test_ai_suggestion_failure_saved_grade_and_old_mock_compatible(self):
         self.configure_ai()
+        aid = self.ai_assignment((1,))
         for failure in (server.APIError(502, '测试模型异常'), {'score': 4, 'feedback': '旧 mock', 'steps': []},
                         {'strength': '已评分', 'focus': [], 'nextStep': '复查'}, RuntimeError('模型异常')):
             with patch.object(self.app.ai, 'call', side_effect=[self.ai_result(), failure]):
-                a = self.attempt(useAi=True)
+                a = self.attempt(aid)
             self.assertEqual(a['score'], 4)
             self.assertEqual(a['aiScore'], 4)
             self.assertEqual(a['suggestion']['source'], 'rules')
@@ -347,6 +370,7 @@ class HomeworkTests(unittest.TestCase):
 
     def test_grade_saved_before_second_ai_call(self):
         self.configure_ai()
+        aid = self.ai_assignment((1,))
         calls = []
         def model(*args, **kwargs):
             calls.append(args)
@@ -358,7 +382,7 @@ class HomeworkTests(unittest.TestCase):
                 self.assertEqual(saved['ai_score'], 4)
             raise server.APIError(502, '建议服务失败')
         with patch.object(self.app.ai, 'call', side_effect=model):
-            a = self.attempt(useAi=True)
+            a = self.attempt(aid)
         self.assertEqual(a['score'], 4)
         self.assertIn('失败', a['suggestion']['notice'])
 
@@ -369,9 +393,10 @@ class HomeworkTests(unittest.TestCase):
         self.attempt(qid=6, answer='7')
         self.attempt(answer='', image=test_server.png_url())
         self.configure_ai()
+        aid = self.ai_assignment((1,))
         suggestion = {'strength': '已评分', 'focus': '补充结论', 'nextStep': '复查'}
         with patch.object(self.app.ai, 'call', side_effect=[self.ai_result(), suggestion]) as ai:
-            self.attempt(useAi=True)
+            self.attempt(aid)
         payload = ai.call_args_list[1].args[1]
         self.assertEqual(len(payload['recent']), 5)
         self.assertTrue(all(r['topic'] == '一元二次方程' and r['score'] == 6 for r in payload['recent']))
@@ -380,11 +405,12 @@ class HomeworkTests(unittest.TestCase):
 
     def test_ai_failure_no_fake_grade_and_consent(self):
         self.configure_ai(external=True)
+        aid = self.ai_assignment((1,))
         with patch.object(self.app.ai, 'call') as ai:
-            self.error(403, 'POST', '/api/attempts', {'questionId': 1, 'answerText': '2', 'useAi': True})
+            self.error(403, 'POST', '/api/attempts', {'assignmentId': aid, 'questionId': 1, 'answerText': '2'})
             ai.assert_not_called()
         with patch.object(self.app.ai, 'call', side_effect=server.APIError(502, '失败')):
-            self.error(502, 'POST', '/api/attempts', {'questionId': 1, 'answerText': '2', 'useAi': True, 'consentExternal': True})
+            self.error(502, 'POST', '/api/attempts', {'assignmentId': aid, 'questionId': 1, 'answerText': '2', 'consentExternal': True})
         with self.app.db() as db:
             self.assertEqual(db.execute('SELECT count(*) FROM attempts').fetchone()[0], 0)
 
@@ -392,7 +418,7 @@ class HomeworkTests(unittest.TestCase):
         with self.app.db() as db:
             self.app.insert_question(db, {**server.seed_questions()[0], 'source': 'AI 生成 · 待核驗'})
         for answer in ('x=2或3', 'x=2'):
-            a = self.attempt(answer=answer, useAi=True)
+            a = self.attempt(answer=answer)
             self.assertEqual(a['suggestion']['source'], 'rules')
             self.assertNotIn(17, [r['id'] for r in a['suggestion']['recommended']])
             self.assertIn('未', a['suggestion']['focus'])
@@ -444,18 +470,20 @@ class HomeworkTests(unittest.TestCase):
         self.assertEqual(self.results(aid)['summary']['pendingReviewCount'], 0)
 
     def test_submit_race_with_ai_attempt_rechecks_finalized(self):
-        aid = self.assignment((1,))
-        self.attempt(aid)
         self.configure_ai()
+        aid = self.ai_assignment((1,))
+        with patch.object(self.app.ai, 'call', return_value=self.ai_result()):
+            self.attempt(aid)
         def model(*args, **kwargs):
             self.finalize(aid)
             return self.ai_result()
         with patch.object(self.app.ai, 'call', side_effect=model):
-            self.error(403, 'POST', '/api/attempts', {'assignmentId': aid, 'questionId': 1, 'answerText': 'x=2', 'useAi': True})
+            self.error(403, 'POST', '/api/attempts', {'assignmentId': aid, 'questionId': 1, 'answerText': 'x=2'})
         self.assertEqual(len(self.detail(aid)['attempts']), 1)
 
     def test_teacher_review_during_ai_suggestion_not_overwritten(self):
         self.configure_ai()
+        aid = self.ai_assignment((1,))
         count = 0
         def model(*args, **kwargs):
             nonlocal count
@@ -467,7 +495,7 @@ class HomeworkTests(unittest.TestCase):
             self.review({'id': row['id']}, 5)
             return {'strength': 'AI', 'focus': 'AI', 'nextStep': 'AI'}
         with patch.object(self.app.ai, 'call', side_effect=model):
-            a = self.attempt(useAi=True)
+            a = self.attempt(aid)
         self.assertEqual(a['score'], 5)
         self.assertEqual(a['aiScore'], 4)
         self.assertEqual(a['suggestion']['source'], 'rules')
@@ -496,15 +524,15 @@ class HomeworkTests(unittest.TestCase):
         self.assertEqual(self.results(aid)['topicStats'][0]['totalCount'], 2)
 
     def test_ai_assignment_uses_snapshot_in_model_payload(self):
-        aid = self.assignment((1,))
+        self.configure_ai()
+        aid = self.ai_assignment((1,))
         with self.app.db() as db:
             q = self.app.get_question(db, 1)
             q.update(answer='999', content='改题', points=100)
             db.execute('UPDATE questions SET payload=? WHERE id=1', (json.dumps(q),))
-        self.configure_ai()
         with patch.object(self.app.ai, 'call', side_effect=[self.ai_result(),
                           {'strength': '已评分', 'focus': '补两根', 'nextStep': '复查'}]) as ai:
-            a = self.attempt(aid, useAi=True)
+            a = self.attempt(aid)
         reference = ai.call_args_list[0].args[1]['question']
         self.assertEqual(reference['answer'], '$x=2$ 或 $x=3$')
         self.assertEqual(reference['points'], 6)
@@ -637,7 +665,7 @@ class HomeworkTests(unittest.TestCase):
                 continue
             text = bank[q['id']]['answer'] if correct else 'x=0'
             self.call('POST', '/api/attempts',
-                      {'questionId': q['id'], 'answerText': text, 'useAi': False, 'mockId': eid}, user)
+                      {'questionId': q['id'], 'answerText': text, 'mockId': eid}, user)
 
     def test_calendar_notes_create_list_and_delete(self):
         today = datetime.now(timezone.utc).date().isoformat()
@@ -716,7 +744,7 @@ class HomeworkTests(unittest.TestCase):
         self.assertEqual(again['report']['score'], total)
         # 提交後不能再作答。
         self.error(403, 'POST', '/api/attempts',
-                   {'questionId': questions[0]['id'], 'answerText': 'x=2或3', 'useAi': False, 'mockId': exam['id']})
+                   {'questionId': questions[0]['id'], 'answerText': 'x=2或3', 'mockId': exam['id']})
         # 列表可看到成績。
         listing = self.call('GET', '/api/mock')
         item = next(e for e in listing['exams'] if e['id'] == exam['id'])
@@ -736,7 +764,7 @@ class HomeworkTests(unittest.TestCase):
         self.assertEqual(self.mock_detail(eid)['exam']['remainingSeconds'], 0)
         # 逾時後不可再作答，但仍可提交（自動提交）並標示逾時。
         self.error(403, 'POST', '/api/attempts',
-                   {'questionId': questions[1]['id'], 'answerText': '70°', 'useAi': False, 'mockId': eid})
+                   {'questionId': questions[1]['id'], 'answerText': '70°', 'mockId': eid})
         result = self.mock_submit(eid)
         self.assertTrue(result['exam']['expired'])
         self.assertEqual(result['report']['answeredCount'], 1)
@@ -751,15 +779,15 @@ class HomeworkTests(unittest.TestCase):
         self.error(404, 'GET', f'/api/mock/{eid}', user=self.other)
         # 不能拿别人的测验编号作答。
         self.error(404, 'POST', '/api/attempts',
-                   {'questionId': questions[0]['id'], 'answerText': '6', 'useAi': False, 'mockId': eid}, self.other)
+                   {'questionId': questions[0]['id'], 'answerText': '6', 'mockId': eid}, self.other)
         # 不属于本场测验的题目不能作答。
         other_qid = next(qid for qid in self.bank_answers() if qid not in [x['id'] for x in questions])
         self.error(403, 'POST', '/api/attempts',
-                   {'questionId': other_qid, 'answerText': 'x', 'useAi': False, 'mockId': eid})
+                   {'questionId': other_qid, 'answerText': 'x', 'mockId': eid})
         # 不能同时属于作业与模拟测验。
         aid = self.assignment((1,))
         self.error(400, 'POST', '/api/attempts',
-                   {'questionId': 1, 'answerText': 'x=2或3', 'useAi': False, 'assignmentId': aid, 'mockId': eid})
+                   {'questionId': 1, 'answerText': 'x=2或3', 'assignmentId': aid, 'mockId': eid})
 
     def test_mock_exam_validation_and_pool_limits(self):
         self.error(400, 'POST', '/api/mock', {'count': 0, 'minutes': 10})
@@ -779,7 +807,7 @@ class HomeworkTests(unittest.TestCase):
         # 手写图片未接 AI：待批阅，不计分也不当零分。
         self.call('POST', '/api/attempts',
                   {'questionId': target['id'], 'answerText': '', 'image': test_server.png_url(),
-                   'useAi': False, 'mockId': eid})
+                   'mockId': eid})
         self.answer_mock(eid, questions, correct=True, only=questions[1]['id'])
         report = self.mock_submit(eid)['report']
         self.assertEqual(report['pendingCount'], 1)
@@ -802,7 +830,7 @@ class HomeworkTests(unittest.TestCase):
                        (json.dumps(payload, ensure_ascii=False), target2['id']))
         # 用原本的答案作答仍应判对，证明评分采用开始时的快照。
         self.call('POST', '/api/attempts',
-                  {'questionId': target2['id'], 'answerText': original, 'useAi': False, 'mockId': eid2})
+                  {'questionId': target2['id'], 'answerText': original, 'mockId': eid2})
         snapshot_score = self.mock_submit(eid2)['report']
         self.assertEqual(snapshot_score['score'], target2['points'], '应使用快照答案评分')
         self.assertEqual(snapshot_score['maxScore'], sum(q['points'] for q in questions2))
@@ -917,7 +945,7 @@ class HomeworkTests(unittest.TestCase):
                    {'studentId': 1, 'note': '重做', 'questionIds': [999]}, self.teacher)
         # 已正式提交後不能再作答。
         self.error(403, 'POST', '/api/attempts',
-                   {'questionId': 1, 'answerText': 'x=2或3', 'useAi': False, 'assignmentId': aid}, self.student)
+                   {'questionId': 1, 'answerText': 'x=2或3', 'assignmentId': aid}, self.student)
         result = self.call('POST', f'/api/assignments/{aid}/return',
                            {'studentId': 1, 'note': '第1題漏了第二個根，請重新解一次。', 'questionIds': [1]}, self.teacher)
         self.assertEqual(result['correction']['round'], 1)
@@ -930,7 +958,7 @@ class HomeworkTests(unittest.TestCase):
         self.assertEqual(detail['mySubmission']['correction']['round'], 1)
         # 訂正範圍以外的題目不能重新作答。
         self.error(403, 'POST', '/api/attempts',
-                   {'questionId': 2, 'answerText': 'x=3或4', 'useAi': False, 'assignmentId': aid}, self.student)
+                   {'questionId': 2, 'answerText': 'x=3或4', 'assignmentId': aid}, self.student)
         # 未重新作答就提交會被拒；必須是教師要求之後的新作答。
         self.error(400, 'POST', f'/api/assignments/{aid}/submit', {}, self.student)
         fixed = self.attempt(aid, qid=1, answer='x=2或3')
@@ -983,7 +1011,7 @@ class HomeworkTests(unittest.TestCase):
         self.assertIsNone(detail['mySubmission']['remainingSeconds'])
         # 未開始前不能作答
         self.error(400, 'POST', '/api/attempts',
-                   {'questionId': 1, 'answerText': 'x=2或3', 'useAi': False, 'assignmentId': aid})
+                   {'questionId': 1, 'answerText': 'x=2或3', 'assignmentId': aid})
         # 只有學生可以開始，教師被拒
         self.error(403, 'POST', f'/api/assignments/{aid}/start', {}, self.teacher)
         # 開始計時
@@ -1021,7 +1049,7 @@ class HomeworkTests(unittest.TestCase):
         self.assertTrue(expired['expired'])
         self.assertEqual(expired['remainingSeconds'], 0)
         self.error(403, 'POST', '/api/attempts',
-                   {'questionId': 1, 'answerText': 'x=2或3', 'useAi': False, 'assignmentId': aid2})
+                   {'questionId': 1, 'answerText': 'x=2或3', 'assignmentId': aid2})
         self.error(403, 'POST', f'/api/assignments/{aid2}/submit', {}, self.student)
         # 不限時的作業不受影響
         aid3 = self.assignment((1,))

@@ -96,11 +96,26 @@ class APITests(unittest.TestCase):
         return headers['Set-Cookie'].split(';', 1)[0]
 
     def submit(self, answer='x=2或3', image=None, **kwargs):
-        body = {'questionId': 1, 'answerText': answer, 'useAi': False}
+        body = {'questionId': 1, 'answerText': answer}
         if image:
             body['image'] = image
         body.update(kwargs)
         return self.request('POST', '/api/attempts', body, cookie=self.student, expect=200)[1]['attempt']
+
+    def student_id(self, username='student'):
+        with self.app.db() as db:
+            return db.execute('SELECT id FROM users WHERE username=?', (username,)).fetchone()[0]
+
+    def ai_assignment(self, question_ids, ai_grading=True, duration=None, kind='homework'):
+        """建立一份作業並由教師決定是否啟用 AI 建議評分；回傳作業編號。"""
+        _, classroom, _ = self.request('POST', '/api/classes',
+                                       {'name': 'AI 測試班', 'studentIds': [self.student_id()]},
+                                       cookie=self.teacher, expect=200)
+        body = {'title': 'AI 作業', 'classId': classroom['class']['id'], 'questionIds': question_ids,
+                'dueAt': '2099-01-01T00:00:00Z', 'aiGrading': ai_grading, 'kind': kind,
+                'durationMinutes': duration}
+        _, created, _ = self.request('POST', '/api/assignments', body, cookie=self.teacher, expect=200)
+        return created['assignment']['id']
 
     def test_login_session_logout_and_cookie(self):
         self.request('GET', '/api/session', expect=200)
@@ -421,7 +436,7 @@ class APITests(unittest.TestCase):
         _, state, _ = self.request('GET', '/api/state', cookie=other, expect=200)
         self.assertEqual(state['attempts'], [])
         self.assertNotIn('演示學生', json.dumps(state, ensure_ascii=False))
-        other_attempt = self.request('POST', '/api/attempts', {'questionId': 1, 'answerText': 'x=2或3', 'useAi': False}, cookie=other, expect=200)[1]['attempt']
+        other_attempt = self.request('POST', '/api/attempts', {'questionId': 1, 'answerText': 'x=2或3'}, cookie=other, expect=200)[1]['attempt']
         _, state, _ = self.request('GET', '/api/state', cookie=self.student, expect=200)
         self.assertEqual([a['id'] for a in state['attempts']], [attempt['id']])
         self.assertNotIn('student', state['attempts'][0])
@@ -763,15 +778,15 @@ class APITests(unittest.TestCase):
         self.request('POST', '/api/login', body, origin=False, extra={'Referer': 'https://evil.invalid/'}, expect=403)
 
     def test_invalid_json_and_inputs(self):
-        for raw in (b'{', b'[]', b'{"useAi":NaN}', b'{"a":1,"a":2}', b'\xff', b'{"answerText":"\\ud800"}'):
+        for raw in (b'{', b'[]', b'{"questionId":NaN}', b'{"a":1,"a":2}', b'\xff', b'{"answerText":"\\ud800"}'):
             self.request('POST', '/api/attempts', cookie=self.student, raw=raw, expect=400)
         self.request('POST', '/api/login', {'username': 'student', 'password': 'x'}, extra={'Content-Type': 'text/plain'}, expect=415)
-        for patch_body in [{'questionId': True}, {'questionId': -1}, {'questionId': '1'}, {'useAi': 'false'},
+        for patch_body in [{'questionId': True}, {'questionId': -1}, {'questionId': '1'}, {'assignmentId': 'x'},
                            {'answerText': []}, {'consentExternal': 'yes'}, {'image': 'data:image/png;base64,YWJj'}, {'answerText': ''},
                            {'questionId': 1e100}, {'answerText': 'a\x00b'}, {'answerText': 'x' * 80001}]:
-            body = {'questionId': 1, 'answerText': 'x=2或3', 'useAi': False, **patch_body}
+            body = {'questionId': 1, 'answerText': 'x=2或3', **patch_body}
             self.request('POST', '/api/attempts', body, cookie=self.student, expect=400)
-        self.request('POST', '/api/attempts', {'questionId': 99999, 'answerText': 'x', 'useAi': False}, cookie=self.student, expect=404)
+        self.request('POST', '/api/attempts', {'questionId': 99999, 'answerText': 'x'}, cookie=self.student, expect=404)
         self.request('POST', '/api/questions/1/generate', {'kind': 'fake'}, cookie=self.student, expect=400)
         self.request('GET', '/api/questions/99999/recommendations', cookie=self.student, expect=404)
 
@@ -779,16 +794,17 @@ class APITests(unittest.TestCase):
         self.request('POST', '/api/attempts', raw=b'{}', cookie=self.student,
                      extra={'Content-Length': str(server.MAX_BODY + 1)}, expect=413)
         huge = 'data:image/png;base64,' + base64.b64encode(b'x' * (server.MAX_FILE + 1)).decode()
-        self.request('POST', '/api/attempts', {'questionId': 1, 'answerText': '', 'useAi': False, 'image': huge},
+        self.request('POST', '/api/attempts', {'questionId': 1, 'answerText': '', 'image': huge},
                      cookie=self.student, expect=413)
         broken = png_url().replace('data:image/png;', 'data:image/jpeg;')
-        self.request('POST', '/api/attempts', {'questionId': 1, 'answerText': '', 'useAi': False, 'image': broken}, cookie=self.student, expect=400)
+        self.request('POST', '/api/attempts', {'questionId': 1, 'answerText': '', 'image': broken}, cookie=self.student, expect=400)
 
     def test_no_ai_handwritten_and_missing_answer_pending(self):
-        self.assertEqual(self.submit('x=2或3', image=png_url(), useAi=True)['status'], 'pending')
-        self.assertEqual(self.submit('x=2或3', useAi=True)['gradingMethod'], 'rule-final')
+        # 自主練習（不屬於任何作業）不會使用 AI 批改。
+        self.assertEqual(self.submit('x=2或3', image=png_url())['status'], 'pending')
+        self.assertEqual(self.submit('x=2或3')['gradingMethod'], 'rule-final')
         self.request('POST', '/api/questions/import', {'questions': [dict(self.draft, answer='')]}, cookie=self.teacher, expect=200)
-        result = self.request('POST', '/api/attempts', {'questionId': 17, 'answerText': '2', 'useAi': False}, cookie=self.student, expect=200)[1]['attempt']
+        result = self.request('POST', '/api/attempts', {'questionId': 17, 'answerText': '2'}, cookie=self.student, expect=200)[1]['attempt']
         self.assertEqual(result['status'], 'pending')
         self.assertIsNone(result['score'])
 
@@ -987,13 +1003,14 @@ class APITests(unittest.TestCase):
 
         self.app.ai.configured = True
         self.app.ai.mode = 'local'
+        aid = self.ai_assignment([qid])
         graded = {'feedback': '整體不錯，但漏了一個根。',
                   'items': [{'percent': 100, 'comment': '方程正確。'},
                             {'percent': 100, 'comment': '分解正確。'},
                             {'percent': 50, 'comment': '只寫出一個根。'}]}
         with patch.object(self.app.ai, 'call', return_value=graded) as ai:
             _, response, _ = self.request('POST', '/api/attempts',
-                                          {'questionId': qid, 'answerText': 'x=2', 'useAi': True},
+                                          {'questionId': qid, 'answerText': 'x=2', 'assignmentId': aid},
                                           cookie=self.student, expect=200)
         attempt = response['attempt']
         # 6 分 × 30/40/30% → 各項配分 1.8 / 2.4 / 1.8；達成 100/100/50% → 1.8 + 2.4 + 0.9 = 5.1
@@ -1008,22 +1025,31 @@ class APITests(unittest.TestCase):
         self.assertEqual(len(response['solution']['rubric']), 3)
         # 項目數不符 → 502，不保存成績
         with patch.object(self.app.ai, 'call', return_value={'feedback': 'x', 'items': [{'percent': 50, 'comment': 'a'}]}):
-            self.request('POST', '/api/attempts', {'questionId': qid, 'answerText': 'x=2', 'useAi': True},
+            self.request('POST', '/api/attempts', {'questionId': qid, 'answerText': 'x=2', 'assignmentId': aid},
                          cookie=self.student, expect=502)
         # 百分比超範圍會被夾在 0–100
         clamped = {'feedback': 'y', 'items': [{'percent': 999, 'comment': 'a'}, {'percent': -5, 'comment': 'b'},
                                              {'percent': 50, 'comment': 'c'}]}
         with patch.object(self.app.ai, 'call', return_value=clamped):
             _, r2, _ = self.request('POST', '/api/attempts',
-                                    {'questionId': qid, 'answerText': 'x=2', 'useAi': True},
+                                    {'questionId': qid, 'answerText': 'x=2', 'assignmentId': aid},
                                     cookie=self.student, expect=200)
         self.assertAlmostEqual(r2['attempt']['score'], 1.8 + 0 + 0.9, places=6)
+        # 同一題放在「教師未啟用 AI」的作業中：完全不呼叫模型，退回規則評分。
+        plain = self.ai_assignment([qid], ai_grading=False)
+        with patch.object(self.app.ai, 'call') as ai2:
+            _, no_ai, _ = self.request('POST', '/api/attempts',
+                                       {'questionId': qid, 'answerText': '$x=2$ 或 $x=3$', 'assignmentId': plain},
+                                       cookie=self.student, expect=200)
+        ai2.assert_not_called()
+        self.assertEqual(no_ai['attempt']['gradingMethod'], 'rule-final')
+        self.assertEqual(no_ai['attempt']['score'], 6)
 
     def test_attempt_solution_only_when_graded_and_rubric_hidden_from_students(self):
         # 未批閱的作答不揭露詳解
         self.app.ai.configured = False
         _, pending, _ = self.request('POST', '/api/attempts',
-                                     {'questionId': 1, 'answerText': '', 'image': png_url(), 'useAi': False},
+                                     {'questionId': 1, 'answerText': '', 'image': png_url()},
                                      cookie=self.student, expect=200)
         self.assertEqual(pending['attempt']['status'], 'pending')
         self.assertIsNone(pending['solution'])
@@ -1043,7 +1069,8 @@ class APITests(unittest.TestCase):
         self.app.ai.configured = True
         self.app.ai.mode = 'external'
         result = {'score': 4, 'feedback': '步驟部分正確', 'steps': [{'label': '因式分解', 'earned': 4, 'max': 6, 'comment': '需補兩根'}]}
-        body = {'questionId': 1, 'answerText': 'x=2', 'useAi': True}
+        aid = self.ai_assignment([1])
+        body = {'questionId': 1, 'answerText': 'x=2', 'assignmentId': aid}
         with patch.object(self.app.ai, 'call', return_value=result) as ai:
             self.request('POST', '/api/attempts', body, cookie=self.student, expect=403)
             ai.assert_not_called()
@@ -1187,8 +1214,7 @@ class AIFailureTests(unittest.TestCase):
 
     def test_network_failure_message(self):
         client = server.AIClient()
-        client.configure({'base_url': 'http://127.0.0.1:9/v1', 'model': 'm', 'api_key': 'k',
-                          'vision_model': '', 'thinking': False})
+        client.configure({'base_url': 'http://127.0.0.1:9/v1', 'model': 'm', 'api_key': 'k',                          'vision_model': '', 'thinking': False})
         with self.assertRaises(server.APIError) as ctx:
             client.call('x', {})
         self.assertIn('無法連線 AI 服務', ctx.exception.message)
@@ -1202,6 +1228,29 @@ class AIFailureTests(unittest.TestCase):
         # 尾端多一個逗號之類的小瑕疵會被救援，不應該整批失敗
         srv = self.serve(self.reply(content='{"drafts":[{"title":"a"},]}', finish='stop'))
         self.assertEqual(self.client(srv).call('x', {})['drafts'], [{'title': 'a'}])
+
+    def test_json_failure_is_retried_with_stricter_instruction(self):
+        bodies = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                payload = json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0))))
+                bodies.append(payload)
+                content = '我先說明一下：這題我不確定。' if len(bodies) == 1 else '{"ok": true}'
+                out = json.dumps({'choices': [{'message': {'content': content}, 'finish_reason': 'stop'}]}).encode()
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Content-Length', str(len(out)))
+                self.end_headers()
+                self.wfile.write(out)
+
+            def log_message(self, *a):
+                pass
+
+        srv = self.serve(Handler)
+        self.assertEqual(self.client(srv).call('x', {}), {'ok': True})
+        self.assertEqual(len(bodies), 2, '不是有效 JSON 時應重試一次')
+        self.assertIn('只輸出單一 JSON 物件', bodies[1]['messages'][0]['content'])
 
     def test_truncated_response_is_salvaged(self):
         srv = self.serve(self.reply(content='```json\n{"drafts":[{"title":"a"},{"title":"b"}', finish='length'))
@@ -1219,6 +1268,23 @@ class AIFailureTests(unittest.TestCase):
         self.assertEqual(server.salvage_json('{"drafts":[{"a":1},{"b":')['drafts'], [{'a': 1}])
         self.assertIsNone(server.salvage_json('完全不是 JSON'))
         self.assertIsNone(server.salvage_json('{"a": "未收尾'))
+        self.assertIsNone(server.salvage_json('{"a": NaN}'))
+
+    def test_extract_json_recovers_noisy_model_output(self):
+        # 模型常先寫一句說明、或用 markdown 圍欄、或用全形引號，這些都應能取回。
+        self.assertEqual(server.extract_json('好的，以下是結果：\n{"score": 4, "feedback": "不錯"}'),
+                         {'score': 4, 'feedback': '不錯'})
+        self.assertEqual(server.extract_json('```json\n{"a": 1}\n```'), {'a': 1})
+        self.assertEqual(server.extract_json('{“score”: 4, “feedback”: “不錯”}'), {'score': 4, 'feedback': '不錯'})
+        self.assertEqual(server.extract_json('{"a": 1,}'), {'a': 1})
+        self.assertEqual(server.extract_json('{"a": 1，"b": 2}'), {'a': 1, 'b': 2})
+        # 結構位置的全形標點會被修正，但字串內容裡的中文標點必須原樣保留。
+        self.assertEqual(server.extract_json('{"feedback"："第一步：化簡，先乘開"}'),
+                         {'feedback': '第一步：化簡，先乘開'})
+        # 真的不是 JSON 時仍要回 None，不能硬掰出內容。
+        self.assertIsNone(server.extract_json('這不是 JSON，只是一段說明文字。'))
+        self.assertIsNone(server.extract_json('{"a": "未收尾'))
+        self.assertIsNone(server.extract_json(''))
 
     def test_paper_chunks_split_on_question_numbers_without_losing_text(self):
         self.assertEqual(server.paper_chunks('1. 短題目'), ['1. 短題目'])

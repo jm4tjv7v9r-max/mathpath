@@ -528,11 +528,18 @@ const HANDWRITING=makePng(400,300);
   await page.locator('#assignment-title').fill('一元二次方程模擬測驗');
   await page.locator('#assignment-kind').selectOption('quiz');
   await page.locator('#assignment-duration').fill('30');
+  // AI 建議評分是教師的決定：佈置作業時由教師勾選，且必須明示「僅供教師覆核」。
+  assert.equal(await page.locator('#assignment-ai').count(),1,'教師佈置作業應有 AI 建議評分選項');
+  assert.equal(await page.locator('#assignment-ai').isDisabled(),false,'已接入 AI 時教師可啟用 AI 建議評分');
+  assert.match(await page.locator('#assignment-ai').locator('xpath=..').innerText(),/僅供教師覆核/);
+  await page.locator('#assignment-ai').check();
+  await page.screenshot({path:path.join(__dirname,'..','MathPath-AI批改由教師選擇.png'),fullPage:true});
   await page.locator('[name=assignment-questions]').first().check();
   await page.locator('#assignment-form button[type=submit]').click();
   await page.waitForFunction(()=>!document.querySelector('#modal-root .modal'));
   assert.equal(durationSent.kind,'quiz','應以測驗類型發布');
   assert.equal(durationSent.durationMinutes,30,'教師設定的時間限制應送出');
+  assert.equal(durationSent.aiGrading,true,'AI 建議評分應由教師決定並送出');
 
   // 訂正重做閉環：教師退回 → 學生看到要求 → 完成訂正後提交。
   await page.locator('[data-page=homework]').first().click();
@@ -676,12 +683,60 @@ const HANDWRITING=makePng(400,300);
   await page.keyboard.type('2');
   assert.equal(await page.locator('#final-answer').inputValue(), '\\frac{1}{2}', '應完成分數輸入');
   assert.ok(await page.locator('#final-answer-preview .katex').count() > 0, '預覽應以 KaTeX 渲染輸入的數學式');
+  // 切到「手寫解題」後鍵盤隱藏，但已輸入的數學式仍要以排版結果顯示，
+  // 否則學生只會看到 \frac{1}{2} 這種原始語法（容易誤解成亂碼）。
+  await page.locator('[data-answer-mode=hand]').click();
+  assert.equal(await page.locator('#math-keyboard').isVisible(), false, '手寫解題不應顯示數學鍵盤');
+  assert.equal(await page.locator('#final-answer-preview').isVisible(), true, '手寫解題仍應顯示排版預覽');
+  assert.ok(await page.locator('#final-answer-preview .katex').count() > 0, '預覽應顯示已輸入數學式的排版結果');
+  await page.locator('[data-answer-mode=text]').click();
+  assert.equal(await page.locator('#math-keyboard').isVisible(), true, '切回文字作答應再顯示數學鍵盤');
   // 切換分類後可插入其他符號
   await page.locator('.mk-tab', {hasText:'集合'}).click();
   await page.locator('.mk-key', {hasText:'ℝ'}).click();
   assert.match(await page.locator('#final-answer').inputValue(), /\\mathbb\{R\}/, '應插入實數符號');
   await page.screenshot({path:path.join(__dirname,'..','MathPath-數學鍵盤.png'),fullPage:true});
 
+  // ── 是否由 AI 批改：由教師在佈置作業時決定，學生不能自行選擇 ──
+  const studentState = extra => route => route.fulfill({json:{
+    user:{id:1,name:'介面測試學生',role:'student'},
+    questions:[blankQuestion],
+    attempts:[graded(1,1,'一元二次方程',6,6)],
+    stats:{completed:1,accuracy:100,streak:1,minutes:5},
+    ai:{configured:true,mode:'external'},
+    topics:['一元二次方程'],...extra}});
+  const openAssignmentQuestion=async()=>{
+    await page.locator('[data-assignment]').first().click();
+    await page.locator('[data-assignment-q]').click();
+    await page.locator('#answer-area').waitFor({timeout:8000});
+  };
+  const assignmentDetail = aiGrading => route => route.fulfill({json:{
+    assignment:{...assignment,aiGrading},
+    questions:[assignmentQuestion],
+    attempts:[],
+    mySubmission:{status:'not_started',submittedAt:null,resubmittedAt:null,submitCount:0,late:false,correction:null},
+    report:{score:null,maxScore:6,totalScoredPoints:0,pendingCount:0,confirmedScore:null,confirmedCount:0,topicStats:[],suggestion:advice}}});
+
+  // 情境一：教師沒有啟用 AI → 學生只看到唯讀說明，沒有可勾選的 AI 選項
+  await page.route('**/api/state', studentState({}));
+  await page.route('**/api/assignments/1', assignmentDetail(false));
+  await page.reload({waitUntil:'networkidle'});
+  await openAssignmentQuestion();
+  assert.equal(await page.locator('#use-ai').count(),0,'學生不應再有「使用 AI 批改」的勾選項');
+  assert.equal(await page.locator('#consent-ai').count(),0,'未啟用 AI 的作業不應要求外部 AI 同意');
+  assert.match(await page.locator('#main').innerText(),/本題不使用 AI 批改/);
+  assert.equal((await page.locator('#submit-answer').innerText()).includes('批閱'),false,'未啟用 AI 時不應寫「提交與批閱」');
+
+  // 情境二：教師啟用了 AI 建議評分 → 學生看到唯讀說明，外部模型仍需同意資料傳送
+  await page.route('**/api/assignments/1', assignmentDetail(true));
+  await page.reload({waitUntil:'networkidle'});
+  await openAssignmentQuestion();
+  assert.equal(await page.locator('#use-ai').count(),0,'學生仍不應有 AI 批改選項');
+  assert.match(await page.locator('#main').innerText(),/由教師設定使用 AI 建議評分/);
+  assert.match(await page.locator('#submit-answer').innerText(),/提交與批閱/);
+  assert.equal(await page.locator('#consent-ai').count(),1,'外部模型需學生同意資料傳送');
+  await page.screenshot({path:path.join(__dirname,'..','MathPath-AI批改由教師決定.png'),fullPage:true});
+
   assert.deepEqual(errors,[]);await browser.close();
-  console.log('PASS: answer modes (choice = click-only with single option list, fill-in = handwriting/text with math keyboard), font scale switch (guest, persisted, 3 levels, no mobile overflow), login page (role cards, remember checked, remembered account), calendar (marks + entry from homework), question type (card badge, filter, draft qtype, rule analysis), full-auto split+import, homework, draft save/reload/restore, logout cleanup, weak-topic drill-down, results filters, CSV export, teacher annotation (pen/ellipse/arrow/highlight/undo/clear/save), AI suggested annotation with student read-back and teacher drag-to-adjust saved positions, correction loop (teacher return with note, student banner, pending guard, resubmit), self-serve mock exam (setup, countdown, per-question answer with mockId, submit + instant score + advice), AI endpoint page (test/save, key never read back), bulk account parse/errors/create, mobile layout, no JS errors. Fixture API only; no server started.');
+  console.log('PASS: answer modes (choice = click-only with single option list, fill-in = handwriting/text with math keyboard + always-visible rendered preview), AI grading decided by teacher (teacher checkbox on assign, student read-only hint, no student use-ai toggle, external consent), font scale switch (guest, persisted, 3 levels, no mobile overflow), login page (role cards, remember checked, remembered account), calendar (marks + entry from homework), question type (card badge, filter, draft qtype, rule analysis), full-auto split+import, homework, draft save/reload/restore, logout cleanup, weak-topic drill-down, results filters, CSV export, teacher annotation (pen/ellipse/arrow/highlight/undo/clear/save), AI suggested annotation with student read-back and teacher drag-to-adjust saved positions, correction loop (teacher return with note, student banner, pending guard, resubmit), self-serve mock exam (setup, countdown, per-question answer with mockId, submit + instant score + advice), AI endpoint page (test/save, key never read back), bulk account parse/errors/create, mobile layout, no JS errors. Fixture API only; no server started.');
 })().catch(e=>{console.error(e);process.exit(1)});

@@ -60,6 +60,10 @@ class Homework:
         if 'duration_minutes' not in assignment_columns:
             # 模擬測驗的作答時間上限；NULL 表示不限時。
             db.execute('ALTER TABLE assignments ADD COLUMN duration_minutes INTEGER')
+        if 'ai_grading' not in assignment_columns:
+            # 是否使用 AI 建議評分：由教師在佈置作業時決定，學生不可自行選擇。
+            # 舊資料一律視為不啟用（0），避免未經教師同意的 AI 批改。
+            db.execute('ALTER TABLE assignments ADD COLUMN ai_grading INTEGER NOT NULL DEFAULT 0')
         for name, sql in (
             ('resubmitted_at', 'ALTER TABLE assignment_recipients ADD COLUMN resubmitted_at TEXT'),
             ('submit_count', 'ALTER TABLE assignment_recipients ADD COLUMN submit_count INTEGER NOT NULL DEFAULT 0'),
@@ -135,6 +139,11 @@ class Homework:
         if not allowed:
             self.fail(403, '没有此作业的访问权限。')
         return row
+
+    @staticmethod
+    def ai_grading(row):
+        """這份作業是否由教師啟用了 AI 建議評分（舊資料沒有此欄位時視為否）。"""
+        return bool(row['ai_grading']) if 'ai_grading' in row.keys() else False
 
     def questions(self, db, aid):
         return [json.loads(r['payload']) for r in db.execute(
@@ -370,6 +379,7 @@ class Homework:
         item = {'id': row['id'], 'title': row['title'], 'kind': row['kind'], 'classId': row['class_id'],
                 'className': row['class_name'],
                 'durationMinutes': row['duration_minutes'] if 'duration_minutes' in row.keys() else None,
+                'aiGrading': self.ai_grading(row),
                 'dueAt': row['due_at'], 'createdAt': row['created_at'], 'questionCount': len(questions),
                 'totalPoints': sum(q['points'] for q in questions), 'studentCount': total,
                 'submittedCount': None, 'gradedCount': None, 'status': 'published',
@@ -593,7 +603,7 @@ class Homework:
         if method == 'POST' and path == '/api/assignments':
             self.app.teacher(user)
             self.fields(body, ('title', 'classId', 'questionIds', 'dueAt', 'description', 'allowLate', 'kind',
-                               'durationMinutes'),
+                               'durationMinutes', 'aiGrading'),
                         ('title', 'classId', 'questionIds', 'dueAt'))
             title = self.text(body['title'], '作业标题', 200)
             kind = body.get('kind', 'homework')
@@ -606,6 +616,12 @@ class Homework:
             allow_late = body.get('allowLate', False)
             if type(allow_late) is not bool:
                 self.fail(400, 'allowLate 必须是布尔值。')
+            # 是否使用 AI 建議評分：只有教師能決定，且 AI 未接入時不得啟用（避免出現假的 AI 成績）。
+            ai_grading = body.get('aiGrading', False)
+            if type(ai_grading) is not bool:
+                self.fail(400, 'aiGrading 必须是布尔值。')
+            if ai_grading and not self.app.ai.configured:
+                self.fail(409, '尚未接入 AI 模型，无法启用 AI 建议评分。')
             duration = body.get('durationMinutes')
             if duration is not None:
                 duration = self.number(duration, '作答时间（分钟）', 1, 300, True)
@@ -623,8 +639,8 @@ class Homework:
                 if any(not self.recommendable(q) for q in questions):
                     self.fail(400, '作业题必须已有非空答案且已完成教师核验。')
                 self.deadline(due)
-                cur = db.execute('INSERT INTO assignments(teacher_id,class_id,class_name,title,description,due_at,created_at,allow_late,kind,duration_minutes) '
-                                 'VALUES(?,?,?,?,?,?,?,?,?,?)', (user['id'], cid, classroom['name'], title, description, due, self.utc_now(), int(allow_late), kind, duration))
+                cur = db.execute('INSERT INTO assignments(teacher_id,class_id,class_name,title,description,due_at,created_at,allow_late,kind,duration_minutes,ai_grading) '
+                                 'VALUES(?,?,?,?,?,?,?,?,?,?,?)', (user['id'], cid, classroom['name'], title, description, due, self.utc_now(), int(allow_late), kind, duration, int(ai_grading)))
                 aid = cur.lastrowid
                 db.executemany('INSERT INTO assignment_questions(assignment_id,question_id,position,payload) VALUES(?,?,?,?)',
                                [(aid, q['id'], i, json.dumps(q, ensure_ascii=False)) for i, q in enumerate(questions)])

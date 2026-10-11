@@ -1129,9 +1129,72 @@ def salvage_json(text, limit=40):
     for cut, rest in reversed(candidates[-limit:]):
         tail = ''.join(']' if c == '[' else '}' for c in reversed(rest))
         try:
-            return json.loads(text[:cut] + tail)
+            return json.loads(text[:cut] + tail, parse_constant=_json_reject_constant)
         except ValueError:
             continue
+    return None
+
+
+def strip_json_fences(text):
+    """移除 markdown 圍欄（```json … ```）；圍欄可能出現在任何位置，不只在頭尾。"""
+    if '```' not in text:
+        return text
+    return re.sub(r'```[a-zA-Z0-9_+-]*\s*', '', text)
+
+
+def repair_json_text(text):
+    """修正常見但不合法的 JSON 寫法：全形／彎引號、結構位置的全形標點、尾逗號。
+
+    只動「結構位置」的標點（緊跟在引號、數字或括號之後），避免改到字串內容裡
+    正常的中文標點，例如「第一步：化簡」必須原樣保留。
+    """
+    fixed = text
+    for bad, good in (('“', '"'), ('”', '"'), ('‘', "'"), ('’', "'")):
+        if bad in fixed:
+            fixed = fixed.replace(bad, good)
+    # 全形冒號／逗號只在結構位置替換。
+    fixed = re.sub(r'(["\d\]}])\s*：', r'\1:', fixed)
+    fixed = re.sub(r'(["\d\]}])\s*，\s*(?=["{\[\d])', r'\1, ', fixed)
+    # 尾逗號：{"a":1,} / [1,2,]
+    fixed = re.sub(r',(\s*[}\]])', r'\1', fixed)
+    # 整份都用單引號時才轉換，避免破壞字串內合法的撇號。
+    if '"' not in fixed and "'" in fixed:
+        fixed = fixed.replace("'", '"')
+    return fixed
+
+
+def _json_reject_constant(_value):
+    raise ValueError('不支援 NaN / Infinity')
+
+
+def extract_json(text, limit=40):
+    """從 AI 回應取出 JSON 物件；容忍夾雜說明文字、markdown 圍欄、尾逗號與全形引號。
+
+    這是「回應內容不是有效 JSON」的主要補救路徑：模型常會先寫一句說明再輸出 JSON，
+    或把 JSON 包在 ```json 圍欄內，甚至用全形引號。全部嘗試過仍取不到才回 None。
+    """
+    if not isinstance(text, str) or not text.strip():
+        return None
+    candidates = []
+    for base in (text.strip(), strip_json_fences(text).strip()):
+        if base and base not in candidates:
+            candidates.append(base)
+        start, end = base.find('{'), base.rfind('}')
+        if 0 <= start < end:
+            sub = base[start:end + 1]
+            if sub not in candidates:
+                candidates.append(sub)
+    for base in list(candidates):
+        fixed = repair_json_text(base)
+        if fixed not in candidates:
+            candidates.append(fixed)
+    for candidate in candidates:
+        try:
+            decoded = json.loads(candidate, parse_constant=_json_reject_constant)
+        except ValueError:
+            decoded = salvage_json(candidate, limit)
+        if isinstance(decoded, dict):
+            return decoded
     return None
 
 
@@ -1224,6 +1287,22 @@ class AIClient:
             fail(403, '資料將傳送至外部模型；必須先明確同意外部上傳。')
 
     def call(self, instruction, payload, image=None, model=None):
+        """呼叫模型並取回 JSON 物件。
+
+        回應不是有效 JSON 時（常見於模型先寫一句說明再輸出 JSON），除了盡量救援之外，
+        再用更嚴格的指示重試一次；其他錯誤（金鑰、逾時、截斷）不重試，避免浪費費用。
+        """
+        try:
+            return self._call_once(instruction, payload, image, model)
+        except APIError as exc:
+            if '不是有效 JSON' not in exc.message:
+                raise
+            ai_log('JSON 解析失敗，改用嚴格指示重試一次')
+            return self._call_once(
+                instruction + ' 只輸出單一 JSON 物件：第一個字元就是 {，不要任何說明文字、不要 markdown 圍欄。',
+                payload, image, model)
+
+    def _call_once(self, instruction, payload, image=None, model=None):
         if not self.configured:
             fail(409, '尚未設定 AI 模型；請設定伺服器環境變數後再試。')
         if not self.slots.acquire(blocking=False):
@@ -1322,14 +1401,14 @@ class AIClient:
             except APIError:
                 raise
             except ValueError:
-                decoded = salvage_json(raw)
+                decoded = extract_json(raw)
                 if decoded is None:
                     ai_log(f'json decode failed (finish={finish}): {raw[:400]!r}')
                     if finish == 'length':
                         fail(502, 'AI 回應因長度上限被截斷，未保存；請把試卷分成幾段分批拆分後重試。')
                     fail(502, 'AI 回傳的內容不是有效 JSON，未保存；請重試或改用其他模型。')
-                self.truncated = True
-                ai_log(f'salvaged truncated response (finish={finish}, {len(raw)} chars)')
+                self.truncated = finish == 'length'
+                ai_log(f'recovered JSON from noisy response (finish={finish}, {len(raw)} chars)')
             if not isinstance(decoded, dict) or validate_text_total(decoded) > MAX_TEXT:
                 raise ValueError()
             return decoded
@@ -2241,15 +2320,16 @@ class Application:
                     self.insert_question(db, q, figure, figure_mime)
             return {'count': len(prepared)}, headers
         if method == 'POST' and path == '/api/attempts':
-            fields(body, ('questionId', 'answerText', 'image', 'useAi', 'consentExternal', 'assignmentId', 'mockId'), ('questionId', 'answerText', 'useAi'))
+            fields(body, ('questionId', 'answerText', 'image', 'consentExternal', 'assignmentId', 'mockId'),
+                   ('questionId', 'answerText'))
             assignment_id = (number(body['assignmentId'], '作业编号', 1, 2**63 - 1, True)
                              if 'assignmentId' in body else None)
             qid = number(body['questionId'], '題目編號', 1, 2**63 - 1, True)
             mock_id = (number(body['mockId'], '模擬測驗編號', 1, 2**63 - 1, True)
                        if 'mockId' in body else None)
             answer = text(body['answerText'], '作答文字', MAX_TEXT, empty=True)
-            if type(body['useAi']) is not bool or ('consentExternal' in body and type(body['consentExternal']) is not bool):
-                fail(400, 'useAi 和 consentExternal 必須是布林值。')
+            if 'consentExternal' in body and type(body['consentExternal']) is not bool:
+                fail(400, 'consentExternal 必須是布林值。')
             image, mime = (None, None)
             if 'image' in body:
                 image, mime = validate_image(body['image'])
@@ -2257,15 +2337,19 @@ class Application:
                 fail(400, '請填寫答案或提交手寫圖片。')
             if assignment_id is not None and mock_id is not None:
                 fail(400, '不能同時屬於作業與模擬測驗。')
+            assignment_row = None
             with self.db() as db:
                 if assignment_id is not None:
-                    self.homework.assert_open(db, assignment_id, user, qid)
+                    assignment_row = self.homework.assert_open(db, assignment_id, user, qid)
                     q = self.homework.question(db, assignment_id, qid)
                 elif mock_id is not None:
                     self.mock.assert_open(db, mock_id, user, qid)
                     q = self.mock.question(db, mock_id, qid)
                 else:
                     q = self.get_question(db, qid)
+            # 是否使用 AI 建議評分由教師在佈置作業時決定，學生不可自行選擇。
+            # 因此只有「教師已啟用 AI 評分」的作業，且 AI 已設定時，才會呼叫模型。
+            ai_grading = bool(self.homework.ai_grading(assignment_row)) if assignment_row is not None else False
             image_key = None
             if image is not None and self.storage.mode == 'r2':
                 image_key = self.storage.put('attempts', image, mime)
@@ -2273,7 +2357,7 @@ class Application:
             score, status, ai_steps = None, 'pending', []
             method = 'pending-teacher'
             feedback = '手寫圖片尚未批閱，等待教師評分；沒有產生 AI 成績。' if image else '此題尚無參考答案，等待教師批閱。'
-            if self.ai.configured and body['useAi']:
+            if self.ai.configured and ai_grading:
                 self.ai.consent(body.get('consentExternal'))
                 rubric = q.get('rubric') or []
                 if rubric:
