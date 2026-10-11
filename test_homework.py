@@ -56,6 +56,18 @@ class HomeworkTests(unittest.TestCase):
     def detail(self, aid, user=None):
         return self.call('GET', f'/api/assignments/{aid}', user=user)
 
+    def teacher_attempt(self, aid, attempt_id, user=None):
+        """以教師視角讀取作業作答。
+
+        作業／測驗在教師批閱前不會向學生揭露分數與 AI 批閱結果，
+        因此要驗證真實成績時一律走教師視角。
+        """
+        data = self.call('GET', f'/api/assignments/{aid}', user=self.teacher if user is None else user)
+        return next(a for a in data['attempts'] if a['id'] == attempt_id)
+
+    def student_attempt(self, aid, attempt_id):
+        return next(a for a in self.detail(aid)['attempts'] if a['id'] == attempt_id)
+
     def ai_assignment(self, questions=(1,)):
         """建立一份教師已啟用 AI 建議評分的作業（呼叫前需先 configure_ai）。"""
         return self.assignment(questions, aiGrading=True)
@@ -160,8 +172,54 @@ class HomeworkTests(unittest.TestCase):
         self.error(400, 'POST', '/api/attempts', {'assignmentId': aid, 'questionId': 1, 'answerText': 'x=2', 'useAi': True})
         with patch.object(self.app.ai, 'call', return_value=self.ai_result()) as ai:
             attempt = self.attempt(aid, answer='x=2')
-        self.assertEqual(attempt['gradingMethod'], 'ai-advisory')
         self.assertTrue(ai.called)
+        # 學生在教師批閱前看不到分數與 AI 批閱結果；教師端才看得到。
+        self.assertEqual(attempt['gradingMethod'], 'awaiting-review')
+        self.assertIsNone(attempt['score'])
+        self.assertIsNone(attempt['suggestion'])
+        self.assertTrue(attempt['awaitingReview'])
+        self.assertEqual(self.teacher_attempt(aid, attempt['id'])['gradingMethod'], 'ai-advisory')
+
+    def test_assignment_scores_hidden_until_teacher_reviews(self):
+        """作業／測驗：教師批閱前，學生看不到分數、AI 批閱結果、詳解與學習建議。"""
+        self.configure_ai()
+        aid = self.ai_assignment((1,))
+        with patch.object(self.app.ai, 'call', side_effect=[self.ai_result(),
+                                                            {'strength': 'a', 'focus': 'b', 'nextStep': 'c'}]):
+            attempt = self.attempt(aid, answer='x=2')
+        # 學生端：只有「等待批閱」，沒有分數、步驟、建議、AI 原分。
+        self.assertEqual(attempt['status'], 'pending')
+        self.assertEqual(attempt['gradingMethod'], 'awaiting-review')
+        self.assertTrue(attempt['awaitingReview'])
+        self.assertEqual(attempt['feedback'], '')
+        self.assertEqual(attempt['steps'], [])
+        for key in ('score', 'aiScore', 'ruleScore', 'confirmedScore', 'suggestion'):
+            self.assertIsNone(attempt[key], key)
+        # 作業報告同樣不揭露，只看得到批閱進度。
+        report = self.detail(aid)['report']
+        self.assertIsNone(report['score'])
+        self.assertIsNone(report['aiScore'])
+        self.assertIsNone(report['percent'])
+        self.assertIsNone(report['suggestion'])
+        self.assertEqual(report['pendingCount'], 1)
+        self.assertTrue(report['awaitingReview'])
+        # 學習足跡的統計也不提早計入未批閱的作業。
+        state = self.call('GET', '/api/state')
+        self.assertEqual(state['stats']['completed'], 0)
+        self.assertEqual([a['status'] for a in state['attempts']], ['pending'])
+        # 教師端仍看得到真實的 AI 建議分。
+        stored = self.teacher_attempt(aid, attempt['id'])
+        self.assertEqual(stored['score'], 4)
+        self.assertEqual(stored['aiScore'], 4)
+        self.assertEqual(stored['suggestion']['source'], 'ai')
+        # 教師批閱後才揭露分數與教師確認分。
+        self.review(attempt, 5)
+        revealed = self.student_attempt(aid, attempt['id'])
+        self.assertEqual(revealed['score'], 5)
+        self.assertEqual(revealed['confirmedScore'], 5)
+        self.assertNotIn('awaitingReview', revealed)
+        self.assertEqual(self.detail(aid)['report']['score'], 5)
+        self.assertEqual(self.call('GET', '/api/state')['stats']['completed'], 1)
 
     def test_practice_always_ai_graded_and_recorded_without_teacher(self):
         # 自主練習（沒有作業編號）：一律 AI 即時評分、記錄分數，不需教師批閱。
@@ -221,8 +279,13 @@ class HomeworkTests(unittest.TestCase):
         with patch.object(self.app.ai, 'call') as ai:
             attempt = self.attempt(aid, answer='x=2或3')
         ai.assert_not_called()
-        self.assertEqual(attempt['gradingMethod'], 'rule-final')
-        self.assertIsNone(attempt['aiScore'])
+        stored = self.teacher_attempt(aid, attempt['id'])
+        self.assertEqual(stored['gradingMethod'], 'rule-final')
+        self.assertIsNone(stored['aiScore'])
+        self.assertEqual(stored['score'], 6)
+        # 規則核對也一樣：教師批閱前學生看不到分數。
+        self.assertEqual(attempt['gradingMethod'], 'awaiting-review')
+        self.assertIsNone(attempt['score'])
 
     def test_practice_external_model_requires_consent(self):
         # 自主練習用外部模型時，學生的資料傳送同意仍是必要條件。
@@ -275,7 +338,13 @@ class HomeworkTests(unittest.TestCase):
             q.update(answer='100', points=99, title='新标题', topic='函數', steps=['变更'], hint='新提示')
             db.execute('UPDATE questions SET payload=? WHERE id=1', (json.dumps(q),))
         attempt = self.attempt(aid)
-        self.assertEqual(attempt['score'], 6)
+        stored = self.teacher_attempt(aid, attempt['id'])
+        self.assertEqual(stored['score'], 6)
+        self.assertEqual(stored['maxScore'], 6)
+        self.assertEqual(stored['questionTitle'], '因式分解解二次方程')
+        self.assertEqual(stored['topic'], '一元二次方程')
+        # 學生端仍看得到題目資訊，但教師批閱前沒有分數。
+        self.assertIsNone(attempt['score'])
         self.assertEqual(attempt['maxScore'], 6)
         self.assertEqual(attempt['questionTitle'], '因式分解解二次方程')
         self.assertEqual(attempt['topic'], '一元二次方程')
@@ -358,17 +427,22 @@ class HomeworkTests(unittest.TestCase):
         old = self.attempt(aid, answer='x=2')
         new = self.attempt(aid)
         self.attempt(aid, 2, 'x=3或4')
+        # 教師批閱前，學生看不到分數；教師端統計仍只採每題最新作答。
         report = self.detail(aid)['report']
-        self.assertEqual(report['score'], 12)
-        self.assertEqual(report['topicStats'][0]['scoredCount'], 2)
-        self.assertEqual(report['topicStats'][0]['totalCount'], 2)
-        self.assertEqual(report['topicStats'][0]['maxScore'], 12)
+        self.assertIsNone(report['score'])
+        self.assertEqual(report['pendingCount'], 2)
+        teacher_stats = self.results(aid)['topicStats'][0]
+        self.assertEqual(teacher_stats['scoredCount'], 2)
+        self.assertEqual(teacher_stats['totalCount'], 4, '2 題 × 2 位收件學生')
+        self.assertEqual(teacher_stats['maxScore'], 12)
         self.assertEqual(len(self.detail(aid)['attempts']), 3)
+        # 被新作答取代的舊紀錄即使批閱了，也不改變學生看到的分數。
         self.review(old, 1)
-        self.assertEqual(self.detail(aid)['report']['score'], 12)
+        self.assertIsNone(self.detail(aid)['report']['score'])
         self.review(new, 5)
-        self.assertEqual(self.detail(aid)['report']['score'], 11)
+        self.assertEqual(self.detail(aid)['report']['score'], 5)
         self.assertEqual(self.detail(aid)['report']['confirmedCount'], 1)
+        self.assertEqual(self.detail(aid)['report']['pendingCount'], 1)
 
     def test_pending_not_zero_and_empty_scores_null(self):
         aid = self.assignment()
@@ -378,15 +452,29 @@ class HomeworkTests(unittest.TestCase):
         self.assertIsNone(report['score'])
         self.assertEqual(report['pendingCount'], 1)
         self.assertIsNone(report['topicStats'][0]['percent'])
-        self.assertIn('待批阅', pending['suggestion']['notice'])
+        self.assertTrue(report['awaitingReview'])
+        self.assertIsNone(report['suggestion'], '教師批閱前不顯示學習建議')
+        self.assertIn('待批阅', self.teacher_attempt(aid, pending['id'])['suggestion']['notice'])
         self.attempt(aid, 2, 'x=3或4')
         self.finalize(aid)
+        report = self.detail(aid)['report']
+        # 教師批閱前，即使題目已由規則評分，學生也看不到分數。
+        self.assertIsNone(report['score'])
+        self.assertEqual(report['totalScoredPoints'], 0)
+        self.assertEqual(report['pendingCount'], 2)
+        self.assertEqual(report['topicStats'][0]['percent'], None)
+        self.assertIsNone(self.results(aid)['summary']['averageScore'])
+        self.assertEqual(self.results(aid)['summary']['pendingReviewCount'], 1)
+        # 教師批閱後才揭露分數（只計已批閱題目，待批不當零分）。
+        text = self.teacher_attempt(aid, self.detail(aid, self.teacher)['attempts'][0]['id'])
+        reviewed = self.review(text, 6)
+        self.assertEqual(reviewed['attempt']['score'], 6)
         report = self.detail(aid)['report']
         self.assertEqual(report['score'], 6)
         self.assertEqual(report['totalScoredPoints'], 6)
         self.assertEqual(report['topicStats'][0]['percent'], 100)
-        self.assertIsNone(self.results(aid)['summary']['averageScore'])
-        self.assertEqual(self.results(aid)['summary']['pendingReviewCount'], 1)
+        self.assertEqual(report['pendingCount'], 1)
+        self.assertTrue(report['awaitingReview'])
 
     def test_averages_only_formal_complete_and_confirmed(self):
         aid = self.assignment()
@@ -430,16 +518,28 @@ class HomeworkTests(unittest.TestCase):
         with patch.object(self.app.ai, 'call', side_effect=[self.ai_result(), suggestion]) as ai:
             a = self.attempt(aid, answer='x=2')
         self.assertEqual(ai.call_count, 2)
-        self.assertEqual(a['suggestion']['source'], 'ai')
-        self.assertEqual(a['suggestion']['recommended'], [{'id': 2, 'title': '相似題：整數根', 'kind': 'similar'}])
-        self.assertEqual(a['aiScore'], 4)
-        self.assertIsNone(a['ruleScore'])
+        stored = self.teacher_attempt(aid, a['id'])
+        self.assertEqual(stored['suggestion']['source'], 'ai')
+        self.assertEqual(stored['suggestion']['recommended'], [{'id': 2, 'title': '相似題：整數根', 'kind': 'similar'}])
+        self.assertEqual(stored['aiScore'], 4)
+        self.assertIsNone(stored['ruleScore'])
+        # 學生端：教師批閱前看不到分數、AI 原分、步驟與學習建議。
+        self.assertIsNone(a['score'])
+        self.assertIsNone(a['aiScore'])
+        self.assertIsNone(a['suggestion'])
+        self.assertEqual(a['steps'], [])
         self.assertEqual(self.results(aid)['summary']['pendingReviewCount'], 1)
         reviewed = self.review(a, 5)['attempt']
         self.assertEqual(reviewed['aiScore'], 4)
         self.assertEqual(reviewed['confirmedScore'], 5)
         self.assertEqual(reviewed['suggestion']['source'], 'rules')
         self.assertEqual(self.results(aid)['summary']['pendingReviewCount'], 0)
+        # 教師批閱後，學生才看到分數與教師確認分。
+        own = self.student_attempt(aid, a['id'])
+        self.assertEqual(own['score'], 5)
+        self.assertEqual(own['confirmedScore'], 5)
+        self.assertNotIn('awaitingReview', own)
+        self.assertTrue(own['suggestion']['source'])
 
     def test_ai_suggestion_failure_saved_grade_and_old_mock_compatible(self):
         self.configure_ai()
@@ -448,10 +548,11 @@ class HomeworkTests(unittest.TestCase):
                         {'strength': '已评分', 'focus': [], 'nextStep': '复查'}, RuntimeError('模型异常')):
             with patch.object(self.app.ai, 'call', side_effect=[self.ai_result(), failure]):
                 a = self.attempt(aid)
-            self.assertEqual(a['score'], 4)
-            self.assertEqual(a['aiScore'], 4)
-            self.assertEqual(a['suggestion']['source'], 'rules')
-            self.assertIn('已保留批改成绩', a['suggestion']['notice'])
+            stored = self.teacher_attempt(aid, a['id'])
+            self.assertEqual(stored['score'], 4)
+            self.assertEqual(stored['aiScore'], 4)
+            self.assertEqual(stored['suggestion']['source'], 'rules')
+            self.assertIn('已保留批改成绩', stored['suggestion']['notice'])
         with self.app.db() as db:
             self.assertEqual(db.execute('SELECT count(*) FROM attempts').fetchone()[0], 4)
 
@@ -470,8 +571,9 @@ class HomeworkTests(unittest.TestCase):
             raise server.APIError(502, '建议服务失败')
         with patch.object(self.app.ai, 'call', side_effect=model):
             a = self.attempt(aid)
-        self.assertEqual(a['score'], 4)
-        self.assertIn('失败', a['suggestion']['notice'])
+        stored = self.teacher_attempt(aid, a['id'])
+        self.assertEqual(stored['score'], 4)
+        self.assertIn('失败', stored['suggestion']['notice'])
 
     def test_ai_history_only_own_graded_same_topic_five(self):
         for _ in range(7):
@@ -601,14 +703,26 @@ class HomeworkTests(unittest.TestCase):
 
     def test_topic_stats_multiple_topics_and_unanswered_excluded(self):
         aid = self.assignment((1, 6))
-        self.attempt(aid)
-        stats = {s['topic']: s for s in self.detail(aid)['report']['topicStats']}
+        attempt = self.attempt(aid)
+        # 教師批閱前學生看不到分數與百分比，但要看得到批閱進度。
+        report = self.detail(aid)['report']
+        self.assertIsNone(report['score'])
+        self.assertEqual(report['pendingCount'], 1, '只有已作答但未批閱的題目才算待批閱')
+        self.assertEqual({s['topic']: s['percent'] for s in report['topicStats']},
+                         {'一元二次方程': None, '函數': None})
+        # 教師端（含未批閱）統計只計已評題目，未作答不當零分。
+        stats = {s['topic']: s for s in self.results(aid)['topicStats']}
         self.assertEqual(stats['一元二次方程']['score'], 6)
-        self.assertEqual(stats['函數']['totalCount'], 1)
+        self.assertEqual(stats['函數']['totalCount'], 2)
         self.assertEqual(stats['函數']['scoredCount'], 0)
         self.assertIsNone(stats['函數']['percent'])
-        self.assertEqual(self.detail(aid)['report']['pendingCount'], 0)
-        self.assertEqual(self.results(aid)['topicStats'][0]['totalCount'], 2)
+        # 教師批閱後才揭露該題分數。
+        self.review(attempt, 6)
+        after = self.detail(aid)['report']
+        self.assertEqual(after['score'], 6)
+        self.assertEqual(after['pendingCount'], 0, '唯一已作答的題目已批閱')
+        self.assertEqual({s['topic']: s['percent'] for s in after['topicStats']},
+                         {'一元二次方程': 100.0, '函數': None})
 
     def test_ai_assignment_uses_snapshot_in_model_payload(self):
         self.configure_ai()
@@ -683,7 +797,10 @@ class HomeworkTests(unittest.TestCase):
         again.safe_initialize()
         result = again.dispatch('GET', f'/api/assignments/{aid}', {}, self.student, None, '127.0.0.1')[0]
         self.assertEqual(result['mySubmission']['status'], 'submitted')
-        self.assertEqual(result['report']['score'], 6)
+        # 教師批閱前，學生看不到分數（作業一律如此）。
+        self.assertIsNone(result['report']['score'])
+        self.assertEqual(result['report']['pendingCount'], 1)
+        self.assertTrue(result['report']['awaitingReview'])
 
 
     def test_teacher_adjusts_ai_marks_positions(self):
@@ -710,10 +827,14 @@ class HomeworkTests(unittest.TestCase):
         self.assertEqual([i['y'] for i in result['aiAnnotation']['issues']], [0.52, 0.73])
         self.assertIsNone(result['score'])
         self.assertEqual(result['status'], 'pending')
-        # 學生看得到教師調整後的位置。
-        own = next(x for x in self.detail(aid)['attempts'] if x['id'] == a['id'])
-        self.assertTrue(own['aiAnnotation']['adjusted'])
-        self.assertAlmostEqual(own['aiAnnotation']['issues'][0]['x'], 0.31)
+        # AI 批註屬 AI 批閱結果：教師批閱前學生看不到；批閱後才揭露教師調整過的位置。
+        own = self.student_attempt(aid, a['id'])
+        self.assertNotIn('aiAnnotation', own)
+        self.assertTrue(own['awaitingReview'])
+        self.review(a, 5)
+        after = self.student_attempt(aid, a['id'])
+        self.assertTrue(after['aiAnnotation']['adjusted'])
+        self.assertAlmostEqual(after['aiAnnotation']['issues'][0]['x'], 0.31)
         # 權限：其他教師與學生都不能移動標記。
         self.error(403, 'POST', path, {'marks': moved}, self.teacher2)
         self.error(403, 'POST', path, {'marks': moved}, self.student)
@@ -968,8 +1089,11 @@ class HomeworkTests(unittest.TestCase):
         # 學生看得到 AI 批註（未經教師確認）。
         with patch.object(self.app.ai, 'call', return_value=marks):
             self.call('POST', path, {}, self.teacher)
-        own = next(x for x in self.detail(aid)['attempts'] if x['id'] == a['id'])
-        self.assertEqual(own['aiAnnotation']['issues'][0]['label'], '符號錯誤')
+        # AI 批註屬 AI 批閱結果：教師批閱前學生看不到。
+        own = self.student_attempt(aid, a['id'])
+        self.assertNotIn('aiAnnotation', own)
+        self.assertTrue(own['awaitingReview'])
+        self.assertEqual(self.teacher_attempt(aid, a['id'])['aiAnnotation']['issues'][0]['label'], '符號錯誤')
         # 教師批註與 AI 批註各自獨立保存，清除 AI 不影響教師批註。
         marked = self.call('POST', f"/api/attempts/{a['id']}/annotation", {'image': test_server.png_url()}, self.teacher)['attempt']
         self.assertIn('annotation', marked)
@@ -1049,14 +1173,16 @@ class HomeworkTests(unittest.TestCase):
         # 未重新作答就提交會被拒；必須是教師要求之後的新作答。
         self.error(400, 'POST', f'/api/assignments/{aid}/submit', {}, self.student)
         fixed = self.attempt(aid, qid=1, answer='x=2或3')
-        self.assertEqual(fixed['score'], 6)
+        self.assertEqual(self.teacher_attempt(aid, fixed['id'])['score'], 6)
         submitted = self.call('POST', f'/api/assignments/{aid}/submit', {}, self.student)
         self.assertEqual(submitted['mySubmission']['status'], 'submitted')
         self.assertIsNone(submitted['mySubmission']['correction'])
         self.assertEqual(submitted['mySubmission']['submitCount'], 2)
         self.assertTrue(submitted['mySubmission']['submittedAt'])
         self.assertTrue(submitted['mySubmission']['resubmittedAt'])
-        self.assertEqual(submitted['report']['score'], 12)
+        # 教師批閱前學生看不到分數；教師端統計仍是真實分數。
+        self.assertIsNone(submitted['report']['score'])
+        self.assertEqual(submitted['report']['pendingCount'], 2)
         # 舊作答保留在稽核紀錄，訂正回合已結案。
         with self.app.db() as db:
             self.assertEqual(db.execute('SELECT count(*) FROM attempts WHERE assignment_id=?', (aid,)).fetchone()[0], 3)
@@ -1088,7 +1214,7 @@ class HomeworkTests(unittest.TestCase):
         self.assertEqual(done['mySubmission']['submitCount'], 3)
         self.assertEqual(done['mySubmission']['late'], False, '訂正不應被標記為遲交')
 
-    def test_timed_quiz_start_expiry_and_immediate_score(self):
+    def test_timed_quiz_start_expiry_and_review_before_score(self):
         # 建立限時模擬測驗
         aid = self.assignment((1,), kind='quiz', durationMinutes=30)
         detail = self.detail(aid)
@@ -1111,19 +1237,27 @@ class HomeworkTests(unittest.TestCase):
         again = self.call('POST', f'/api/assignments/{aid}/start', {}, self.student)['mySubmission']
         self.assertEqual(again['startedAt'], started['startedAt'])
         self.assertLessEqual(again['remainingSeconds'], started['remainingSeconds'])
-        # 開始後可以作答，提交後即時計分並附建議
+        # 開始後可以作答；提交後學生只看到「等待教師批閱」，不即時看到分數與 AI 結果
         self.attempt(aid, qid=1, answer='x=2或3')
         submitted = self.call('POST', f'/api/assignments/{aid}/submit', {}, self.student)
         report = submitted['report']
-        self.assertEqual(report['score'], 6)
+        self.assertIsNone(report['score'])
+        self.assertEqual(report['pendingCount'], 1)
+        self.assertTrue(report['awaitingReview'])
+        self.assertIsNone(report['suggestion'])
         self.assertEqual(report['maxScore'], 6)
-        self.assertEqual(report['percent'], 100.0)
-        self.assertEqual(report['gradedCount'], 1)
         self.assertEqual(report['questionCount'], 1)
-        self.assertIn('suggestion', report)
-        self.assertTrue(report['suggestion'].get('nextStep'))
         self.assertIsNotNone(submitted['mySubmission']['submittedAt'])
         self.assertGreaterEqual(submitted['mySubmission']['timeUsedSeconds'], 0)
+        # 教師批閱後，學生才看到分數、百分比與學習建議。
+        quiz_attempt = self.student_attempt(aid, self.detail(aid, self.teacher)['attempts'][0]['id'])
+        self.review(quiz_attempt, 6)
+        after = self.detail(aid)['report']
+        self.assertEqual(after['score'], 6)
+        self.assertEqual(after['percent'], 100.0)
+        self.assertEqual(after['gradedCount'], 1)
+        self.assertIn('suggestion', after)
+        self.assertTrue(after['suggestion'].get('nextStep'))
         # 提交後不能重新開始
         self.error(403, 'POST', f'/api/assignments/{aid}/start', {}, self.student)
         # 逾時後不能再作答，也不能提交

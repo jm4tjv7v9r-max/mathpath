@@ -595,7 +595,7 @@ const HANDWRITING=makePng(400,300);
   await page.locator('#finalize-assignment').click();
   await page.locator('.quiz-result-banner').waitFor();
   const quizResult=await page.locator('.quiz-result-banner').innerText();
-  assert.match(quizResult,/即時計分/);assert.match(quizResult,/6 \/ 6 分/);assert.match(quizResult,/100%/);
+  assert.match(quizResult,/教師已批閱/);assert.match(quizResult,/6 \/ 6 分/);assert.match(quizResult,/100%/);
   assert.equal(quizSubmitted,true,'測驗應已提交');
   assert.match(await page.locator('.learning-advice').first().innerText(),/下一步練習/,'提交後應顯示提升建議');
   await page.screenshot({path:path.join(__dirname,'..','MathPath-模擬測驗.png'),fullPage:true});
@@ -742,6 +742,54 @@ const HANDWRITING=makePng(400,300);
   assert.equal(await page.locator('#consent-ai').count(),1,'外部模型需學生同意資料傳送');
   await page.screenshot({path:path.join(__dirname,'..','MathPath-AI批改由教師決定.png'),fullPage:true});
 
+  // ── 作業：做完題目並提交後，要等教師批閱才看得到評分與 AI 批閱結果 ──
+  const awaitingAttempt = {...handwritten, score:null, status:'pending', gradingMethod:'awaiting-review',
+    awaitingReview:true, feedback:'', steps:[], suggestion:null, aiScore:null, ruleScore:null, confirmedScore:null};
+  const awaitingReport = {score:null,maxScore:6,totalScoredPoints:0,pendingCount:1,confirmedScore:null,
+    confirmedCount:0,gradedCount:0,questionCount:1,percent:null,topicStats:[],suggestion:null,awaitingReview:true};
+  await page.route('**/api/state', route => route.fulfill({json:{
+    user:{id:1,name:'介面測試學生',role:'student'}, questions:[blankQuestion], attempts:[awaitingAttempt],
+    stats:{completed:0,accuracy:0,streak:0,minutes:0}, ai:{configured:true,mode:'external'}, topics:['一元二次方程']}}));
+  // 情境三：已提交但教師未批閱 → 作業頁與作答紀錄都看不到分數與 AI 結果
+  await page.route('**/api/assignments/1', route => route.fulfill({json:{
+    assignment:{...assignment,aiGrading:true}, questions:[assignmentQuestion], attempts:[awaitingAttempt],
+    mySubmission:{status:'submitted',submittedAt:stamp,resubmittedAt:null,submitCount:1,late:false,correction:null},
+    report:awaitingReport}}));
+  await page.reload({waitUntil:'networkidle'});
+  await page.locator('[data-assignment]').first().click();
+  await page.locator('.assignment-question-row').first().waitFor({timeout:8000});
+  const awaitingText = await page.locator('#main').innerText();
+  assert.match(awaitingText, /等待教師批閱/);
+  assert.match(awaitingText, /教師批閱後才會顯示分數/);
+  assert.equal(/已評\s*\d/.test(awaitingText), false, '教師批閱前不應顯示已評分數');
+  assert.match(await page.locator('[data-review]').first().innerText(), /查看我的作答/);
+  await page.locator('[data-review]').first().click();
+  const reviewText = await page.locator('#modal-root').innerText();
+  assert.match(reviewText, /教師批閱後才會顯示分數/);
+  assert.equal(reviewText.includes('AI 原建議分'), false, '批閱前不應顯示 AI 原建議分');
+  await page.locator('[data-action=close-modal]').click();
+  await page.screenshot({path:path.join(__dirname,'..','MathPath-作業等待教師批閱.png'),fullPage:true});
+
+  // 情境四：在作業中提交一題 → 結果卡只顯示「等待教師批閱」，沒有分數與參考答案
+  await page.route('**/api/attempts', route => route.request().method()==='POST'
+    ? route.fulfill({json:{attempt:awaitingAttempt,solution:null}}) : route.fallback());
+  await page.route('**/api/assignments/1', route => route.fulfill({json:{
+    assignment:{...assignment,aiGrading:true}, questions:[assignmentQuestion], attempts:[],
+    mySubmission:{status:'not_started',submittedAt:null,resubmittedAt:null,submitCount:0,late:false,correction:null},
+    report:{...awaitingReport,pendingCount:0,awaitingReview:false}}}));
+  await page.reload({waitUntil:'networkidle'});
+  await openAssignmentQuestion();
+  await page.locator('[data-answer-mode=text]').click();
+  await page.locator('#final-answer').fill('x=2 或 x=3');
+  await page.locator('#consent-ai').check();
+  await page.locator('#submit-answer').click();
+  await page.locator('#result-root .result').waitFor({timeout:8000});
+  const submittedResult = await page.locator('#result-root').innerText();
+  assert.match(submittedResult, /已提交，等待教師批閱/);
+  assert.equal(await page.locator('#result-root .result-score').count(), 0, '結果卡不應顯示分數');
+  assert.equal(await page.locator('#result-root .solution-box').count(), 0, '批閱前不應顯示參考答案與詳解');
+  assert.equal(await page.locator('#result-root .result-step').count(), 0, '批閱前不應顯示逐項評分');
+
   assert.deepEqual(errors,[]);await browser.close();
-  console.log('PASS: answer modes (choice = click-only with single option list, fill-in = handwriting/text with math keyboard + always-visible rendered preview), AI grading policy (self-practice = AI instant score recorded without teacher review, no student use-ai toggle; teacher checkbox on assign, student read-only hint, external consent), font scale switch (guest, persisted, 3 levels, no mobile overflow), login page (role cards, remember checked, remembered account), calendar (marks + entry from homework), question type (card badge, filter, draft qtype, rule analysis), full-auto split+import, homework, draft save/reload/restore, logout cleanup, weak-topic drill-down, results filters, CSV export, teacher annotation (pen/ellipse/arrow/highlight/undo/clear/save), AI suggested annotation with student read-back and teacher drag-to-adjust saved positions, correction loop (teacher return with note, student banner, pending guard, resubmit), self-serve mock exam (setup, countdown, per-question answer with mockId, submit + instant score + advice), AI endpoint page (test/save, key never read back), bulk account parse/errors/create, mobile layout, no JS errors. Fixture API only; no server started.');
+  console.log('PASS: answer modes (choice = click-only with single option list, fill-in = handwriting/text with math keyboard + always-visible rendered preview), AI grading policy (self-practice = AI instant score recorded without teacher review, no student use-ai toggle; teacher checkbox on assign, student read-only hint, external consent; homework/quiz scores, AI results, solution and advice hidden until the teacher reviews), font scale switch (guest, persisted, 3 levels, no mobile overflow), login page (role cards, remember checked, remembered account), calendar (marks + entry from homework), question type (card badge, filter, draft qtype, rule analysis), full-auto split+import, homework, draft save/reload/restore, logout cleanup, weak-topic drill-down, results filters, CSV export, teacher annotation (pen/ellipse/arrow/highlight/undo/clear/save), AI suggested annotation with student read-back and teacher drag-to-adjust saved positions, correction loop (teacher return with note, student banner, pending guard, resubmit), self-serve mock exam (setup, countdown, per-question answer with mockId, submit + instant score + advice), AI endpoint page (test/save, key never read back), bulk account parse/errors/create, mobile layout, no JS errors. Fixture API only; no server started.');
 })().catch(e=>{console.error(e);process.exit(1)});

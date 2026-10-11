@@ -321,9 +321,15 @@ class Homework:
             suggestion['notice'] += f' 当前有{len(pending)}题待批阅，未将待批阅题计为零分。'
         return suggestion
 
-    def report(self, db, assignment, uid):
+    def report(self, db, assignment, uid, reviewed_only=False):
+        """作業報告。
+
+        reviewed_only=True 是學生版：教師批閱前不揭露分數與 AI 批閱結果，
+        因此只計「教師已批閱」的題目，其餘列為待批閱。
+        """
         questions = self.questions(db, assignment['id'])
-        rows = self.latest(db, assignment['id'], uid)
+        latest = self.latest(db, assignment['id'], uid)
+        rows = [r for r in latest if r['teacher_reviewed']] if reviewed_only else latest
         sums = self.sums(rows)
         scored = sums['totalScoredPoints']
         result = {**sums, 'maxScore': sum(q['points'] for q in questions),
@@ -334,6 +340,13 @@ class Homework:
         # 即時計分：只以已評分題目計算百分比，待批題目不當零分。
         result['percent'] = (round(sums['score'] * 100 / scored, 1)
                              if sums['score'] is not None and scored else None)
+        if reviewed_only:
+            # 學生版：待教師批閱 = 已作答但教師尚未批閱的題目數。
+            result['pendingCount'] = len(latest) - len(rows)
+            result['awaitingReview'] = result['pendingCount'] > 0
+            if not rows:
+                # 教師尚未批閱任何一題：不顯示學習建議，避免洩漏 AI 診斷。
+                result['suggestion'] = None
         return result
 
     def results(self, db, assignment):
@@ -702,7 +715,7 @@ class Homework:
                         db.execute('UPDATE assignment_recipients SET submitted_at=?,late=?,submit_count=1 '
                                    'WHERE assignment_id=? AND user_id=?',
                                    (now, int(self.is_late(assignment)), aid, user['id']))
-                return {'report': self.report(db, assignment, user['id']),
+                return {'report': self.report(db, assignment, user['id'], reviewed_only=True),
                         'mySubmission': self.submission(db, aid, user['id'])}
         if method == 'POST' and action == 'return':
             self.app.teacher(user)
@@ -748,14 +761,14 @@ class Homework:
                                       'JOIN users u ON u.id=a.user_id WHERE a.assignment_id=? ORDER BY a.id DESC', (aid,)).fetchall()
                 else:
                     rows = db.execute('SELECT * FROM attempts WHERE assignment_id=? AND user_id=? ORDER BY id DESC', (aid, user['id'])).fetchall()
-                attempts = [self.app.attempt_public(db, r) for r in rows]
+                attempts = [self.app.attempt_public(db, r, user) for r in rows]
                 if user['role'] == 'teacher':
                     for attempt, row in zip(attempts, rows):
                         attempt['student'] = {'id': row['user_id'], 'name': row['student_name'], 'username': row['student_username']}
                 result = {'assignment': self.assignment_public(db, assignment, user, True), 'questions': questions,
                           'attempts': attempts, 'report': None}
                 if user['role'] == 'student':
-                    result.update(report=self.report(db, assignment, user['id']),
+                    result.update(report=self.report(db, assignment, user['id'], reviewed_only=True),
                                   mySubmission=self.submission(db, aid, user['id']))
                 return result
         return None

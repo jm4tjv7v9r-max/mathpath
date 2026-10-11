@@ -117,6 +117,11 @@ class APITests(unittest.TestCase):
         _, created, _ = self.request('POST', '/api/assignments', body, cookie=self.teacher, expect=200)
         return created['assignment']['id']
 
+    def teacher_attempt(self, aid, attempt_id):
+        """以教師視角讀取作業作答：學生在教師批閱前看不到分數與 AI 批閱結果。"""
+        _, detail, _ = self.request('GET', f'/api/assignments/{aid}', cookie=self.teacher, expect=200)
+        return next(a for a in detail['attempts'] if a['id'] == attempt_id)
+
     def test_login_session_logout_and_cookie(self):
         self.request('GET', '/api/session', expect=200)
         self.request('GET', '/api/state', expect=401)
@@ -1012,7 +1017,14 @@ class APITests(unittest.TestCase):
             _, response, _ = self.request('POST', '/api/attempts',
                                           {'questionId': qid, 'answerText': 'x=2', 'assignmentId': aid},
                                           cookie=self.student, expect=200)
+        # 作業要等教師批閱後才揭露：學生端只看到「等待批閱」。
         attempt = response['attempt']
+        self.assertEqual(attempt['gradingMethod'], 'awaiting-review')
+        self.assertIsNone(attempt['score'])
+        self.assertIsNone(attempt['suggestion'])
+        self.assertIsNone(response['solution'], '批閱前不揭露參考答案與詳解')
+        # 教師端才是真實的 AI 建議評分。
+        attempt = self.teacher_attempt(aid, attempt['id'])
         # 6 分 × 30/40/30% → 各項配分 1.8 / 2.4 / 1.8；達成 100/100/50% → 1.8 + 2.4 + 0.9 = 5.1
         self.assertEqual(attempt['gradingMethod'], 'ai-advisory')
         self.assertAlmostEqual(attempt['score'], 5.1, places=6)
@@ -1020,9 +1032,14 @@ class APITests(unittest.TestCase):
         self.assertEqual([s['max'] for s in attempt['steps']], [1.8, 2.4, 1.8])
         self.assertAlmostEqual(sum(s['earned'] for s in attempt['steps']), 5.1, places=6)
         self.assertIn('評分標準', attempt['feedback'])
-        # 提交後回傳參考答案與詳解
-        self.assertEqual(response['solution']['answer'], '$x=2$ 或 $x=3$')
-        self.assertEqual(len(response['solution']['rubric']), 3)
+        # 教師批閱後，學生才看到分數與教師確認分。
+        self.request('POST', f"/api/attempts/{attempt['id']}/review",
+                     {'score': 5, 'feedback': '步驟清楚'}, cookie=self.teacher, expect=200)
+        _, detail, _ = self.request('GET', f'/api/assignments/{aid}', cookie=self.student, expect=200)
+        own = next(a for a in detail['attempts'] if a['id'] == attempt['id'])
+        self.assertEqual(own['score'], 5)
+        self.assertEqual(own['confirmedScore'], 5)
+        self.assertNotIn('awaitingReview', own)
         # 項目數不符 → 502，不保存成績
         with patch.object(self.app.ai, 'call', return_value={'feedback': 'x', 'items': [{'percent': 50, 'comment': 'a'}]}):
             self.request('POST', '/api/attempts', {'questionId': qid, 'answerText': 'x=2', 'assignmentId': aid},
@@ -1034,7 +1051,7 @@ class APITests(unittest.TestCase):
             _, r2, _ = self.request('POST', '/api/attempts',
                                     {'questionId': qid, 'answerText': 'x=2', 'assignmentId': aid},
                                     cookie=self.student, expect=200)
-        self.assertAlmostEqual(r2['attempt']['score'], 1.8 + 0 + 0.9, places=6)
+        self.assertAlmostEqual(self.teacher_attempt(aid, r2['attempt']['id'])['score'], 1.8 + 0 + 0.9, places=6)
         # 同一題放在「教師未啟用 AI」的作業中：完全不呼叫模型，退回規則評分。
         plain = self.ai_assignment([qid], ai_grading=False)
         with patch.object(self.app.ai, 'call') as ai2:
@@ -1042,8 +1059,10 @@ class APITests(unittest.TestCase):
                                        {'questionId': qid, 'answerText': '$x=2$ 或 $x=3$', 'assignmentId': plain},
                                        cookie=self.student, expect=200)
         ai2.assert_not_called()
-        self.assertEqual(no_ai['attempt']['gradingMethod'], 'rule-final')
-        self.assertEqual(no_ai['attempt']['score'], 6)
+        self.assertEqual(no_ai['attempt']['gradingMethod'], 'awaiting-review')
+        stored = self.teacher_attempt(plain, no_ai['attempt']['id'])
+        self.assertEqual(stored['gradingMethod'], 'rule-final')
+        self.assertEqual(stored['score'], 6)
 
     def test_attempt_solution_only_when_graded_and_rubric_hidden_from_students(self):
         # 未批閱的作答不揭露詳解
@@ -1075,11 +1094,16 @@ class APITests(unittest.TestCase):
             self.request('POST', '/api/attempts', body, cookie=self.student, expect=403)
             ai.assert_not_called()
             _, response, _ = self.request('POST', '/api/attempts', dict(body, consentExternal=True), cookie=self.student, expect=200)
-            self.assertEqual(response['attempt']['gradingMethod'], 'ai-advisory')
-            self.assertEqual(response['attempt']['score'], 4)
-            self.assertIn('僅供教師復核', response['attempt']['feedback'])
-            self.assertFalse(response['attempt']['teacherReviewed'])
-            self.assertEqual(response['attempt']['steps'][0]['earned'], 4)
+            # 學生端看不到分數與 AI 批閱結果，要由教師視角驗證。
+            self.assertEqual(response['attempt']['gradingMethod'], 'awaiting-review')
+            self.assertIsNone(response['attempt']['score'])
+            self.assertIsNone(response['solution'])
+            stored = self.teacher_attempt(aid, response['attempt']['id'])
+            self.assertEqual(stored['gradingMethod'], 'ai-advisory')
+            self.assertEqual(stored['score'], 4)
+            self.assertIn('僅供教師復核', stored['feedback'])
+            self.assertFalse(stored['teacherReviewed'])
+            self.assertEqual(stored['steps'][0]['earned'], 4)
         for invalid in [dict(result, score=1000), dict(result, score=-1), dict(result, score=True),
                         dict(result, score=float('nan')), dict(result, score=5), dict(result, steps=[]),
                         dict(result, feedback=[]), dict(result, steps=[{'label': 'x', 'earned': 7, 'max': 6, 'comment': 'x'}])]:

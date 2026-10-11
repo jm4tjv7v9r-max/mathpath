@@ -198,7 +198,7 @@ class MockExams:
                 row = self._exam(db, eid, user)
                 questions = self.questions(db, eid)
                 rows = self.latest(db, eid, user['id'])
-                attempts = [self.app.attempt_public(db, r) for r in rows]
+                attempts = [self.app.attempt_public(db, r, user) for r in rows]
                 report = self.report(db, row) if row['submitted_at'] else None
             return {'exam': self.public(row), 'questions': [self.question_public(q) for q in questions],
                     'attempts': attempts, 'report': report,

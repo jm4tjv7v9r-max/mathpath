@@ -1974,7 +1974,16 @@ class Application:
             fail(404, '找不到題目。')
         return self.question_row(row)
 
-    def attempt_public(self, db, row):
+    @staticmethod
+    def withheld_from_student(row, viewer):
+        """教師佈置的作業／測驗：教師批閱前，學生看不到分數與 AI 批閱結果。
+
+        自主練習與自助模擬測驗（沒有 assignment_id）即時評分，不受此限。
+        """
+        return (viewer is not None and viewer['role'] != 'teacher'
+                and row['assignment_id'] is not None and not row['teacher_reviewed'])
+
+    def attempt_public(self, db, row, viewer=None):
         q = self.homework.question_for_attempt(db, row)
         result = {'id': row['id'], 'questionId': q['id'], 'questionTitle': q['title'], 'topic': q['topic'],
                   'score': row['score'], 'maxScore': row['max_score'], 'status': row['status'],
@@ -1993,10 +2002,20 @@ class Application:
         ai_marks = json.loads((row['ai_annotation'] if 'ai_annotation' in keys else '') or '{}')
         if ai_marks.get('issues'):
             result['aiAnnotation'] = {**ai_marks, 'at': row['ai_annotation_at'] if 'ai_annotation_at' in keys else None}
+        if self.withheld_from_student(row, viewer):
+            # 作業：教師批閱前只讓學生看到「已提交、等待批閱」，
+            # 分數、AI 評語、步驟、學習建議與 AI 批註都要等教師批閱後才揭露。
+            result.update({'score': None, 'status': 'pending', 'feedback': '',
+                           'gradingMethod': 'awaiting-review', 'steps': [], 'suggestion': None,
+                           'aiScore': None, 'ruleScore': None, 'confirmedScore': None,
+                           'awaitingReview': True})
+            result.pop('aiAnnotation', None)
         return result
 
     @staticmethod
     def stats(rows):
+        # 教師佈置的作業要等教師批閱後才計入學生的練習統計，避免批閱前就洩漏分數。
+        rows = [a for a in rows if a['assignment_id'] is None or a['teacher_reviewed']]
         graded = [a for a in rows if a['status'] == 'graded']
         total = sum(a['max_score'] for a in graded)
         dates = {datetime.fromisoformat(a['submitted_at'].replace('Z', '+00:00')).date() for a in rows}
@@ -2260,7 +2279,7 @@ class Application:
                                       'ORDER BY a.id DESC', (user['id'],)).fetchall()
                 else:
                     rows = db.execute('SELECT * FROM attempts WHERE user_id=? ORDER BY id DESC', (user['id'],)).fetchall()
-                attempts = [self.attempt_public(db, r) for r in rows]
+                attempts = [self.attempt_public(db, r, user) for r in rows]
                 if user['role'] == 'teacher':
                     for attempt, row in zip(attempts, rows):
                         owner = db.execute('SELECT id,name FROM users WHERE id=?', (row['user_id'],)).fetchone()
@@ -2454,10 +2473,11 @@ class Application:
             if method in ('ai-advisory', 'ai-practice'):
                 self.homework.ai_suggestion(q, row, body.get('consentExternal'))
             with self.db() as db:
-                attempt = self.attempt_public(db, db.execute('SELECT * FROM attempts WHERE id=?', (row['id'],)).fetchone())
+                attempt = self.attempt_public(db, db.execute('SELECT * FROM attempts WHERE id=?', (row['id'],)).fetchone(), user)
             # 已批閱的作答附上參考答案與詳解，讓學生能對照學習（未批閱不揭露）。
+            # 作業要等教師批閱後才揭露：批閱前連參考答案都不給，避免學生即時對答案。
             solution = None
-            if status == 'graded':
+            if status == 'graded' and not self.withheld_from_student(row, user):
                 solution = {'answer': q.get('answer', ''), 'steps': q.get('steps', []),
                             'analysis': q.get('analysis', ''), 'rubric': q.get('rubric', [])}
             return {'attempt': attempt, 'solution': solution}, headers
@@ -2483,7 +2503,7 @@ class Application:
             if body.get('clear'):
                 with self.db() as db:
                     db.execute("UPDATE attempts SET ai_annotation='{}',ai_annotation_at=NULL WHERE id=?", (row['id'],))
-                    attempt = self.attempt_public(db, db.execute('SELECT * FROM attempts WHERE id=?', (row['id'],)).fetchone())
+                    attempt = self.attempt_public(db, db.execute('SELECT * FROM attempts WHERE id=?', (row['id'],)).fetchone(), user)
                 return {'attempt': attempt}, headers
             if 'marks' in body:
                 # 教師移動 AI 標記後保存調整位置；沿用同一套座標驗證，不因教師操作而放寬。
@@ -2493,7 +2513,7 @@ class Application:
                 with self.db() as db:
                     db.execute('UPDATE attempts SET ai_annotation=?,ai_annotation_at=? WHERE id=?',
                                (json.dumps(marks, ensure_ascii=False), utc_now(), row['id']))
-                    attempt = self.attempt_public(db, db.execute('SELECT * FROM attempts WHERE id=?', (row['id'],)).fetchone())
+                    attempt = self.attempt_public(db, db.execute('SELECT * FROM attempts WHERE id=?', (row['id'],)).fetchone(), user)
                 return {'attempt': attempt}, headers
             if not (self.ai.configured and self.ai.vision):
                 fail(409, 'AI 批註需要設定支援視覺的模型（MATH_AI_VISION_MODEL）；未設定時不產生任何批註。')
@@ -2515,7 +2535,7 @@ class Application:
             with self.db() as db:
                 db.execute('UPDATE attempts SET ai_annotation=?,ai_annotation_at=? WHERE id=?',
                            (json.dumps(marks, ensure_ascii=False), utc_now(), row['id']))
-                attempt = self.attempt_public(db, db.execute('SELECT * FROM attempts WHERE id=?', (row['id'],)).fetchone())
+                attempt = self.attempt_public(db, db.execute('SELECT * FROM attempts WHERE id=?', (row['id'],)).fetchone(), user)
             return {'attempt': attempt}, headers
         match = re.fullmatch(r'/api/attempts/([1-9]\d{0,17})/annotation', path)
         if method == 'POST' and match:
@@ -2541,7 +2561,7 @@ class Application:
                 else:
                     db.execute('UPDATE attempts SET annotation=?,annotation_mime=?,annotation_at=? WHERE id=?',
                                (data, mime, utc_now(), row['id']))
-                attempt = self.attempt_public(db, db.execute('SELECT * FROM attempts WHERE id=?', (row['id'],)).fetchone())
+                attempt = self.attempt_public(db, db.execute('SELECT * FROM attempts WHERE id=?', (row['id'],)).fetchone(), user)
             return {'attempt': attempt}, headers
         match = re.fullmatch(r'/api/attempts/([1-9]\d{0,17})/review', path)
         if method == 'POST' and match:
@@ -2563,7 +2583,7 @@ class Application:
                 db.execute('UPDATE attempts SET score=?,status=?,feedback=?,method=?,teacher_reviewed=1,reviewed_by=?,reviewed_at=?,teacher_confirmed_score=?,suggestion=? WHERE id=?',
                            (score, 'graded', '教師已覆核：' + feedback, 'teacher-reviewed', user['id'], utc_now(),
                             score, json.dumps(suggestion, ensure_ascii=False), row['id']))
-                attempt = self.attempt_public(db, db.execute('SELECT * FROM attempts WHERE id=?', (row['id'],)).fetchone())
+                attempt = self.attempt_public(db, db.execute('SELECT * FROM attempts WHERE id=?', (row['id'],)).fetchone(), user)
                 result = {'attempt': attempt}
                 if row['assignment_id'] is not None:
                     assignment = self.homework.get_assignment(db, row['assignment_id'], user)
