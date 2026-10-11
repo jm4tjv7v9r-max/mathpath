@@ -91,7 +91,7 @@ class Homework:
             if name not in columns:
                 db.execute(sql)
         db.execute('CREATE INDEX IF NOT EXISTS attempts_assignment ON attempts(assignment_id,user_id,question_id,id)')
-        db.execute("UPDATE attempts SET ai_score=score WHERE method='ai-advisory' AND ai_score IS NULL")
+        db.execute("UPDATE attempts SET ai_score=score WHERE method IN ('ai-advisory','ai-practice') AND ai_score IS NULL")
         db.execute("UPDATE attempts SET rule_score=score WHERE method='rule-final' AND rule_score IS NULL")
         db.execute('UPDATE attempts SET teacher_confirmed_score=score '
                    'WHERE teacher_reviewed=1 AND teacher_confirmed_score IS NULL')
@@ -426,7 +426,9 @@ class Homework:
             else:
                 focus = row['feedback'][:2000]
             next_step = (f'根据真实评语复查过程。提示：{q["hint"]}' if q.get('hint') else '根据真实评语复查过程，尝试同主题练习。')
-            if row['method'] == 'ai-advisory':
+            if row['method'] == 'ai-practice':
+                notice += ' 自主练习由 AI 即时评分并记录分数，不需教师批阅。'
+            elif row['method'] == 'ai-advisory':
                 notice += ' AI 数学判断和成绩仍仅供教师覆核。'
             elif row['method'] == 'teacher-reviewed':
                 notice += ' 依据教师覆核成绩与评语更新。'
@@ -472,7 +474,9 @@ class Homework:
                 allowed = {v['id']: v for v in recommended}
                 # 无效模型推荐不进入响应，回退到真实题库精选候选。
                 selected = [allowed[v] for v in dict.fromkeys(ids) if v in allowed] or recommended
-            suggestion.update(source='ai', recommended=selected, notice='AI 学习建议和数学判断仅供教师覆核。')
+            notice = ('AI 即时评分与学习建议；自主练习分数只作个人练习纪录，不需教师批阅。'
+                      if row['method'] == 'ai-practice' else 'AI 学习建议和数学判断仅供教师覆核。')
+            suggestion.update(source='ai', recommended=selected, notice=notice)
         except Exception:
             suggestion = fallback
             suggestion['notice'] += ' AI 学习建议生成失败，已保留批改成绩并使用规则建议。'

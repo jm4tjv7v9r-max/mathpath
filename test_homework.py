@@ -163,6 +163,93 @@ class HomeworkTests(unittest.TestCase):
         self.assertEqual(attempt['gradingMethod'], 'ai-advisory')
         self.assertTrue(ai.called)
 
+    def test_practice_always_ai_graded_and_recorded_without_teacher(self):
+        # 自主練習（沒有作業編號）：一律 AI 即時評分、記錄分數，不需教師批閱。
+        self.configure_ai()
+        with patch.object(self.app.ai, 'call', return_value=self.ai_result()) as ai:
+            attempt = self.attempt(None, qid=1, answer='x=2或3')
+        self.assertTrue(ai.called, '自主練習應呼叫模型即時評分')
+        self.assertEqual(attempt['gradingMethod'], 'ai-practice')
+        self.assertEqual(attempt['status'], 'graded')
+        self.assertEqual(attempt['score'], 4)
+        self.assertEqual(attempt['aiScore'], 4)
+        self.assertIsNone(attempt['ruleScore'])
+        self.assertFalse(attempt['teacherReviewed'], '自主練習不需教師批閱')
+        self.assertIn('不需教師批閱', attempt['feedback'])
+        self.assertNotIn('僅供教師復核', attempt['feedback'])
+        # 分數與作答都要寫進紀錄（學生自己看得到，不需教師再處理）。
+        state = self.call('GET', '/api/state')
+        saved = next(a for a in state['attempts'] if a['id'] == attempt['id'])
+        self.assertEqual(saved['score'], 4)
+        self.assertEqual(saved['gradingMethod'], 'ai-practice')
+        self.assertIn('不需教师批阅', saved['suggestion']['notice'])
+
+    def test_practice_ai_failure_falls_back_to_rule_and_still_records_score(self):
+        # 自主練習以「即時評分、記錄分數」為目的；模型暫時失敗時退回規則核對，不能沒有分數。
+        self.configure_ai()
+        with patch.object(self.app.ai, 'call', side_effect=server.APIError(502, '模型暫時失敗')):
+            attempt = self.attempt(None, qid=1, answer='x=2或3')
+        self.assertEqual(attempt['gradingMethod'], 'rule-final')
+        self.assertEqual(attempt['status'], 'graded')
+        self.assertEqual(attempt['score'], 6)
+        self.assertEqual(attempt['ruleScore'], 6)
+        self.assertIsNone(attempt['aiScore'], '退回規則核對時不得留下 AI 原分')
+        self.assertIn('AI 暫時無法使用', attempt['feedback'])
+
+    def test_practice_ai_failure_on_handwriting_still_saves(self):
+        self.configure_ai()
+        with patch.object(self.app.ai, 'call', side_effect=server.APIError(502, '模型暫時失敗')):
+            attempt = self.attempt(None, qid=1, answer='', image=test_server.png_url())
+        self.assertEqual(attempt['gradingMethod'], 'pending-teacher')
+        self.assertEqual(attempt['status'], 'pending')
+        self.assertIsNone(attempt['score'])
+        self.assertIn('AI 暫時無法辨識手寫內容', attempt['feedback'])
+
+    def test_practice_without_ai_keeps_rule_and_pending(self):
+        # 未接入 AI 時不得偽造分數：文字規則核對，手寫列為待教師批閱。
+        text = self.attempt(None, qid=1, answer='x=2或3')
+        self.assertEqual(text['gradingMethod'], 'rule-final')
+        handwritten = self.attempt(None, qid=1, answer='', image=test_server.png_url())
+        self.assertEqual(handwritten['gradingMethod'], 'pending-teacher')
+        self.assertIsNone(handwritten['score'])
+        self.assertEqual(handwritten['status'], 'pending')
+
+    def test_assignment_without_ai_grading_never_calls_model(self):
+        # 教師沒有啟用 AI 的作業：即使 AI 已接入，也不能由學生觸發模型。
+        self.configure_ai()
+        aid = self.assignment((1,))
+        with patch.object(self.app.ai, 'call') as ai:
+            attempt = self.attempt(aid, answer='x=2或3')
+        ai.assert_not_called()
+        self.assertEqual(attempt['gradingMethod'], 'rule-final')
+        self.assertIsNone(attempt['aiScore'])
+
+    def test_practice_external_model_requires_consent(self):
+        # 自主練習用外部模型時，學生的資料傳送同意仍是必要條件。
+        self.configure_ai(external=True)
+        with patch.object(self.app.ai, 'call') as ai:
+            self.error(403, 'POST', '/api/attempts', {'questionId': 1, 'answerText': '2'})
+            ai.assert_not_called()
+        with patch.object(self.app.ai, 'call', return_value=self.ai_result()):
+            attempt = self.attempt(None, qid=1, answer='2', consentExternal=True)
+        self.assertEqual(attempt['gradingMethod'], 'ai-practice')
+        self.assertEqual(attempt['score'], 4)
+
+    def test_mock_exam_uses_instant_ai_grading_without_teacher(self):
+        # 自助模擬測驗同樣不是教師佈置的作業：AI 即時評分、不需教師批閱。
+        self.configure_ai()
+        started = self.mock(topic='一元二次方程', count=1, minutes=30)
+        exam, questions = started['exam'], started['questions']
+        with patch.object(self.app.ai, 'call', return_value={**self.ai_result(),
+                                                            'steps': [{'label': '因式分解', 'earned': 4,
+                                                                       'max': questions[0]['points'],
+                                                                       'comment': '需补结论'}]}) as ai:
+            attempt = self.call('POST', '/api/attempts',
+                                {'questionId': questions[0]['id'], 'answerText': 'x=2或3', 'mockId': exam['id']})['attempt']
+        self.assertTrue(ai.called)
+        self.assertEqual(attempt['gradingMethod'], 'ai-practice')
+        self.assertFalse(attempt['teacherReviewed'])
+
     def test_deadlines_require_future_valid_timezone(self):
         for due in ('garbage', '2099-01-01', '2099-01-01T12:00:00', '2000-01-01T00:00:00Z',
                     '2099-02-30T12:00:00Z', '2099-01-01T12:00:00+24:00', '2099-01-01T12:00:00+01:60'):

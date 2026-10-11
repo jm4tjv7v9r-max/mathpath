@@ -1305,6 +1305,10 @@ class AIClient:
     def _call_once(self, instruction, payload, image=None, model=None):
         if not self.configured:
             fail(409, '尚未設定 AI 模型；請設定伺服器環境變數後再試。')
+        # 端點可能來自環境變數或介面設定；格式不對時要回可讀的錯誤，不能讓 urllib 拋出 500。
+        if not isinstance(self.endpoint, str) or not self.endpoint.startswith(('http://', 'https://')):
+            ai_log(f'invalid endpoint: {self.endpoint!r}')
+            fail(502, 'AI 端點網址無效；請在「模型端點」頁重新設定後再試。')
         if not self.slots.acquire(blocking=False):
             fail(503, 'AI 工作繁忙，請稍後再試。')
         self.truncated = False
@@ -1806,19 +1810,22 @@ class Application:
             fail(403, '更換模型端點需要管理員權杖（MATH_ADMIN_TOKEN），或在本機操作。'
                       if expected else '未設定 MATH_ADMIN_TOKEN 時，只可在伺服器本機更換模型端點。')
 
-    def ai_rubric_grade(self, q, rubric, answer, image):
+    def ai_rubric_grade(self, q, rubric, answer, image, practice=False):
         """依題目的評分標準（百分比）請 AI 逐項評估學生達成率。
 
         配分由伺服器按百分比換算（不信任模型自報分值），AI 只需回報每項達成百分比與評語，
         這樣即使模型算術不穩，總分與各項配分仍然精確。回傳 (score, feedback, steps)。
+        practice=True 為學生自主練習／自助模擬測驗的即時評分（不需教師批閱）。
         """
         planned = rubric_steps(rubric, q['points'])
+        tail = ('這是學生自主練習的即時評分，請直接給出評語與下一步改進方向，不需教師批閱。'
+                if practice else '提醒僅供教師復核。')
         result = self.ai.call(
             '你是數學批改助手。請依題目、參考答案與評分標準逐項評估學生作答；無法讀清的步驟不可推測。'
             '返回 {feedback:str,items:[{percent:number,comment:str}]}。'
             'items 必須與輸入的 rubric 陣列一一對應（順序與數量完全相同，不可增加或減少）。'
             'percent 是該評分標準學生達成的百分比（0 至 100 的數字）；comment 是該項一至兩句評語。'
-            'feedback 用二至四句說明整體表現與下一步改進方向。提醒僅供教師復核。',
+            'feedback 用二至四句說明整體表現與下一步改進方向。' + tail,
             {'question': q, 'rubric': planned, 'answerText': answer},
             image=image, model=(self.ai.vision or self.ai.model) if image else None)
         try:
@@ -1854,7 +1861,48 @@ class Application:
             score = min(float(q['points']), max(0.0, total))
         except (APIError, ValueError, KeyError, TypeError):
             fail(502, 'AI 評分格式或分值無效；未保存成績，請改用教師批閱。')
-        return score, 'AI 建議評分（依評分標準逐項評估），僅供教師復核，不可直接用於正式考試。\n' + feedback, steps
+        note = ('AI 即時評分（依評分標準逐項評估；自主練習分數只作個人練習紀錄，不需教師批閱）。\n'
+                if practice else 'AI 建議評分（依評分標準逐項評估），僅供教師復核，不可直接用於正式考試。\n')
+        return score, note + feedback, steps
+
+    def grade_with_ai(self, q, answer, image, practice):
+        """請 AI 批改一次作答，回傳 (score, feedback, steps)。
+
+        practice=True：學生自主練習／自助模擬測驗，即時評分並記錄分數，不需教師批閱。
+        practice=False：教師佈置的作業／測驗，AI 只作建議，供教師覆核。
+        """
+        rubric = q.get('rubric') or []
+        if rubric:
+            return self.ai_rubric_grade(q, rubric, answer, image, practice)
+        tail = ('這是學生自主練習的即時評分，請直接給出評語與下一步改進方向，不需教師批閱。'
+                if practice else '提醒僅供教師復核。')
+        result = self.ai.call(
+            '你是數學批改助手。依據題目及參考答案評估實際作答；無法讀清的步驟不可推測。'
+            '返回 {score:number,feedback:str,steps:[{label:str,earned:number,max:number,comment:str}]}。'
+            'score介乎0至points；各步max總和等於points，各步earned總和等於score。' + tail,
+            {'question': q, 'answerText': answer}, image=image,
+            model=(self.ai.vision or self.ai.model) if image else None)
+        score, ai_steps = 0, []
+        try:
+            fields(result, ('score', 'feedback', 'steps'), ('score', 'feedback', 'steps'))
+            score = number(result['score'], 'AI分數', 0, q['points'])
+            feedback = text(result['feedback'], 'AI評語', 12000)
+            if not isinstance(result['steps'], list) or not 1 <= len(result['steps']) <= 40:
+                raise ValueError()
+            for step in result['steps']:
+                fields(step, ('label', 'earned', 'max', 'comment'), ('label', 'earned', 'max', 'comment'))
+                maximum = number(step['max'], '步驟分值', 0, q['points'])
+                ai_steps.append({'label': text(step['label'], '步驟標籤', 200),
+                                 'earned': number(step['earned'], '步驟得分', 0, maximum), 'max': maximum,
+                                 'comment': text(step['comment'], '步驟評語', 2000, empty=True)})
+            if not math.isclose(sum(s['max'] for s in ai_steps), q['points'], abs_tol=0.001) or \
+                    not math.isclose(sum(s['earned'] for s in ai_steps), score, abs_tol=0.001):
+                raise ValueError()
+        except (APIError, ValueError, KeyError, TypeError):
+            fail(502, 'AI 評分格式或分值無效；未保存成績，請改用教師批閱。')
+        note = ('AI 即時評分（自主練習；分數只作個人練習紀錄，不需教師批閱）。\n'
+                if practice else 'AI 建議評分，僅供教師復核，不可直接用於正式考試。\n')
+        return score, note + feedback, ai_steps
 
     def insert_question(self, db, q, figure=None, figure_mime=None):
         figure_key = None
@@ -2347,9 +2395,15 @@ class Application:
                     q = self.mock.question(db, mock_id, qid)
                 else:
                     q = self.get_question(db, qid)
-            # 是否使用 AI 建議評分由教師在佈置作業時決定，學生不可自行選擇。
-            # 因此只有「教師已啟用 AI 評分」的作業，且 AI 已設定時，才會呼叫模型。
-            ai_grading = bool(self.homework.ai_grading(assignment_row)) if assignment_row is not None else False
+            # 是否使用 AI 批改：
+            # - 教師佈置的作業／測驗：由教師在佈置時決定（學生不可自行選擇），AI 只作建議。
+            # - 自主練習與自助模擬測驗：一律 AI 即時評分並記錄分數，不需教師批閱。
+            if assignment_row is not None:
+                ai_grading = self.homework.ai_grading(assignment_row)
+                practice_mode = False
+            else:
+                ai_grading = True
+                practice_mode = True
             image_key = None
             if image is not None and self.storage.mode == 'r2':
                 image_key = self.storage.put('attempts', image, mime)
@@ -2357,40 +2411,29 @@ class Application:
             score, status, ai_steps = None, 'pending', []
             method = 'pending-teacher'
             feedback = '手寫圖片尚未批閱，等待教師評分；沒有產生 AI 成績。' if image else '此題尚無參考答案，等待教師批閱。'
+            fallback_note = ''
             if self.ai.configured and ai_grading:
+                # 外部模型的資料傳送同意屬隱私要求，不因批改失敗而降級。
                 self.ai.consent(body.get('consentExternal'))
-                rubric = q.get('rubric') or []
-                if rubric:
-                    score, feedback, ai_steps = self.ai_rubric_grade(q, rubric, answer, body.get('image'))
-                else:
-                    result = self.ai.call('你是數學批改助手。依據題目及參考答案評估實際作答；無法讀清的步驟不可推測。'
-                                          '返回 {score:number,feedback:str,steps:[{label:str,earned:number,max:number,comment:str}]}。'
-                                          'score介乎0至points；各步max總和等於points，各步earned總和等於score。提醒僅供教師復核。',
-                                          {'question': q, 'answerText': answer}, image=body.get('image'),
-                                          model=(self.ai.vision or self.ai.model) if image else None)
-                    try:
-                        fields(result, ('score', 'feedback', 'steps'), ('score', 'feedback', 'steps'))
-                        score = number(result['score'], 'AI分數', 0, q['points'])
-                        feedback = text(result['feedback'], 'AI評語', 12000)
-                        if not isinstance(result['steps'], list) or not 1 <= len(result['steps']) <= 40:
-                            raise ValueError()
-                        for step in result['steps']:
-                            fields(step, ('label', 'earned', 'max', 'comment'), ('label', 'earned', 'max', 'comment'))
-                            maximum = number(step['max'], '步驟分值', 0, q['points'])
-                            ai_steps.append({'label': text(step['label'], '步驟標籤', 200),
-                                             'earned': number(step['earned'], '步驟得分', 0, maximum), 'max': maximum,
-                                             'comment': text(step['comment'], '步驟評語', 2000, empty=True)})
-                        if not math.isclose(sum(s['max'] for s in ai_steps), q['points'], abs_tol=0.001) or not math.isclose(sum(s['earned'] for s in ai_steps), score, abs_tol=0.001):
-                            raise ValueError()
-                    except (APIError, ValueError, KeyError, TypeError):
-                        fail(502, 'AI 評分格式或分值無效；未保存成績，請改用教師批閱。')
-                    feedback = 'AI 建議評分，僅供教師復核，不可直接用於正式考試。\n' + feedback
-                status, method = 'graded', 'ai-advisory'
-            elif image is None and q['answer'].strip():
+                try:
+                    score, feedback, ai_steps = self.grade_with_ai(q, answer, body.get('image'), practice_mode)
+                    status = 'graded'
+                    method = 'ai-practice' if practice_mode else 'ai-advisory'
+                except APIError as exc:
+                    # 自主練習／自助模擬測驗以「即時評分、記錄分數」為目的，
+                    # 模型暫時失敗時退回規則核對，不能讓學生連分數都記錄不到。
+                    # 教師佈置的作業維持嚴格失敗，交由教師批閱。
+                    if not practice_mode:
+                        raise
+                    ai_log(f'自主練習 AI 評分失敗，改用規則核對：{exc.message}')
+                    fallback_note = '（AI 暫時無法使用，本次改用規則核對最終答案；分數只作個人練習紀錄。）'
+                    if image is not None:
+                        feedback = 'AI 暫時無法辨識手寫內容，作答已保存；此題需教師批閱。'
+            if method == 'pending-teacher' and image is None and q['answer'].strip():
                 correct = final_correct(answer, q['answer'])
                 score = q['points'] if correct else 0
                 status, method = 'graded', 'rule-final'
-                feedback = ('規則評分：最終答案與參考答案嚴格等價。' if correct else '規則評分：未能確認最終答案與參考答案嚴格等價，記0分；可請教師覆核。') + '僅檢查最終答案，未批改推導步驟，也未使用 AI。'
+                feedback = ('規則評分：最終答案與參考答案嚴格等價。' if correct else '規則評分：未能確認最終答案與參考答案嚴格等價，記0分；可請教師覆核。') + '僅檢查最終答案，未批改推導步驟，也未使用 AI。' + fallback_note
             with self.db() as db:
                 db.execute('BEGIN IMMEDIATE')
                 # 与正式提交串行化；耗时模型调用后重新检查权限和截止时间。
@@ -2405,10 +2448,10 @@ class Application:
                                  'VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
                                  (user['id'], qid, answer, image, mime, image_key, score, q['points'], status, feedback, utc_now(), method,
                                   json.dumps(ai_steps, ensure_ascii=False), assignment_id, mock_id,
-                                  score if method == 'ai-advisory' else None,
+                                  score if method in ('ai-advisory', 'ai-practice') else None,
                                   score if method == 'rule-final' else None, json.dumps(suggestion, ensure_ascii=False)))
                 row = db.execute('SELECT * FROM attempts WHERE id=?', (cur.lastrowid,)).fetchone()
-            if method == 'ai-advisory':
+            if method in ('ai-advisory', 'ai-practice'):
                 self.homework.ai_suggestion(q, row, body.get('consentExternal'))
             with self.db() as db:
                 attempt = self.attempt_public(db, db.execute('SELECT * FROM attempts WHERE id=?', (row['id'],)).fetchone())

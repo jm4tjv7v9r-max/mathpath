@@ -657,6 +657,10 @@ const HANDWRITING=makePng(400,300);
   await page.locator('#answer-area').waitFor({timeout:8000});
   assert.deepEqual((await page.locator('.practice-tabs button').allInnerTexts()).map(t=>t.trim()),
     ['手寫解題','文字作答'], '填空題應只有手寫解題與文字作答');
+  // 自主練習（題庫直接練習）：一律 AI 即時評分並記錄分數，不需教師批閱；學生沒有 AI 批改選項。
+  assert.equal(await page.locator('#use-ai').count(),0,'學生不應有「使用 AI 批改」的勾選項');
+  assert.match(await page.locator('#main').innerText(),/自主練習由 AI 即時評分並記錄分數/);
+  assert.match(await page.locator('#submit-answer').innerText(),/提交並評分/);
   await page.locator('[data-answer-mode=text]').click();
   await page.locator('#math-keyboard').waitFor({state:'visible',timeout:5000});
   assert.ok(await page.locator('.mk-key').count() >= 40, '數學鍵盤應提供多個符號鍵');
@@ -724,8 +728,9 @@ const HANDWRITING=makePng(400,300);
   await openAssignmentQuestion();
   assert.equal(await page.locator('#use-ai').count(),0,'學生不應再有「使用 AI 批改」的勾選項');
   assert.equal(await page.locator('#consent-ai').count(),0,'未啟用 AI 的作業不應要求外部 AI 同意');
-  assert.match(await page.locator('#main').innerText(),/本題不使用 AI 批改/);
+  assert.match(await page.locator('#main').innerText(),/本份作業由教師設定不使用 AI 批改/);
   assert.equal((await page.locator('#submit-answer').innerText()).includes('批閱'),false,'未啟用 AI 時不應寫「提交與批閱」');
+  assert.match(await page.locator('#submit-answer').innerText(),/提交作答/);
 
   // 情境二：教師啟用了 AI 建議評分 → 學生看到唯讀說明，外部模型仍需同意資料傳送
   await page.route('**/api/assignments/1', assignmentDetail(true));
@@ -738,5 +743,5 @@ const HANDWRITING=makePng(400,300);
   await page.screenshot({path:path.join(__dirname,'..','MathPath-AI批改由教師決定.png'),fullPage:true});
 
   assert.deepEqual(errors,[]);await browser.close();
-  console.log('PASS: answer modes (choice = click-only with single option list, fill-in = handwriting/text with math keyboard + always-visible rendered preview), AI grading decided by teacher (teacher checkbox on assign, student read-only hint, no student use-ai toggle, external consent), font scale switch (guest, persisted, 3 levels, no mobile overflow), login page (role cards, remember checked, remembered account), calendar (marks + entry from homework), question type (card badge, filter, draft qtype, rule analysis), full-auto split+import, homework, draft save/reload/restore, logout cleanup, weak-topic drill-down, results filters, CSV export, teacher annotation (pen/ellipse/arrow/highlight/undo/clear/save), AI suggested annotation with student read-back and teacher drag-to-adjust saved positions, correction loop (teacher return with note, student banner, pending guard, resubmit), self-serve mock exam (setup, countdown, per-question answer with mockId, submit + instant score + advice), AI endpoint page (test/save, key never read back), bulk account parse/errors/create, mobile layout, no JS errors. Fixture API only; no server started.');
+  console.log('PASS: answer modes (choice = click-only with single option list, fill-in = handwriting/text with math keyboard + always-visible rendered preview), AI grading policy (self-practice = AI instant score recorded without teacher review, no student use-ai toggle; teacher checkbox on assign, student read-only hint, external consent), font scale switch (guest, persisted, 3 levels, no mobile overflow), login page (role cards, remember checked, remembered account), calendar (marks + entry from homework), question type (card badge, filter, draft qtype, rule analysis), full-auto split+import, homework, draft save/reload/restore, logout cleanup, weak-topic drill-down, results filters, CSV export, teacher annotation (pen/ellipse/arrow/highlight/undo/clear/save), AI suggested annotation with student read-back and teacher drag-to-adjust saved positions, correction loop (teacher return with note, student banner, pending guard, resubmit), self-serve mock exam (setup, countdown, per-question answer with mockId, submit + instant score + advice), AI endpoint page (test/save, key never read back), bulk account parse/errors/create, mobile layout, no JS errors. Fixture API only; no server started.');
 })().catch(e=>{console.error(e);process.exit(1)});
