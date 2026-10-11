@@ -221,6 +221,103 @@ class HomeworkTests(unittest.TestCase):
         self.assertEqual(self.detail(aid)['report']['score'], 5)
         self.assertEqual(self.call('GET', '/api/state')['stats']['completed'], 1)
 
+    def test_review_feedback_can_be_empty(self):
+        # 教師只想確認分數時可以不寫評語。
+        aid = self.assignment((1,))
+        attempt = self.attempt(aid, answer='x=2或3')
+        reviewed = self.call('POST', f"/api/attempts/{attempt['id']}/review", {'score': 5}, self.teacher)['attempt']
+        self.assertEqual(reviewed['score'], 5)
+        self.assertTrue(reviewed['teacherReviewed'])
+        self.assertIn('未填寫評語', reviewed['feedback'])
+        # 只有空白字元同樣視為留空。
+        other = self.attempt(aid, qid=1, answer='x=2')
+        blank = self.call('POST', f"/api/attempts/{other['id']}/review",
+                          {'score': 3, 'feedback': '   '}, self.teacher)['attempt']
+        self.assertEqual(blank['score'], 3)
+        self.assertIn('未填寫評語', blank['feedback'])
+        # 有寫評語時照舊顯示。
+        written = self.attempt(aid, qid=1, answer='x=2或3')
+        noted = self.call('POST', f"/api/attempts/{written['id']}/review",
+                          {'score': 6, 'feedback': '步驟清楚'}, self.teacher)['attempt']
+        self.assertEqual(noted['feedback'], '教師已覆核：步驟清楚')
+        # 分數仍是必填，評語型別仍要正確。
+        self.error(400, 'POST', f"/api/attempts/{written['id']}/review", {'feedback': '只有評語'}, self.teacher)
+        self.error(400, 'POST', f"/api/attempts/{written['id']}/review", {'score': 3, 'feedback': 5}, self.teacher)
+
+    def test_teacher_one_click_ai_review_all(self):
+        self.configure_ai()
+        aid = self.ai_assignment((1, 2))
+        suggestion = {'strength': 'a', 'focus': 'b', 'nextStep': 'c'}
+        with patch.object(self.app.ai, 'call', side_effect=[self.ai_result(), suggestion,
+                                                            self.ai_result(), suggestion]):
+            first = self.attempt(aid, qid=1, answer='x=2')
+            second = self.attempt(aid, qid=2, answer='x=3或4')
+        # 批閱前學生看不到分數。
+        self.assertIsNone(first['score'])
+        self.assertIsNone(self.detail(aid)['report']['score'])
+        # 學生不能自己觸發一鍵批閱。
+        self.error(403, 'POST', f'/api/assignments/{aid}/ai-review', {}, self.student)
+        result = self.call('POST', f'/api/assignments/{aid}/ai-review', {}, self.teacher)
+        self.assertEqual(result['reviewed'], 2)
+        self.assertEqual(result['failed'], 0)
+        # 一鍵批閱後學生才看到分數，且標記為教師批閱。
+        own = self.student_attempt(aid, first['id'])
+        self.assertEqual(own['score'], 4)
+        self.assertTrue(own['teacherReviewed'])
+        self.assertIn('AI 批閱（教師一鍵批閱）', own['feedback'])
+        self.assertNotIn('awaitingReview', own)
+        self.assertEqual(self.detail(aid)['report']['score'], 8)
+        self.assertEqual(self.results(aid)['summary']['pendingReviewCount'], 0)
+        # 已經全部批閱：再按一次不會重複呼叫模型。
+        with patch.object(self.app.ai, 'call') as ai:
+            again = self.call('POST', f'/api/assignments/{aid}/ai-review', {}, self.teacher)
+        ai.assert_not_called()
+        self.assertEqual(again['reviewed'], 0)
+        # 沒有由教師啟用 AI 評分的作業不能一鍵 AI 批閱。
+        plain = self.assignment((1,))
+        self.error(409, 'POST', f'/api/assignments/{plain}/ai-review', {}, self.teacher)
+
+    def test_one_click_ai_review_uses_existing_ai_score_and_survives_failure(self):
+        self.configure_ai()
+        aid = self.ai_assignment((1, 2))
+        suggestion = {'strength': 'a', 'focus': 'b', 'nextStep': 'c'}
+        # 第一題已由 AI 建議評分（尚未教師確認）。
+        with patch.object(self.app.ai, 'call', side_effect=[self.ai_result(), suggestion]):
+            first = self.attempt(aid, qid=1, answer='x=2')
+        # 第二題在 AI 暫時未接入時提交 → 只有規則分、待批閱。
+        self.app.ai.configured = False
+        second = self.attempt(aid, qid=2, answer='x=3或4')
+        self.app.ai.configured = True
+        self.assertEqual(self.teacher_attempt(aid, first['id'])['aiScore'], 4)
+        self.assertEqual(self.teacher_attempt(aid, second['id'])['gradingMethod'], 'rule-final')
+        # 一鍵批閱：第一題直接採用既有 AI 分數（不呼叫模型），第二題才呼叫一次。
+        with patch.object(self.app.ai, 'call', return_value=self.ai_result()) as ai:
+            result = self.call('POST', f'/api/assignments/{aid}/ai-review', {}, self.teacher)
+        self.assertEqual(ai.call_count, 1, '已有 AI 原分的作答不應重複呼叫模型')
+        self.assertEqual(result['reviewed'], 2)
+        self.assertEqual(self.student_attempt(aid, first['id'])['score'], 4)
+        self.assertIn('採用先前 AI 建議分數', self.student_attempt(aid, first['id'])['feedback'])
+        self.assertEqual(self.student_attempt(aid, second['id'])['score'], 4)
+        # 模型失敗時其他題仍要批閱完成，並回報錯誤。
+        aid2 = self.ai_assignment((1, 2))
+        self.app.ai.configured = False
+        self.attempt(aid2, qid=1, answer='x=2')
+        self.attempt(aid2, qid=2, answer='x=3或4')
+        self.app.ai.configured = True
+        with patch.object(self.app.ai, 'call', side_effect=[server.APIError(502, '壞了'), self.ai_result()]):
+            partial = self.call('POST', f'/api/assignments/{aid2}/ai-review', {}, self.teacher)
+        self.assertEqual(partial['reviewed'], 1)
+        self.assertEqual(partial['failed'], 1)
+        self.assertEqual(partial['errors'][0]['error'], '壞了')
+        self.assertEqual(self.detail(aid2)['report']['pendingCount'], 1)
+
+    def test_one_click_ai_review_external_requires_consent(self):
+        self.configure_ai(external=True)
+        aid = self.ai_assignment((1,))
+        with patch.object(self.app.ai, 'call') as ai:
+            self.error(403, 'POST', f'/api/assignments/{aid}/ai-review', {}, self.teacher)
+            ai.assert_not_called()
+
     def test_practice_always_ai_graded_and_recorded_without_teacher(self):
         # 自主練習（沒有作業編號）：一律 AI 即時評分、記錄分數，不需教師批閱。
         self.configure_ai()
@@ -769,7 +866,9 @@ class HomeworkTests(unittest.TestCase):
                 reviewed_by INTEGER REFERENCES users(id),reviewed_at TEXT);
         ''')
         legacy.execute('INSERT INTO users VALUES(?,?,?,?,?,?)', (1, 'legacy', '原用户', 'student', self.student['password'], 0))
-        legacy.execute('INSERT INTO questions(payload) VALUES(?)', (json.dumps(server.seed_questions()[0]),))
+        # 舊題目 payload 沒有 qtype／subtopic（欄位是後來才加的），遷移時要依題面回填。
+        legacy_q = {k: v for k, v in server.seed_questions()[0].items() if k not in ('qtype', 'subtopic')}
+        legacy.execute('INSERT INTO questions(payload) VALUES(?)', (json.dumps(legacy_q),))
         for method, reviewed, score in [('ai-advisory', 0, 4), ('rule-final', 0, 6), ('teacher-reviewed', 1, 5), ('pending-teacher', 0, None)]:
             legacy.execute('INSERT INTO attempts(user_id,question_id,answer_text,score,max_score,status,feedback,submitted_at,method,teacher_reviewed) '
                            'VALUES(1,1,?,?,?,?,?,?,?,?)', ('2', score, 6, 'pending' if score is None else 'graded', '原评语', server.utc_now(), method, reviewed))
@@ -781,6 +880,9 @@ class HomeworkTests(unittest.TestCase):
         with migrated.db() as db:
             self.assertEqual(db.execute('SELECT count(*) FROM users').fetchone()[0], 1)
             self.assertEqual(db.execute('SELECT count(*) FROM questions').fetchone()[0], 1)
+            backfilled = json.loads(db.execute('SELECT payload FROM questions WHERE id=1').fetchone()['payload'])
+            self.assertEqual(backfilled['qtype'], '解答題', '舊題目缺少 qtype 時應依題面回填')
+            self.assertEqual(backfilled['subtopic'], '')
             rows = db.execute('SELECT * FROM attempts ORDER BY id').fetchall()
             self.assertEqual(len(rows), 4)
             self.assertEqual(rows[0]['ai_score'], 4)

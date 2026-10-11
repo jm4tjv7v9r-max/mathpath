@@ -42,6 +42,8 @@ MAX_TEXT = 80_000
 MAX_BODY = 4 * ((MAX_FILE + 2) // 3) + MAX_TEXT * 12 + 10_000
 SESSION_SECONDS = 12 * 3600
 SESSION_SECONDS_LONG = 30 * 24 * 3600
+# 教師「一鍵 AI 全部批閱」單次最多處理的作答數，避免一次請求過久；剩下的再按一次即可。
+AI_REVIEW_LIMIT = 40
 # ── 兩層知識分類：主分類 → 子分類 ──
 # 參考人教版（七至九年級、高中必修／選擇性必修）章節細分，
 # 並保留香港課程的三大範疇（數與代數／度量圖形與空間／數據處理）＋延伸部分（微積分）。
@@ -1734,6 +1736,19 @@ class Application:
         with self.db() as db:
             self.homework.migrate(db)
             self.mock.migrate(db)
+            # 一次性回填：舊版題目 payload 沒有 qtype／subtopic（欄位是後來才加的），
+            # 依題面規則補回，讓題型與章節篩選在既有題庫也能運作。只做一次，不覆蓋教師已填的值。
+            if not db.execute('SELECT 1 FROM meta WHERE key=?', ('qtype_backfilled',)).fetchone():
+                for row in db.execute('SELECT id,payload FROM questions').fetchall():
+                    data = json.loads(row['payload'])
+                    if data.get('qtype') in QTYPES and 'subtopic' in data:
+                        continue
+                    if data.get('qtype') not in QTYPES:
+                        data['qtype'] = classify_type(data.get('content', ''))
+                    data.setdefault('subtopic', '')
+                    db.execute('UPDATE questions SET payload=? WHERE id=?',
+                               (json.dumps(data, ensure_ascii=False), row['id']))
+                db.execute('INSERT INTO meta(key,value) VALUES(?,?)', ('qtype_backfilled', '1'))
         os.chmod(self.db_path, 0o600)
         self.reload_ai()
         self.initialized = True
@@ -1903,6 +1918,44 @@ class Application:
         note = ('AI 即時評分（自主練習；分數只作個人練習紀錄，不需教師批閱）。\n'
                 if practice else 'AI 建議評分，僅供教師復核，不可直接用於正式考試。\n')
         return score, note + feedback, ai_steps
+
+    def attempt_image_url(self, row):
+        """取回手寫作答圖片的 data URL；沒有圖片時回 None。"""
+        keys = row.keys()
+        has_key = 'image_key' in keys and row['image_key'] is not None
+        if row['image'] is None and not has_key:
+            return None
+        if has_key:
+            raw, mime = self.storage.get(row['image_key'])
+        else:
+            raw, mime = row['image'], row['image_mime']
+        return 'data:' + mime + ';base64,' + base64.b64encode(raw).decode()
+
+    def confirm_attempt(self, db, row, user, score, feedback='', method='teacher-reviewed',
+                        prefix='教師已覆核', ai_score=None, ai_steps=None):
+        """教師確認一題分數：單題覆核與一鍵 AI 批閱共用。
+
+        feedback 可以留空（教師只想確認分數）；留空時仍寫入一句可讀的說明。
+        """
+        q = self.homework.question_for_attempt(db, row)
+        feedback = (feedback or '').strip()
+        note = f'{prefix}：{feedback}' if feedback else f'{prefix}（未填寫評語）。'
+        suggestion = self.homework.rule_suggestion(db, q, {
+            'score': score, 'max_score': row['max_score'], 'status': 'graded',
+            'feedback': note, 'method': method})
+        updates = ['score=?', 'status=?', 'feedback=?', 'method=?', 'teacher_reviewed=1',
+                   'reviewed_by=?', 'reviewed_at=?', 'teacher_confirmed_score=?', 'suggestion=?']
+        values = [score, 'graded', note, method, user['id'], utc_now(), score,
+                  json.dumps(suggestion, ensure_ascii=False)]
+        if ai_score is not None:
+            updates.append('ai_score=?')
+            values.append(ai_score)
+        if ai_steps is not None:
+            updates.append('ai_steps=?')
+            values.append(json.dumps(ai_steps, ensure_ascii=False))
+        values.append(row['id'])
+        db.execute(f'UPDATE attempts SET {",".join(updates)} WHERE id=?', values)
+        return suggestion
 
     def insert_question(self, db, q, figure=None, figure_mime=None):
         figure_key = None
@@ -2563,11 +2616,68 @@ class Application:
                                (data, mime, utc_now(), row['id']))
                 attempt = self.attempt_public(db, db.execute('SELECT * FROM attempts WHERE id=?', (row['id'],)).fetchone(), user)
             return {'attempt': attempt}, headers
+        match = re.fullmatch(r'/api/assignments/([1-9]\d{0,17})/ai-review', path)
+        if method == 'POST' and match:
+            # 教師一鍵 AI 全部批閱：對這份作業所有「尚未教師批閱」的最新作答逐題批閱並確認分數。
+            # 已經有 AI 原分的作答直接採用，不重複呼叫模型（省錢、也避免同一題兩次評分不一致）。
+            self.teacher(user)
+            fields(body, ('consentExternal',))
+            if 'consentExternal' in body and type(body['consentExternal']) is not bool:
+                fail(400, 'consentExternal 必須是布林值。')
+            aid = int(match[1])
+            with self.db() as db:
+                assignment = self.homework.get_assignment(db, aid, user)
+                if not self.homework.ai_grading(assignment):
+                    fail(409, '這份作業沒有由教師啟用 AI 建議評分，無法使用一鍵 AI 批閱。')
+                questions = {q['id']: q for q in self.homework.questions(db, aid)}
+                rows = db.execute(
+                    'SELECT a.* FROM attempts a JOIN (SELECT question_id,user_id,MAX(id) AS mid FROM attempts '
+                    'WHERE assignment_id=? GROUP BY question_id,user_id) latest ON a.id=latest.mid '
+                    'WHERE a.teacher_reviewed=0 ORDER BY a.id', (aid,)).fetchall()
+            if not self.ai.configured:
+                fail(409, '尚未設定 AI 模型；請設定伺服器環境變數後再試。')
+            self.ai.consent(body.get('consentExternal'))
+            pending, skipped = rows[:AI_REVIEW_LIMIT], []
+            reviewed, failed = [], []
+            for row in pending:
+                q = questions.get(row['question_id'])
+                if q is None:
+                    continue
+                try:
+                    if row['ai_score'] is not None:
+                        score = row['ai_score']
+                        feedback = '採用先前 AI 建議分數，由教師一鍵確認。'
+                        steps = json.loads(row['ai_steps'])
+                        ai_score = None
+                    else:
+                        image_url = self.attempt_image_url(row)
+                        score, feedback, steps = self.grade_with_ai(q, row['answer_text'], image_url, False)
+                        feedback = feedback.split('\n', 1)[-1]
+                        ai_score = score
+                    with self.db() as db:
+                        db.execute('BEGIN IMMEDIATE')
+                        fresh = db.execute('SELECT * FROM attempts WHERE id=?', (row['id'],)).fetchone()
+                        if not fresh or fresh['teacher_reviewed']:
+                            skipped.append(row['id'])
+                            continue
+                        self.confirm_attempt(db, fresh, user, score, feedback, prefix='AI 批閱（教師一鍵批閱）',
+                                             ai_score=ai_score, ai_steps=steps)
+                    reviewed.append(row['id'])
+                except APIError as exc:
+                    ai_log(f'一鍵批閱失敗 attempt={row["id"]}: {exc.message}')
+                    failed.append({'attemptId': row['id'], 'error': exc.message})
+            return {'reviewed': len(reviewed), 'failed': len(failed), 'skipped': len(skipped),
+                    'remaining': max(0, len(rows) - len(pending)),
+                    'errors': failed[:5]}, headers
         match = re.fullmatch(r'/api/attempts/([1-9]\d{0,17})/review', path)
         if method == 'POST' and match:
             self.teacher(user)
-            fields(body, ('score', 'feedback'), ('score', 'feedback'))
-            feedback = text(body['feedback'], '教師評語', 12000)
+            # 評語可以不寫：教師只想確認分數時留空即可。
+            fields(body, ('score', 'feedback'), ('score',))
+            raw_feedback = body.get('feedback', '')
+            if not isinstance(raw_feedback, str):
+                fail(400, 'feedback 必須是文字。')
+            feedback = text(raw_feedback, '教師評語', 12000, empty=True)
             with self.db() as db:
                 db.execute('BEGIN IMMEDIATE')
                 row = db.execute('SELECT * FROM attempts WHERE id=?', (int(match[1]),)).fetchone()
@@ -2576,13 +2686,7 @@ class Application:
                 if not self.homework.can_access_attempt(db, row, user):
                     fail(403, '只有作业所属教师可以覆核此记录。')
                 score = number(body['score'], '分數', 0, row['max_score'])
-                q = self.homework.question_for_attempt(db, row)
-                suggestion = self.homework.rule_suggestion(db, q, {
-                    'score': score, 'max_score': row['max_score'], 'status': 'graded',
-                    'feedback': '教师已覆核：' + feedback, 'method': 'teacher-reviewed'})
-                db.execute('UPDATE attempts SET score=?,status=?,feedback=?,method=?,teacher_reviewed=1,reviewed_by=?,reviewed_at=?,teacher_confirmed_score=?,suggestion=? WHERE id=?',
-                           (score, 'graded', '教師已覆核：' + feedback, 'teacher-reviewed', user['id'], utc_now(),
-                            score, json.dumps(suggestion, ensure_ascii=False), row['id']))
+                self.confirm_attempt(db, row, user, score, feedback)
                 attempt = self.attempt_public(db, db.execute('SELECT * FROM attempts WHERE id=?', (row['id'],)).fetchone(), user)
                 result = {'attempt': attempt}
                 if row['assignment_id'] is not None:

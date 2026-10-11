@@ -36,6 +36,7 @@ const HANDWRITING=makePng(400,300);
   const mockExam=()=>({id:7,topic:mockStarted&&mockStarted.topic||'幾何',level:null,qtype:'解答題',minutes:mockStarted?mockStarted.minutes:15,questionCount:1,createdAt:stamp,startedAt:stamp,expiresAt:stamp,submittedAt:mockState&&mockState.submitted?stamp:null,expired:false,status:mockState&&mockState.submitted?'submitted':'in_progress',remainingSeconds:mockState&&mockState.submitted?0:(mockStarted?mockStarted.minutes*60:900)});
   const mockReport=()=>({score:5,maxScore:5,percent:100,totalScoredPoints:5,pendingCount:0,confirmedScore:null,confirmedCount:0,aiScore:null,ruleScore:5,topicStats:[{topic:'幾何',scoredCount:1,totalCount:1,score:5,maxScore:5,percent:100}],suggestion:advice,answeredCount:1});
   let quizStarted=false,quizSubmitted=false,quizStartSeen=0,durationSent=null;
+  let reviewSent=null,aiReviewSent=null;
   const quizReport=()=>({score:quizSubmitted?6:null,maxScore:6,totalScoredPoints:quizSubmitted?6:0,pendingCount:0,confirmedScore:null,confirmedCount:0,gradedCount:quizSubmitted?1:0,questionCount:1,percent:quizSubmitted?100:null,aiScore:null,ruleScore:quizSubmitted?6:null,topicStats:[],suggestion:advice});
   const quizSub=()=>({status:quizSubmitted?'submitted':'not_started',submittedAt:quizSubmitted?stamp:null,resubmittedAt:null,submitCount:quizSubmitted?1:0,late:false,correction:null,startedAt:quizStarted?stamp:null,expiresAt:quizStarted?'2099-01-01T00:30:00Z':null,remainingSeconds:quizStarted?1800:null,timeUsedSeconds:quizStarted?0:null,expired:false});
   const AI_ISSUE={x:0.3,y:0.4,label:'符號錯誤',comment:'這裡應為負號'};
@@ -65,6 +66,15 @@ const HANDWRITING=makePng(400,300);
       assert.notEqual(body.consentExternal,undefined,'前端必須帶上外部傳送同意欄位');
       aiMarked=!body.clear;if(body.clear)aiAdjusted=null;
       return route.fulfill({json:{attempt:attemptFixture()}});
+    }
+    if(url.pathname==='/api/attempts/9/review'&&route.request().method()==='POST'){
+      reviewSent=route.request().postDataJSON();
+      const note=reviewSent.feedback?('教師已覆核：'+reviewSent.feedback):'教師已覆核（未填寫評語）。';
+      return route.fulfill({json:{attempt:{...attemptFixture(),score:reviewSent.score,teacherReviewed:true,confirmedScore:reviewSent.score,feedback:note,gradingMethod:'teacher-reviewed'}}});
+    }
+    if(url.pathname==='/api/assignments/1/ai-review'&&route.request().method()==='POST'){
+      aiReviewSent=route.request().postDataJSON();
+      return route.fulfill({json:{reviewed:2,failed:0,skipped:0,remaining:0,errors:[]}});
     }
     if(url.pathname==='/api/attempts/9/annotation'&&route.request().method()==='POST'){const sent=route.request().postDataJSON();assert.ok(sent.image.startsWith('data:image/png;base64,'),'批註必須以 PNG 儲存');assert.ok(sent.image.length>2000,'批註圖應包含手稿與筆跡');annotated=true;return route.fulfill({json:{attempt:attemptFixture()}});}
     const user=role?{id:role==='teacher'?2:1,name:role==='teacher'?'介面測試教師':'介面測試學生',role}:null;
@@ -266,6 +276,26 @@ const HANDWRITING=makePng(400,300);
   await page.waitForFunction(()=>document.querySelectorAll('.cal-note').length===0);
   assert.equal(calendarNotes.length,0,'刪除後不應再有提醒');
   await page.screenshot({path:path.join(__dirname,'..','MathPath-日曆.png'),fullPage:true});
+  // 日曆下方版面：分隔線標籤必須在面板中央，且各寬度／字級都不橫向溢出
+  for(const fs of ['','large','xlarge']){
+    for(const w of [1440,1024,768,390]){
+      await page.setViewportSize({width:w,height:900});
+      await page.evaluate(f=>{if(f)document.documentElement.dataset.fs=f;else delete document.documentElement.dataset.fs;},fs);
+      await page.evaluate(()=>navigate('calendar'));
+      await page.waitForTimeout(250);
+      const geom=await page.evaluate(()=>{
+        const de=document.documentElement,dv=document.querySelector('.divider-text'),panel=dv&&dv.closest('.panel');
+        const mid=el=>{const r=el.getBoundingClientRect();return r.left+r.width/2;};
+        return {sw:de.scrollWidth,iw:innerWidth,label:dv&&dv.querySelector('span')?mid(dv.querySelector('span')):null,panel:panel?mid(panel):null};
+      });
+      assert.ok(geom.sw<=geom.iw,`日曆在 ${w}px / ${fs||'normal'} 不應橫向溢出`);
+      assert.ok(Math.abs(geom.label-geom.panel)<=1,`提醒事項分隔線標籤應在面板中央（${w}px / ${fs||'normal'}）`);
+    }
+  }
+  await page.evaluate(()=>delete document.documentElement.dataset.fs);
+  await page.setViewportSize({width:1440,height:1000});
+  await page.evaluate(()=>navigate('calendar'));
+  await page.waitForTimeout(300);
   // 題庫：顯示題型，並可依題型篩選
   await page.locator('[data-page=bank]').first().click();
   await page.locator('[data-topic="全部題目"]').click();
@@ -790,6 +820,92 @@ const HANDWRITING=makePng(400,300);
   assert.equal(await page.locator('#result-root .solution-box').count(), 0, '批閱前不應顯示參考答案與詳解');
   assert.equal(await page.locator('#result-root .result-step').count(), 0, '批閱前不應顯示逐項評分');
 
+  // ── 教師批閱：評語可留空；一鍵 AI 全部批閱；教師側邊欄無自主練習 ──
+  const practiceQuestions=[
+    {id:101,title:'解一元二次方程',content:'解方程 $x^2-5x+6=0$。',topic:'一元二次方程',subtopic:'因式分解法',grade:'中三',points:6,level:1,qtype:'解答題',source:'校本題庫',tags:[],hint:''},
+    {id:102,title:'選出正確的根',content:'下列何者為 $x^2=4$ 的根？',topic:'一元二次方程',subtopic:'因式分解法',grade:'中三',points:4,level:1,qtype:'選擇題',source:'校本題庫',tags:[],hint:'',options:['$x=2$','$x=-2$','$x=2$ 或 $x=-2$','$x=4$']},
+    {id:103,title:'一次函數求值',content:'已知 $f(x)=2x+1$，求 $f(3)$。',topic:'函數',subtopic:'一次函數',grade:'中三',points:4,level:1,qtype:'填空題',source:'校本題庫',tags:[],hint:''},
+  ];
+  // 依目前登入身分回應狀態（覆寫前面學生情境用的固定狀態）。
+  await page.route('**/api/state', route => route.fulfill({json:{
+    user: role?{id:role==='teacher'?2:1,name:role==='teacher'?'介面測試教師':'介面測試學生',role}:null,
+    questions:practiceQuestions, attempts:[], stats:{completed:0,accuracy:0,streak:0,minutes:0},
+    ai:{configured:true,mode:'local'}, topics:['一元二次方程','函數']}}));
+  await page.locator('#account').click();await page.locator('#logout-btn').click();await page.waitForSelector('#homework-login');
+  await login('teacher');
+  assert.equal(await page.locator('#nav [data-page=practice]').count(),0,'教師側邊欄不應出現自主練習');
+  assert.equal(await page.locator('#nav [data-page=ai]').count(),1,'教師側邊欄應有模型端點');
+  assert.equal(await page.locator('#nav [data-page=import]').count(),1,'教師側邊欄應有試卷拆題');
+  const resultsFixture = aiGrading => route => route.fulfill({json:{
+    assignment:{...assignment,aiGrading},
+    students:[{...student,status:'submitted',submittedAt:stamp,answeredCount:1,pendingCount:1,score:null,scoredPoints:0,confirmedScore:null,confirmedCount:0}],
+    summary:{studentCount:1,submittedCount:1,correctionCount:0,fullyGradedCount:0,pendingReviewCount:1,averageScore:null,confirmedAverage:null},
+    topicStats:[]}});
+  // 一鍵 AI 全部批閱（只有教師啟用 AI 評分的作業才有此按鈕）
+  await page.route('**/api/assignments/1', route => route.fulfill({json:{
+    assignment:{...assignment,aiGrading:true}, questions:[assignmentQuestion], attempts:[attemptFixture()],
+    mySubmission:{status:'submitted',submittedAt:stamp,resubmittedAt:null,submitCount:1,late:false,correction:null},
+    report:{score:null,maxScore:6,totalScoredPoints:0,pendingCount:1,confirmedScore:null,confirmedCount:0,topicStats:[],suggestion:advice}}}));
+  await page.route('**/api/assignments/1/results', resultsFixture(true));
+  await page.locator('[data-page=homework]').first().click();
+  await page.locator('[data-results]').first().click();
+  await page.locator('#ai-review-all').waitFor({timeout:8000});
+  await page.locator('#ai-review-all').click();
+  await page.waitForTimeout(600);
+  assert.ok(aiReviewSent,'應呼叫一鍵 AI 批閱端點');
+  assert.equal(aiReviewSent.consentExternal,false,'本機模型不需外部傳送同意');
+  assert.match(await page.locator('#toast').innerText(),/已批閱 2 題/,'應回報批次結果');
+  // 教師覆核：只填分數、不寫評語也要能送出
+  await page.locator('[data-student-result]').first().click();
+  await page.locator('[data-hw-review]').first().click();
+  await page.locator('#review-score').waitFor({timeout:8000});
+  assert.equal(await page.locator('#review-feedback').getAttribute('required'),null,'評語欄不應必填');
+  assert.match(await page.locator('label[for=review-feedback]').innerText(),/可留空/);
+  await page.locator('#review-score').fill('5');
+  await page.locator('#review-form button[type=submit]').click();
+  await page.waitForFunction(()=>!document.querySelector('#modal-root .modal'));
+  assert.equal(reviewSent.score,5);
+  assert.equal(reviewSent.feedback,'','未填評語時應送出空字串');
+  // 未啟用 AI 評分的作業不應出現一鍵批閱
+  await page.route('**/api/assignments/1/results', resultsFixture(false));
+  await page.locator('[data-page=homework]').first().click();
+  await page.locator('[data-results]').first().click();
+  await page.locator('#export-results').waitFor({timeout:8000});
+  assert.equal(await page.locator('#ai-review-all').count(),0,'未啟用 AI 評分的作業不應有一鍵批閱');
+
+  // ── 自主練習：可選章節（主／子分類）與題型 ──
+  await page.locator('#account').click();await page.locator('#logout-btn').click();await page.waitForSelector('#homework-login');
+  await login('student');
+  await page.reload({waitUntil:'networkidle'});
+  await page.locator('#nav [data-page=practice]').click();
+  await page.locator('#pr-topic').waitFor({timeout:8000});
+  assert.deepEqual((await page.locator('#pr-topic option').allInnerTexts()).map(t=>t.trim()),
+    ['全部章節','一元二次方程','函數'],'自主練習應可選章節');
+  assert.match(await page.locator('#pr-count').innerText(),/3 題符合/);
+  assert.equal(await page.locator('#pr-subtopic').isDisabled(),true,'未選章節時子分類應停用');
+  await page.locator('#pr-topic').selectOption('一元二次方程');
+  await page.locator('#pr-subtopic').waitFor();
+  assert.equal(await page.locator('#pr-subtopic').isDisabled(),false,'選了章節後子分類應可用');
+  assert.deepEqual((await page.locator('#pr-subtopic option').allInnerTexts()).map(t=>t.trim()),
+    ['全部子分類','因式分解法'],'子分類應隨章節連動');
+  await page.locator('#pr-qtype').selectOption('選擇題');
+  assert.match(await page.locator('#pr-count').innerText(),/1 題符合/,'題型篩選應生效');
+  assert.equal(await page.locator('[data-pr-q]').count(),1);
+  // 換章節後原本的題型已不存在，應自動放寬而不是顯示 0 題
+  await page.locator('#pr-topic').selectOption('函數');
+  await page.locator('#pr-count').waitFor();
+  assert.match(await page.locator('#pr-count').innerText(),/1 題符合/,'換章節應自動放寬不合用的題型');
+  await page.locator('#pr-start').click();
+  await page.locator('#answer-area').waitFor({timeout:8000});
+  assert.match(await page.locator('#main').innerText(),/一次函數求值/,'應開啟符合範圍的題目');
+  assert.match(await page.locator('#main').innerText(),/自主練習/);
+  // 可回到範圍選擇（保留原本條件）
+  await page.locator('#change-range').click();
+  await page.locator('#pr-topic').waitFor({timeout:8000});
+  assert.equal(await page.locator('#pr-topic').inputValue(),'函數','換範圍應保留原本的章節');
+  assert.match(await page.locator('#pr-count').innerText(),/1 題符合/);
+  await page.screenshot({path:path.join(__dirname,'..','MathPath-自主練習範圍.png'),fullPage:true});
+
   assert.deepEqual(errors,[]);await browser.close();
-  console.log('PASS: answer modes (choice = click-only with single option list, fill-in = handwriting/text with math keyboard + always-visible rendered preview), AI grading policy (self-practice = AI instant score recorded without teacher review, no student use-ai toggle; teacher checkbox on assign, student read-only hint, external consent; homework/quiz scores, AI results, solution and advice hidden until the teacher reviews), font scale switch (guest, persisted, 3 levels, no mobile overflow), login page (role cards, remember checked, remembered account), calendar (marks + entry from homework), question type (card badge, filter, draft qtype, rule analysis), full-auto split+import, homework, draft save/reload/restore, logout cleanup, weak-topic drill-down, results filters, CSV export, teacher annotation (pen/ellipse/arrow/highlight/undo/clear/save), AI suggested annotation with student read-back and teacher drag-to-adjust saved positions, correction loop (teacher return with note, student banner, pending guard, resubmit), self-serve mock exam (setup, countdown, per-question answer with mockId, submit + instant score + advice), AI endpoint page (test/save, key never read back), bulk account parse/errors/create, mobile layout, no JS errors. Fixture API only; no server started.');
+  console.log('PASS: answer modes (choice = click-only with single option list, fill-in = handwriting/text with math keyboard + always-visible rendered preview), AI grading policy (self-practice = AI instant score recorded without teacher review, no student use-ai toggle; teacher checkbox on assign, student read-only hint, external consent; homework/quiz scores, AI results, solution and advice hidden until the teacher reviews), self-practice range picker (chapter + sub-chapter + question type, linked options, auto-widening, change-range keeps filters), teacher review with optional feedback, one-click AI review of a whole assignment (only for AI-enabled assignments), teacher sidebar without self-practice, calendar lower panel (centred divider label, no horizontal overflow at 4 widths x 3 font scales), font scale switch (guest, persisted, 3 levels, no mobile overflow), login page (role cards, remember checked, remembered account), calendar (marks + entry from homework), question type (card badge, filter, draft qtype, rule analysis), full-auto split+import, homework, draft save/reload/restore, logout cleanup, weak-topic drill-down, results filters, CSV export, teacher annotation (pen/ellipse/arrow/highlight/undo/clear/save), AI suggested annotation with student read-back and teacher drag-to-adjust saved positions, correction loop (teacher return with note, student banner, pending guard, resubmit), self-serve mock exam (setup, countdown, per-question answer with mockId, submit + instant score + advice), AI endpoint page (test/save, key never read back), bulk account parse/errors/create, mobile layout, no JS errors. Fixture API only; no server started.');
 })().catch(e=>{console.error(e);process.exit(1)});
