@@ -177,3 +177,28 @@ button.danger:disabled{opacity:.6}
   .admin-actions .secondary{flex:1 1 100%}
   .danger-zone{padding:16px}
 }
+
+/* ── 學生名單列（含編輯按鈕） ── */
+.roster-row{display:flex;align-items:center;gap:10px;padding:8px 2px;border-bottom:1px solid var(--border)}
+.roster-row .roster-who{flex:1;min-width:0;display:flex;align-items:center;gap:7px;flex-wrap:wrap;
+  font-size:calc(15px*var(--fs));line-height:1.6}
+.roster-row .text-button{flex:0 0 auto;font-size:calc(13px*var(--fs))}
+
+/* ── 設定：從歸檔還原 ── */
+.restore-zone{margin-top:24px;border:1px solid var(--border);border-radius:10px;padding:20px 22px;background:#fbfdfa}
+.restore-zone h3{margin:0 0 10px;font-size:calc(16px*var(--fs));display:flex;gap:8px;align-items:center;color:var(--ink)}
+.restore-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(calc(260px*var(--fs)),1fr));gap:16px;margin-top:14px}
+.restore-card{border:1px solid var(--border);border-radius:9px;background:#fff;padding:16px 17px;
+  display:flex;flex-direction:column;gap:9px}
+.restore-card>strong{font-size:calc(15px*var(--fs));font-weight:600}
+.restore-card .field-hint{margin:0}
+.restore-card .form-field{margin:0}
+.restore-card input[type=file]{font-size:calc(13px*var(--fs));color:#7c8d80}
+.restore-card .secondary,.restore-card .danger{font-size:calc(14px*var(--fs));padding:10px 14px}
+.restore-result:empty{display:none}
+.restore-result{margin-top:4px}
+.restore-result .code-block{max-height:260px;overflow:auto;font-size:calc(13px*var(--fs))}
+@media (max-width:640px){
+  .restore-zone{padding:16px}
+  .restore-grid{grid-template-columns:1fr}
+}

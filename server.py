@@ -24,15 +24,16 @@ import shutil
 import sqlite3
 import struct
 import sys
+import tempfile
 import threading
 import time
 import unicodedata
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlsplit
 from urllib.request import Request, build_opener, HTTPRedirectHandler, ProxyHandler
 from urllib.error import URLError, HTTPError
 import zlib
 
-from dataadmin import DataAdmin
+from dataadmin import MAX_UPLOAD_BYTES, DataAdmin
 from homework import Homework
 from mock import MockExams
 from storage import Storage
@@ -45,10 +46,14 @@ MAX_BODY = 4 * ((MAX_FILE + 2) // 3) + MAX_TEXT * 12 + 10_000
 SESSION_SECONDS = 12 * 3600
 SESSION_SECONDS_LONG = 30 * 24 * 3600
 # 允許帶查詢參數的路徑（日曆區間、歸檔選項）。
-QUERY_PATHS = ('/api/calendar', '/api/admin/archive/students', '/api/admin/archive/questions')
+QUERY_PATHS = ('/api/calendar', '/api/admin/archive/students', '/api/admin/archive/questions',
+               '/api/admin/restore/questions', '/api/admin/restore/students')
 # 需要串流下載的教師端點（不經過一般 JSON 回應）。
 ADMIN_DOWNLOADS = ('/api/admin/backup/db', '/api/admin/archive/questions',
                    '/api/admin/archive/students')
+# 還原：以原始二進位主體串流上傳（不經 JSON 解析），可能很大。
+RESTORE_UPLOADS = ('/api/admin/restore/db', '/api/admin/restore/questions',
+                   '/api/admin/restore/students')
 # 教師「一鍵 AI 全部批閱」單次最多處理的作答數，避免一次請求過久；剩下的再按一次即可。
 AI_REVIEW_LIMIT = 40
 # ── 兩層知識分類：主分類 → 子分類 ──
@@ -1732,7 +1737,10 @@ class Application:
         self.dummy_hash = password_hash(secrets.token_urlsafe(24))
         self.homework = Homework(self, fail, fields, text, number, utc_now)
         self.mock = MockExams(self, self.homework, fail, fields, text, number, utc_now, TOPIC_TREE)
-        self.dataadmin = DataAdmin(self, fail, text, utc_now)
+        self.dataadmin = DataAdmin(self, fail, text, utc_now, password_hash=password_hash,
+                                   seat_value=seat_value, student_name=student_name,
+                                   question_valid=question_valid, decode_figure=decode_figure,
+                                   validate_image=validate_image)
         # initialize() 必須由 main() 在背景執行緒呼叫，避免 Render 健康檢查 timeout。
         # initialize() 完成前 /api/health 回 starting，其它端點會因 DB 未就緒回 503。
         self.initialized = False
@@ -2313,6 +2321,14 @@ class Application:
                     created.append({'id': cur.lastrowid, 'username': username, 'name': name, 'role': 'student',
                                     'seat': seat})
             return {'count': len(created), 'users': created}, headers
+        update_user = re.fullmatch(r'/api/users/([1-9]\d{0,17})/update', path)
+        if method == 'POST' and update_user:
+            # 編輯學生：只改有填的欄位；重設密碼會同時登出該生。
+            self.teacher(user)
+            fields(body, ('username', 'name', 'seat', 'password'), ())
+            with self.db() as db:
+                db.execute('BEGIN IMMEDIATE')
+                return self.dataadmin.update_student(db, int(update_user[1]), body), headers
         if path == '/api/admin/storage' and method == 'GET':
             self.teacher(user)
             with self.db() as db:
@@ -2879,6 +2895,48 @@ class Handler(BaseHTTPRequestHandler):
         if self.command != 'HEAD':
             self.wfile.write(data)
 
+    def receive_upload(self, target, max_bytes):
+        """把請求主體串流寫入暫存檔（歸檔可能數百 MB，不能整份讀進記憶體）。"""
+        if self.headers.get('Transfer-Encoding') or len(self.headers.get_all('Content-Length', [])) != 1:
+            fail(400, '必須提供唯一 Content-Length，不支援分塊上傳。')
+        length = self.headers['Content-Length']
+        if not re.fullmatch(r'\d{1,12}', length):
+            fail(400, 'Content-Length 無效。')
+        length = int(length)
+        if not 0 < length <= max_bytes:
+            fail(413, '檔案大小必須介於 1 位元組與 %d MB 之間。' % (max_bytes // (1024 * 1024)))
+        previous = self.connection.gettimeout()
+        self.connection.settimeout(600)
+        remaining = length
+        try:
+            with open(target, 'wb') as handle:
+                while remaining > 0:
+                    chunk = self.rfile.read(min(1 << 20, remaining))
+                    if not chunk:
+                        fail(400, '上傳中斷，內容不完整。')
+                    handle.write(chunk)
+                    remaining -= len(chunk)
+        finally:
+            self.connection.settimeout(previous)
+        return length
+
+    def handle_restore(self, path, query, user):
+        app = self.server.app
+        directory = tempfile.mkdtemp(prefix='mathpath-restore-')
+        target = os.path.join(directory, 'upload.bin')
+        try:
+            self.receive_upload(target, MAX_UPLOAD_BYTES)
+            if path == '/api/admin/restore/db':
+                result = app.dataadmin.restore_database(target)
+            elif path == '/api/admin/restore/questions':
+                result = app.dataadmin.restore_questions(target, 'replace=1' in query)
+            else:
+                options = dict(parse_qsl(query))
+                result = app.dataadmin.restore_students(target, user['id'], options.get('password'))
+            self.respond(200, result)
+        finally:
+            shutil.rmtree(directory, ignore_errors=True)
+
     def file_chunks(self, target, size=512 * 1024):
         with open(target, 'rb') as handle:
             while True:
@@ -2995,6 +3053,15 @@ class Handler(BaseHTTPRequestHandler):
                 self.same_origin()
                 if self.command != 'POST':
                     fail(405, '僅支援 GET 和 POST。')
+                if path in RESTORE_UPLOADS:
+                    # 還原檔案可能很大，先驗身分再串流寫入暫存檔，不整份讀進記憶體。
+                    restore_app = self.server.app
+                    restore_user, _ = restore_app.current_user(self.headers.get('Cookie'))
+                    if restore_user is None:
+                        fail(401, '請先登入。')
+                    restore_app.teacher(restore_user)
+                    self.handle_restore(path, parsed.query, restore_user)
+                    return
                 body = self.read_json()
             app = self.server.app
             user, token_hash = app.current_user(self.headers.get('Cookie'))

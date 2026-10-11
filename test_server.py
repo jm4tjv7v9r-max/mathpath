@@ -1728,12 +1728,17 @@ class DataAdminTests(unittest.TestCase):
         self.httpd.server_close()
         self.thread.join(timeout=3)
 
-    def request(self, method, path, body=None, cookie=None, expect=None):
-        conn = http.client.HTTPConnection('127.0.0.1', self.httpd.server_port, timeout=30)
-        headers = {'Content-Type': 'application/json', 'Origin': self.origin}
+    def request(self, method, path, body=None, cookie=None, expect=None, raw=None,
+                ctype='application/json'):
+        conn = http.client.HTTPConnection('127.0.0.1', self.httpd.server_port, timeout=60)
+        headers = {'Origin': self.origin}
         if cookie:
             headers['Cookie'] = cookie
-        data = json.dumps(body, ensure_ascii=False).encode() if body is not None else None
+        if raw is not None:
+            data, headers['Content-Type'] = raw, ctype
+        else:
+            data = json.dumps(body, ensure_ascii=False).encode() if body is not None else None
+            headers['Content-Type'] = 'application/json'
         try:
             conn.request(method, path, data, headers)
             response = conn.getresponse()
@@ -1777,7 +1782,11 @@ class DataAdminTests(unittest.TestCase):
                  ('POST', '/api/admin/reset/students', {'confirm': 'RESET'}),
                  ('GET', '/api/admin/backup/db', None),
                  ('GET', '/api/admin/archive/questions', None),
-                 ('GET', '/api/admin/archive/students', None)]
+                 ('GET', '/api/admin/archive/students', None),
+                 ('POST', '/api/users/1/update', {'name': 'x'}),
+                 ('POST', '/api/admin/restore/db', None),
+                 ('POST', '/api/admin/restore/questions', None),
+                 ('POST', '/api/admin/restore/students', None)]
         for method, path, body in cases:
             with self.subTest(path=path, role='student'):
                 self.request(method, path, body, cookie=self.student, expect=403)
@@ -1871,6 +1880,176 @@ class DataAdminTests(unittest.TestCase):
                 break
             time.sleep(0.1)
         self.assertEqual(set(Path(tempfile.gettempdir()).glob('mathpath-backup-*')), before)
+
+    def archives(self):
+        """匯出三份檔案（題庫歸檔、學生歸檔、資料庫備份）供還原測試使用。"""
+        _, questions, _ = self.request('GET', '/api/admin/archive/questions',
+                                       cookie=self.teacher, expect=200)
+        if isinstance(questions, dict):
+            questions = json.dumps(questions, ensure_ascii=False).encode()
+        _, students, _ = self.request('GET', '/api/admin/archive/students',
+                                      cookie=self.teacher, expect=200)
+        _, backup, _ = self.request('GET', '/api/admin/backup/db', cookie=self.teacher, expect=200)
+        return questions, students, backup
+
+    def test_update_student_fields_and_password_reset(self):
+        _, created, _ = self.request('POST', '/api/users/bulk', {'students': [
+            {'username': 'u1a01', 'password': 'UpdatePass123', 'seat': '1'},
+            {'username': 'u1a02', 'password': 'UpdatePass123', 'seat': '2'}]},
+            cookie=self.teacher, expect=200)
+        uid = created['users'][0]['id']
+        path = f'/api/users/{uid}/update'
+        _, out, _ = self.request('POST', path, {'name': '陳大文', 'seat': '9'},
+                                 cookie=self.teacher, expect=200)
+        self.assertEqual(out['user'], {'id': uid, 'username': 'u1a01', 'name': '陳大文',
+                                       'role': 'student', 'seat': '9'})
+        self.assertEqual(out['changed'], ['姓名', '班內號'])
+        # 改學號；被別人用掉要 409
+        _, out, _ = self.request('POST', path, {'username': 'u1a01x'}, cookie=self.teacher, expect=200)
+        self.assertEqual(out['user']['username'], 'u1a01x')
+        self.request('POST', path, {'username': 'u1a02'}, cookie=self.teacher, expect=409)
+        # 重設密碼會撤銷該生所有登入工作階段
+        self.login('u1a01x', 'UpdatePass123')
+        _, out, _ = self.request('POST', path, {'password': 'BrandNewPass99'},
+                                 cookie=self.teacher, expect=200)
+        self.assertTrue(out['passwordReset'])
+        self.assertEqual(out['sessionsRevoked'], 1)
+        self.request('POST', '/api/login', {'username': 'u1a01x', 'password': 'UpdatePass123'}, expect=401)
+        self.login('u1a01x', 'BrandNewPass99')
+        # 姓名清空會回到學號；班內號可以清空
+        _, out, _ = self.request('POST', path, {'name': '   ', 'seat': ''},
+                                 cookie=self.teacher, expect=200)
+        self.assertEqual(out['user']['name'], 'u1a01x')
+        self.assertIsNone(out['user']['seat'])
+        # 各種無效輸入
+        self.request('POST', path, {}, cookie=self.teacher, expect=400)
+        self.request('POST', path, {'role': 'teacher'}, cookie=self.teacher, expect=400)
+        self.request('POST', path, {'username': 'ab'}, cookie=self.teacher, expect=400)
+        self.request('POST', path, {'password': 'short'}, cookie=self.teacher, expect=400)
+        self.request('POST', f'/api/users/{self.teacher_id()}/update', {'name': 'x'},
+                     cookie=self.teacher, expect=404)
+        self.request('POST', '/api/users/999999/update', {'name': 'x'}, cookie=self.teacher, expect=404)
+        self.request('POST', '/api/users/0/update', {'name': 'x'}, cookie=self.teacher, expect=404)
+
+    def teacher_id(self):
+        with self.app.db() as db:
+            return db.execute("SELECT id FROM users WHERE role='teacher' ORDER BY id").fetchone()[0]
+
+    def test_restore_questions_merge_and_replace_preserves_ids(self):
+        self.scenario()
+        questions, _, _ = self.archives()
+        document = json.loads(questions)
+        self.assertEqual(len(document['sourceIds']), 16, '題庫歸檔要帶原編號')
+        # 合併：題目都已存在 → 全部跳過，但仍記錄編號對照
+        _, merged, _ = self.request('POST', '/api/admin/restore/questions', raw=questions,
+                                    ctype='application/octet-stream', cookie=self.teacher, expect=200)
+        self.assertEqual((merged['inserted'], merged['skipped']), (0, 16))
+        self.assertEqual(merged['mapped'], 16)
+        # 取代：先清空題庫再以原編號寫回（有作答引用時應被擋下）
+        self.request('POST', '/api/admin/restore/questions?replace=1', raw=questions,
+                     ctype='application/octet-stream', cookie=self.teacher, expect=409)
+        self.request('POST', '/api/admin/reset/students', {'confirm': 'RESET'},
+                     cookie=self.teacher, expect=200)
+        _, replaced, _ = self.request('POST', '/api/admin/restore/questions?replace=1', raw=questions,
+                                      ctype='application/octet-stream', cookie=self.teacher, expect=200)
+        self.assertEqual(replaced['inserted'], 16)
+        self.assertTrue(replaced['replaced'])
+        with self.app.db() as db:
+            ids = [row[0] for row in db.execute('SELECT id FROM questions ORDER BY id')]
+        self.assertEqual(ids, document['sourceIds'], '取代模式要保留原編號')
+
+    def test_restore_students_round_trip(self):
+        _, aid, _ = self.scenario()
+        _, students, _ = self.archives()
+        records = [json.loads(line) for line in students.decode().strip().split('\n')]
+        attempt_record = next(r for r in records if r.get('type') == 'attempt')
+        self.assertTrue(attempt_record['image'].startswith('data:image/'))
+        self.request('POST', '/api/admin/reset/students', {'confirm': 'RESET'},
+                     cookie=self.teacher, expect=200)
+        with self.app.db() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM users').fetchone()[0], 2)
+        # 用共用初始密碼還原
+        _, out, _ = self.request('POST', '/api/admin/restore/students?password=RestoredPass99',
+                                 raw=students, ctype='application/octet-stream',
+                                 cookie=self.teacher, expect=200)
+        self.assertEqual(out['written']['student'], 2)
+        self.assertEqual(out['written']['class'], 1)
+        self.assertEqual(out['written']['assignment'], 1)
+        self.assertEqual(out['written']['attempt'], 1)
+        self.assertEqual(out['written']['classStudent'], 2)
+        self.assertTrue(out['usedSharedPassword'])
+        self.assertEqual(out['unreadableImages'], 0)
+        self.assertEqual([c['username'] for c in out['credentials']], ['y7a01', 'y7a02'])
+        self.assertEqual([c['seat'] for c in out['credentials']], ['1', '2'])
+        # 還原後的學生可以登入，並看到原本的作業與作答
+        cookie = self.login('y7a01', 'RestoredPass99')
+        _, homework, _ = self.request('GET', '/api/homework', cookie=cookie, expect=200)
+        self.assertEqual(len(homework['assignments']), 1)
+        restored_id = homework['assignments'][0]['id']
+        _, detail, _ = self.request('GET', f'/api/assignments/{restored_id}', cookie=cookie, expect=200)
+        self.assertEqual(len(detail['attempts']), 1)
+        self.assertEqual(detail['attempts'][0]['answerText'], 'x=2或3')
+        self.assertTrue(detail['attempts'][0]['image'])
+        # 圖片真的可以讀出來（重新驗證 PNG）
+        image = self.request('GET', f"/api/attempts/{detail['attempts'][0]['id']}/image",
+                             cookie=cookie, expect=200)[1]
+        self.assertTrue(image.startswith(b'\x89PNG\r\n\x1a\n'))
+        # 同名帳號不會被覆蓋，第二次還原只會跳過
+        _, again, _ = self.request('POST', '/api/admin/restore/students?password=RestoredPass99',
+                                   raw=students, ctype='application/octet-stream',
+                                   cookie=self.teacher, expect=200)
+        self.assertEqual(again['written'].get('student', 0), 0)
+        # 歸檔含演示學生 + 兩位測試學生，都已存在 → 全部跳過；演示教師另計。
+        self.assertEqual(again['skipped']['student'], 3)
+        self.assertEqual(again['skipped']['teacherRecord'], 1)
+
+    def test_restore_students_generates_passwords_without_shared_one(self):
+        self.scenario()
+        _, students, _ = self.archives()
+        self.request('POST', '/api/admin/reset/students', {'confirm': 'RESET'},
+                     cookie=self.teacher, expect=200)
+        _, out, _ = self.request('POST', '/api/admin/restore/students', raw=students,
+                                 ctype='application/octet-stream', cookie=self.teacher, expect=200)
+        self.assertFalse(out['usedSharedPassword'])
+        for item in out['credentials']:
+            self.assertTrue(item['generated'])
+            self.assertGreaterEqual(len(item['password']), 10)
+        self.login(out['credentials'][0]['username'], out['credentials'][0]['password'])
+        # 共用密碼太短要擋下來
+        self.request('POST', '/api/admin/restore/students?password=short', raw=students,
+                     ctype='application/octet-stream', cookie=self.teacher, expect=400)
+
+    def test_restore_database_replaces_and_keeps_previous(self):
+        self.scenario()
+        _, _, backup = self.archives()
+        with self.app.db() as db:
+            before = db.execute('SELECT count(*) FROM attempts').fetchone()[0]
+        self.request('POST', '/api/admin/reset/students', {'confirm': 'RESET'},
+                     cookie=self.teacher, expect=200)
+        _, out, _ = self.request('POST', '/api/admin/restore/db', raw=backup,
+                                 ctype='application/octet-stream', cookie=self.teacher, expect=200)
+        self.assertTrue(out['restored'])
+        self.assertEqual(out['counts']['attempts'], before)
+        self.assertTrue(out['keptPreviousAs'].startswith('mathpath.replaced-'))
+        self.assertTrue((self.root / 'data' / out['keptPreviousAs']).exists(), '舊資料庫要保留')
+        with self.app.db() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM attempts').fetchone()[0], before)
+        # 換檔後教師仍可登入
+        self.login('teacher', 'Teach1234!')
+
+    def test_restore_rejects_invalid_uploads(self):
+        cases = [('/api/admin/restore/db', b'not a database' * 50),
+                 ('/api/admin/restore/questions', b'{"format":"other"}'),
+                 ('/api/admin/restore/students', b'{"type":"student"}\n')]
+        for path, payload in cases:
+            with self.subTest(path=path):
+                self.request('POST', path, raw=payload, ctype='application/octet-stream',
+                             cookie=self.teacher, expect=400)
+        # 空檔案與超額大小
+        self.request('POST', '/api/admin/restore/db', raw=b'', ctype='application/octet-stream',
+                     cookie=self.teacher, expect=413)
+        with self.app.db() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM questions').fetchone()[0], 16)
 
     def test_reset_requires_phrase_and_keeps_question_bank(self):
         self.scenario()

@@ -37,6 +37,7 @@ const HANDWRITING=makePng(400,300);
   const mockReport=()=>({score:5,maxScore:5,percent:100,totalScoredPoints:5,pendingCount:0,confirmedScore:null,confirmedCount:0,aiScore:null,ruleScore:5,topicStats:[{topic:'幾何',scoredCount:1,totalCount:1,score:5,maxScore:5,percent:100}],suggestion:advice,answeredCount:1});
   let quizStarted=false,quizSubmitted=false,quizStartSeen=0,durationSent=null;
   let reviewSent=null,aiReviewSent=null,bulkSent=null,resetSent=null,vacuumCalled=0;
+  let editSent=null;const restoreSent={};
   const quizReport=()=>({score:quizSubmitted?6:null,maxScore:6,totalScoredPoints:quizSubmitted?6:0,pendingCount:0,confirmedScore:null,confirmedCount:0,gradedCount:quizSubmitted?1:0,questionCount:1,percent:quizSubmitted?100:null,aiScore:null,ruleScore:quizSubmitted?6:null,topicStats:[],suggestion:advice});
   const quizSub=()=>({status:quizSubmitted?'submitted':'not_started',submittedAt:quizSubmitted?stamp:null,resubmittedAt:null,submitCount:quizSubmitted?1:0,late:false,correction:null,startedAt:quizStarted?stamp:null,expiresAt:quizStarted?'2099-01-01T00:30:00Z':null,remainingSeconds:quizStarted?1800:null,timeUsedSeconds:quizStarted?0:null,expired:false});
   const AI_ISSUE={x:0.3,y:0.4,label:'符號錯誤',comment:'這裡應為負號'};
@@ -101,6 +102,10 @@ const HANDWRITING=makePng(400,300);
     else if(url.pathname==='/api/assignments'&&route.request().method()==='POST'){durationSent=route.request().postDataJSON();return route.fulfill({json:{assignment:quizAssignment}});}
     else if(url.pathname==='/api/questions/import'){importedQuestions=route.request().postDataJSON().questions;return route.fulfill({json:{count:importedQuestions.length}});}
     else if(url.pathname==='/api/users')data={users:[{id:1,username:'student',name:'介面測試學生',role:'student',seat:'1'}]};
+    else if(/^\/api\/users\/\d+\/update$/.test(url.pathname)){editSent={id:Number(url.pathname.split('/')[3]),body:route.request().postDataJSON()};return route.fulfill({json:{user:{id:editSent.id,username:editSent.body.username||'student',name:editSent.body.name||'介面測試學生',role:'student',seat:editSent.body.seat===undefined?'1':editSent.body.seat},changed:Object.keys(editSent.body),passwordReset:!!editSent.body.password,sessionsRevoked:editSent.body.password?1:0}});}
+    else if(url.pathname==='/api/admin/restore/questions'){restoreSent.questions={replace:url.searchParams.get('replace'),bytes:route.request().postDataBuffer().length};return route.fulfill({json:{inserted:3,skipped:13,mapped:16,total:16,replaced:url.searchParams.get('replace')==='1',notice:'已保留原編號'}});}
+    else if(url.pathname==='/api/admin/restore/students'){restoreSent.students={password:url.searchParams.get('password'),bytes:route.request().postDataBuffer().length};return route.fulfill({json:{written:{student:2,class:1,assignment:1,attempt:1},skipped:{},credentials:[{username:'s3a01',name:'s3a01',seat:'1',password:'FjdatfcsXnig',generated:false}],usedSharedPassword:true,unreadableImages:0,questionMapApplied:true,notice:'歸檔不含密碼'}});}
+    else if(url.pathname==='/api/admin/restore/db'){restoreSent.db={bytes:route.request().postDataBuffer().length};return route.fulfill({json:{restored:true,keptPreviousAs:'mathpath.replaced-test.sqlite3',counts:{questions:3000,attempts:2500,users:100},notice:'已用備份取代資料庫'}});}
     else if(url.pathname==='/api/admin/storage')data={database:{bytes:15728640,reclaimableBytes:1048576,walBytes:32768},counts:{questions:3000,attempts:2500,users:100,classes:3,assignments:5,mock_exams:0,calendar_notes:0,sessions:12},images:{handwriting:1500,annotation:300,questionFigure:40,inDatabaseBytes:45088768,inObjectStorage:0,storageMode:'db'},lastStudentReset:null,questionBankKeptAcrossYears:true};
     else if(url.pathname==='/api/admin/vacuum'){vacuumCalled+=1;return route.fulfill({json:{beforeBytes:15728640,afterBytes:10485760,savedBytes:5242880,at:stamp}});}
     else if(url.pathname==='/api/admin/reset/students'){resetSent=route.request().postDataJSON();return route.fulfill({json:{removed:{students:100,attempts:2500,classes:3,assignments:5,sessions:12},at:stamp,kept:{questions:3000,teachers:1,notice:'題庫、教師帳號、內建演示帳號與日曆提醒都保留。'},vacuum:{beforeBytes:15728640,afterBytes:1048576,savedBytes:14680064,at:stamp}}});}
@@ -567,6 +572,24 @@ const HANDWRITING=makePng(400,300);
   assert.match(seatResult,/學號\s+班內號\s+密碼/,'複製文字應含班內號欄');
   assert.match(seatResult,/s3a11\s+11/);
 
+  // ── 編輯學生 ──
+  const editBtn=page.locator('[data-edit-user]').first();
+  assert.equal(await editBtn.count(),1,'每列學生要有編輯按鈕');
+  await editBtn.click();
+  await page.locator('#student-edit-form').waitFor();
+  await page.locator('#edit-name').fill('陳大文');
+  await page.locator('#edit-seat').fill('7');
+  await page.locator('#student-edit-form button[type=submit]').click();
+  await page.waitForFunction(()=>document.querySelector('#student-edit-form')===null);
+  assert.deepEqual(editSent.body,{name:'陳大文',seat:'7'},'只送出有改動的欄位');
+  // 重設密碼會一起送出，並提示已登出該生
+  await page.locator('[data-edit-user]').first().click();
+  await page.locator('#edit-password').fill('BrandNewPass99');
+  await page.locator('#student-edit-form button[type=submit]').click();
+  await page.waitForFunction(()=>document.querySelector('#student-edit-form')===null);
+  assert.deepEqual(editSent.body,{password:'BrandNewPass99'});
+  assert.match(await page.locator('#toast').innerText(),/已登出該生目前的登入/);
+
   await page.locator('[data-action=close-modal]').click();
 
   // ── 設定與隱私：資料管理（教師專用）──
@@ -596,6 +619,35 @@ const HANDWRITING=makePng(400,300);
   assert.deepEqual(resetSent,{confirm:'reset'},'重置應送出確認字串');
   await page.waitForFunction(()=>document.querySelector('#toast').textContent.includes('學年重置完成'));
   await page.screenshot({path:path.join(__dirname,'..','MathPath-資料管理.png'),fullPage:true});
+
+  // ── 從歸檔還原 ──
+  assert.equal(await page.locator('#restore-replace').count(),1);
+  assert.equal(await page.locator('#restore-db-btn').count(),1);
+  await page.locator('#restore-questions-file').setInputFiles({name:'questions.json',mimeType:'application/json',
+    buffer:Buffer.from('{"format":"mathpath-question-archive","questions":[]}')});
+  await page.locator('#restore-questions-btn').click();
+  await page.waitForFunction(()=>document.querySelector('#restore-questions-result').innerText.includes('題庫還原完成'));
+  assert.equal(restoreSent.questions.bytes>0,true,'題庫歸檔要真的上傳');
+  assert.equal(restoreSent.questions.replace,null,'預設是合併，不帶 replace');
+  assert.match(await page.locator('#restore-questions-result').innerText(),/新增 3 題/);
+  // 勾選整批取代會帶上 replace=1（並跳一次確認對話框，測試已自動接受）
+  await page.locator('#restore-replace').check();
+  await page.locator('#restore-questions-btn').click();
+  await page.waitForFunction(()=>document.querySelector('#restore-questions-result').innerText.includes('歸檔共 16 題'));
+  assert.equal(restoreSent.questions.replace,'1');
+  // 還原學生作業：帶共用密碼、顯示產生的帳密表
+  await page.locator('#restore-password').fill('FjdatfcsXnig');
+  await page.locator('#restore-students-file').setInputFiles({name:'students.jsonl',mimeType:'application/x-ndjson',
+    buffer:Buffer.from('{"format":"mathpath-student-archive"}\n')});
+  await page.locator('#restore-students-btn').click();
+  await page.waitForFunction(()=>document.querySelector('#restore-students-result').innerText.includes('學生作業還原完成'));
+  assert.equal(restoreSent.students.password,'FjdatfcsXnig');
+  assert.equal(restoreSent.students.bytes>0,true,'學生歸檔要真的上傳');
+  assert.match(await page.locator('#restore-students-result').innerText(),/s3a01/);
+  assert.match(await page.locator('#restore-students-result').innerText(),/題號已依題庫還原對照表換算/);
+  assert.equal(await page.locator('#restore-copy').count(),1,'要能複製帳密');
+  await page.locator('#restore-students-result').scrollIntoViewIfNeeded();
+  await page.screenshot({path:path.join(__dirname,'..','MathPath-還原歸檔.png'),fullPage:true});
 
   // 學生看不到資料管理區塊
   await page.locator('#account').click();await page.locator('#logout-btn').click();await page.waitForSelector('#homework-login');
@@ -999,5 +1051,5 @@ const HANDWRITING=makePng(400,300);
   await page.screenshot({path:path.join(__dirname,'..','MathPath-自主練習範圍.png'),fullPage:true});
 
   assert.deepEqual(errors,[]);await browser.close();
-  console.log('PASS: answer modes (choice = click-only with single option list, fill-in = handwriting/text with math keyboard + always-visible rendered preview), AI grading policy (self-practice = AI instant score recorded without teacher review, no student use-ai toggle; teacher checkbox on assign, student read-only hint, external consent; homework/quiz scores, AI results, solution and advice hidden until the teacher reviews), self-practice range picker (chapter + sub-chapter + question type, linked options, auto-widening, change-range keeps filters), teacher review with optional feedback, one-click AI review of a whole assignment (only for AI-enabled assignments), teacher sidebar without self-practice, calendar lower panel (centred divider label, panel content never flush to the card border, no horizontal overflow at 4 widths x 3 font scales), font scale switch (guest, persisted, 3 levels, no mobile overflow), login page (role cards, remember checked, remembered account), calendar (marks + entry from homework), question type (card badge, filter, draft qtype, rule analysis), full-auto split+import, homework, draft save/reload/restore, logout cleanup, weak-topic drill-down, results filters, CSV export, teacher annotation (pen/ellipse/arrow/highlight/undo/clear/save), AI suggested annotation with student read-back and teacher drag-to-adjust saved positions, correction loop (teacher return with note, student banner, pending guard, resubmit), self-serve mock exam (setup, countdown, per-question answer with mockId, submit + instant score + advice), AI endpoint page (test/save, key never read back), bulk student import (column-order auto-detect + header row, student id only with seat number and no name, generated passwords, per-line errors, class creation), data management (usage cards, four download entries, vacuum, school-year reset gated by a typed confirmation and hidden from students), mobile layout, no JS errors. Fixture API only; no server started.');
+  console.log('PASS: answer modes (choice = click-only with single option list, fill-in = handwriting/text with math keyboard + always-visible rendered preview), AI grading policy (self-practice = AI instant score recorded without teacher review, no student use-ai toggle; teacher checkbox on assign, student read-only hint, external consent; homework/quiz scores, AI results, solution and advice hidden until the teacher reviews), self-practice range picker (chapter + sub-chapter + question type, linked options, auto-widening, change-range keeps filters), teacher review with optional feedback, one-click AI review of a whole assignment (only for AI-enabled assignments), teacher sidebar without self-practice, calendar lower panel (centred divider label, panel content never flush to the card border, no horizontal overflow at 4 widths x 3 font scales), font scale switch (guest, persisted, 3 levels, no mobile overflow), login page (role cards, remember checked, remembered account), calendar (marks + entry from homework), question type (card badge, filter, draft qtype, rule analysis), full-auto split+import, homework, draft save/reload/restore, logout cleanup, weak-topic drill-down, results filters, CSV export, teacher annotation (pen/ellipse/arrow/highlight/undo/clear/save), AI suggested annotation with student read-back and teacher drag-to-adjust saved positions, correction loop (teacher return with note, student banner, pending guard, resubmit), self-serve mock exam (setup, countdown, per-question answer with mockId, submit + instant score + advice), AI endpoint page (test/save, key never read back), bulk student import (column-order auto-detect + header row, student id only with seat number and no name, generated passwords, per-line errors, class creation), data management (usage cards, four download entries, vacuum, school-year reset gated by a typed confirmation and hidden from students), student editing (only changed fields submitted, password reset warns about logout), archive restore (question merge vs replace, student archive with shared password and credential table), mobile layout, no JS errors. Fixture API only; no server started.');
 })().catch(e=>{console.error(e);process.exit(1)});
