@@ -286,10 +286,19 @@ const HANDWRITING=makePng(400,300);
       const geom=await page.evaluate(()=>{
         const de=document.documentElement,dv=document.querySelector('.divider-text'),panel=dv&&dv.closest('.panel');
         const mid=el=>{const r=el.getBoundingClientRect();return r.left+r.width/2;};
-        return {sw:de.scrollWidth,iw:innerWidth,label:dv&&dv.querySelector('span')?mid(dv.querySelector('span')):null,panel:panel?mid(panel):null};
+        // 內容不可貼著卡片左邊框：量測標題／表單相對於面板左緣的內縮
+        const insets=[...document.querySelectorAll('#main .panel')].map(p=>{
+          const b=p.getBoundingClientRect();
+          const kid=[...p.querySelectorAll(':scope > *')].find(k=>k.getBoundingClientRect().height>1);
+          return kid?Math.round(kid.getBoundingClientRect().left-b.left):null;
+        });
+        return {sw:de.scrollWidth,iw:innerWidth,label:dv&&dv.querySelector('span')?mid(dv.querySelector('span')):null,panel:panel?mid(panel):null,insets};
       });
       assert.ok(geom.sw<=geom.iw,`日曆在 ${w}px / ${fs||'normal'} 不應橫向溢出`);
       assert.ok(Math.abs(geom.label-geom.panel)<=1,`提醒事項分隔線標籤應在面板中央（${w}px / ${fs||'normal'}）`);
+      for(const inset of geom.insets){
+        assert.ok(inset>=15,`日曆卡片內容不應貼左邊框（${w}px / ${fs||'normal'} 實測內縮 ${inset}px）`);
+      }
     }
   }
   await page.evaluate(()=>delete document.documentElement.dataset.fs);
@@ -907,5 +916,5 @@ const HANDWRITING=makePng(400,300);
   await page.screenshot({path:path.join(__dirname,'..','MathPath-自主練習範圍.png'),fullPage:true});
 
   assert.deepEqual(errors,[]);await browser.close();
-  console.log('PASS: answer modes (choice = click-only with single option list, fill-in = handwriting/text with math keyboard + always-visible rendered preview), AI grading policy (self-practice = AI instant score recorded without teacher review, no student use-ai toggle; teacher checkbox on assign, student read-only hint, external consent; homework/quiz scores, AI results, solution and advice hidden until the teacher reviews), self-practice range picker (chapter + sub-chapter + question type, linked options, auto-widening, change-range keeps filters), teacher review with optional feedback, one-click AI review of a whole assignment (only for AI-enabled assignments), teacher sidebar without self-practice, calendar lower panel (centred divider label, no horizontal overflow at 4 widths x 3 font scales), font scale switch (guest, persisted, 3 levels, no mobile overflow), login page (role cards, remember checked, remembered account), calendar (marks + entry from homework), question type (card badge, filter, draft qtype, rule analysis), full-auto split+import, homework, draft save/reload/restore, logout cleanup, weak-topic drill-down, results filters, CSV export, teacher annotation (pen/ellipse/arrow/highlight/undo/clear/save), AI suggested annotation with student read-back and teacher drag-to-adjust saved positions, correction loop (teacher return with note, student banner, pending guard, resubmit), self-serve mock exam (setup, countdown, per-question answer with mockId, submit + instant score + advice), AI endpoint page (test/save, key never read back), bulk account parse/errors/create, mobile layout, no JS errors. Fixture API only; no server started.');
+  console.log('PASS: answer modes (choice = click-only with single option list, fill-in = handwriting/text with math keyboard + always-visible rendered preview), AI grading policy (self-practice = AI instant score recorded without teacher review, no student use-ai toggle; teacher checkbox on assign, student read-only hint, external consent; homework/quiz scores, AI results, solution and advice hidden until the teacher reviews), self-practice range picker (chapter + sub-chapter + question type, linked options, auto-widening, change-range keeps filters), teacher review with optional feedback, one-click AI review of a whole assignment (only for AI-enabled assignments), teacher sidebar without self-practice, calendar lower panel (centred divider label, panel content never flush to the card border, no horizontal overflow at 4 widths x 3 font scales), font scale switch (guest, persisted, 3 levels, no mobile overflow), login page (role cards, remember checked, remembered account), calendar (marks + entry from homework), question type (card badge, filter, draft qtype, rule analysis), full-auto split+import, homework, draft save/reload/restore, logout cleanup, weak-topic drill-down, results filters, CSV export, teacher annotation (pen/ellipse/arrow/highlight/undo/clear/save), AI suggested annotation with student read-back and teacher drag-to-adjust saved positions, correction loop (teacher return with note, student banner, pending guard, resubmit), self-serve mock exam (setup, countdown, per-question answer with mockId, submit + instant score + advice), AI endpoint page (test/save, key never read back), bulk account parse/errors/create, mobile layout, no JS errors. Fixture API only; no server started.');
 })().catch(e=>{console.error(e);process.exit(1)});
