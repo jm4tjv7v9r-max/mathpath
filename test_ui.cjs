@@ -37,7 +37,7 @@ const HANDWRITING=makePng(400,300);
   const mockReport=()=>({score:5,maxScore:5,percent:100,totalScoredPoints:5,pendingCount:0,confirmedScore:null,confirmedCount:0,aiScore:null,ruleScore:5,topicStats:[{topic:'幾何',scoredCount:1,totalCount:1,score:5,maxScore:5,percent:100}],suggestion:advice,answeredCount:1});
   let quizStarted=false,quizSubmitted=false,quizStartSeen=0,durationSent=null;
   let reviewSent=null,aiReviewSent=null,bulkSent=null,resetSent=null,vacuumCalled=0;
-  let editSent=null;const restoreSent={};
+  let editSent=null;const restoreSent={};let aiGenerated=null;
   const quizReport=()=>({score:quizSubmitted?6:null,maxScore:6,totalScoredPoints:quizSubmitted?6:0,pendingCount:0,confirmedScore:null,confirmedCount:0,gradedCount:quizSubmitted?1:0,questionCount:1,percent:quizSubmitted?100:null,aiScore:null,ruleScore:quizSubmitted?6:null,topicStats:[],suggestion:advice});
   const quizSub=()=>({status:quizSubmitted?'submitted':'not_started',submittedAt:quizSubmitted?stamp:null,resubmittedAt:null,submitCount:quizSubmitted?1:0,late:false,correction:null,startedAt:quizStarted?stamp:null,expiresAt:quizStarted?'2099-01-01T00:30:00Z':null,remainingSeconds:quizStarted?1800:null,timeUsedSeconds:quizStarted?0:null,expired:false});
   const AI_ISSUE={x:0.3,y:0.4,label:'符號錯誤',comment:'這裡應為負號'};
@@ -100,7 +100,7 @@ const HANDWRITING=makePng(400,300);
     else if(url.pathname==='/api/assignments/2/submit'){quizSubmitted=true;return route.fulfill({json:{report:{score:6,maxScore:6,totalScoredPoints:6,pendingCount:0,confirmedScore:null,confirmedCount:0,gradedCount:1,questionCount:1,percent:100,aiScore:null,ruleScore:6,topicStats:[],suggestion:advice},mySubmission:quizSub()}});}
     else if(url.pathname==='/api/assignments/2')data={assignment:quizAssignment,questions:[q],attempts:quizStarted?[graded(21,1,'一元二次方程',6,6)]:[],mySubmission:quizSub(),report:quizReport()};
     else if(url.pathname==='/api/assignments'&&route.request().method()==='POST'){durationSent=route.request().postDataJSON();return route.fulfill({json:{assignment:quizAssignment}});}
-    else if(url.pathname==='/api/questions/import'){importedQuestions=route.request().postDataJSON().questions;return route.fulfill({json:{count:importedQuestions.length}});}
+    else if(url.pathname==='/api/questions/import'){importedQuestions=route.request().postDataJSON().questions;return route.fulfill({json:{count:importedQuestions.length,questions:importedQuestions.map((qq,i)=>({id:50+i,...qq}))}});}
     else if(url.pathname==='/api/users')data={users:[{id:1,username:'student',name:'介面測試學生',role:'student',seat:'1'}]};
     else if(/^\/api\/users\/\d+\/update$/.test(url.pathname)){editSent={id:Number(url.pathname.split('/')[3]),body:route.request().postDataJSON()};return route.fulfill({json:{user:{id:editSent.id,username:editSent.body.username||'student',name:editSent.body.name||'介面測試學生',role:'student',seat:editSent.body.seat===undefined?'1':editSent.body.seat},changed:Object.keys(editSent.body),passwordReset:!!editSent.body.password,sessionsRevoked:editSent.body.password?1:0}});}
     else if(url.pathname==='/api/admin/restore/questions'){restoreSent.questions={replace:url.searchParams.get('replace'),bytes:route.request().postDataBuffer().length};return route.fulfill({json:{inserted:3,skipped:13,mapped:16,total:16,replaced:url.searchParams.get('replace')==='1',notice:'已保留原編號'}});}
@@ -111,7 +111,8 @@ const HANDWRITING=makePng(400,300);
     else if(url.pathname==='/api/admin/reset/students'){resetSent=route.request().postDataJSON();return route.fulfill({json:{removed:{students:100,attempts:2500,classes:3,assignments:5,sessions:12},at:stamp,kept:{questions:3000,teachers:1,notice:'題庫、教師帳號、內建演示帳號與日曆提醒都保留。'},vacuum:{beforeBytes:15728640,afterBytes:1048576,savedBytes:14680064,at:stamp}}});}
     else if(url.pathname==='/api/users/bulk'){bulkSent=route.request().postDataJSON();return route.fulfill({json:{count:bulkSent.students.length,users:bulkSent.students.map((st,i)=>({id:5+i,username:st.username,name:st.name||st.username,role:'student',seat:st.seat||null}))}});}
     else if(url.pathname==='/api/classes')data={class:{id:2,name:route.request().postDataJSON().name,studentCount:2,studentIds:[5,6]}};
-    else if(url.pathname==='/api/questions/1/recommendations')data={similar:[],advanced:[]};
+    else if(/^\/api\/questions\/\d+\/recommendations$/.test(url.pathname))data={similar:[],advanced:[]};
+    else if(/^\/api\/questions\/\d+\/generate$/.test(url.pathname)){aiGenerated=route.request().postDataJSON();aiGenerated.qid=Number(url.pathname.split('/')[3]);return route.fulfill({json:{kind:aiGenerated.kind,notice:'這是 AI 生成的草稿，尚未加入題庫。請核對題目內容、分類與參考答案後，再決定是否加入。',draft:{title:'AI 生成 · 相似題',content:'解方程 $x^2-7x+12=0$。',topic:'一元二次方程',subtopic:'因式分解法',level:1,grade:'中三',points:6,qtype:'解答題',options:[],answer:'$x=3$ 或 $x=4$',steps:['分解為 $(x-3)(x-4)=0$。','得 $x=3$ 或 $x=4$。'],analysis:'考點是因式分解法，注意常數項與一次項的配對。',rubric:[{label:'正確分解',percent:100}],hint:'找乘積為 12、和為 7 的兩數。',tags:['待教師核驗'],source:'AI 生成 · 待核驗'}}});}
     else if(url.pathname==='/api/assignments/1/return'){returned=route.request().postDataJSON();correction={round:1,note:returned.note,requestedAt:stamp,questionIds:returned.questionIds,minAttemptId:9};return route.fulfill({json:{correction,report:{score:6,maxScore:6,totalScoredPoints:6,pendingCount:0,confirmedScore:null,confirmedCount:0,topicStats:[],suggestion:advice}}});}
     else if(url.pathname==='/api/assignments/1/submit'){correction=null;studentSubmitted=true;return route.fulfill({json:{report:{score:12,maxScore:12,totalScoredPoints:12,pendingCount:0,confirmedScore:null,confirmedCount:0,topicStats:[],suggestion:advice},mySubmission:{status:'submitted',submittedAt:stamp,resubmittedAt:stamp,submitCount:2,late:false,correction:null}}});}
     else if(url.pathname==='/api/assignments/1/results')data={assignment,students:[{...student,status:correction?'correction':'submitted',submittedAt:stamp,correction},{...student,id:3,name:'第二位測試學生',username:'second',status:'in_progress',pendingCount:1}],summary:{studentCount:2,submittedCount:1,correctionCount:correction?1:0,fullyGradedCount:0,pendingReviewCount:1,averageScore:null,confirmedAverage:null},topicStats:[]};
@@ -1043,6 +1044,9 @@ const HANDWRITING=makePng(400,300);
   await page.locator('#answer-area').waitFor({timeout:8000});
   assert.match(await page.locator('#main').innerText(),/一次函數求值/,'應開啟符合範圍的題目');
   assert.match(await page.locator('#main').innerText(),/自主練習/);
+  // 學生在練習頁右側「從一道題，到一類題」看不到 AI 生成按鈕（只有教師可生成並加入題庫）
+  await page.locator('#recommendations .recommend-label').first().waitFor({timeout:8000});
+  assert.equal(await page.locator('#recommendations [data-generate]').count(),0,'學生不應看到 AI 生成題目的按鈕');
   // 可回到範圍選擇（保留原本條件）
   await page.locator('#change-range').click();
   await page.locator('#pr-topic').waitFor({timeout:8000});
@@ -1050,6 +1054,33 @@ const HANDWRITING=makePng(400,300);
   assert.match(await page.locator('#pr-count').innerText(),/1 題符合/);
   await page.screenshot({path:path.join(__dirname,'..','MathPath-自主練習範圍.png'),fullPage:true});
 
+  // ── 教師：依題目由 AI 生成類似題，核驗後才決定是否加入題庫 ──
+  await page.locator('#account').click();await page.locator('#logout-btn').click();await page.waitForSelector('#homework-login');
+  await login('teacher');
+  await page.reload({waitUntil:'networkidle'});
+  await page.locator('#nav [data-page=bank]').click();
+  const genBtn=page.locator('[data-aigen]').first();
+  await genBtn.waitFor({timeout:8000});
+  const importBefore=importedQuestions?importedQuestions.length:0;
+  await genBtn.click();
+  await page.locator('[data-gen-kind=similar]').waitFor();
+  await page.locator('[data-gen-kind=similar]').click();
+  await page.locator('#ai-draft-save').waitFor({timeout:8000});
+  const draftText=await page.locator('.modal').innerText();
+  assert.match(draftText,/尚未加入題庫/,'AI 生成後應先顯示草稿，並說明尚未加入題庫');
+  assert.match(draftText,/參考答案/,'草稿應顯示參考答案供教師核驗');
+  assert.match(draftText,/評分標準/,'草稿應顯示評分標準供教師核驗');
+  assert.equal(importedQuestions?importedQuestions.length:0,importBefore,'教師未按「加入題庫」前，不應送出任何題目');
+  assert.equal(aiGenerated.kind,'similar','應依教師選擇生成相似題');
+  assert.ok(aiGenerated.qid>0,'應以教師點選的那道題為參考題');
+  assert.equal(aiGenerated.consentExternal,false,'內部模型不應要求外部上傳同意');
+  await page.screenshot({path:path.join(__dirname,'..','MathPath-AI生成題目草稿.png'),fullPage:true});
+  await page.locator('#ai-draft-save').click();
+  await page.locator('.modal').waitFor({state:'detached',timeout:8000});
+  assert.equal(importedQuestions.length,1,'教師確認後才把草稿送進題庫匯入');
+  assert.equal(importedQuestions[0].title,'AI 生成 · 相似題');
+  assert.equal(importedQuestions[0].source,'AI 生成 · 待核驗','加入題庫後應標示為 AI 生成待核驗');
+
   assert.deepEqual(errors,[]);await browser.close();
-  console.log('PASS: answer modes (choice = click-only with single option list, fill-in = handwriting/text with math keyboard + always-visible rendered preview), AI grading policy (self-practice = AI instant score recorded without teacher review, no student use-ai toggle; teacher checkbox on assign, student read-only hint, external consent; homework/quiz scores, AI results, solution and advice hidden until the teacher reviews), self-practice range picker (chapter + sub-chapter + question type, linked options, auto-widening, change-range keeps filters), teacher review with optional feedback, one-click AI review of a whole assignment (only for AI-enabled assignments), teacher sidebar without self-practice, calendar lower panel (centred divider label, panel content never flush to the card border, no horizontal overflow at 4 widths x 3 font scales), font scale switch (guest, persisted, 3 levels, no mobile overflow), login page (role cards, remember checked, remembered account), calendar (marks + entry from homework), question type (card badge, filter, draft qtype, rule analysis), full-auto split+import, homework, draft save/reload/restore, logout cleanup, weak-topic drill-down, results filters, CSV export, teacher annotation (pen/ellipse/arrow/highlight/undo/clear/save), AI suggested annotation with student read-back and teacher drag-to-adjust saved positions, correction loop (teacher return with note, student banner, pending guard, resubmit), self-serve mock exam (setup, countdown, per-question answer with mockId, submit + instant score + advice), AI endpoint page (test/save, key never read back), bulk student import (column-order auto-detect + header row, student id only with seat number and no name, generated passwords, per-line errors, class creation), data management (usage cards, four download entries, vacuum, school-year reset gated by a typed confirmation and hidden from students), student editing (only changed fields submitted, password reset warns about logout), archive restore (question merge vs replace, student archive with shared password and credential table), mobile layout, no JS errors. Fixture API only; no server started.');
+  console.log('PASS: answer modes (choice = click-only with single option list, fill-in = handwriting/text with math keyboard + always-visible rendered preview), AI grading policy (self-practice = AI instant score recorded without teacher review, no student use-ai toggle; teacher checkbox on assign, student read-only hint, external consent; homework/quiz scores, AI results, solution and advice hidden until the teacher reviews), AI similar-question drafting (teacher-only entry on bank card, draft preview with answer/steps/rubric, nothing imported until the teacher confirms), self-practice range picker (chapter + sub-chapter + question type, linked options, auto-widening, change-range keeps filters), teacher review with optional feedback, one-click AI review of a whole assignment (only for AI-enabled assignments), teacher sidebar without self-practice, calendar lower panel (centred divider label, panel content never flush to the card border, no horizontal overflow at 4 widths x 3 font scales), font scale switch (guest, persisted, 3 levels, no mobile overflow), login page (role cards, remember checked, remembered account), calendar (marks + entry from homework), question type (card badge, filter, draft qtype, rule analysis), full-auto split+import, homework, draft save/reload/restore, logout cleanup, weak-topic drill-down, results filters, CSV export, teacher annotation (pen/ellipse/arrow/highlight/undo/clear/save), AI suggested annotation with student read-back and teacher drag-to-adjust saved positions, correction loop (teacher return with note, student banner, pending guard, resubmit), self-serve mock exam (setup, countdown, per-question answer with mockId, submit + instant score + advice), AI endpoint page (test/save, key never read back), bulk student import (column-order auto-detect + header row, student id only with seat number and no name, generated passwords, per-line errors, class creation), data management (usage cards, four download entries, vacuum, school-year reset gated by a typed confirmation and hidden from students), student editing (only changed fields submitted, password reset warns about logout), archive restore (question merge vs replace, student archive with shared password and credential table), mobile layout, no JS errors. Fixture API only; no server started.');
 })().catch(e=>{console.error(e);process.exit(1)});

@@ -24,7 +24,7 @@ STUDENT_FORMAT = 'mathpath-student-archive'
 RESET_PHRASE = 'RESET'
 # 還原：資料庫與學生歸檔用串流寫入暫存檔，題庫歸檔需整份載入記憶體，上限較嚴。
 MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024
-MAX_QUESTION_ARCHIVE_BYTES = 256 * 1024 * 1024
+MAX_QUESTION_ARCHIVE_BYTES = 500 * 1024 * 1024
 MAX_RESTORE_QUESTIONS = 20000
 RESTORE_COMMIT_EVERY = 400
 RESTORE_REQUIRED_TABLES = ('users', 'questions', 'attempts', 'meta')

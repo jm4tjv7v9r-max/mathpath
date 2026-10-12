@@ -2466,6 +2466,9 @@ class Application:
                     return {'similar': [self.question_public(v, user) for v in similar],
                             'advanced': [self.question_public(v, user) for v in advanced]}, headers
             if method == 'POST' and action == 'generate':
+                # 依參考題由 AI 生成變式題草稿。只回傳草稿，**不直接寫入題庫**：
+                # 由教師核對內容、分類與答案後，再自行決定是否加入題庫。
+                self.teacher(user)
                 fields(body, ('kind', 'consentExternal'), ('kind',))
                 if 'consentExternal' in body and type(body['consentExternal']) is not bool:
                     fail(400, '外部上傳同意必須是布林值。')
@@ -2499,9 +2502,8 @@ class Application:
                     fail(502, 'AI 生成題目的欄位、答案或難度無效，未保存。')
                 generated['source'] = 'AI 生成 · 待核驗'
                 generated['tags'] = list(dict.fromkeys(generated['tags'] + ['待教師核驗']))[:20]
-                with self.db() as db:
-                    saved = self.insert_question(db, generated)
-                return {'question': self.question_public(saved, user)}, headers
+                return {'draft': generated, 'kind': body['kind'],
+                        'notice': '這是 AI 生成的草稿，尚未加入題庫。請核對題目內容、分類與參考答案後，再決定是否加入。'}, headers
         if method == 'POST' and path == '/api/questions/ai-answer':
             # 教師新增題目時，請 AI 產生答案、詳解、詳細解釋與評分標準（百分比）。
             self.teacher(user)
@@ -2546,9 +2548,10 @@ class Application:
                 figure, figure_mime = decode_figure(item.get('figure'))
                 prepared.append((q, figure, figure_mime))
             with self.db() as db:
-                for q, figure, figure_mime in prepared:
-                    self.insert_question(db, q, figure, figure_mime)
-            return {'count': len(prepared)}, headers
+                saved = [self.insert_question(db, q, figure, figure_mime)
+                         for q, figure, figure_mime in prepared]
+            return {'count': len(prepared),
+                    'questions': [self.question_public(q, user) for q in saved]}, headers
         if method == 'POST' and path == '/api/attempts':
             fields(body, ('questionId', 'answerText', 'image', 'consentExternal', 'assignmentId', 'mockId'),
                    ('questionId', 'answerText'))

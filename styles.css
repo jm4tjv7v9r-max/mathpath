@@ -202,3 +202,11 @@ button.danger:disabled{opacity:.6}
   .restore-zone{padding:16px}
   .restore-grid{grid-template-columns:1fr}
 }
+
+/* AI 生成題目草稿預覽（教師核驗後才加入題庫） */
+.ai-gen-entry{color:#7a9a86;font-weight:600}
+.draft-section{margin-top:12px;border-top:1px dashed #e0e8e1;padding-top:10px}
+.draft-section>span{display:block;font-size:calc(12px*var(--fs));color:#8aa091;letter-spacing:.04em;margin-bottom:5px}
+.draft-section p{margin:0;line-height:1.85;color:#3d5145;word-break:break-word}
+.draft-section ol,.draft-section ul{margin:0;padding-left:20px;line-height:1.85;color:#3d5145}
+.draft-section li{margin:3px 0;word-break:break-word}

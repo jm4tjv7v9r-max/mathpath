@@ -237,7 +237,8 @@ class APITests(unittest.TestCase):
             self.assertNotIn('answer', q)
             self.assertNotIn('steps', q)
             self.assertEqual(q['topic'], '一元二次方程')
-        self.request('POST', '/api/questions/1/generate', {'kind': 'similar'}, cookie=self.student, expect=409)
+        # AI 生成題目只限教師：學生即使未設定 AI 也先被擋下（403，而非 409）。
+        self.request('POST', '/api/questions/1/generate', {'kind': 'similar'}, cookie=self.student, expect=403)
 
     def test_teacher_rbac_parse_import(self):
         body = {'name': '測驗', 'text': '1. 解 x²−5x+6=0。\n2、求三角形內角。\n3) 求平均數。\nQ4 probability of a die\n第5题 求 f(x)=2x+1。'}
@@ -807,7 +808,7 @@ class APITests(unittest.TestCase):
             body = {'questionId': 1, 'answerText': 'x=2或3', **patch_body}
             self.request('POST', '/api/attempts', body, cookie=self.student, expect=400)
         self.request('POST', '/api/attempts', {'questionId': 99999, 'answerText': 'x'}, cookie=self.student, expect=404)
-        self.request('POST', '/api/questions/1/generate', {'kind': 'fake'}, cookie=self.student, expect=400)
+        self.request('POST', '/api/questions/1/generate', {'kind': 'fake'}, cookie=self.teacher, expect=400)
         self.request('GET', '/api/questions/99999/recommendations', cookie=self.student, expect=404)
 
     def test_request_and_file_limits(self):
@@ -1141,43 +1142,64 @@ class APITests(unittest.TestCase):
             with patch.dict('os.environ', {'MATH_AI_BASE_URL': base, 'MATH_AI_MODEL': 'model'}, clear=True):
                 self.app.ai = server.AIClient()
             self.assertEqual(self.app.ai.mode, 'external')
-            for cookie in (self.student, self.teacher):
-                with patch.object(self.app.ai, 'call', return_value={'question': generated}) as ai:
-                    for patch_body, status in (({}, 403), ({'consentExternal': False}, 403),
-                                               ({'consentExternal': 'true'}, 400), ({'consentExternal': 1}, 400),
-                                               ({'consentExternal': None}, 400), ({'unknown': True}, 400)):
-                        self.request('POST', '/api/questions/1/generate', {'kind': 'similar', **patch_body},
-                                     cookie=cookie, expect=status)
-                    ai.assert_not_called()
-                    with self.app.db() as db:
-                        before = db.execute('SELECT count(*) FROM questions').fetchone()[0]
-                    _, result, _ = self.request('POST', '/api/questions/1/generate',
-                                                {'kind': 'similar', 'consentExternal': True}, cookie=cookie, expect=200)
-                    ai.assert_called_once()
-                    self.assertEqual(result['question']['source'], 'AI 生成 · 待核驗')
-                    self.assertEqual('answer' in result['question'], cookie == self.teacher)
-                    with self.app.db() as db:
-                        self.assertEqual(db.execute('SELECT count(*) FROM questions').fetchone()[0], before + 1)
+            # 生成題目只限教師：學生一律 403，且不會呼叫外部模型。
+            with patch.object(self.app.ai, 'call', return_value={'question': generated}) as ai:
+                self.request('POST', '/api/questions/1/generate', {'kind': 'similar', 'consentExternal': True},
+                             cookie=self.student, expect=403)
+                ai.assert_not_called()
+            with patch.object(self.app.ai, 'call', return_value={'question': generated}) as ai:
+                for patch_body, status in (({}, 403), ({'consentExternal': False}, 403),
+                                           ({'consentExternal': 'true'}, 400), ({'consentExternal': 1}, 400),
+                                           ({'consentExternal': None}, 400), ({'unknown': True}, 400)):
+                    self.request('POST', '/api/questions/1/generate', {'kind': 'similar', **patch_body},
+                                 cookie=self.teacher, expect=status)
+                ai.assert_not_called()
+                with self.app.db() as db:
+                    before = db.execute('SELECT count(*) FROM questions').fetchone()[0]
+                _, result, _ = self.request('POST', '/api/questions/1/generate',
+                                            {'kind': 'similar', 'consentExternal': True}, cookie=self.teacher, expect=200)
+                ai.assert_called_once()
+                # 草稿只回傳、不寫入題庫；教師可看到答案與詳解以便核驗。
+                self.assertEqual(result['draft']['source'], 'AI 生成 · 待核驗')
+                self.assertIn('answer', result['draft'])
+                self.assertNotIn('id', result['draft'])
+                with self.app.db() as db:
+                    self.assertEqual(db.execute('SELECT count(*) FROM questions').fetchone()[0], before)
 
-    def test_generated_question_storage_and_student_solution_hidden(self):
+    def test_generated_question_draft_not_saved_until_teacher_confirms(self):
         self.app.ai.configured = True
         self.app.ai.mode = 'local'
         generated = dict(self.draft, title='AI 新題')
         with patch.object(self.app.ai, 'call', return_value={'question': generated}):
-            _, result, _ = self.request('POST', '/api/questions/1/generate', {'kind': 'similar'}, cookie=self.student, expect=200)
-        q = result['question']
-        self.assertEqual(q['id'], 17)
-        self.assertEqual(q['source'], 'AI 生成 · 待核驗')
-        self.assertNotIn('answer', q)
-        self.assertNotIn('steps', q)
+            _, result, _ = self.request('POST', '/api/questions/1/generate', {'kind': 'similar'},
+                                        cookie=self.teacher, expect=200)
+        draft = result['draft']
+        # 草稿尚未加入題庫：沒有編號，題庫數量不變。
+        self.assertNotIn('id', draft)
+        self.assertEqual(draft['source'], 'AI 生成 · 待核驗')
+        self.assertIn('answer', draft)
+        self.assertIn('steps', draft)
         with self.app.db() as db:
-            stored = self.app.get_question(db, 17)
+            self.assertEqual(db.execute('SELECT count(*) FROM questions').fetchone()[0], 16)
+        # 教師核驗後決定加入題庫，才透過題庫匯入寫入，並可取回新題編號。
+        _, imported, _ = self.request('POST', '/api/questions/import', {'questions': [draft]},
+                                      cookie=self.teacher, expect=200)
+        self.assertEqual(imported['count'], 1)
+        self.assertEqual(imported['questions'][0]['title'], 'AI 新題')
+        with self.app.db() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM questions').fetchone()[0], 17)
+            stored = self.app.get_question(db, imported['questions'][0]['id'])
             self.assertEqual(stored['answer'], generated['answer'])
+        # 學生不能生成題目，也不能藉此把題目寫進題庫。
+        with patch.object(self.app.ai, 'call', return_value={'question': generated}) as ai:
+            self.request('POST', '/api/questions/1/generate', {'kind': 'similar'}, cookie=self.student, expect=403)
+            ai.assert_not_called()
         with patch.object(self.app.ai, 'call', return_value={'question': dict(generated, level=3)}):
             self.request('POST', '/api/questions/1/generate', {'kind': 'similar'}, cookie=self.teacher, expect=502)
         with patch.object(self.app.ai, 'call', return_value={'question': dict(generated, level=2)}):
-            _, result, _ = self.request('POST', '/api/questions/1/generate', {'kind': 'advanced'}, cookie=self.teacher, expect=200)
-            self.assertIn('answer', result['question'])
+            _, result, _ = self.request('POST', '/api/questions/1/generate', {'kind': 'advanced'},
+                                        cookie=self.teacher, expect=200)
+            self.assertIn('answer', result['draft'])
         with patch.object(self.app.ai, 'call', return_value={'drafts': [generated]}):
             _, parsed, _ = self.request('POST', '/api/papers/parse', {'name': '試卷', 'text': '1. 解方程'}, cookie=self.teacher, expect=200)
             self.assertEqual(parsed['method'], 'AI 識別')
