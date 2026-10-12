@@ -248,3 +248,25 @@ button.danger:disabled{opacity:.6}
 @media(max-width:740px){.pick-filters{grid-template-columns:1fr}}
 /* 結果卡與作業導覽的按鈕在窄螢幕要能換行，避免橫向溢出 */
 .result-actions{flex-wrap:wrap}
+
+/* AI 判定印章與批語：只落在手稿的空白處，不遮住學生的字 */
+.ai-ink-layer{position:absolute;inset:0;pointer-events:none;overflow:hidden}
+.ai-leaders{position:absolute;inset:0;width:100%;height:100%;overflow:visible}
+.ai-leaders line{stroke:#d9453b;stroke-width:1.4;stroke-dasharray:3 3;vector-effect:non-scaling-stroke;opacity:.7}
+.ai-callout{position:absolute;transform:translate(-50%,-50%);display:flex;gap:6px;align-items:flex-start;background:#fffdfb;border:1px solid #e8ccc7;border-left:3px solid #d9453b;border-radius:6px;padding:5px 8px;font-size:calc(12px*var(--fs));line-height:1.5;color:#7a4a43;box-shadow:0 2px 8px #2b1b1a14;max-height:calc(12px*1.5*4 + 12px);overflow:hidden}
+.ai-callout b{flex:0 0 auto;width:calc(15px*var(--fs));height:calc(15px*var(--fs));background:#d9453b;color:#fff;border-radius:50%;display:grid;place-items:center;font-size:calc(10px*var(--fs));margin-top:1px}
+.ai-callout strong{display:block;color:#b8453b;font-weight:600}
+.ai-callout span{display:block;min-width:0}
+.ai-callout.summary{border-left-color:#6d9a80;background:#f8fcf7;color:#4f6b58}
+.ai-callout.summary strong{color:#4a7c60}
+.verdict-stamp{position:absolute;transform:translate(-50%,-50%);display:flex;flex-direction:column;align-items:center;gap:1px;opacity:.92}
+.verdict-stamp svg{width:100%;height:auto;display:block}
+.verdict-stamp span{font-size:calc(12px*var(--fs));font-weight:700;color:#c0392b;letter-spacing:.06em;white-space:nowrap}
+.verdict-stamp path{fill:none;stroke:#c0392b;stroke-width:7;stroke-linecap:round;stroke-linejoin:round}
+.verdict-glyph{width:calc(14px*var(--fs));height:calc(14px*var(--fs));vertical-align:-2px}
+.verdict-glyph path{fill:none;stroke:#c0392b;stroke-width:8;stroke-linecap:round;stroke-linejoin:round}
+.badge.verdict{display:inline-flex;align-items:center;gap:4px;background:#fdeeec;color:#b8453b;border-color:#f2d6d2}
+.badge.verdict.correct{background:#eaf6ee;color:#2f7d55;border-color:#cde7d8}
+.badge.verdict.correct .verdict-glyph path{stroke:#2f7d55}
+.badge.verdict.partial{background:#fdf4e7;color:#9a7128;border-color:#f0e0c4}
+.badge.verdict.partial .verdict-glyph path{stroke:#9a7128}

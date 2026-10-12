@@ -1718,6 +1718,22 @@ def final_correct(student, reference):
     return a == b
 
 
+def attempt_verdict(score, max_score, status):
+    """手寫作答的整體判定：全對／全錯／部分正確（未評分回 None）。
+
+    只依分數判定（分數可能來自 AI 建議或教師確認，兩者共用同一個分數欄位）：
+    滿分＝全對、0 分＝全錯，其餘為部分正確。前端據此在手寫稿上蓋紅剔／紅叉／
+    紅剔加斜線，因此判定必須與畫面顯示的分數完全一致。
+    """
+    if status != 'graded' or score is None or not max_score:
+        return None
+    if score >= max_score - 0.001:
+        return 'correct'
+    if score <= 0.001:
+        return 'wrong'
+    return 'partial'
+
+
 def ai_annotation_valid(result):
     """AI 批註只接受 0..1 的相對座標；座標或欄位不可靠時一律拒絕保存，不做像素換算或猜測。"""
     try:
@@ -2316,6 +2332,10 @@ class Application:
         keys = row.keys()
         if row['image'] is not None or ('image_key' in keys and row['image_key'] is not None):
             result['image'] = f'/api/attempts/{row["id"]}/image'
+            # 手寫作答的整體判定（全對／全錯／部分正確），供前端在手稿上蓋印。
+            verdict = attempt_verdict(row['score'], row['max_score'], row['status'])
+            if verdict:
+                result['verdict'] = verdict
         if row['annotation'] is not None or ('annotation_key' in keys and row['annotation_key'] is not None):
             result['annotation'] = f'/api/attempts/{row["id"]}/annotation'
             result['annotationAt'] = row['annotation_at']
@@ -2330,6 +2350,7 @@ class Application:
                            'aiScore': None, 'ruleScore': None, 'confirmedScore': None,
                            'awaitingReview': True})
             result.pop('aiAnnotation', None)
+            result.pop('verdict', None)
         return result
 
     @staticmethod

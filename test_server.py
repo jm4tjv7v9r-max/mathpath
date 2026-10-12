@@ -1141,6 +1141,44 @@ class APITests(unittest.TestCase):
         self.app.ai.configured = False
         self.request('POST', '/api/questions/ai-answer', payload, cookie=self.teacher, expect=409)
 
+    def test_handwritten_verdict_for_full_partial_and_wrong(self):
+        # 手寫作答要有整體判定（全對／全錯／部分正確），前端據此在手稿上蓋紅剔／紅叉／紅剔加一撇。
+        self.app.ai.configured = True
+        self.app.ai.mode = 'local'
+        self.app.ai.vision = 'vision'
+        aid = self.ai_assignment([1])
+
+        def graded(score):
+            return {'score': score, 'feedback': '評語。',
+                    'steps': [{'label': '過程', 'earned': score, 'max': 6, 'comment': ''}]}
+
+        for score, verdict in ((6, 'correct'), (0, 'wrong'), (3, 'partial')):
+            with self.subTest(score=score):
+                with patch.object(self.app.ai, 'call', return_value=graded(score)):
+                    attempt = self.submit('x=2 或 x=3', image=png_url(), assignmentId=aid)
+                self.assertNotIn('verdict', attempt, '教師批閱前不揭露判定')
+                stored = self.teacher_attempt(aid, attempt['id'])
+                self.assertEqual(stored['verdict'], verdict)
+                self.assertEqual(stored['score'], score)
+                self.assertEqual(stored['image'], f"/api/attempts/{attempt['id']}/image")
+        # 教師批閱後，學生看到的判定必須與分數一致。
+        last = stored['id']
+        self.request('POST', f'/api/attempts/{last}/review', {'score': 3, 'feedback': ''},
+                     cookie=self.teacher, expect=200)
+        _, detail, _ = self.request('GET', f'/api/assignments/{aid}', cookie=self.student, expect=200)
+        own = next(a for a in detail['attempts'] if a['id'] == last)
+        self.assertEqual(own['score'], 3)
+        self.assertEqual(own['verdict'], 'partial')
+        # 純文字作答沒有手寫稿，不產生印章判定。
+        text = self.submit('x=2 或 x=3', assignmentId=aid)
+        self.assertNotIn('verdict', self.teacher_attempt(aid, text['id']))
+        # 未評分（等待批閱）不蓋章，避免出現沒有分數依據的判定。
+        self.app.ai.configured = False
+        pending = self.submit('x=2 或 x=3', image=png_url(), assignmentId=aid)
+        stored = self.teacher_attempt(aid, pending['id'])
+        self.assertEqual(stored['status'], 'pending')
+        self.assertNotIn('verdict', stored)
+
     def test_ai_grading_follows_rubric_percentages(self):
         # 有評分標準時，配分由伺服器按百分比計算；AI 只回報每項達成百分比與評語。
         question = dict(self.draft, title='評分標準題', content='解方程 $x^2-5x+6=0$。', answer='$x=2$ 或 $x=3$',

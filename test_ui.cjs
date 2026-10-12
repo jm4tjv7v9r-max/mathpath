@@ -3,16 +3,21 @@ const fs = require('node:fs');
 const path = require('node:path');
 const zlib = require('node:zlib');
 const assert = require('node:assert/strict');
-function makePng(w,h){
+function pngFrom(w,h,pixel){
   const crcTable=[...Array(256)].map((_,n)=>{let c=n;for(let k=0;k<8;k++)c=c&1?0xEDB88320^(c>>>1):c>>>1;return c>>>0;});
   const crc=buf=>{let c=0xffffffff;for(const b of buf)c=crcTable[(c^b)&0xff]^(c>>>8);return (c^0xffffffff)>>>0;};
   const chunk=(type,data)=>{const len=Buffer.alloc(4);len.writeUInt32BE(data.length);const td=Buffer.concat([Buffer.from(type),data]);const cr=Buffer.alloc(4);cr.writeUInt32BE(crc(td));return Buffer.concat([len,td,cr]);};
   const raw=Buffer.alloc((w*3+1)*h);
-  for(let y=0;y<h;y++){for(let x=0;x<w;x++){const o=y*(w*3+1)+1+x*3;raw[o]=238;raw[o+1]=244;raw[o+2]=238;}}
+  for(let y=0;y<h;y++){for(let x=0;x<w;x++){const [r,g,b]=pixel(x,y);const o=y*(w*3+1)+1+x*3;raw[o]=r;raw[o+1]=g;raw[o+2]=b;}}
   const ihdr=Buffer.alloc(13);ihdr.writeUInt32BE(w,0);ihdr.writeUInt32BE(h,4);ihdr[8]=8;ihdr[9]=2;
   return Buffer.concat([Buffer.from([137,80,78,71,13,10,26,10]),chunk('IHDR',ihdr),chunk('IDAT',zlib.deflateSync(raw)),chunk('IEND',Buffer.alloc(0))]);
 }
+function makePng(w,h){return pngFrom(w,h,()=>[238,244,238]);}
+// 上方 60% 是「筆跡」、下方 40% 是空白紙：用來驗證 AI 印章與批語只落在空白處。
+function makeInkPng(w,h,inkRatio=0.6){return pngFrom(w,h,(x,y)=>y<h*inkRatio?(y%6<4?[50,50,60]:[250,250,248]):[250,250,248]);}
 const HANDWRITING=makePng(400,300);
+const INK_HANDWRITING=makeInkPng(400,300);
+const FULL_INK_HANDWRITING=makeInkPng(400,300,1);
 (async () => {
   const browser = await chromium.launch({channel:'chrome',headless:true,args:['--disable-features=Rlz','--disable-background-networking','--disable-breakpad','--no-first-run','--no-default-browser-check']});
   const page = await browser.newPage({viewport:{width:1440,height:1000}});
@@ -250,6 +255,73 @@ const HANDWRITING=makePng(400,300);
   // 學生同時看得到 AI 建議批註，並清楚標示未經教師確認。
   assert.match(await page.locator('.ai-annotation').innerText(),/未經教師確認/);
   assert.equal(await page.locator('.ai-mark').count(),1);
+  await page.locator('[data-action=close-modal]').click();
+
+  // ── 手寫判定印章與 AI 批語：貼在手稿上，但只落在空白處，不遮住學生的字 ──
+  // 測試圖片上方 60% 是筆跡、下方 40% 是空白紙，所以印章與批語必須全部落在 60% 以下。
+  const inkAttempt=verdict=>({...handwritten,id:12,verdict,score:verdict==='correct'?6:verdict==='wrong'?0:3,status:'graded',
+    gradingMethod:'teacher-reviewed',teacherReviewed:true,image:'/api/attempts/12/image',
+    aiAnnotation:{issues:[{x:0.35,y:0.25,label:'符號錯誤',comment:'這裡應為負號'},
+                          {x:0.6,y:0.42,label:'漏寫第二個根',comment:'兩個解都要寫出來'}],
+                  summary:'思路正確，符號與根的數目要再檢查。',at:stamp}});
+  // 只在這一節生效：其他情境（例如後面的訂正重跑）要交還給原本的路由，不能攔下來。
+  let inkMode=null;
+  await page.route('**/api/attempts/12/image', route => inkMode
+    ? route.fulfill({contentType:'image/png', body:inkMode.image}) : route.fallback());
+  await page.route('**/api/assignments/1', route => inkMode
+    ? route.fulfill({json:inkMode.detail}) : route.fallback());
+  const showInkAttempt=async(attempt,image)=>{
+    inkMode={image, detail:{
+      assignment:{...assignment,aiGrading:true}, questions:[assignmentQuestion], attempts:[attempt],
+      mySubmission:{status:'submitted',submittedAt:stamp,resubmittedAt:null,submitCount:1,late:false,correction:null},
+      report:{score:attempt.score,maxScore:6,totalScoredPoints:6,pendingCount:0,confirmedScore:attempt.score,
+        confirmedCount:1,gradedCount:1,questionCount:1,percent:50,topicStats:[],suggestion:advice,awaitingReview:false}}};
+    await page.reload({waitUntil:'networkidle'});
+    await page.locator('[data-assignment]').first().click();
+    await page.locator('[data-review]').first().click();
+    await page.locator('.annotated-view .ai-ink-layer').waitFor({timeout:8000});
+  };
+  await showInkAttempt(inkAttempt('partial'),INK_HANDWRITING);
+  await page.waitForFunction(()=>document.querySelectorAll('.annotated-view .ai-callout').length>=3);
+  const inkLayout=await page.evaluate(()=>{
+    const wrap=document.querySelector('.annotated-view .mark-wrap');
+    const r=wrap.querySelector('img.review-image').getBoundingClientRect();
+    const frac=el=>{const b=el.getBoundingClientRect();
+      return {cls:el.className,top:(b.top-r.top)/r.height,bottom:(b.bottom-r.top)/r.height,left:(b.left-r.left)/r.width,right:(b.right-r.left)/r.width};};
+    return {boxes:[...wrap.querySelectorAll('.verdict-stamp,.ai-callout')].map(frac),
+      leaders:wrap.querySelectorAll('.ai-leaders line').length,
+      pins:wrap.querySelectorAll('.ai-mark').length};
+  });
+  assert.equal(inkLayout.boxes.filter(b=>b.cls.includes('verdict-stamp')).length,1,'手稿上應有 1 個判定印章');
+  assert.equal(inkLayout.boxes.filter(b=>b.cls.includes('ai-callout')).length,3,'2 則 AI 批語＋1 則總結都要貼在手稿上');
+  assert.equal(inkLayout.pins,2,'AI 標記仍要標在它指出的位置');
+  assert.ok(inkLayout.leaders>=1,'批語與標記之間要有引線指回位置');
+  for(const b of inkLayout.boxes){
+    assert.ok(b.top>=0.58,`印章與批語不可蓋住手寫內容（${b.cls} 的 top=${b.top.toFixed(3)}）`);
+    assert.ok(b.bottom<=1.001&&b.left>=-0.001&&b.right<=1.001,`印章與批語不可超出圖片（${b.cls}）`);
+  }
+  assert.match(await page.locator('.annotated-view .badge.verdict').innerText(),/部分正確/);
+  assert.equal(await page.locator('.annotated-view .verdict-stamp.partial').count(),1,'部分正確要蓋紅剔加一撇');
+  assert.equal(await page.locator('.annotated-view .verdict-stamp path').count(),2,'紅剔加一撇是兩筆路徑');
+  assert.match(await page.locator('.annotated-view').innerText(),/紅色剔＝全對、紅色叉＝全錯、紅色剔加一撇＝部分正確/);
+  assert.match(await page.locator('.annotated-view').innerText(),/3 \/ 6 分/);
+  await page.locator('.annotated-view').scrollIntoViewIfNeeded();
+  await page.screenshot({path:path.join(__dirname,'..','MathPath-手寫判定印章.png'),fullPage:true});
+  // 全對＝紅剔（一筆）；全錯＝紅叉（兩筆）
+  for(const [verdict,label,paths] of [['correct','全對',1],['wrong','全錯',2]]){
+    await showInkAttempt(inkAttempt(verdict),INK_HANDWRITING);
+    await page.waitForFunction(()=>document.querySelector('.annotated-view .verdict-stamp'));
+    assert.match(await page.locator('.annotated-view .badge.verdict').innerText(),new RegExp(label),`判定應為${label}`);
+    assert.equal(await page.locator(`.annotated-view .verdict-stamp.${verdict} path`).count(),paths,`${label}印章的筆畫數`);
+  }
+  // 手稿寫滿整張紙（沒有空白處）時：印章與批語都不畫在圖上，改由上方標籤與下方清單呈現，
+  // 絕不會壓住學生的字。
+  await showInkAttempt(inkAttempt('partial'),FULL_INK_HANDWRITING);
+  await page.waitForTimeout(400);
+  assert.equal(await page.locator('.annotated-view .ai-ink-layer > *').count(),0,'沒有空白處時不可把批語壓在手寫上');
+  assert.match(await page.locator('.annotated-view .badge.verdict').innerText(),/部分正確/,'判定仍要以標籤顯示');
+  assert.match(await page.locator('.ai-annotation').innerText(),/符號錯誤/,'批語仍要完整列在下方清單');
+  inkMode=null;
   await page.locator('[data-action=close-modal]').click();
   await page.locator('#account').click();await page.locator('#logout-btn').click();
 
@@ -1280,5 +1352,5 @@ const HANDWRITING=makePng(400,300);
   await page.screenshot({path:path.join(__dirname,'..','MathPath-初始化失敗提示.png'),fullPage:true});
 
   assert.deepEqual(errors,[]);await browser.close();
-  console.log('PASS: answer modes (choice = click-only with single option list, fill-in = handwriting/text with math keyboard + always-visible rendered preview, upload = photo/PDF with a rear-camera button), AI grading policy (self-practice = AI instant score recorded without teacher review, no student use-ai toggle; teacher checkbox on assign, student read-only hint, external consent; homework/quiz scores, AI results, solution and advice hidden until the teacher reviews), AI similar-question drafting (teacher-only entry on bank card and practice panel, similar = same level and same question type vs advanced = one level up, distinct kind sent and labelled in the dialog, reference question expandable for comparison, draft preview with answer/steps/rubric, rubric shown with typeset math while the editor keeps raw LaTeX, nothing imported until the teacher confirms, no navigation after adding, repeated generation sends the previous summaries so the next draft differs), self-practice range picker (chapter + sub-chapter + question type, linked options, auto-widening, change-range keeps filters), teacher review with optional feedback, one-click AI review of a whole assignment (only for AI-enabled assignments), teacher sidebar without self-practice, calendar lower panel (centred divider label, panel content never flush to the card border, no horizontal overflow at 4 widths x 3 font scales), font scale switch (guest, persisted, 3 levels, no mobile overflow), login page (role cards, remember checked, remembered account), calendar (marks + entry from homework), question type (card badge, filter, draft qtype, rule analysis), full-auto split+import, homework (per-question navigation: next/previous question after submitting, progress count, submit prompt when all questions are done; assignment question picker filtered by chapter, sub-chapter and keyword with selection kept across filters), draft save/reload/restore, logout cleanup, weak-topic drill-down, results filters, CSV export, teacher annotation (pen/ellipse/arrow/highlight/undo/clear/save), AI suggested annotation with student read-back and teacher drag-to-adjust saved positions, correction loop (teacher return with note, student banner, pending guard, resubmit), self-serve mock exam (setup, countdown, per-question answer with mockId, submit + instant score + advice), AI endpoint page (test/save, key never read back), bulk student import (column-order auto-detect + header row, student id only with seat number and no name, generated passwords, per-line errors, class creation), data management (usage cards, four download entries, vacuum, school-year reset gated by a typed confirmation and hidden from students), student editing (only changed fields submitted, password reset warns about logout), archive restore (question merge vs replace, student archive with shared password and credential table), no dead space before the footer on short pages, mobile layout, no JS errors. Fixture API only; no server started.');
+  console.log('PASS: answer modes (choice = click-only with single option list, fill-in = handwriting/text with math keyboard + always-visible rendered preview, upload = photo/PDF with a rear-camera button), AI grading policy (self-practice = AI instant score recorded without teacher review, no student use-ai toggle; teacher checkbox on assign, student read-only hint, external consent; homework/quiz scores, AI results, solution and advice hidden until the teacher reviews), AI similar-question drafting (teacher-only entry on bank card and practice panel, similar = same level and same question type vs advanced = one level up, distinct kind sent and labelled in the dialog, reference question expandable for comparison, draft preview with answer/steps/rubric, rubric shown with typeset math while the editor keeps raw LaTeX, nothing imported until the teacher confirms, no navigation after adding, repeated generation sends the previous summaries so the next draft differs), self-practice range picker (chapter + sub-chapter + question type, linked options, auto-widening, change-range keeps filters), teacher review with optional feedback, one-click AI review of a whole assignment (only for AI-enabled assignments), teacher sidebar without self-practice, calendar lower panel (centred divider label, panel content never flush to the card border, no horizontal overflow at 4 widths x 3 font scales), font scale switch (guest, persisted, 3 levels, no mobile overflow), login page (role cards, remember checked, remembered account), calendar (marks + entry from homework), question type (card badge, filter, draft qtype, rule analysis), full-auto split+import, homework (per-question navigation: next/previous question after submitting, progress count, submit prompt when all questions are done; assignment question picker filtered by chapter, sub-chapter and keyword with selection kept across filters), draft save/reload/restore, logout cleanup, weak-topic drill-down, results filters, CSV export, teacher annotation (pen/ellipse/arrow/highlight/undo/clear/save), AI suggested annotation with student read-back and teacher drag-to-adjust saved positions, handwritten verdict stamp (red tick = all correct, red cross = all wrong, red tick with a stroke = partly correct) and AI comments placed on the sheet only where the paper is blank (never over the handwriting; dense pages fall back to the badge and the list below), correction loop (teacher return with note, student banner, pending guard, resubmit), self-serve mock exam (setup, countdown, per-question answer with mockId, submit + instant score + advice), AI endpoint page (test/save, key never read back), bulk student import (column-order auto-detect + header row, student id only with seat number and no name, generated passwords, per-line errors, class creation), data management (usage cards, four download entries, vacuum, school-year reset gated by a typed confirmation and hidden from students), student editing (only changed fields submitted, password reset warns about logout), archive restore (question merge vs replace, student archive with shared password and credential table), no dead space before the footer on short pages, mobile layout, no JS errors. Fixture API only; no server started.');
 })().catch(e=>{console.error(e);process.exit(1)});

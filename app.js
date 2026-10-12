@@ -1280,9 +1280,136 @@ async function autoImportPaper(){if(busy)return;if(!paperName.trim())return toas
 
 async function saveDrafts(){if(busy)return;if(!$('#confirm-drafts').checked)return toast('請確認已核驗題目及評分依據。');if(!drafts.length)return toast('沒有可匯入的題目。');const rp=drafts.map(q=>isObjectiveQtype(q.qtype)?'':rubricProblem(q.rubric)).find(Boolean);if(rp)return $('#import-error').innerHTML=`<div class="inline-error">${esc(rp)}</div>`;busy=true;$('#save-drafts').disabled=true;try{const verified=drafts.map(q=>{const isChoice=q.qtype==='選擇題';const options=isChoice?(q.options||[]).map(o=>String(o||'').trim()).filter(Boolean):[];return {...q,options,rubric:isObjectiveQtype(q.qtype)?[]:cleanRubric(q.rubric),tags:(q.tags||[]).filter(t=>!/(?:待.*(?:確認|确认|核驗|核验|審核|审核))/.test(t))};});await api('/api/questions/import',{questions:verified});await refresh();importStage=3;importPage();toast('已成功保存到本地題庫。');}catch(e){$('#import-error').innerHTML=`<div class="inline-error">${esc(e.message)}</div>`;if($('#save-drafts'))$('#save-drafts').disabled=false;}finally{busy=false;}}
 function recordsPage(){page='mistakes';shell();if(!S.user)return loginModal(recordsPage);const teacher=S.user.role==='teacher',filtered=S.attempts.filter(a=>historyFilter==='all'||historyFilter==='pending'&&a.status==='pending'||historyFilter==='wrong'&&a.status==='graded'&&a.score<a.maxScore||historyFilter==='saved'&&bookmarks.has(a.questionId));$('#main').innerHTML=`<div class="fade-in">${heading(teacher?'REVIEW & FEEDBACK':'REFLECT & IMPROVE',teacher?'作答批閱':'我的錯題本',teacher?'看見學生的推導，用簡短回饋引導下一步。':'錯題不是終點。回看思路，再用相似題鞏固理解。',`<button class="secondary" id="refresh-records">${icon('undo')}重新整理</button>`)}<div class="history-filters">${[['all',teacher?'全部作答':'全部紀錄'],['wrong','需要鞏固'],['pending','等待批閱'],['saved','已收藏題目']].map(([id,t])=>`<button data-history="${id}" class="${historyFilter===id?'active':''}">${t}</button>`).join('')}</div><section class="panel records-panel">${filtered.length?filtered.map(a=>`<article class="record"><div class="record-icon">${icon(a.status==='pending'?'clock':a.score<a.maxScore?'mistakes':'check')}</div><div class="record-main"><strong>${esc(a.questionTitle)}</strong> <span class="badge">${esc(a.topic)}</span><p>${mathText(a.feedback)}</p>${suggestionCard(a.suggestion)}<small>${esc(new Date(a.submittedAt).toLocaleString('zh-HK'))}${teacher&&a.student?' · '+esc(a.student.name):''} · ${a.teacherReviewed?'教師已覆核':a.gradingMethod==='awaiting-review'?'已提交 · 等待教師批閱':a.gradingMethod==='rule-final'?'規則核對 · 非步驟評分':a.gradingMethod==='ai-practice'?'AI 即時評分 · 不需教師批閱':a.gradingMethod==='ai-advisory'?'AI 建議 · 未教師覆核':'等待教師'}</small><div class="record-actions"><button class="secondary" data-qid="${a.questionId}">再練一次 ${icon('arrow')}</button><button class="secondary" data-review="${a.id}">${teacher?'查看與批閱':'查看作答'}</button></div></div><div class="record-score">${a.status==='pending'?'待批閱':`${a.score} <small>/ ${a.maxScore} 分</small>`}</div></article>`).join(''):empty(historyFilter==='wrong'?'目前沒有需鞏固的題目':'還沒有作答紀錄',historyFilter==='pending'?'提交手寫作答後，可在這裡查看批閱進度。':'開始一道練習，讓思考留下足跡。',`<button class="primary" data-action="start">開始練習 ${icon('arrow')}</button>`)}</section></div>`;$('#refresh-records').onclick=async()=>{try{await refresh();recordsPage();toast('已讀取最新批閱紀錄。');}catch(e){toast(e.message);}};}
+// ── AI 判定印章與批語：貼在手寫稿上，但絕不遮住手寫內容 ──
+// 先把圖片縮成小畫布做「墨水圖」，找出哪些格子有筆跡；印章與批語只放在沒有筆跡的
+// 空白處（找不到空白處就不畫在圖上，仍可在下方文字清單看到），因此不會壓住學生的字。
+const VERDICT_TEXT={correct:'全對',wrong:'全錯',partial:'部分正確'};
+const VERDICT_PATHS={correct:['M12 34 L26 48 L52 16'],
+  wrong:['M16 16 L48 48','M48 16 L16 48'],
+  partial:['M12 34 L26 48 L52 16','M8 54 L56 10']};   // 部分正確＝紅剔上加一撇
+const INK_COLS=24, INK_ROWS=24;
+const AI_INK_DATA=new Map();
+const verdictPaths=v=>(VERDICT_PATHS[v]||[]).map(d=>`<path d="${d}"/>`).join('');
+function verdictGlyph(v){return VERDICT_PATHS[v]?`<svg class="verdict-glyph" viewBox="0 0 64 64" aria-hidden="true">${verdictPaths(v)}</svg>`:'';}
+function verdictBadge(v){return VERDICT_TEXT[v]?`<span class="badge verdict ${v}">${VERDICT_TEXT[v]} ${verdictGlyph(v)}</span>`:'';}
+function aiInkLayer(a){
+  if(!a.image)return '';
+  const issues=a.aiAnnotation?.issues||[], summary=a.aiAnnotation?.summary||'';
+  if(!issues.length&&!a.verdict&&!summary)return '';
+  AI_INK_DATA.set(a.id,{image:a.image,verdict:a.verdict||'',summary,issues});
+  return `<div class="ai-ink-layer" data-ink="${a.id}"></div>`;
+}
+// 縮圖後逐格統計深色像素，做出「這裡有筆跡」的粗略地圖。
+function inkGrid(img){
+  const scale=Math.min(1,200/Math.max(img.naturalWidth,img.naturalHeight));
+  const w=Math.max(12,Math.round(img.naturalWidth*scale)),h=Math.max(12,Math.round(img.naturalHeight*scale));
+  const c=document.createElement('canvas');c.width=w;c.height=h;
+  const ctx=c.getContext('2d',{willReadFrequently:true});
+  if(!ctx)return null;
+  ctx.fillStyle='#fff';ctx.fillRect(0,0,w,h);ctx.drawImage(img,0,0,w,h);
+  let px;try{px=ctx.getImageData(0,0,w,h).data;}catch{return null;}   // 讀不到像素（跨來源）就不畫
+  const count=new Uint32Array(INK_COLS*INK_ROWS);
+  for(let y=0;y<h;y++){
+    const ry=Math.min(INK_ROWS-1,Math.floor(y/h*INK_ROWS));
+    for(let x=0;x<w;x++){
+      const i=(y*w+x)*4;
+      if(px[i+3]<40)continue;
+      if(0.299*px[i]+0.587*px[i+1]+0.114*px[i+2]>=150)continue;   // 只算明顯比紙張深的筆跡
+      count[ry*INK_COLS+Math.min(INK_COLS-1,Math.floor(x/w*INK_COLS))]++;
+    }
+  }
+  const min=Math.max(2,Math.round(w*h/(INK_COLS*INK_ROWS)*0.02));
+  return {cols:INK_COLS,rows:INK_ROWS,grid:Array.from(count,n=>n>=min?1:0)};
+}
+// 找一塊完全沒有筆跡的矩形（比例座標，回傳中心點），取最接近 anchor 的一塊；找不到回 null。
+function inkFreeSpot(ink,w,h,anchor){
+  if(!ink)return null;
+  const cw=Math.min(ink.cols,Math.max(1,Math.round(w*ink.cols)));
+  const ch=Math.min(ink.rows,Math.max(1,Math.round(h*ink.rows)));
+  let best=null;
+  for(let cy=0;cy<=ink.rows-ch;cy++){
+    for(let cx=0;cx<=ink.cols-cw;cx++){
+      let hit=false;
+      for(let y=cy;y<cy+ch&&!hit;y++)for(let x=cx;x<cx+cw;x++)if(ink.grid[y*ink.cols+x]){hit=true;break;}
+      if(hit)continue;
+      const px=(cx+cw/2)/ink.cols,py=(cy+ch/2)/ink.rows;
+      const d=Math.hypot(px-anchor.x,py-anchor.y);
+      if(!best||d<best.d)best={d,x:px,y:py};
+    }
+  }
+  if(!best)return null;
+  const clamp=(v,half)=>w>=1||h>=1?0.5:Math.min(Math.max(v,half),1-half);
+  return {x:clamp(best.x,w/2),y:clamp(best.y,h/2)};
+}
+// 佔用剛放好的位置，避免下一個印章／批語疊在同一處。
+function inkReserve(ink,spot,w,h){
+  const cw=Math.min(ink.cols,Math.max(1,Math.round(w*ink.cols)));
+  const ch=Math.min(ink.rows,Math.max(1,Math.round(h*ink.rows)));
+  const x0=Math.round(spot.x*ink.cols-cw/2), y0=Math.round(spot.y*ink.rows-ch/2);
+  for(let y=Math.max(0,y0);y<Math.min(ink.rows,y0+ch);y++)
+    for(let x=Math.max(0,x0);x<Math.min(ink.cols,x0+cw);x++)ink.grid[y*ink.cols+x]=1;
+}
+function aiCalloutBox(text){
+  const lines=Math.min(4,Math.max(1,Math.ceil(String(text).length/16)));
+  return {w:0.30,h:0.055+0.036*lines};
+}
+// 把手寫稿上的空白處填上印章與批語；沒有空白處的項目就不畫（下方清單仍完整）。
+async function paintAiInk(layer,data){
+  const img=new Image();
+  img.src=data.image;
+  if(!img.complete)await new Promise(r=>{img.onload=r;img.onerror=r;});
+  if(!img.naturalWidth)return;
+  const ink=inkGrid(img);
+  if(!ink)return;
+  const boxes=[],leaders=[];
+  const place=(text,anchor,w,h,cls)=>{
+    const spot=inkFreeSpot(ink,w,h,anchor);
+    if(!spot)return false;
+    inkReserve(ink,spot,w,h);
+    boxes.push(`<span class="ai-callout ${cls}" style="left:${(spot.x*100).toFixed(2)}%;top:${(spot.y*100).toFixed(2)}%;width:${(w*100).toFixed(2)}%">${text}</span>`);
+    if(Math.hypot(spot.x-anchor.x,spot.y-anchor.y)>0.08)
+      leaders.push(`<line x1="${(spot.x*100).toFixed(2)}" y1="${(spot.y*100).toFixed(2)}" x2="${(anchor.x*100).toFixed(2)}" y2="${(anchor.y*100).toFixed(2)}"/>`);
+    return true;
+  };
+  const ratio=img.naturalWidth/Math.max(1,img.naturalHeight);
+  // 印章：寬 16%（下方還有一行文字，估算高度時要一起算進去）。
+  if(data.verdict){
+    const w=0.16, h=Math.min(0.50,Math.max(0.12,w*ratio+0.07));
+    const spot=inkFreeSpot(ink,w,h,{x:0.88,y:0.12});
+    if(spot){
+      inkReserve(ink,spot,w,h);
+      boxes.push(`<div class="verdict-stamp ${data.verdict}" style="left:${(spot.x*100).toFixed(2)}%;top:${(spot.y*100).toFixed(2)}%;width:${(w*100).toFixed(2)}%"><svg viewBox="0 0 64 64" aria-hidden="true">${verdictPaths(data.verdict)}</svg><span>${VERDICT_TEXT[data.verdict]}</span></div>`);
+    }
+  }
+  data.issues.forEach((it,i)=>{
+    const text=`<b>${i+1}</b><span><strong>${esc(it.label)}</strong>${esc(String(it.comment||'').slice(0,60))}${String(it.comment||'').length>60?'…':''}</span>`;
+    const box=aiCalloutBox(`${it.label}${it.comment||''}`);
+    place(text,{x:it.x,y:it.y},box.w,box.h,'issue');
+  });
+  if(data.summary){
+    const text=`<span><strong>AI 總結</strong>${esc(data.summary.slice(0,80))}${data.summary.length>80?'…':''}</span>`;
+    const box=aiCalloutBox(data.summary);
+    place(text,{x:0.5,y:0.88},box.w,box.h,'summary');
+  }
+  layer.innerHTML=`${leaders.length?`<svg class="ai-leaders" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">${leaders.join('')}</svg>`:''}${boxes.join('')}`;
+}
+function paintAllAiInk(){
+  $$('.ai-ink-layer[data-ink]').forEach(layer=>{
+    const data=AI_INK_DATA.get(Number(layer.dataset.ink));
+    if(data)paintAiInk(layer,data).catch(()=>{});
+  });
+}
 function aiMarkLayer(a,drag){const ann=a.aiAnnotation;if(!ann||!ann.issues?.length)return '';return `<div class="ai-mark-layer${drag?' draggable':''}">${ann.issues.map((it,i)=>`<span class="ai-mark" data-ai-index="${i}" data-label="${esc(it.label)}" data-comment="${esc(it.comment)}" style="left:${(it.x*100).toFixed(2)}%;top:${(it.y*100).toFixed(2)}%" title="${esc(it.label)}：${esc(it.comment)}"><i>${i+1}</i></span>`).join('')}</div>`;}
 function aiMarksBlock(a){const ann=a.aiAnnotation;if(!ann||!ann.issues?.length)return '';return `<div class="ai-annotation"><div class="advice-heading">${icon('spark')}AI 建議批註 <span class="badge">${ann.issues.length} 處 · 未經教師確認</span></div><p class="field-hint">AI 只標示它能從照片確認的位置；標記座標可能偏移，數學判斷也可能出錯，必須由教師覆核後才可作準。數字對應圖上的圓形標記。</p>${ann.summary?`<p class="ai-summary">${esc(ann.summary)}</p>`:''}<ol class="ai-issue-list">${ann.issues.map(it=>`<li><strong>${esc(it.label)}</strong><span>${esc(it.comment)}</span></li>`).join('')}</ol>${ann.at?`<small class="field-hint">AI 於 ${dateText(ann.at)} 產生</small>`:''}</div>`;}
-function annotationBlock(a,editable){if(!a.image)return '';if(!editable)return `<div class="annotated-view">${a.annotation?`<span class="badge">教師批註</span>`:`<span class="badge outline">手寫原稿</span>`}<div class="mark-wrap"><img class="review-image" src="${a.annotation||a.image}" alt="學生手寫解題${a.annotation?'（含教師批註）':''}">${aiMarkLayer(a)}</div>${a.annotation&&a.annotationAt?`<small class="field-hint">教師批註於 ${dateText(a.annotationAt)}。紅圈與箭頭指出需要修改的地方。</small>`:`<small class="field-hint">教師尚未加上批註。</small>`}</div>${aiMarksBlock(a)}`;return `<div class="annotation-tool"><div class="writing-toolbar"><div class="tool-group"><button class="icon-btn active" data-ann-tool="pen" title="紅筆" aria-label="紅筆">${icon('practice')}</button><button class="icon-btn" data-ann-tool="ellipse" title="圈出錯處" aria-label="圈出錯處">◯</button><button class="icon-btn" data-ann-tool="arrow" title="箭頭指出錯處" aria-label="箭頭">↗</button><button class="icon-btn" data-ann-tool="highlight" title="螢光標示" aria-label="螢光標示">▬</button><button class="icon-btn" data-ann-tool="text" title="文字批註" aria-label="文字批註">A</button><button class="icon-btn" data-ann-tool="eraser" title="擦除批註" aria-label="擦除批註">${icon('eraser')}</button><span style="height:20px;border-right:1px solid var(--border);margin:0 4px"></span><button class="icon-btn" id="ann-undo" title="撤銷" aria-label="撤銷">${icon('undo')}</button><button class="icon-btn" id="ann-clear" title="清除全部批註" aria-label="清除全部批註">${icon('trash')}</button></div><span class="small-text">直接在學生手稿上標示</span></div><div class="canvas-wrap ann-canvas-wrap"><canvas id="ann-canvas" width="1200" height="800" aria-label="批註畫布"></canvas></div><div class="submit-row"><span class="small-text" id="ann-status">批註在按下「儲存批註」前不會保存</span><button class="secondary" id="ann-save">${icon('check')}儲存批註</button></div><div class="ai-tool-row">${S.ai.configured?`<button class="secondary" id="ai-annotate">${icon('spark')}${a.aiAnnotation?.issues?.length?'重新產生 AI 批註':'請 AI 建議批註位置'}</button>`:`<span class="small-text">AI 未接入，未能產生建議批註。</span>`}${a.aiAnnotation?.issues?.length?`<button class="text-button" id="ai-clear" style="font-size:calc(14px*var(--fs))">清除 AI 批註</button>`:''}</div>${a.aiAnnotation?.issues?.length?`<div class="mark-wrap ai-preview" data-attempt="${a.id}" data-summary="${esc(a.aiAnnotation.summary||'')}"><img class="review-image" src="${a.annotation||a.image}" alt="AI 建議批註位置">${aiMarkLayer(a,true)}</div><div class="submit-row"><span class="small-text" id="ai-adjust-status">${a.aiAnnotation.adjusted?'教師已調整標記位置':'可直接拖動圓形標記，修正 AI 標錯的位置'}</span><button class="secondary" id="ai-adjust-save">${icon('check')}儲存調整後位置</button></div>`:''}${aiMarksBlock(a)}</div>`;}
+function annotationBlock(a,editable){
+  if(!a.image)return '';
+  const hasMarks=!!(a.aiAnnotation?.issues||[]).length;
+  if(!editable){
+    return `<div class="annotated-view">${a.annotation?`<span class="badge">教師批註</span>`:`<span class="badge outline">手寫原稿</span>`}${verdictBadge(a.verdict)}<div class="mark-wrap"><img class="review-image" src="${a.annotation||a.image}" alt="學生手寫解題${a.annotation?'（含教師批註）':''}">${aiInkLayer(a)}${aiMarkLayer(a)}</div>${a.verdict?`<small class="field-hint">AI 判定：<strong>${VERDICT_TEXT[a.verdict]}</strong>（${scoreText(a.score)} / ${a.maxScore} 分）${a.teacherReviewed?'，已由教師確認':''}。紅色剔＝全對、紅色叉＝全錯、紅色剔加一撇＝部分正確；AI 批語只寫在手稿的空白處，不會蓋住你的字。</small>`:''}${a.annotation&&a.annotationAt?`<small class="field-hint">教師批註於 ${dateText(a.annotationAt)}。紅圈與箭頭指出需要修改的地方。</small>`:`<small class="field-hint">教師尚未加上批註。</small>`}</div>${aiMarksBlock(a)}`;
+  }
+  return `<div class="annotation-tool"><div class="writing-toolbar"><div class="tool-group"><button class="icon-btn active" data-ann-tool="pen" title="紅筆" aria-label="紅筆">${icon('practice')}</button><button class="icon-btn" data-ann-tool="ellipse" title="圈出錯處" aria-label="圈出錯處">◯</button><button class="icon-btn" data-ann-tool="arrow" title="箭頭指出錯處" aria-label="箭頭">↗</button><button class="icon-btn" data-ann-tool="highlight" title="螢光標示" aria-label="螢光標示">▬</button><button class="icon-btn" data-ann-tool="text" title="文字批註" aria-label="文字批註">A</button><button class="icon-btn" data-ann-tool="eraser" title="擦除批註" aria-label="擦除批註">${icon('eraser')}</button><span style="height:20px;border-right:1px solid var(--border);margin:0 4px"></span><button class="icon-btn" id="ann-undo" title="撤銷" aria-label="撤銷">${icon('undo')}</button><button class="icon-btn" id="ann-clear" title="清除全部批註" aria-label="清除全部批註">${icon('trash')}</button></div><span class="small-text">直接在學生手稿上標示</span></div><div class="canvas-wrap ann-canvas-wrap"><canvas id="ann-canvas" width="1200" height="800" aria-label="批註畫布"></canvas></div><div class="submit-row"><span class="small-text" id="ann-status">批註在按下「儲存批註」前不會保存</span><button class="secondary" id="ann-save">${icon('check')}儲存批註</button></div><div class="ai-tool-row">${S.ai.configured?`<button class="secondary" id="ai-annotate">${icon('spark')}${hasMarks?'重新產生 AI 批註':'請 AI 建議批註位置'}</button>`:`<span class="small-text">AI 未接入，未能產生建議批註。</span>`}${hasMarks?`<button class="text-button" id="ai-clear" style="font-size:calc(14px*var(--fs))">清除 AI 批註</button>`:''}</div>${(hasMarks||a.verdict)?`<div class="mark-wrap${hasMarks?' ai-preview':''}"${hasMarks?` data-attempt="${a.id}" data-summary="${esc(a.aiAnnotation.summary||'')}"`:''}><img class="review-image" src="${a.annotation||a.image}" alt="${hasMarks?'AI 建議批註位置':'手寫稿與 AI 判定'}">${aiInkLayer(a)}${hasMarks?aiMarkLayer(a,true):''}</div>`:''}${hasMarks?`<div class="submit-row"><span class="small-text" id="ai-adjust-status">${a.aiAnnotation.adjusted?'教師已調整標記位置':'可直接拖動圓形標記，修正 AI 標錯的位置'}</span><button class="secondary" id="ai-adjust-save">${icon('check')}儲存調整後位置</button></div>`:''}${aiMarksBlock(a)}</div>`;
+}
+
 let ann={base:null,shapes:[],tool:'pen',drawing:null},annotationDone=null;
 function annotationRefresh(attempt){if(ann.shapes?.length&&!confirm('畫面將重新載入，你尚未儲存的紅筆批註會遺失。確定繼續？'))return;closeModal();reviewModal(attempt.id,annotationDone);}
 function redrawAnn(){const c=$('#ann-canvas');if(!c||!ann.base)return;const ctx=c.getContext('2d');ctx.fillStyle='#fff';ctx.fillRect(0,0,c.width,c.height);ctx.drawImage(ann.base,0,0,c.width,c.height);for(const s of ann.shapes)drawAnnShape(ctx,s);if(ann.drawing)drawAnnShape(ctx,ann.drawing);}
@@ -1305,7 +1432,7 @@ document.addEventListener('pointerdown',e=>{const m=e.target&&e.target.closest?e
 document.addEventListener('pointermove',e=>{if(!aiDrag)return;const {m,r}=aiDrag;let x=e.clientX-aiDrag.dx-r.left,y=e.clientY-aiDrag.dy-r.top;x=Math.min(Math.max(x,0),r.width);y=Math.min(Math.max(y,0),r.height);m.style.left=(x/r.width*100)+'%';m.style.top=(y/r.height*100)+'%';const st=document.getElementById('ai-adjust-status');if(st)st.textContent='標記位置已改動，記得按「儲存調整後位置」。';});
 ['pointerup','pointercancel'].forEach(t=>document.addEventListener(t,()=>{aiDrag=null;}));
 document.addEventListener('click',async e=>{const btn=e.target&&e.target.closest?e.target.closest('#ai-adjust-save'):null;if(!btn)return;const wrap=btn.closest('#modal-root')?.querySelector('.mark-wrap.ai-preview');if(!wrap)return;const aid=wrap.dataset.attempt,layer=wrap.querySelector('.ai-mark-layer.draggable');if(!aid||!layer)return;const r=wrap.getBoundingClientRect();const issues=[...layer.querySelectorAll('.ai-mark')].map(m=>{const b=m.getBoundingClientRect();return {x:Math.min(Math.max((b.left+b.width/2-r.left)/r.width,0),1),y:Math.min(Math.max((b.top+b.height/2-r.top)/r.height,0),1),label:m.dataset.label||'',comment:m.dataset.comment||''};});btn.disabled=true;const st=document.getElementById('ai-adjust-status');if(st)st.textContent='正在儲存調整後的位置…';try{const {attempt}=await api(`/api/attempts/${aid}/ai-annotation`,{marks:{issues,summary:wrap.dataset.summary||''}});const i=S.attempts.findIndex(x=>x.id===attempt.id);if(i<0)S.attempts.push(attempt);else S.attempts[i]=attempt;toast('已儲存調整後的標記位置。');annotationRefresh(attempt);}catch(err){if(st)st.textContent=err.message;btn.disabled=false;}});
-function reviewModal(id,onDone=null,snapshot=null){const a=S.attempts.find(a=>a.id===Number(id));if(!a)return;const q=snapshot||(a.assignmentId&&assignmentDetail?.assignment?.id===a.assignmentId?assignmentDetail.questions.find(q=>q.id===a.questionId):null)||S.questions.find(q=>q.id===a.questionId),teacher=S.user.role==='teacher';modal(`<p class="eyebrow">${teacher?'TEACHER REVIEW':'YOUR THINKING'}</p><h2>${esc(a.questionTitle)}</h2><p class="modal-intro">${mathText(q?.content)} · ${a.maxScore} 分${a.student?' · '+esc(a.student.name):''}</p>${annotationBlock(a,teacher)}${a.answerText?`<div class="review-answer">${mathText(a.answerText)}</div>`:''}${teacher&&(q?.answer||q?.steps?.length||q?.analysis||q?.rubric?.length)?`<div class="hint-box"><strong>教師參考答案：</strong>${q?.answer?mathText(q.answer):'（未填）'}${(q?.steps||[]).length?`<ol class="solution-steps">${q.steps.map(x=>`<li>${mathText(x)}</li>`).join('')}</ol>`:''}${q?.analysis?`<p class="solution-analysis">${mathText(q.analysis)}</p>`:''}${rubricListHtml(q?.rubric,a.maxScore)}</div>`:''}${a.awaitingReview&&!teacher?`<div class="hint-box">${icon('clock')}教師批閱後才會顯示分數、AI 批閱結果、參考答案與學習建議。你的作答已保存。</div>`:`<p class="info-note">${mathText(a.feedback)}</p>${suggestionCard(a.suggestion)}<p class="field-hint">AI 原建議分：${scoreText(a.aiScore)} · 規則原分：${scoreText(a.ruleScore)} · 教師確認：${scoreText(a.confirmedScore)}</p>`}${teacher?`<form id="review-form"><div class="form-field"><label class="field-label" for="review-score">評分（0–${a.maxScore}）</label><input id="review-score" type="number" min="0" max="${a.maxScore}" step="0.5" value="${a.score??''}" required></div><div class="form-field"><label class="field-label" for="review-feedback">簡要評語 / 下一步建議 <span class="small-text">· 可留空</span></label><textarea class="answer-field" id="review-feedback" placeholder="可留空；若要寫，指出做得好的步驟，再給一個具體可改進的地方。" maxlength="12000"></textarea></div><p id="review-error" class="error-text"></p><button class="primary wide" type="submit">保存教師批閱 ${icon('check')}</button></form>`:`<button class="secondary wide" id="retry-from-review">再練一次 ${icon('arrow')}</button>`}`,true);if(teacher&&a.image){annotationDone=onDone||(()=>recordsPage());initAnnotation(a);}if(teacher)$('#review-form').onsubmit=async e=>{e.preventDefault();const b=$('[type="submit"]',e.target);b.disabled=true;try{await api(`/api/attempts/${a.id}/review`,{score:Number($('#review-score').value),feedback:$('#review-feedback').value});await refresh();closeModal();if(onDone)onDone();else recordsPage();toast('教師批閱已保存，學生可查看最新評語與建議。');}catch(err){$('#review-error').textContent=err.message;b.disabled=false;}};else $('#retry-from-review').onclick=()=>{closeModal();openQuestion(a.questionId);};}
+function reviewModal(id,onDone=null,snapshot=null){const a=S.attempts.find(a=>a.id===Number(id));if(!a)return;const q=snapshot||(a.assignmentId&&assignmentDetail?.assignment?.id===a.assignmentId?assignmentDetail.questions.find(q=>q.id===a.questionId):null)||S.questions.find(q=>q.id===a.questionId),teacher=S.user.role==='teacher';modal(`<p class="eyebrow">${teacher?'TEACHER REVIEW':'YOUR THINKING'}</p><h2>${esc(a.questionTitle)}</h2><p class="modal-intro">${mathText(q?.content)} · ${a.maxScore} 分${a.student?' · '+esc(a.student.name):''}</p>${annotationBlock(a,teacher)}${a.answerText?`<div class="review-answer">${mathText(a.answerText)}</div>`:''}${teacher&&(q?.answer||q?.steps?.length||q?.analysis||q?.rubric?.length)?`<div class="hint-box"><strong>教師參考答案：</strong>${q?.answer?mathText(q.answer):'（未填）'}${(q?.steps||[]).length?`<ol class="solution-steps">${q.steps.map(x=>`<li>${mathText(x)}</li>`).join('')}</ol>`:''}${q?.analysis?`<p class="solution-analysis">${mathText(q.analysis)}</p>`:''}${rubricListHtml(q?.rubric,a.maxScore)}</div>`:''}${a.awaitingReview&&!teacher?`<div class="hint-box">${icon('clock')}教師批閱後才會顯示分數、AI 批閱結果、參考答案與學習建議。你的作答已保存。</div>`:`<p class="info-note">${mathText(a.feedback)}</p>${suggestionCard(a.suggestion)}<p class="field-hint">AI 原建議分：${scoreText(a.aiScore)} · 規則原分：${scoreText(a.ruleScore)} · 教師確認：${scoreText(a.confirmedScore)}</p>`}${teacher?`<form id="review-form"><div class="form-field"><label class="field-label" for="review-score">評分（0–${a.maxScore}）</label><input id="review-score" type="number" min="0" max="${a.maxScore}" step="0.5" value="${a.score??''}" required></div><div class="form-field"><label class="field-label" for="review-feedback">簡要評語 / 下一步建議 <span class="small-text">· 可留空</span></label><textarea class="answer-field" id="review-feedback" placeholder="可留空；若要寫，指出做得好的步驟，再給一個具體可改進的地方。" maxlength="12000"></textarea></div><p id="review-error" class="error-text"></p><button class="primary wide" type="submit">保存教師批閱 ${icon('check')}</button></form>`:`<button class="secondary wide" id="retry-from-review">再練一次 ${icon('arrow')}</button>`}`,true);if(teacher&&a.image){annotationDone=onDone||(()=>recordsPage());initAnnotation(a);}if(teacher)$('#review-form').onsubmit=async e=>{e.preventDefault();const b=$('[type="submit"]',e.target);b.disabled=true;try{await api(`/api/attempts/${a.id}/review`,{score:Number($('#review-score').value),feedback:$('#review-feedback').value});await refresh();closeModal();if(onDone)onDone();else recordsPage();toast('教師批閱已保存，學生可查看最新評語與建議。');}catch(err){$('#review-error').textContent=err.message;b.disabled=false;}};else $('#retry-from-review').onclick=()=>{closeModal();openQuestion(a.questionId);};paintAllAiInk();}
 function growthPage(){page='growth';shell();if(!S.user)return loginModal(growthPage);const days=Array.from({length:7},(_,i)=>{const d=new Date();d.setDate(d.getDate()-6+i);const key=d.toLocaleDateString('en-CA');return {label:`${d.getMonth()+1}/${d.getDate()}`,n:S.attempts.filter(a=>new Date(a.submittedAt).toLocaleDateString('en-CA')===key).length};});const max=Math.max(1,...days.map(d=>d.n));$('#main').innerHTML=`<div class="fade-in">${heading('YOUR LEARNING JOURNEY','學習足跡','進步藏在每一次願意再想一步的練習裡。')}${metrics()}<div class="growth-layout"><section class="panel growth-panel"><h2>最近七天的練習</h2><p>提交次數（含待批閱） · 只呈現真實作答，不產生示例學習紀錄</p><div class="chart">${days.map(d=>`<div class="chart-column"><span class="bar-value">${d.n}</span><div class="bar" style="height:${d.n/max*145+3}px"></div><span class="bar-label">${d.label}</span></div>`).join('')}</div><div class="chart-caption">每一次練習都值得被看見。${S.attempts.length?'繼續保持，鞏固薄弱知識點。':'你還沒有提交練習，從第一道題開始吧。'}</div></section><section class="panel growth-panel"><h2>知識點練習表現</h2><p>得分率是練習表現，不代表能力的完整測量。</p>${(()=>{const practiced=topics.map(t=>({t,st:topicStats(t)})).filter(x=>x.st.n>0).sort((a,b)=>a.st.value-b.st.value);if(!practiced.length)return `<p class="chart-caption">還沒有任何知識點的練習記錄，先去做幾題吧。</p>`;return practiced.map(({t,st})=>`<div class="topic-detail"><div class="knowledge-row"><span>${esc(t)}</span><span>${st.n} 次 · ${st.value}%</span></div><div class="progress-track"><div class="progress-fill" style="width:${st.value}%"></div></div></div>`).join('');})()}</section><section class="panel growth-panel"><h2>${icon('bulb')}下一步學習建議</h2><p>${S.attempts.some(a=>a.status==='graded'&&a.score<a.maxScore)?'從錯題本選擇一道需要鞏固的題目，先回看錯誤步驟，再做同知識點相似題。':'先完成一道基礎題；在能清楚解釋方法後，再挑戰進階題。'}</p><button class="text-button" data-action="start">前往自主練習 ${icon('arrow')}</button></section></div></div>`;}
 let AICFG=null;
 function aiCapability(label,ok,need){return `<li class="${ok?'ready':''}">${ok?icon('check'):icon('lock')}<div><strong>${esc(label)}</strong><small>${ok?'可用 · ':''}${esc(need)}</small></div></li>`;}
