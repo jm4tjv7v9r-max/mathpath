@@ -216,3 +216,8 @@ button.danger:disabled{opacity:.6}
 .rubric-preview:empty{display:none}
 .rubric-preview-label{display:block;font-size:calc(12px*var(--fs));color:#8aa091;letter-spacing:.04em;margin-bottom:5px}
 .rubric-preview .rubric-view{margin:0;padding:11px 13px;border:1px dashed #cfe0d4;border-radius:8px;background:#f7fbf6}
+
+/* AI 草稿彈窗：可展開對照參考題，方便教師判斷「夠不夠類似」 */
+.ref-compare{margin:0 0 14px;border:1px solid var(--border);border-radius:8px;background:#fcfdfb;padding:11px 13px}
+.ref-compare>summary{cursor:pointer;font-size:calc(13px*var(--fs));color:#5d7d6b;font-weight:600}
+.ref-compare .question-formula{font-size:calc(17px*var(--fs));margin:10px 0 6px}

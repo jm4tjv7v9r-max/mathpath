@@ -1042,6 +1042,7 @@ function aiDraftModal(draft,kind,qid){
     : `與參考題${ref?`（${levels[ref.level]||'—'}）`:''}同難度`;
   modal(`<p class="eyebrow">AI DRAFT</p><h2>AI 生成的${name}草稿</h2>
   <p class="modal-intro">這是依參考題生成的${name}草稿（<strong>${relation}</strong>），<strong>尚未加入題庫</strong>。請核對題目內容、分類與參考答案，再決定是否加入。</p>
+  ${ref?`<details class="ref-compare"><summary>對照參考題：${esc(ref.title)}</summary><div class="question-formula">${mathText(ref.content)}</div>${optionsHtml(ref)}<div class="question-meta"><span>${esc(ref.topic)}${ref.subtopic?' · '+esc(ref.subtopic):''}</span><i class="separator"></i><span>${levels[ref.level]||''}</span><i class="separator"></i><span>${esc(ref.qtype||'')}</span></div></details>`:''}
   ${aiDraftPreview(draft)}
   <p class="field-hint">加入後會標示為「AI 生成 · 待核驗」，方便日後在題庫中辨識。</p>
   <div class="submit-row"><button class="primary" id="ai-draft-save">${icon('check')}加入題庫</button><div class="row-actions"><button class="secondary" id="ai-draft-again">再生成一題</button><button class="secondary" id="ai-draft-cancel">放棄</button></div></div>`,true);

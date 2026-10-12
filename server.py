@@ -63,12 +63,12 @@ DRAFT_TEMPERATURE = 0.8
 DRAFT_SEEN_KEY = 'draft_seen_%d'
 DRAFT_SEEN_LIMIT = 12
 # 每次生成隨機挑一個變化方向，讓提示本身就不一樣。
-# 相似題只換外殼、難度不變；進階題才允許加深，避免「相似題」生成出更難的題目。
+# 相似題只換數字與情境（把參考題當模板）；進階題才允許加深。
 DRAFT_VARIATIONS_SIMILAR = (
-    '換一組數字（係數、根的數值或邊長都要不同），但解題步驟與難度不變',
-    '換成生活應用情境（購物、面積、行程、統計等），問法與推理層次維持不變',
-    '把已知與所求對調，所需技巧與步驟數量維持不變',
-    '改用圖形、表格或座標描述同一個知識點，推理層次維持不變',
+    '換一組數字：把係數、常數或邊長換成另一組，答案形式與參考題相同',
+    '換一組數字，並把情境換成同類型的生活情境（問法與步驟結構完全不變）',
+    '保留相同的式子結構，只把數值改成另一組（例如把 5、6 改成 7、12）',
+    '把參考題的數字放大或縮小（仍為整數、仍可整除），解法與步驟完全不變',
 )
 DRAFT_VARIATIONS_ADVANCED = (
     '加入需要驗算或比較兩個結果的問法',
@@ -2542,18 +2542,29 @@ class Application:
                 avoid = list(dict.fromkeys(avoid + seen))[:20]
                 seen_keys = {normalize_draft(v) for v in seen}
                 self.ai.consent(body.get('consentExternal'))
-                # 難度必須說清楚數字，否則模型容易把「相似題」寫成更難的題目。
+                # 難度與題型都要說清楚，否則模型容易把「相似題」寫成另一種題目。
                 want_level = q['level'] if body['kind'] == 'similar' else min(3, q['level'] + 1)
                 kind_name = '相似題' if body['kind'] == 'similar' else '進階題'
+                ref_qtype = q.get('qtype') or classify_type(q['content'])
+                ref_steps = q.get('steps') or []
+                template = (f'參考題：「{q.get("title", "")}」{q.get("content", "")}'
+                            f'（題型 {ref_qtype}、子分類 {q.get("subtopic") or "（未設定）"}、'
+                            f'{q.get("points", 5)} 分、參考答案「{q.get("answer", "")}」、'
+                            f'參考解法共 {len(ref_steps)} 步）。')
                 if body['kind'] == 'similar':
                     difficulty = (f'這是「相似題」：level 必須是 {want_level}，與參考題完全相同。'
-                                  '只換數字、情境與問法；解題所需的技巧、步驟數量與推理深度都要和參考題相當，'
-                                  '不可以變得更難，也不可以加入參考題沒有的新概念或新技巧。')
+                                  + template +
+                                  '請把參考題當作模板，只替換數字與情境文字：'
+                                  f'知識點、解題方法、題型（{ref_qtype}）、小題數量、作答形式（例如一樣是「求兩根」）、'
+                                  f'步驟數量（約 {len(ref_steps)} 步）與推理深度，全部都要與參考題一致，'
+                                  '學生用完全相同的步驟就能解出來。'
+                                  '不可以變得更難、不可以新增條件、不可以改問法、不可以加入參考題沒有的新概念或新技巧。')
                     variations = DRAFT_VARIATIONS_SIMILAR
                 else:
                     difficulty = (f'這是「進階題」：level 必須是 {want_level}，比參考題高一級。'
-                                  '可以多一步推理、需要驗算或比較兩個結果，但不可超出年級範圍，'
-                                  '也不可使用更深奧的技巧；仍要能獨立作答。')
+                                  + template +
+                                  '在同一個知識點與解題方法的基礎上加深：可以多一步推理、需要驗算或比較兩個結果，'
+                                  '但不可超出年級範圍，也不可使用更深奧的技巧；仍要能獨立作答。')
                     variations = DRAFT_VARIATIONS_ADVANCED
                 base = (f'根據參考題生成一題同年級（{q.get("grade", "中三")}）的數學題。'
                         '返回 {question:{title,content,topic,level,grade,points,answer,steps:[str],analysis,rubric:[{label:str,percent:number}],hint,source,tags:[str]}}。'
@@ -2561,15 +2572,15 @@ class Application:
                         'steps 為完整詳細解法；analysis 為二至四句詳細解釋（考點、思路、易錯處）；'
                         'rubric 為評分標準 3 至 6 項，percent 加總必須等於 100。'
                         '數學式用 LaTeX（行內 $...$）；必須自行核算答案和步驟。'
-                        + difficulty +
-                        '這是變式題：數字、情境與問法都必須與參考題不同，不能只是換個標題。')
+                        + difficulty)
                 generated = None
                 for attempt in (1, 2):
                     extra = ' 本次變化方向：' + secrets.choice(variations) + '。'
                     if avoid:
                         extra += ' 不可與下列題目重複（數字、情境與問法都要不同）：' + '｜'.join(avoid) + '。'
                     if attempt == 2:
-                        extra += ' 注意：上一次生成的題目與既有題目重複，這次務必換一組完全不同的數字、情境與問法。'
+                        extra += (' 注意：上一次生成的題目不符合要求（' + '；'.join(problems) + '），'
+                                  '這次務必修正，並換一組完全不同的數字與情境。')
                     result = self.ai.call(base + extra, {'reference': q, 'kind': body['kind']},
                                           temperature=DRAFT_TEMPERATURE)
                     try:
@@ -2585,16 +2596,20 @@ class Application:
                             raise ValueError()
                     except (APIError, ValueError, TypeError, KeyError):
                         fail(502, 'AI 生成題目的欄位、答案或難度無效，未保存。')
-                    # 難度是最容易出錯的一項，這裡硬性檢查並給出明確訊息：
-                    # 相似題必須同難度、進階題必須高一級，避免「相似題」變成更難的題目。
+                    # 品質檢查：難度一定要對；相似題還必須同題型、不與先前重複。
+                    problems = []
                     if candidate['level'] != want_level:
-                        fail(502, f'AI 生成的題目難度不符：{kind_name}需要難度 {want_level}'
-                                  f'（1 基礎／2 鞏固／3 進階），模型卻回報難度 {candidate["level"]}。'
-                                  '未保存，請再按一次生成。')
-                    # 與先前生成過的題目一模一樣時再試一次（最多兩次，避免一直重複）。
-                    if attempt == 2 or draft_summary(candidate) not in seen_keys:
+                        problems.append(f'難度必須是 {want_level}（1 基礎／2 鞏固／3 進階），卻回報 {candidate["level"]}')
+                    if body['kind'] == 'similar' and candidate['qtype'] != ref_qtype:
+                        problems.append(f'題型必須與參考題相同（{ref_qtype}），卻變成 {candidate["qtype"]}')
+                    if draft_summary(candidate) in seen_keys:
+                        problems.append('與先前生成過的題目重複')
+                    if not problems:
                         generated = candidate
                         break
+                    if attempt == 2:
+                        fail(502, f'AI 生成的題目不符合{kind_name}的要求（' + '；'.join(problems)
+                                  + '），未保存，請再按一次生成。')
                 generated['source'] = 'AI 生成 · 待核驗'
                 generated['tags'] = list(dict.fromkeys(generated['tags'] + ['待教師核驗']))[:20]
                 with self.db() as db:
