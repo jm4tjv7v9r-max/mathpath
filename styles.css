@@ -221,3 +221,6 @@ button.danger:disabled{opacity:.6}
 .ref-compare{margin:0 0 14px;border:1px solid var(--border);border-radius:8px;background:#fcfdfb;padding:11px 13px}
 .ref-compare>summary{cursor:pointer;font-size:calc(13px*var(--fs));color:#5d7d6b;font-weight:600}
 .ref-compare .question-formula{font-size:calc(17px*var(--fs));margin:10px 0 6px}
+
+/* 客觀題（選擇題／填空題）不需要評分標準的說明 */
+.objective-note{font-size:calc(13px*var(--fs));color:#99a99c;line-height:1.8}

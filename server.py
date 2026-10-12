@@ -272,6 +272,8 @@ GRADES = ['中一', '中二', '中三', '中四', '中五', '中六']
 TOPIC_HINT = '、'.join(TOPICS)
 GRADE_HINT = '、'.join(GRADES)
 QTYPES = ['選擇題', '填空題', '解答題', '證明題']
+# 客觀題：作答只有對或錯，用規則核對答案即可，不需要評分標準（也就不會產生 AI 評分步驟）。
+OBJECTIVE_QTYPES = ('選擇題', '填空題')
 # 選擇題選項標號：支援 4 個、5 個或更多選項（最多 10 個）。
 OPTION_LETTERS = 'ABCDEFGHIJ'
 # 評分標準（rubric）：每項含評分要點與佔分百分比，總和必須為 100。
@@ -401,8 +403,9 @@ def parse_instruction(total_chunks=1, index=0):
             'answer：填空題填最終答案、解答題／證明題填完整結論（選擇題填字母）。'
             'steps：詳解步驟，最多 5 步、每步不超過 40 字，要寫出關鍵式子。'
             'analysis：詳細解釋，不超過 50 字，說明考點與常見錯誤。'
-            'rubric：評分標準 3 至 4 項，每項 {label:評分要點（不超過 14 字）, percent:佔分百分比}，'
-            '所有 percent 加總必須等於 100；選擇題可依「正確選項」與「推理依據」配分。'
+            'rubric：評分標準，只給解答題與證明題（3 至 4 項，每項 {label:評分要點（不超過 14 字）, percent:佔分百分比}，'
+            '所有 percent 加總必須等於 100）；選擇題與填空題是客觀題（作答只有對或錯，不需要評分步驟），'
+            'rubric 一律留空陣列 []，不要為它們配分。'
             'content、answer、steps、analysis、rubric 中的數學式一律用 LaTeX：行內用 $...$'
             '（例如 $x^2-5x+6=0$、$\\frac{1}{2}$、$\\sqrt{3}$）；不要用圖片或純文字排版數學式。'
             f'topic（主分類）只能是以下之一：{TOPIC_HINT}；'
@@ -530,15 +533,19 @@ def ai_answer_draft(app, body):
         options = []
     app.ai.consent(body.get('consentExternal'))
     letters = OPTION_LETTERS[:len(options)] if options else ''
+    objective = qtype in OBJECTIVE_QTYPES
     instruction = (
-        '你是資深數學教師。請為以下題目產生正確答案、完整詳解、詳細解釋與評分標準。'
-        '返回 {answer:str,steps:[str],analysis:str,rubric:[{label:str,percent:number}]}。'
+        '你是資深數學教師。請為以下題目產生正確答案、完整詳解與詳細解釋'
+        + ('（這是客觀題，不需要評分標準）。' if objective else '與評分標準。')
+        + '返回 {answer:str,steps:[str],analysis:str,rubric:[{label:str,percent:number}]}。'
         'answer：填空題填最終答案；解答題／證明題填完整結論；'
         + (f'選擇題只能填正確選項的字母（{letters} 其中一個）。' if options else '')
         + 'steps：完整詳細解法，逐步寫出關鍵式子與理由，至少 2 步。'
         'analysis：詳細解釋（二至四句），說明考點、解題思路與常見錯誤。'
-        f'rubric：評分標準 3 至 6 項，每項 {{label:評分要點,percent:佔分百分比}}，全部 percent 加總必須等於 100。'
-        '數學式一律用 LaTeX：行內用 $...$、獨立一行用 $$...$$。'
+        + ('rubric：選擇題／填空題是客觀題（作答只有對或錯，不需要評分步驟），rubric 必須是空陣列 []。'
+           if objective else
+           'rubric：評分標準 3 至 6 項，每項 {label:評分要點,percent:佔分百分比}，全部 percent 加總必須等於 100。')
+        + '數學式一律用 LaTeX：行內用 $...$、獨立一行用 $$...$$。'
         '必須自行核算答案與步驟，不確定時寧可保守作答，不要捏造。')
     result = app.ai.call(instruction, {'question': {'title': title, 'content': content, 'topic': topic,
                                                     'subtopic': subtopic, 'qtype': qtype,
@@ -546,6 +553,9 @@ def ai_answer_draft(app, body):
     answer = coerce_ai_answer(result, qtype, options)
     if answer is None:
         fail(502, 'AI 沒有產生可用的答案；請確認題目內容完整後重試，或手動填寫。')
+    if objective:
+        # 客觀題不需要評分標準；模型若仍硬生出來，這裡直接清掉。
+        answer['rubric'] = []
     return {**answer, 'qtype': qtype, 'options': options, 'method': 'AI 生成'}
 
 
@@ -706,6 +716,10 @@ def coerce_ai_draft(raw):
         if d['qtype'] != '選擇題':
             d['qtype'] = '選擇題'
         d['answer'] = normalize_choice_answer(d['answer'], options)
+    # 客觀題（選擇題／填空題）以答案是否正確評分，AI 常硬生出來的評分標準一律清掉，
+    # 免得多出用不到的「評分步驟」配分。
+    if d['qtype'] in OBJECTIVE_QTYPES:
+        d['rubric'] = []
     return d
 
 

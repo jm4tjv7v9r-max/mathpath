@@ -1230,6 +1230,42 @@ class APITests(unittest.TestCase):
             _, parsed, _ = self.request('POST', '/api/papers/parse', {'name': '試卷', 'text': '1. 解方程'}, cookie=self.teacher, expect=200)
             self.assertEqual(parsed['method'], 'AI 識別')
 
+    def test_objective_questions_do_not_get_a_rubric(self):
+        # 選擇題／填空題是客觀題：作答只有對或錯，不需要評分標準，也就不會產生 AI 評分步驟。
+        self.app.ai.configured = True
+        self.app.ai.mode = 'local'
+        # 1) 拆題提示要講清楚：客觀題的 rubric 一律留空
+        instruction = server.parse_instruction()
+        self.assertIn('客觀題', instruction)
+        self.assertIn('rubric 一律留空陣列', instruction)
+        # 2) 模型若硬生評分標準，拆題與 AI 生成答案都會清掉
+        choice = dict(self.draft, title='客觀選擇題', qtype='選擇題', options=['$1$', '$2$'], answer='B',
+                      rubric=[{'label': '正確選項', 'percent': 60}, {'label': '推理依據', 'percent': 40}])
+        self.assertEqual(server.coerce_ai_draft(choice)['rubric'], [])
+        blank = dict(self.draft, title='客觀填空題', qtype='填空題', options=[],
+                     rubric=[{'label': '答案正確', 'percent': 100}])
+        self.assertEqual(server.coerce_ai_draft(blank)['rubric'], [])
+        essay = dict(self.draft, title='主觀解答題', qtype='解答題',
+                     rubric=[{'label': '列式', 'percent': 50}, {'label': '求解', 'percent': 50}])
+        self.assertEqual(len(server.coerce_ai_draft(essay)['rubric']), 2, '解答題仍要保留評分標準')
+        with patch.object(self.app.ai, 'call', return_value={'answer': 'B', 'steps': ['代入求解。', '得 B。'],
+                                                             'analysis': '考點是代數運算。',
+                                                             'rubric': [{'label': '正確選項', 'percent': 100}]}) as ai:
+            _, result, _ = self.request('POST', '/api/questions/ai-answer',
+                                        {'content': '下列何者正確？ (A) 1 (B) 2', 'qtype': '選擇題',
+                                         'options': ['1', '2'], 'points': 5}, cookie=self.teacher, expect=200)
+            self.assertEqual(result['rubric'], [], '選擇題不應回傳評分標準')
+            self.assertEqual(result['qtype'], '選擇題')
+            self.assertIn('空陣列', ai.call_args[0][0], '提示要說明客觀題的 rubric 留空')
+        # 3) 拆題（AI 識別）出來的選擇題草稿也沒有評分標準
+        ai_choice = dict(self.draft, title='AI 拆出的選擇題', qtype='選擇題', options=['$1$', '$2$'], answer='A',
+                         rubric=[{'label': '正確選項', 'percent': 100}])
+        with patch.object(self.app.ai, 'call', return_value={'drafts': [ai_choice]}):
+            _, parsed, _ = self.request('POST', '/api/papers/parse', {'name': '試卷', 'text': '1. 解方程'},
+                                        cookie=self.teacher, expect=200)
+        self.assertEqual(parsed['drafts'][0]['qtype'], '選擇題')
+        self.assertEqual(parsed['drafts'][0]['rubric'], [])
+
     def test_generate_asks_for_a_new_variant_each_time(self):
         # 同一道參考題連續生成時，必須要求模型換一題，而不是每次都拿到相同的題目。
         self.app.ai.configured = True

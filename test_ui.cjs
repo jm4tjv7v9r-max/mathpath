@@ -420,6 +420,16 @@ const HANDWRITING=makePng(400,300);
   assert.match(await page.locator('[data-field=analysis]').inputValue(),/題型為選擇題/,'應顯示題目分析');
   assert.equal((await page.locator('.draft-card [data-field=steps]').inputValue()).split('\n').filter(Boolean).length,1,'應顯示詳解步驟');
   assert.equal(await page.locator('.draft-card [data-rubric-label]').count(),0,'未提供評分標準時不應有項目');
+  // 選擇題／填空題是客觀題：不需要評分標準（也就不會產生 AI 評分步驟）
+  assert.equal(await page.locator('[data-rubric-field="draft-0"]').isVisible(),false,'選擇題草稿應隱藏評分標準');
+  assert.equal(await page.locator('[data-objective-note="draft-0"]').isVisible(),true,'選擇題草稿應說明不需要評分標準');
+  assert.match(await page.locator('[data-objective-note="draft-0"]').innerText(),/客觀題/);
+  await page.locator('[data-field=qtype]').selectOption('解答題');
+  assert.equal(await page.locator('[data-rubric-field="draft-0"]').isVisible(),true,'改成解答題後應顯示評分標準');
+  assert.equal(await page.locator('[data-objective-note="draft-0"]').isVisible(),false,'解答題不應顯示客觀題說明');
+  await page.locator('[data-field=qtype]').selectOption('填空題');
+  assert.equal(await page.locator('[data-rubric-field="draft-0"]').isVisible(),false,'填空題草稿也應隱藏評分標準');
+  await page.locator('[data-field=qtype]').selectOption('選擇題');
   // 拆題編輯頁的表單欄位必須顯示「原始 LaTeX 文字」，不可把渲染後的 KaTeX HTML 塞進輸入框
   const draftTex = await page.locator('[data-field=content]').inputValue();
   assert.ok(draftTex.includes('$A=\\{x\\mid -1<x\\le 3\\}$'), `題目內容應為原始 LaTeX，實際：${draftTex.slice(0,80)}`);

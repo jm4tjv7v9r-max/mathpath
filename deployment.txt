@@ -60,6 +60,8 @@ stdlib http.server适合受控内网试用；生产应加入反代限流、资�
 18. 全自动拆分并汇入：POST /api/papers/auto-import 一次完成拆分、题型分类、知识点分类并写入题库，全部加上「自動匯入 · 待核驗」标签，返回 {count,method,questions,notice}。教师限定；参数与 /api/papers/parse 相同。若已配置 AI 则用 AI 识别（图片须同时配置视觉模型），未配置时用本地规则，不会假装已用 AI。已核验的答案仍须教师在题库核对后才可布置给学生。
 19. 题目分析：题目带有 analysis 栏（最多 2000 字），说明本题考什么、解题关键或常见错误。未接 AI 时为规则分析（例如「規則分析：題型為選擇題，知識點為代數；參考答案留空，需教師核對。」）；接上 AI 后由模型生成。分析在拆题预览的草稿卡上以「題目分析」显示，供教师核验参考，不当作评分依据。
 
+19-1. 客观题不需要评分标准：選擇題与填空題的作答只有对或错，用规则核对答案即可，因此 AI 拆题与「AI 生成答案」都不会为它们产生 rubric（评分标准／AI 评分步骤）——提示明确要求这两种题型的 rubric 一律留空数组，模型若仍硬生出来，后端在 coerce_ai_draft／ai_answer_draft 会直接清掉。前端在草稿卡与手动输入表单也会在選擇題／填空題时隐藏评分标准编辑器（改回解答题／证明题才显示），汇入时这两种题型一律送空数组，且不会因为残留的评分标准总和不等于 100% 而挡住汇入。解答题与证明题保留 3 至 6 项评分标准。
+
 20. 學生自助模擬測驗（限時、即時計分、提升建議）：學生可在「模擬測驗」頁自選知識點、難度、題型、題數（1至20）與時限（1至180分鐘），即時開始，不需要教師指派。
     POST /api/mock {topic?,level?,qtype?,count,minutes} 建立並開始一場測驗：只從題庫中「答案已核驗」的題目抽選（待核驗的 AI 生成題不會被抽中），題目以快照保存，之後題庫改動不影響已開始的測驗；回傳 {exam,questions,notice}，學生版題目不包含答案與步驟。符合條件的題目不足時回 409 並說明可用題數，不會少給題目。
     GET /api/mock 回傳 {exams,options,ai}：我的測驗紀錄與可選條件（topics／counts／minutes／qtypes／available）。GET /api/mock/:id 回傳 {exam,questions,attempts,report,notice}，exam 含 status、remainingSeconds、expired；未提交時 report 為 null。
