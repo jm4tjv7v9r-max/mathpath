@@ -224,3 +224,10 @@ button.danger:disabled{opacity:.6}
 
 /* 客觀題（選擇題／填空題）不需要評分標準的說明 */
 .objective-note{font-size:calc(13px*var(--fs));color:#99a99c;line-height:1.8}
+
+/* 作答上傳：相片／PDF，以及手機拍照 */
+.upload-actions{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:12px}
+.upload-actions .secondary{font-size:calc(14px*var(--fs));padding:10px 14px}
+.upload-file{display:flex;flex-direction:column;align-items:center;gap:8px;text-align:center;color:#5d7d6b}
+.upload-file strong{font-size:calc(16px*var(--fs))}
+.upload-file small{color:#99a99c;font-size:calc(12px*var(--fs));line-height:1.7}

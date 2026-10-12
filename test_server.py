@@ -33,6 +33,75 @@ def png_url():
     return 'data:image/png;base64,' + base64.b64encode(raw).decode()
 
 
+def jpeg_bytes(pad=6000):
+    """最小但合法的 JPEG（用 COM 區段撐到 5 KB 以上，模擬掃描檔內嵌的相片）。"""
+    size = min(65535, max(4, pad))
+    com = b'\xff\xfe' + struct.pack('>H', size) + b'x' * (size - 2)
+    sof = (b'\xff\xc0' + struct.pack('>H', 17) + bytes([8]) + struct.pack('>HH', 1, 1)
+           + bytes([3, 1, 0x11, 0, 2, 0x11, 0, 3, 0x11, 0]))
+    sos = b'\xff\xda' + struct.pack('>H', 12) + bytes([3, 1, 0, 2, 0, 3, 0, 0, 63, 0])
+    return b'\xff\xd8' + com + sof + sos + b'\x00' + b'\xff\xd9'
+
+
+def make_pdf(objects):
+    """把物件列表組成一份帶正確 xref 的最小 PDF。"""
+    out = bytearray(b'%PDF-1.4\n')
+    offsets = []
+    for index, body in enumerate(objects, 1):
+        offsets.append(len(out))
+        out += b'%d 0 obj\n' % index + body + b'\nendobj\n'
+    startxref = len(out)
+    out += b'xref\n0 %d\n0000000000 65535 f \n' % (len(objects) + 1)
+    for offset in offsets:
+        out += b'%010d 00000 n \n' % offset
+    out += (b'trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n'
+            % (len(objects) + 1, startxref))
+    return bytes(out)
+
+
+def pdf_url(objects):
+    return 'data:application/pdf;base64,' + base64.b64encode(make_pdf(objects)).decode()
+
+
+def text_pdf_url(text='x=3'):
+    """有文字層的 PDF（打字後匯出）。"""
+    content = ('BT /F1 24 Tf 20 100 Td (%s) Tj ET' % text).encode()
+    return pdf_url([
+        b'<< /Type /Catalog /Pages 2 0 R >>',
+        b'<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+        b'<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] '
+        b'/Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>',
+        b'<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+        b'<< /Length %d >>\nstream\n' % len(content) + content + b'\nendstream',
+    ])
+
+
+def scanned_pdf_url():
+    """掃描檔：沒有文字層，只有一張內嵌的 JPEG。"""
+    jpeg = jpeg_bytes()
+    content = b'q 100 0 0 100 0 0 cm /Im0 Do Q'
+    return pdf_url([
+        b'<< /Type /Catalog /Pages 2 0 R >>',
+        b'<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+        b'<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] '
+        b'/Resources << /XObject << /Im0 4 0 R >> >> /Contents 5 0 R >>',
+        b'<< /Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceRGB '
+        b'/BitsPerComponent 8 /Filter /DCTDecode /Length %d >>\nstream\n' % len(jpeg) + jpeg + b'\nendstream',
+        b'<< /Length %d >>\nstream\n' % len(content) + content + b'\nendstream',
+    ])
+
+
+def blank_pdf_url():
+    """既沒有文字層也沒有圖片的 PDF。"""
+    content = b' '
+    return pdf_url([
+        b'<< /Type /Catalog /Pages 2 0 R >>',
+        b'<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+        b'<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 4 0 R >>',
+        b'<< /Length %d >>\nstream\n' % len(content) + content + b'\nendstream',
+    ])
+
+
 class APITests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix='mathpath-api-')
@@ -1002,6 +1071,45 @@ class APITests(unittest.TestCase):
                                        cookie=self.teacher, expect=502)
         self.assertIn('AI 服務回應錯誤', error['error'])
 
+    def test_student_can_upload_pdf_answer(self):
+        # 學生可以用 PDF 交作答：有文字層就讀文字，掃描檔就取內嵌的 JPEG 當作答圖片。
+        text_attempt = self.submit('', image=text_pdf_url('x=3'))
+        with self.app.db() as db:
+            row = db.execute('SELECT answer_text, image FROM attempts WHERE id=?',
+                             (text_attempt['id'],)).fetchone()
+        self.assertIn('x=3', row['answer_text'])
+        self.assertIsNone(row['image'])
+        scanned_attempt = self.submit('', image=scanned_pdf_url())
+        self.assertIsNotNone(scanned_attempt.get('image'), '掃描 PDF 應取出內嵌圖片當作答')
+        with self.app.db() as db:
+            row2 = db.execute('SELECT image, image_mime FROM attempts WHERE id=?',
+                              (scanned_attempt['id'],)).fetchone()
+        self.assertTrue(bytes(row2['image']).startswith(b'\xff\xd8'))
+        self.assertEqual(row2['image_mime'], 'image/jpeg')
+        # 沒有文字也沒有圖片時要講清楚怎麼做，不能假裝成功。
+        self.request('POST', '/api/attempts', {'questionId': 1, 'answerText': '', 'image': blank_pdf_url()},
+                     cookie=self.student, expect=400)
+        # 學生仍可用文字＋PDF 一起交（文字在前、PDF 文字接在後）。
+        both = self.submit('先寫結論', image=text_pdf_url('x=3'))
+        with self.app.db() as db:
+            merged = db.execute('SELECT answer_text FROM attempts WHERE id=?', (both['id'],)).fetchone()[0]
+        self.assertIn('先寫結論', merged)
+        self.assertIn('x=3', merged)
+
+    def test_ai_json_with_unescaped_latex_is_recovered(self):
+        # 模型常在 JSON 字串裡直接寫 LaTeX（\sqrt 不是合法跳脫）或夾帶原始換行，
+        # 這些都必須救回來，不能讓學生看到「不是有效 JSON」而丟掉整次批改。
+        raw = '{"feedback": "答案 $\\sqrt{3}$ 要注意", "items": [{"percent": 100, "comment": "第一行\n第二行"}]}'
+        with self.assertRaises(ValueError):
+            json.loads(raw)
+        decoded = server.extract_json(raw)
+        self.assertIsNotNone(decoded)
+        self.assertIn('\\sqrt{3}', decoded['feedback'])
+        self.assertEqual(decoded['items'][0]['comment'], '第一行\n第二行')
+        # 正常的 JSON 不應該被改動。
+        plain = '{"score": 4, "feedback": "很好"}'
+        self.assertEqual(server.escape_json_strings(plain), plain)
+
     def test_ai_answer_endpoint_generates_answer_and_rubric(self):
         # 教師新增題目時可請 AI 產生答案、詳解、詳細解釋與評分標準。
         canned = {'answer': '$x=2$ 或 $x=3$', 'steps': ['分解為 $(x-2)(x-3)=0$。', '得 $x=2$ 或 $x=3$。'],
@@ -1080,10 +1188,15 @@ class APITests(unittest.TestCase):
         self.assertEqual(own['score'], 5)
         self.assertEqual(own['confirmedScore'], 5)
         self.assertNotIn('awaitingReview', own)
-        # 項目數不符 → 502，不保存成績
+        # 項目數不符時不偽造分數，但作答一定要保住：改為等待教師批閱，不自動用規則給分。
         with patch.object(self.app.ai, 'call', return_value={'feedback': 'x', 'items': [{'percent': 50, 'comment': 'a'}]}):
-            self.request('POST', '/api/attempts', {'questionId': qid, 'answerText': 'x=2', 'assignmentId': aid},
-                         cookie=self.student, expect=502)
+            _, failed, _ = self.request('POST', '/api/attempts',
+                                        {'questionId': qid, 'answerText': 'x=2', 'assignmentId': aid},
+                                        cookie=self.student, expect=200)
+            stored = self.teacher_attempt(aid, failed['attempt']['id'])
+            self.assertEqual(stored['gradingMethod'], 'pending-teacher')
+            self.assertIsNone(stored['score'])
+            self.assertIn('AI 建議評分暫時無法使用', stored['feedback'])
         # 百分比超範圍會被夾在 0–100
         clamped = {'feedback': 'y', 'items': [{'percent': 999, 'comment': 'a'}, {'percent': -5, 'comment': 'b'},
                                              {'percent': 50, 'comment': 'c'}]}
@@ -1144,13 +1257,21 @@ class APITests(unittest.TestCase):
             self.assertIn('僅供教師復核', stored['feedback'])
             self.assertFalse(stored['teacherReviewed'])
             self.assertEqual(stored['steps'][0]['earned'], 4)
-        for invalid in [dict(result, score=1000), dict(result, score=-1), dict(result, score=True),
-                        dict(result, score=float('nan')), dict(result, score=5), dict(result, steps=[]),
-                        dict(result, feedback=[]), dict(result, steps=[{'label': 'x', 'earned': 7, 'max': 6, 'comment': 'x'}])]:
+        invalid_results = [dict(result, score=1000), dict(result, score=-1), dict(result, score=True),
+                           dict(result, score=float('nan')), dict(result, score=5), dict(result, steps=[]),
+                           dict(result, feedback=[]),
+                           dict(result, steps=[{'label': 'x', 'earned': 7, 'max': 6, 'comment': 'x'}])]
+        for invalid in invalid_results:
+            # AI 回傳格式無效時不偽造分數，但學生的作答一定要保住：改為等待教師批閱。
             with patch.object(self.app.ai, 'call', return_value=invalid):
-                self.request('POST', '/api/attempts', dict(body, consentExternal=True), cookie=self.student, expect=502)
+                _, fallback, _ = self.request('POST', '/api/attempts', dict(body, consentExternal=True),
+                                              cookie=self.student, expect=200)
+            stored = self.teacher_attempt(aid, fallback['attempt']['id'])
+            self.assertEqual(stored['gradingMethod'], 'pending-teacher')
+            self.assertIsNone(stored['score'])
+            self.assertIn('AI 建議評分暫時無法使用', stored['feedback'])
         with self.app.db() as db:
-            self.assertEqual(db.execute('SELECT count(*) FROM attempts').fetchone()[0], 1)
+            self.assertEqual(db.execute('SELECT count(*) FROM attempts').fetchone()[0], 1 + len(invalid_results))
         with patch.object(self.app.ai, 'call') as ai:
             _, parsed, _ = self.request('POST', '/api/papers/parse', {'name': '文本', 'text': '1. 解 x²−5x+6=0。'}, cookie=self.teacher, expect=200)
             self.assertEqual(parsed['method'], '規則拆題')

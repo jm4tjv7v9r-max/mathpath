@@ -72,6 +72,9 @@ stdlib http.server适合受控内网试用；生产应加入反代限流、资�
 23. GET /api/health（不需登入）：回傳 {status,storage:{mode,bucket,configured,error},ai,questions}，供 Render 等平台健康檢查，也可用來確認 R2 是否已啟用。
 24. 免費部署架構與限制：詳見 deployment-cloud.md。要點：本專案是 Python 標準庫 + SQLite，不是 Node.js；Render 免費版無持久磁碟，SQLite 會隨重啟清空（檔案放 R2 可解決，資料庫仍需另想辦法或改 Postgres）；前端若與後端分屬不同網域，SameSite=Lax 的登入 cookie 會被瀏覽器擋掉，不建議拆分。學生手寫照片上傳第三方雲端屬個人資料傳輸，需另行告知與同意。
 
+25. 學生作答上傳（相片／手機拍照／PDF）：POST /api/attempts 的 image 欄位除 PNG／JPEG／WebP（10 MB）外也接受 application/pdf（20 MB，MAX_BODY 已同步放寬）。PDF 先讀文字層（打字後匯出）並接在 answerText 之後；沒有文字層的掃描檔改用純標準庫掃出內嵌的 DCTDecode（JPEG）影像當作答圖片（只認 JPEG 檔頭、跳過小於 5 KB 的圖，不假裝成功）；兩者都取不到時回 400 並提示改用手機拍照。前端作答區提供「用手機拍照」（accept=image/* 加 capture=environment，直接開後置鏡頭）與檔案選擇（image/*,application/pdf）；PDF 不以圖片預覽，改顯示檔案提示。儲存的是抽出的文字或內嵌 JPEG，不是原 PDF。
+26. AI 批改失敗一定要保住學生的作答：作業／測驗的 AI 建議評分失敗（模型錯誤、回應格式無效等）時不再讓整個請求失敗，改存成 pending-teacher（分數留空），feedback 寫明「AI 建議評分暫時無法使用（原因）作答已保存，改由教師批閱」，且不自動用規則給分（避免教師把規則分數誤當成 AI 建議分數）；自主練習／自助模擬測驗仍退回規則核對以記錄分數。另外，模型回應的字串若直接寫 LaTeX（\sqrt 這類非法跳脫）或夾帶原始換行，extract_json 會先自動補上正確轉義（escape_json_strings）再解析，避免整次批改因一個反斜線而失敗。
+
 网络与上线状态：
 当前代码可本地运行，但未部署互联网，未配置真实AI模型。现有标准库服务不能直接作为公网生产部署方案；正式上线须生产服务、HTTPS、独立账户、权限审计、恶意文件隔离、持续备份、模型预算与并发队列。单实例SQLite适合受控试用；多实例互联网版须持久数据库与私有文件存储。
 

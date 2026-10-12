@@ -696,9 +696,18 @@ class HomeworkTests(unittest.TestCase):
             self.error(403, 'POST', '/api/attempts', {'assignmentId': aid, 'questionId': 1, 'answerText': '2'})
             ai.assert_not_called()
         with patch.object(self.app.ai, 'call', side_effect=server.APIError(502, '失败')):
-            self.error(502, 'POST', '/api/attempts', {'assignmentId': aid, 'questionId': 1, 'answerText': '2', 'consentExternal': True})
+            attempt = self.call('POST', '/api/attempts',
+                                {'assignmentId': aid, 'questionId': 1, 'answerText': '2',
+                                 'consentExternal': True})['attempt']
+        # 模型失敗時不偽造分數，但一定要保住學生的作答：改為等待教師批閱，不自動用規則給分。
+        self.assertIsNone(attempt['score'])
+        self.assertEqual(attempt['gradingMethod'], 'awaiting-review')
+        stored = self.teacher_attempt(aid, attempt['id'])
+        self.assertEqual(stored['gradingMethod'], 'pending-teacher')
+        self.assertIsNone(stored['score'])
+        self.assertIn('AI 建議評分暫時無法使用', stored['feedback'])
         with self.app.db() as db:
-            self.assertEqual(db.execute('SELECT count(*) FROM attempts').fetchone()[0], 0)
+            self.assertEqual(db.execute('SELECT count(*) FROM attempts').fetchone()[0], 1)
 
     def test_rules_each_free_attempt_pending_and_recommendable_only(self):
         with self.app.db() as db:

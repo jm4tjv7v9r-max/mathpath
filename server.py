@@ -40,9 +40,11 @@ from storage import Storage
 
 ROOT = Path(__file__).resolve().parent
 MAX_FILE = 10 * 1024 * 1024
+# 學生作答可上傳 PDF（掃描檔常比單張相片大）；圖片仍維持 10 MB。
+MAX_PDF = 20 * 1024 * 1024
 MAX_FIGURE = 2 * 1024 * 1024
 MAX_TEXT = 80_000
-MAX_BODY = 4 * ((MAX_FILE + 2) // 3) + MAX_TEXT * 12 + 10_000
+MAX_BODY = 4 * ((MAX_PDF + 2) // 3) + MAX_TEXT * 12 + 10_000
 SESSION_SECONDS = 12 * 3600
 SESSION_SECONDS_LONG = 30 * 24 * 3600
 # 允許帶查詢參數的路徑（日曆區間、歸檔選項）。
@@ -1048,9 +1050,9 @@ def utc_now():
     return datetime.now(timezone.utc).isoformat(timespec='seconds').replace('+00:00', 'Z')
 
 
-def decode_data_url(value, allowed):
-    if not isinstance(value, str) or len(value) > 4 * ((MAX_FILE + 2) // 3) + 100:
-        fail(413, '檔案不得超過 10 MB。')
+def decode_data_url(value, allowed, limit=MAX_FILE):
+    if not isinstance(value, str) or len(value) > 4 * ((limit + 2) // 3) + 100:
+        fail(413, '檔案不得超過 %d MB。' % (limit // (1024 * 1024)))
     match = re.fullmatch(r'data:([a-z]+/[a-z0-9.+-]+);base64,([A-Za-z0-9+/=]+)', value)
     if not match or match[1] not in allowed:
         fail(400, '請提供支援格式的 base64 dataURL。')
@@ -1058,8 +1060,8 @@ def decode_data_url(value, allowed):
         data = base64.b64decode(match[2], validate=True)
     except (ValueError, binascii.Error):
         fail(400, '檔案編碼無效。')
-    if not data or len(data) > MAX_FILE:
-        fail(413, '檔案不可為空，且不得超過 10 MB。')
+    if not data or len(data) > limit:
+        fail(413, '檔案不可為空，且不得超過 %d MB。' % (limit // (1024 * 1024)))
     return data, match[1]
 
 
@@ -1276,6 +1278,54 @@ def repair_json_text(text):
     return fixed
 
 
+def escape_json_strings(text):
+    """修正常見的「字串內容沒轉義」問題：LaTeX 反斜線與原始換行／控制字元。
+
+    模型很常在 JSON 字串裡直接寫 LaTeX（例如 $\\sqrt{3}$）。`\\s` 不是合法的 JSON
+    跳脫序列，json.loads 會整個失敗（數學科最常踩到）。這裡只處理字串內部：
+    不合法的反斜線補成 `\\\\`，原始換行／定位字元換成 `\\n` / `\\t`，其他控制字元換成 `\\uXXXX`。
+    已經是合法 JSON 的文字不會被改動。
+    """
+    valid = '"\\/bfnrtu'
+    out, in_str, i, n = [], False, 0, len(text)
+    while i < n:
+        ch = text[i]
+        if not in_str:
+            out.append(ch)
+            if ch == '"':
+                in_str = True
+            i += 1
+        elif ch == '"':
+            in_str = False
+            out.append(ch)
+            i += 1
+        elif ch == '\\':
+            nxt = text[i + 1] if i + 1 < n else ''
+            if nxt in valid:
+                out.append(ch)
+                out.append(nxt)
+                i += 2
+            else:
+                out.append('\\\\')
+                i += 1
+        elif ch == '\n':
+            out.append('\\n')
+            i += 1
+        elif ch == '\r':
+            out.append('\\r')
+            i += 1
+        elif ch == '\t':
+            out.append('\\t')
+            i += 1
+        elif ord(ch) < 0x20:
+            out.append('\\u%04x' % ord(ch))
+            i += 1
+        else:
+            out.append(ch)
+            i += 1
+    return ''.join(out)
+
+
 def _json_reject_constant(_value):
     raise ValueError('不支援 NaN / Infinity')
 
@@ -1301,6 +1351,10 @@ def extract_json(text, limit=40):
         fixed = repair_json_text(base)
         if fixed not in candidates:
             candidates.append(fixed)
+        # 再試「字串內容補上正確轉義」的版本：模型常把 LaTeX（\sqrt…）直接寫進 JSON 字串。
+        escaped = escape_json_strings(fixed)
+        if escaped not in candidates:
+            candidates.append(escaped)
     for candidate in candidates:
         try:
             decoded = json.loads(candidate, parse_constant=_json_reject_constant)
@@ -1768,6 +1822,67 @@ def pdf_text(data):
     if not extracted:
         fail(422, '此 PDF 沒有可抽取文字，可能是掃描版。請配置視覺識別模型，並轉為逐頁 PNG / JPEG 圖片上傳。')
     return text(extracted, 'PDF 文字')
+
+
+def pdf_embedded_jpeg(data, limit=40, minimum=5_000):
+    """從 PDF 取出第一個內嵌的 JPEG 影像串流（掃描檔通常就是每頁一張 JPEG）。
+
+    純標準庫：只認 /Filter 為 DCTDecode 的影像，取出的位元組必須以 JPEG 檔頭開頭，
+    不做像素解碼、不猜測，也跳過太小的圖（通常是頁首標誌而不是作答內容）。找不到回 None。
+    """
+    for count, match in enumerate(re.finditer(rb'/Filter\s*(?:/\s*DCTDecode\b|\[\s*/DCTDecode\b)', data)):
+        if count >= limit:
+            break
+        start = data.find(b'stream', match.end())
+        if start < 0:
+            continue
+        pos = start + len(b'stream')
+        if data[pos:pos + 2] == b'\r\n':
+            pos += 2
+        elif data[pos:pos + 1] in (b'\n', b'\r'):
+            pos += 1
+        end = data.find(b'endstream', pos)
+        if end < 0:
+            continue
+        chunk = data[pos:end].rstrip(b'\r\n')
+        if len(chunk) >= minimum and chunk.startswith(b'\xff\xd8\xff'):
+            return chunk
+    return None
+
+
+def student_pdf_answer(data):
+    """學生上傳 PDF 作答：回 (answer_text, image_bytes, mime)。
+
+    先讀文字層（打字後匯出的 PDF）；沒有文字層（掃描檔）就取出內嵌的 JPEG 當作答圖片。
+    兩者都取不到時回 (None, None, None)，由呼叫端提示改用手機拍照。
+    """
+    if not data.startswith(b'%PDF-'):
+        fail(400, '檔案內容不是有效 PDF。')
+    try:
+        from pypdf import PdfReader
+    except ImportError:
+        fail(422, '伺服器未安裝 pypdf，無法讀取 PDF；請改用手機拍照上傳。')
+    try:
+        reader = PdfReader(io.BytesIO(data))
+        if reader.is_encrypted:
+            fail(422, '不支援加密 PDF，請先解密或改用手機拍照上傳。')
+        if len(reader.pages) > 30:
+            fail(413, 'PDF 最多 30 頁，請分次上傳。')
+        chunks, length = [], 0
+        for page in reader.pages:
+            chunk = page.extract_text() or ''
+            length += len(chunk)
+            if length > MAX_TEXT:
+                fail(413, 'PDF 文字超過 80,000 字，請分次上傳。')
+            chunks.append(chunk)
+        extracted = '\n'.join(chunks).strip()
+    except APIError:
+        raise
+    except Exception:
+        fail(422, 'PDF 無法讀取，請改用手機拍照上傳。')
+    if extracted:
+        return extracted, None, None
+    return None, pdf_embedded_jpeg(data), 'image/jpeg'
 
 
 class Application:
@@ -2702,9 +2817,26 @@ class Application:
             answer = text(body['answerText'], '作答文字', MAX_TEXT, empty=True)
             if 'consentExternal' in body and type(body['consentExternal']) is not bool:
                 fail(400, 'consentExternal 必須是布林值。')
-            image, mime = (None, None)
+            image, mime, ai_image = (None, None, None)
             if 'image' in body:
-                image, mime = validate_image(body['image'])
+                # 學生可以上傳相片（含手機拍照）或 PDF：PDF 先讀文字層，
+                # 掃描檔沒有文字層時改取內嵌的 JPEG 當作答圖片。
+                declared = body['image'][:40]
+                if declared.startswith('data:application/pdf'):
+                    pdf_bytes, _ = decode_data_url(body['image'], ('application/pdf',), MAX_PDF)
+                    extracted, embedded, embedded_mime = student_pdf_answer(pdf_bytes)
+                    if extracted:
+                        answer = (answer + '\n' + extracted).strip() if answer else extracted
+                    elif embedded:
+                        image, mime = validate_image('data:%s;base64,%s'
+                                                     % (embedded_mime, base64.b64encode(embedded).decode()))
+                        ai_image = 'data:%s;base64,%s' % (mime, base64.b64encode(image).decode())
+                    else:
+                        fail(400, '這份 PDF 沒有可讀取的文字或圖片（可能是純掃描或加密檔）；'
+                                  '請改用手機拍照上傳，或先把 PDF 頁面另存成圖片。')
+                else:
+                    image, mime = validate_image(body['image'])
+                    ai_image = body['image']
             if not answer and image is None:
                 fail(400, '請填寫答案或提交手寫圖片。')
             if assignment_id is not None and mock_id is not None:
@@ -2736,24 +2868,28 @@ class Application:
             method = 'pending-teacher'
             feedback = '手寫圖片尚未批閱，等待教師評分；沒有產生 AI 成績。' if image else '此題尚無參考答案，等待教師批閱。'
             fallback_note = ''
+            ai_failed = False
             if self.ai.configured and ai_grading:
                 # 外部模型的資料傳送同意屬隱私要求，不因批改失敗而降級。
                 self.ai.consent(body.get('consentExternal'))
                 try:
-                    score, feedback, ai_steps = self.grade_with_ai(q, answer, body.get('image'), practice_mode)
+                    score, feedback, ai_steps = self.grade_with_ai(q, answer, ai_image, practice_mode)
                     status = 'graded'
                     method = 'ai-practice' if practice_mode else 'ai-advisory'
                 except APIError as exc:
-                    # 自主練習／自助模擬測驗以「即時評分、記錄分數」為目的，
-                    # 模型暫時失敗時退回規則核對，不能讓學生連分數都記錄不到。
-                    # 教師佈置的作業維持嚴格失敗，交由教師批閱。
-                    if not practice_mode:
-                        raise
-                    ai_log(f'自主練習 AI 評分失敗，改用規則核對：{exc.message}')
-                    fallback_note = '（AI 暫時無法使用，本次改用規則核對最終答案；分數只作個人練習紀錄。）'
+                    # 模型失敗時一定要保住學生的作答，不能整個請求失敗讓學生重打一次。
+                    ai_log(f'AI 批改失敗（{"自主練習" if practice_mode else "作業"}）：{exc.message}')
+                    if practice_mode:
+                        # 自主練習以「即時評分、記錄分數」為目的，退回規則核對。
+                        fallback_note = '（AI 暫時無法使用，本次改用規則核對最終答案；分數只作個人練習紀錄。）'
+                    else:
+                        # 作業／測驗的 AI 只是輔助：改為等待教師批閱，不自動用規則給分，
+                        # 避免教師把規則分數誤當成 AI 建議分數。
+                        ai_failed = True
+                        feedback = f'AI 建議評分暫時無法使用（{exc.message}）作答已保存，改由教師批閱。'
                     if image is not None:
                         feedback = 'AI 暫時無法辨識手寫內容，作答已保存；此題需教師批閱。'
-            if method == 'pending-teacher' and image is None and q['answer'].strip():
+            if method == 'pending-teacher' and not ai_failed and image is None and q['answer'].strip():
                 correct = final_correct(answer, q['answer'])
                 score = q['points'] if correct else 0
                 status, method = 'graded', 'rule-final'
