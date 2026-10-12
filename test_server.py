@@ -1237,6 +1237,21 @@ class APITests(unittest.TestCase):
                                         cookie=self.teacher, expect=200)
             self.assertEqual(ai.call_count, 2)
             self.assertEqual(result['draft']['title'], 'AI變式甲')
+        # 提示要明確寫出要求的難度數字，避免「相似題」被寫成更難的題目。
+        with patch.object(self.app.ai, 'call', return_value={'question': dict(second, level=2)}) as ai:
+            self.request('POST', '/api/questions/1/generate', {'kind': 'advanced'}, cookie=self.teacher, expect=200)
+            advanced_text = ai.call_args[0][0]
+            self.assertIn('進階題', advanced_text)
+            self.assertIn('level 必須是 2', advanced_text)
+        with patch.object(self.app.ai, 'call', return_value={'question': first}) as ai:
+            self.request('POST', '/api/questions/1/generate', {'kind': 'similar'}, cookie=self.teacher, expect=200)
+            similar_text = ai.call_args[0][0]
+            self.assertIn('相似題', similar_text)
+            self.assertIn('level 必須是 1', similar_text)
+            self.assertIn('不可以變得更難', similar_text)
+        # 難度不符（相似題卻回高一級）要擋下，不能默默收下更難的題目。
+        with patch.object(self.app.ai, 'call', return_value={'question': dict(first, level=2)}):
+            self.request('POST', '/api/questions/1/generate', {'kind': 'similar'}, cookie=self.teacher, expect=502)
         # avoid 格式錯誤要在呼叫模型前擋下。
         with patch.object(self.app.ai, 'call') as ai:
             self.request('POST', '/api/questions/1/generate', {'kind': 'similar', 'avoid': '不是清單'},

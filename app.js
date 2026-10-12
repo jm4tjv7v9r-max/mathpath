@@ -1013,7 +1013,7 @@ function aiGenerateModal(qid){
   <p class="modal-intro">以「${esc(q.title)}」為參考題，由 AI 生成一道變式題。<strong>生成後不會直接加入題庫</strong>，你可以先核對內容，再決定是否加入。</p>
   <div class="draft-card"><div class="question-formula">${mathText(q.content)}</div>${optionsHtml(q)}<div class="question-meta"><span>${esc(q.topic)}${q.subtopic?' · '+esc(q.subtopic):''}</span><i class="separator"></i><span>${levels[q.level]||''}</span><i class="separator"></i><span>${q.points} 分</span></div></div>
   <p class="field-hint">${S.ai.configured?'生成會使用學校配置的 AI 模型，需教師核驗後才入庫。':'尚未接入 AI 模型，請先到「設定與隱私」完成設定。'}</p>
-  <div class="submit-row"><button class="primary" data-gen-kind="similar" data-gen-qid="${q.id}">${icon('spark')}生成相似題</button><button class="secondary" data-gen-kind="advanced" data-gen-qid="${q.id}">${icon('spark')}生成進階題</button></div>`,true);
+  <div class="submit-row"><button class="primary" data-gen-kind="similar" data-gen-qid="${q.id}">${icon('spark')}生成相似題（同難度）</button><button class="secondary" data-gen-kind="advanced" data-gen-qid="${q.id}">${icon('spark')}生成進階題（高一級）</button></div>`,true);
 }
 // 教師：AI 草稿預覽（含答案、詳解、評分標準），決定是否加入題庫。
 function aiDraftPreview(q){
@@ -1034,9 +1034,14 @@ function aiDraftPreview(q){
   </div>`;
 }
 function aiDraftModal(draft,kind,qid){
+  const ref=S.questions.find(x=>x.id===Number(qid));
   const name=kind==='advanced'?'進階題':'相似題';
+  // 明確寫出與參考題的難度關係，方便教師一眼看出這是不是他按的那一種。
+  const relation=kind==='advanced'
+    ? `比參考題${ref?`（${levels[ref.level]||'—'}）`:''}高一級`
+    : `與參考題${ref?`（${levels[ref.level]||'—'}）`:''}同難度`;
   modal(`<p class="eyebrow">AI DRAFT</p><h2>AI 生成的${name}草稿</h2>
-  <p class="modal-intro">這是依參考題生成的草稿，<strong>尚未加入題庫</strong>。請核對題目內容、分類與參考答案，再決定是否加入。</p>
+  <p class="modal-intro">這是依參考題生成的${name}草稿（<strong>${relation}</strong>），<strong>尚未加入題庫</strong>。請核對題目內容、分類與參考答案，再決定是否加入。</p>
   ${aiDraftPreview(draft)}
   <p class="field-hint">加入後會標示為「AI 生成 · 待核驗」，方便日後在題庫中辨識。</p>
   <div class="submit-row"><button class="primary" id="ai-draft-save">${icon('check')}加入題庫</button><div class="row-actions"><button class="secondary" id="ai-draft-again">再生成一題</button><button class="secondary" id="ai-draft-cancel">放棄</button></div></div>`,true);
