@@ -930,6 +930,30 @@ class APITests(unittest.TestCase):
         with self.app.db() as db:
             self.assertTrue(server.password_matches('Math1234!', db.execute('SELECT password FROM users WHERE id=1').fetchone()[0]))
 
+    def test_invalid_env_password_fails_loudly_instead_of_hanging(self):
+        # 真實踩過的坑：把演示密碼（9 字）填進 MATH_STUDENT_PASSWORD，初始化會失敗，
+        # 但前端只看到「伺服器正在初始化」而永遠等不到結果。這裡要求失敗要說清楚原因。
+        with patch.dict('os.environ', {'MATH_STUDENT_PASSWORD': 'Math1234!'}):
+            broken = server.Application(self.root / 'bad-password-data')
+            broken.safe_initialize()
+        self.assertIsNotNone(broken.init_error, '密碼不合規時初始化應該失敗並留下原因')
+        self.assertIn('MATH_STUDENT_PASSWORD', broken.init_error)
+        self.assertIn('10', broken.init_error)
+        self.assertNotIn('ValueError', broken.init_error, '給使用者看的訊息不應該是 repr')
+        health, _ = broken.dispatch('GET', '/api/health', None, None, None, '127.0.0.1')
+        self.assertEqual(health['status'], 'error')
+        self.assertIn('MATH_STUDENT_PASSWORD', health['error'])
+        with self.assertRaises(server.APIError) as ctx:
+            broken.dispatch('POST', '/api/login', {'username': 'student', 'password': 'x'},
+                            None, None, '127.0.0.1')
+        self.assertEqual(ctx.exception.status, 503)
+        self.assertIn('初始化失敗', ctx.exception.message)
+        self.assertIn('MATH_STUDENT_PASSWORD', ctx.exception.message)
+        # 沒設定環境變數時沿用內建演示密碼，仍可正常啟動。
+        fallback = server.Application(self.root / 'fallback-data')
+        fallback.safe_initialize()
+        self.assertIsNone(fallback.init_error)
+
     def test_long_paper_is_chunked_merged_and_reported(self):
         # 長試卷分段呼叫 AI：每段只處理本段題目，結果合併，並在拆分方式回報分段數。
         self.app.ai.configured = True

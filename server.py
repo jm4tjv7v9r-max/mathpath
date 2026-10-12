@@ -1832,9 +1832,14 @@ class Application:
                     ('student', 'student', 'Math1234!', 'MATH_STUDENT_PASSWORD', '演示學生'),
                     ('teacher', 'teacher', 'Teach1234!', 'MATH_TEACHER_PASSWORD', '演示教師')]:
                     pw = os.environ.get(env, default)
-                    if (not pw.strip() or len(pw) < (10 if env in os.environ else 8) or len(pw) > 256
+                    # 用環境變數指定密碼時要求至少 10 字（內建演示密碼是 9 字，所以門檻放寬為 8）。
+                    minimum = 10 if env in os.environ else 8
+                    if (not pw.strip() or len(pw) < minimum or len(pw) > 256
                             or '\x00' in pw or re.search(r'[\ud800-\udfff]', pw)):
-                        raise ValueError(f'{env} 必須是有效密碼，至少10字、最多256字。')
+                        raise ValueError(
+                            f'{env} 必須是 {minimum} 至 256 個字元、且不可只有空白的密碼'
+                            f'（目前設定值不符合，請在部署平台的環境變數改成符合的密碼後重新部署；'
+                            '也可以移除這個環境變數，沿用內建演示密碼，但只適合測試）。')
                     db.execute('INSERT INTO users(username,name,role,password,demo) VALUES(?,?,?,?,?)',
                                (username, name, role, password_hash(pw), int(pw == default)))
                 for q in seed_questions():
@@ -1861,13 +1866,17 @@ class Application:
         self.initialized = True
 
     def safe_initialize(self):
-        """背景執行緒用的初始化：失敗不致命，讓 server 仍在 listening，admin 可查 /api/health。"""
+        """背景執行緒用的初始化：失敗不致命，讓 server 仍在 listening，admin 可查 /api/health。
+
+        失敗原因會存成可讀訊息（不是 repr），因為它會直接顯示在 /api/health 與前端的
+        「伺服器初始化失敗」提示上——否則使用者只會看到「正在初始化」而永遠等不到結果。
+        """
         with self.init_lock:
             try:
                 self.initialize()
             except Exception as exc:
-                self.init_error = repr(exc)
-                print(f'[startup] 初始化失敗：{exc}', flush=True)
+                self.init_error = str(exc)
+                print(f'[startup] 初始化失敗：{exc!r}', flush=True)
 
     def draft_seen(self, db, qid):
         """讀取這道參考題最近生成過的變式題摘要（供提示避開重複）。"""
@@ -2225,9 +2234,10 @@ class Application:
 
     def _dispatch_health(self, headers):
         # 供 Render 等平台健康檢查，也可用來確認 R2 是否已啟用。
-        # 啟動初期資料庫尚未就緒時，回 starting 而不是 5xx，避免 Render 健康檢查 timeout。
+        # 啟動初期資料庫尚未就緒時，回 starting 而不是 5xx，避免 Render 健康檢查 timeout；
+        # 初始化真的失敗時 status 改回 error 並附上原因，方便一眼看出不是「還在跑」。
         if not self.initialized:
-            payload = {'status': 'starting'}
+            payload = {'status': 'error' if self.init_error else 'starting'}
             if self.init_error:
                 payload['error'] = self.init_error
             return payload, headers
@@ -2242,7 +2252,10 @@ class Application:
         if method == 'GET' and path == '/api/health':
             return self._dispatch_health(headers)
         # 其它 API 在 DB 還沒就緒時回 503，前端會自動重試。
+        # 若初始化已經失敗，訊息要說清楚原因，不能讓使用者一直等「正在初始化」。
         if not self.initialized:
+            if self.init_error:
+                fail(503, f'伺服器初始化失敗：{self.init_error}')
             fail(503, '伺服器正在初始化，請稍候再試。')
         if method == 'GET' and path == '/api/session':
             return {'user': self.user_public(user) if user else None, 'notice': self.notice(user)}, headers

@@ -38,8 +38,13 @@
 | `MATH_AI_API_KEY` | `sk-xxxxx...`（你的 DeepSeek 金鑰）| ✅ |
 | `MATH_AI_THINKING` | `off` | 建議 |
 | `MATH_ADMIN_TOKEN` | 自己想一組長密碼 | 強烈建議 |
-| `MATH_STUDENT_PASSWORD` | 學生的新密碼（至少 10 字）| 強烈建議 |
-| `MATH_TEACHER_PASSWORD` | 教師的新密碼（至少 10 字）| 強烈建議 |
+| `MATH_STUDENT_PASSWORD` | 學生的新密碼（**至少 10 字**）| 強烈建議 |
+| `MATH_TEACHER_PASSWORD` | 教師的新密碼（**至少 10 字**）| 強烈建議 |
+
+> ⚠️ **這兩個密碼一定要 10 字以上，不可以直接填演示密碼！**
+> 內建的演示密碼 `Math1234!`、`Teach1234!` 都只有 **9 個字元**，填進環境變數會讓網站**起不來**
+> （登入頁一直顯示「伺服器正在初始化」）。請自己改一組 10 字以上的，例如 `MathPath2026!`。
+> 如果真的填錯了，開 `網址/api/health` 就會看到原因。
 
 > **為什麼要用 `deepseek-flash`？**
 > DeepSeek 官方文件：Vision（圖片辨識）**只有 flash 支援**，pro 不支援。
@@ -100,6 +105,12 @@
 ---
 
 ## 常見問題
+
+**Q：網站一直顯示「伺服器正在初始化，請稍候再試」？**
+A：這是後端**初始化失敗**，不是還在跑。開 `網址/api/health` 看 `error` 欄位就會寫出原因。
+   最常見的是 `MATH_STUDENT_PASSWORD` / `MATH_TEACHER_PASSWORD` **少於 10 個字元**
+   （例如直接填了 9 字的演示密碼 `Math1234!`）。到 Render 的 Environment 改成 10 字以上
+   再重新部署，或把該環境變數刪掉沿用演示密碼。
 
 **Q：網站第一次開很慢？**
 A：Render 免費版 15 分鐘沒人訪問會休眠，下次訪問要等 20–30 秒喚醒。正常現象。
