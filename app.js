@@ -1284,12 +1284,14 @@ function recordsPage(){page='mistakes';shell();if(!S.user)return loginModal(reco
 // 先把圖片縮成小畫布做「墨水圖」，找出哪些格子有筆跡；印章與批語只放在沒有筆跡的
 // 空白處（找不到空白處就不畫在圖上，仍可在下方文字清單看到），因此不會壓住學生的字。
 const VERDICT_TEXT={correct:'全對',wrong:'全錯',partial:'部分正確'};
-const VERDICT_PATHS={correct:['M12 34 L26 48 L52 16'],
-  wrong:['M16 16 L48 48','M48 16 L16 48'],
-  partial:['M12 34 L26 48 L52 16','M8 54 L56 10']};   // 部分正確＝紅剔上加一撇
+// 部分正確＝「✓」與「＼」兩個符號合併：紅剔上疊一撇，斜線由左上往右下（＼方向），
+// 撇畫得比剔幼，免得看起來像一個叉（全錯）。
+const VERDICT_PATHS={correct:[{d:'M12 34 L26 48 L52 16'}],
+  wrong:[{d:'M16 16 L48 48'},{d:'M48 16 L16 48'}],
+  partial:[{d:'M12 34 L26 48 L52 16'},{d:'M30 22 L50 46',w:5}]};
 const INK_COLS=24, INK_ROWS=24;
 const AI_INK_DATA=new Map();
-const verdictPaths=v=>(VERDICT_PATHS[v]||[]).map(d=>`<path d="${d}"/>`).join('');
+const verdictPaths=v=>(VERDICT_PATHS[v]||[]).map(p=>`<path d="${p.d}"${p.w?` style="stroke-width:${p.w}"`:''}/>`).join('');
 function verdictGlyph(v){return VERDICT_PATHS[v]?`<svg class="verdict-glyph" viewBox="0 0 64 64" aria-hidden="true">${verdictPaths(v)}</svg>`:'';}
 function verdictBadge(v){return VERDICT_TEXT[v]?`<span class="badge verdict ${v}">${VERDICT_TEXT[v]} ${verdictGlyph(v)}</span>`:'';}
 function aiInkLayer(a){
