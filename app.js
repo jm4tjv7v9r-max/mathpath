@@ -970,17 +970,24 @@ function canvasImage(){const c=$('#hand-canvas'),out=document.createElement('can
 async function submitAnswer(){if(busy)return;const btn=$('#submit-answer');const final=$('#final-answer').value.trim();const process=answerMode==='text'?(($('#answer-process')?.value||'').trim()):'';const body={questionId:currentQuestion.id,answerText:process?(process+(final?'\n最終答案：'+final:'')):final,consentExternal:!!$('#consent-ai')?.checked};if(assignmentContext)body.assignmentId=assignmentContext.id;if(mockContext)body.mockId=mockContext.id;if(answerMode==='hand'&&strokes.some(s=>!s.erase))body.image=canvasImage();if(answerMode==='upload'&&answerFile)body.image=answerFile;if(!body.answerText&&!body.image)return toast('請先寫下答案或上傳手寫作答。');if(aiGradedNow()&&S.ai.mode==='external'&&!body.consentExternal)return toast(assignmentContext?'本份作業由教師設定使用外部 AI 評分，請先確認資料傳送同意。':'自主練習會把本題與作答傳送至外部 AI 即時評分，請先確認資料傳送同意。');busy=true;btn.disabled=true;btn.innerHTML=icon('clock')+(aiGradedNow()?'正在保存與評分…':'正在保存…');try{const {attempt,solution}=await api('/api/attempts',body);clearCurrentDraft();lastResult=attempt;lastSolution=solution||null;await refresh();renderResult();toast(attempt.status==='pending'?'作答已保存，等待教師批閱。':assignmentContext?'作答與批閱結果已保存。':'作答與即時評分已記錄。');$('#result-root').scrollIntoView({behavior:'smooth',block:'nearest'});}catch(e){toast(e.message);$('#result-root').innerHTML=`<div class="inline-error">${esc(e.message)}<br>${assignmentContext?'你的內容仍保留在頁面，可稍後重試；若持續失敗，教師仍可直接批閱你的作答。':'你的內容仍保留在頁面，可稍後重試；也可以按「給我一點提示」先自行核對。'}</div>`;}finally{busy=false;btn.disabled=false;btn.innerHTML=icon('check')+'再次提交作答';}}
 function renderResult(){if(!lastResult||!$('#result-root'))return;const a=lastResult;if(a.awaitingReview){$('#result-root').innerHTML=`<div class="result pending"><div class="result-title">${icon('clock')}已提交，等待教師批閱</div><p>作答已保存。教師批閱後，你才會看到分數、AI 批閱結果、參考答案與學習建議。</p></div>`;return;}$('#result-root').innerHTML=`<div class="result ${a.status==='pending'?'pending':''}"><div class="result-title">${icon(a.status==='pending'?'clock':'check')}${a.status==='pending'?'已保存，等待批閱':a.gradingMethod==='rule-final'?'最終答案核對':a.gradingMethod==='ai-practice'?'AI 即時評分':a.teacherReviewed?'教師批閱':'AI 建議批閱'}${a.status==='graded'?`<span class="result-score">${a.score}<small> / ${a.maxScore}</small></span>`:''}</div><p>${mathText(a.feedback).replace(/\n/g,'<br>')}</p>${(a.steps||[]).map(s=>`<div class="result-step"><div><strong>${mathText(s.label)}</strong><p>${mathText(s.comment)}</p></div><span>${s.earned} / ${s.max}</span></div>`).join('')}${lastSolution&&(lastSolution.answer||(lastSolution.steps||[]).length||lastSolution.analysis||(lastSolution.rubric||[]).length)?`<details class="solution-box"><summary>${icon('bulb')}參考答案與詳解</summary>${lastSolution.answer?`<p class="solution-answer"><strong>參考答案：</strong>${mathText(lastSolution.answer)}</p>`:''}${(lastSolution.steps||[]).length?`<ol class="solution-steps">${lastSolution.steps.map(x=>`<li>${mathText(x)}</li>`).join('')}</ol>`:''}${lastSolution.analysis?`<p class="solution-analysis">${mathText(lastSolution.analysis)}</p>`:''}${rubricListHtml(lastSolution.rubric,a.maxScore)}</details>`:''}${suggestionCard(a.suggestion)}<div class="result-actions">${mockContext?`<button class="secondary" data-mock="${mockContext.id}">返回模擬測驗 ${icon('arrow')}</button>`:assignmentContext?`<button class="secondary" data-assignment="${assignmentContext.id}">返回作業，繼續下一題 ${icon('arrow')}</button>`:''}<button class="secondary" id="next-similar">相似題鞏固 ${icon('arrow')}</button><button class="secondary" data-page="mistakes">查看作答紀錄</button></div></div>`;$('#next-similar').onclick=()=>{const q=recommendations?.similar?.[0];if(q)openQuestion(q.id);else toast('此題目前沒有同難度的相似題，請選擇其他知識點練習。');};}
 function renderRecommendations(){const r=$('#recommendations');if(!r)return;if(!recommendations){r.innerHTML='<p class="field-hint">正在讀取同知識點題目…</p>';return;}r.innerHTML=`<div class="recommend-label">02 · 相似題鞏固</div><div class="recommend-list">${recommendations.similar.length?recommendations.similar.map(q=>`<button data-qid="${q.id}"><strong>${mathText(q.title)}</strong><small>${levels[q.level]} · ${q.points} 分 · 題庫精選</small></button>`).join(''):'<p class="field-hint">暫無同難度的相似題。</p>'}</div><div class="recommend-label">03 · 進階挑戰</div><div class="recommend-list">${recommendations.advanced.length?recommendations.advanced.map(q=>`<button data-qid="${q.id}"><strong>${mathText(q.title)}</strong><small>${levels[q.level]} · ${q.points} 分 · 題庫精選</small></button>`).join(''):'<p class="field-hint">已達此知識點的目前最高難度。</p>'}</div>${S.user?.role==='teacher'?`<div style="border-top:1px solid var(--border);margin-top:18px;padding-top:14px"><p class="field-hint">${S.ai.configured?'AI 可依本題生成變式題；生成後由你決定是否加入題庫。':'接入 AI 後，可依本題生成變式題，並由你決定是否加入題庫。'}</p><button class="text-button" data-generate="similar" style="font-size:calc(13px*var(--fs))">${icon('spark')}AI 生成相似題</button><button class="text-button" data-generate="advanced" style="font-size:calc(13px*var(--fs));margin-top:8px;display:flex">${icon('spark')}AI 生成進階題</button></div>`:''}`;}
+// 同一道參考題每次生成都要不一樣：記住這題已生成過的摘要，下次生成時要求模型避開。
+const aiDraftSeen={};
+function aiDraftSummary(q){return `${q.title||''}${q.content||''}`.replace(/\s+/g,'').slice(0,160);}
 async function generateQuestion(kind,qid){
   if(S.user?.role!=='teacher')return toast('只有教師可以生成題目並加入題庫。');
   if(!S.ai.configured)return toast('AI 尚未接入。請在「設定與隱私」查看管理員配置說明。');
   if(S.ai.mode==='external'&&!confirm('生成新題會將原題（不含學生作答）傳送至學校配置的外部 AI，是否繼續？'))return;
-  const target=qid||(currentQuestion&&currentQuestion.id);
-  if(!target)return toast('請先開啟一道參考題。');
+  const target=Number(qid||(currentQuestion&&currentQuestion.id));
+  if(!target||Number.isNaN(target))return toast('請先開啟一道參考題。');
   const b=$(`[data-gen-kind="${kind}"]`)||$(`[data-generate="${kind}"]`);
   const label=b?b.textContent:'';
   if(b){b.disabled=true;b.textContent='正在生成，請稍候…';}
   try{
-    const {draft}=await api(`/api/questions/${target}/generate`,{kind,consentExternal:S.ai.mode==='external'});
+    const avoid=(aiDraftSeen[target]||[]).slice(-12);
+    const {draft}=await api(`/api/questions/${target}/generate`,{kind,consentExternal:S.ai.mode==='external',avoid});
+    const seen=aiDraftSeen[target]||(aiDraftSeen[target]=[]);
+    seen.push(aiDraftSummary(draft));
+    if(seen.length>20)seen.splice(0,seen.length-20);
     aiDraftModal(draft,kind,target);
   }catch(e){
     toast(e.message);
@@ -1027,13 +1034,12 @@ function aiDraftModal(draft,kind,qid){
   $('#ai-draft-save').onclick=async()=>{
     const b=$('#ai-draft-save');b.disabled=true;b.textContent='正在加入題庫…';
     try{
-      const {questions}=await api('/api/questions/import',{questions:[draft]});
+      await api('/api/questions/import',{questions:[draft]});
       await refresh();
-      const saved=questions&&questions[0];
       closeModal();
       toast('已加入題庫。');
-      if(saved&&S.questions.some(q=>q.id===saved.id))openQuestion(saved.id);
-      else if(page==='bank')bank();
+      // 不跳轉到新題：教師留在原本的位置，可以繼續生成或挑下一道參考題。
+      if(page==='bank')bank();
     }catch(e){b.disabled=false;b.innerHTML=icon('check')+'加入題庫';toast(e.message);}
   };
 }

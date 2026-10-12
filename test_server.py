@@ -1158,7 +1158,8 @@ class APITests(unittest.TestCase):
                     before = db.execute('SELECT count(*) FROM questions').fetchone()[0]
                 _, result, _ = self.request('POST', '/api/questions/1/generate',
                                             {'kind': 'similar', 'consentExternal': True}, cookie=self.teacher, expect=200)
-                ai.assert_called_once()
+                # 同一道題第二次生成時會要求避開先前的題目，可能重試一次，故只確認確實呼叫過模型。
+                self.assertTrue(ai.called)
                 # 草稿只回傳、不寫入題庫；教師可看到答案與詳解以便核驗。
                 self.assertEqual(result['draft']['source'], 'AI 生成 · 待核驗')
                 self.assertIn('answer', result['draft'])
@@ -1203,6 +1204,48 @@ class APITests(unittest.TestCase):
         with patch.object(self.app.ai, 'call', return_value={'drafts': [generated]}):
             _, parsed, _ = self.request('POST', '/api/papers/parse', {'name': '試卷', 'text': '1. 解方程'}, cookie=self.teacher, expect=200)
             self.assertEqual(parsed['method'], 'AI 識別')
+
+    def test_generate_asks_for_a_new_variant_each_time(self):
+        # 同一道參考題連續生成時，必須要求模型換一題，而不是每次都拿到相同的題目。
+        self.app.ai.configured = True
+        self.app.ai.mode = 'local'
+        first = dict(self.draft, title='AI變式甲')
+        second = dict(self.draft, title='AI變式乙')
+        with patch.object(self.app.ai, 'call', return_value={'question': first}) as ai:
+            _, result, _ = self.request('POST', '/api/questions/1/generate', {'kind': 'similar'},
+                                        cookie=self.teacher, expect=200)
+            self.assertEqual(result['draft']['title'], 'AI變式甲')
+            self.assertEqual(ai.call_count, 1)
+            # 生成用較高 temperature；批改仍維持 0（可重現）。
+            self.assertGreater(ai.call_args[1]['temperature'], 0)
+        # 第二次生成：先前的題目摘要會進到提示，並帶上隨機變化方向。
+        with patch.object(self.app.ai, 'call', return_value={'question': second}) as ai:
+            _, result, _ = self.request('POST', '/api/questions/1/generate', {'kind': 'similar'},
+                                        cookie=self.teacher, expect=200)
+            instruction = ai.call_args[0][0]
+            self.assertIn('AI變式甲', instruction)
+            self.assertIn('本次變化方向', instruction)
+            self.assertEqual(result['draft']['title'], 'AI變式乙')
+        # 前端也可以自己帶 avoid 清單（例如重新載入後仍記得）。
+        with patch.object(self.app.ai, 'call', return_value={'question': second}) as ai:
+            self.request('POST', '/api/questions/1/generate', {'kind': 'similar', 'avoid': ['別重複的題目']},
+                         cookie=self.teacher, expect=200)
+            self.assertIn('別重複的題目', ai.call_args[0][0])
+        # 模型仍生成與先前完全相同的題目時，會再試一次（最多兩次）。
+        with patch.object(self.app.ai, 'call', return_value={'question': first}) as ai:
+            _, result, _ = self.request('POST', '/api/questions/1/generate', {'kind': 'similar'},
+                                        cookie=self.teacher, expect=200)
+            self.assertEqual(ai.call_count, 2)
+            self.assertEqual(result['draft']['title'], 'AI變式甲')
+        # avoid 格式錯誤要在呼叫模型前擋下。
+        with patch.object(self.app.ai, 'call') as ai:
+            self.request('POST', '/api/questions/1/generate', {'kind': 'similar', 'avoid': '不是清單'},
+                         cookie=self.teacher, expect=400)
+            self.request('POST', '/api/questions/1/generate', {'kind': 'similar', 'avoid': [1, 2]},
+                         cookie=self.teacher, expect=400)
+            self.request('POST', '/api/questions/1/generate',
+                         {'kind': 'similar', 'avoid': ['x'] * 21}, cookie=self.teacher, expect=400)
+            ai.assert_not_called()
 
 
 class AIFailureTests(unittest.TestCase):
