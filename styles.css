@@ -210,3 +210,9 @@ button.danger:disabled{opacity:.6}
 .draft-section p{margin:0;line-height:1.85;color:#3d5145;word-break:break-word}
 .draft-section ol,.draft-section ul{margin:0;padding-left:20px;line-height:1.85;color:#3d5145}
 .draft-section li{margin:3px 0;word-break:break-word}
+
+/* 評分標準的排版預覽：輸入框只能顯示原始 LaTeX，這裡顯示排版後的式子 */
+.rubric-preview{margin-top:10px}
+.rubric-preview:empty{display:none}
+.rubric-preview-label{display:block;font-size:calc(12px*var(--fs));color:#8aa091;letter-spacing:.04em;margin-bottom:5px}
+.rubric-preview .rubric-view{margin:0;padding:11px 13px;border:1px dashed #cfe0d4;border-radius:8px;background:#f7fbf6}

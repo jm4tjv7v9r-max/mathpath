@@ -65,13 +65,22 @@ function rubricRowsHtml(items, scope){
 function rubricEditorHtml(scope, items){
   return `<label class="field-label">評分標準（百分比 · 供 AI 評分按比例配分）<span class="small-text" style="font-weight:400">　總和須為 100%</span></label>
     <div class="rubric-list" data-rubric-list="${scope}">${rubricRowsHtml(items, scope)}</div>
-    <div class="rubric-actions"><button type="button" class="text-button" data-rubric-add="${scope}">＋ 新增評分要點</button><span class="rubric-total" data-rubric-total="${scope}">總和 0%</span></div>`;
+    <div class="rubric-actions"><button type="button" class="text-button" data-rubric-add="${scope}">＋ 新增評分要點</button><span class="rubric-total" data-rubric-total="${scope}">總和 0%</span></div>
+    <div class="rubric-preview" data-rubric-preview="${scope}"></div>`;
 }
-// 唯讀呈現（題目詳解、批閱視窗）
+// 唯讀呈現（題目詳解、批閱視窗、AI 草稿）
 function rubricListHtml(items, points){
   if(!items||!items.length) return '';
   return `<ul class="rubric-view">${items.map(it=>{const pct=Number(it.percent)||0;
     return `<li><span class="rubric-view-label">${mathText(it.label||'')}</span><span class="rubric-view-percent">${pct}%${points?` · ${Math.round(points*pct)/100} 分`:''}</span></li>`;}).join('')}</ul>`;
+}
+// 編輯器的即時排版預覽：輸入框只能顯示原始 LaTeX，這裡讓教師看到排版後的式子。
+function rubricPreviewRender(scope){
+  const store = rubricStores.get(scope);
+  const box = document.querySelector(`[data-rubric-preview="${scope}"]`);
+  if(!store || !box) return;
+  const html = rubricListHtml((store.items||[]).filter(x=>x && String(x.label||'').trim()));
+  box.innerHTML = html ? `<span class="rubric-preview-label">排版預覽</span>${html}` : '';
 }
 const rubricStores = new Map();
 function rubricRender(scope){
@@ -80,13 +89,14 @@ function rubricRender(scope){
   if(!store || !list) return;
   const items = store.items;
   list.innerHTML = rubricRowsHtml(items, scope);
+  rubricPreviewRender(scope);
   const total = document.querySelector(`[data-rubric-total="${scope}"]`);
   if(total){
     const t = Math.round(rubricTotal(items)*100)/100;
     total.textContent = items.length ? `總和 ${t}%${Math.abs(t-100)>0.01?'（須為 100%）':''}` : '尚未設定';
     total.classList.toggle('bad', items.length>0 && Math.abs(t-100)>0.01);
   }
-  list.querySelectorAll('[data-rubric-label]').forEach(inp=>inp.oninput=e=>{items[Number(e.target.dataset.rubricIndex)].label=e.target.value;});
+  list.querySelectorAll('[data-rubric-label]').forEach(inp=>inp.oninput=e=>{items[Number(e.target.dataset.rubricIndex)].label=e.target.value;rubricPreviewRender(scope);});
   list.querySelectorAll('[data-rubric-percent]').forEach(inp=>inp.oninput=e=>{
     items[Number(e.target.dataset.rubricIndex)].percent=Number(e.target.value)||0;
     const t=Math.round(rubricTotal(items)*100)/100;
@@ -1007,7 +1017,8 @@ function aiGenerateModal(qid){
 }
 // 教師：AI 草稿預覽（含答案、詳解、評分標準），決定是否加入題庫。
 function aiDraftPreview(q){
-  const rub=(q.rubric||[]).map(r=>`<li>${esc(r.label)} · ${r.percent}%</li>`).join('');
+  // 評分標準用唯讀版型呈現，數學式（$...$）會排版後再顯示，不會看到原始 LaTeX。
+  const rub=rubricListHtml(q.rubric,q.points);
   const steps=(q.steps||[]).map(s=>`<li>${mathText(s)}</li>`).join('');
   return `<div class="draft-card">
   <div class="draft-top"><strong>${mathText(q.title||'（未命名題目）')}</strong></div>
@@ -1018,7 +1029,7 @@ function aiDraftPreview(q){
   <div class="draft-section"><span>參考答案</span><p>${mathText(q.answer||'（無）')}</p></div>
   ${steps?`<div class="draft-section"><span>詳解步驟</span><ol>${steps}</ol></div>`:''}
   ${q.analysis?`<div class="draft-section"><span>詳細解釋</span><p>${mathText(q.analysis)}</p></div>`:''}
-  ${rub?`<div class="draft-section"><span>評分標準</span><ul>${rub}</ul></div>`:''}
+  ${rub?`<div class="draft-section"><span>評分標準</span>${rub}</div>`:''}
   ${(q.tags||[]).length?`<div class="question-meta" style="margin-top:10px"><span>${esc(q.tags.join(' · '))}</span></div>`:''}
   </div>`;
 }
