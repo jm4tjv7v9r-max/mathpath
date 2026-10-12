@@ -715,9 +715,51 @@ const HANDWRITING=makePng(400,300);
   await page.setViewportSize({width:1440,height:1000});
 
   // 教師佈置限時模擬測驗：可設定時間限制
+  // 挑題：可先選章節（主／子分類），或直接輸入關鍵字搜尋；已勾選的題目在換篩選後仍保留。
+  const pickerQuestions=[
+    {...assignmentQuestion,id:1,title:'因式分解解二次方程',topic:'一元二次方程',subtopic:'因式分解法'},
+    {...assignmentQuestion,id:2,title:'配方法解二次方程',topic:'一元二次方程',subtopic:'配方法'},
+    {...assignmentQuestion,id:3,title:'三角形面積',topic:'幾何',subtopic:'面積'},
+    {...assignmentQuestion,id:4,title:'畢氏定理應用',topic:'幾何',subtopic:'畢氏定理'}
+  ];
+  // 依登入身分回應，避免後面的學生情境拿到教師身分
+  await page.route('**/api/state', route => route.fulfill({json:{
+    user: role?{id:role==='teacher'?2:1,name:role==='teacher'?'介面測試教師':'介面測試學生',role}:null,
+    questions: role==='teacher'?pickerQuestions:pickerQuestions.map(x=>({...x,answer:undefined,steps:undefined})),
+    attempts: role==='teacher'?[]:[graded(1,1,'一元二次方程',6,6),graded(2,2,'幾何',0,5)],
+    stats:{completed:2,accuracy:55,streak:1,minutes:10}, ai, topics:['一元二次方程','幾何']}}));
+  await page.reload({waitUntil:'networkidle'});
   await page.locator('[data-page=homework]').first().click();
   await page.locator('#create-assignment').click();
-  await page.locator('#assignment-title').fill('一元二次方程模擬測驗');
+  await page.locator('#pick-topic').waitFor({timeout:8000});
+  assert.equal(await page.locator('#assignment-picks .pick-row').count(),4,'預設應列出全部可佈置題目');
+  assert.match(await page.locator('#pick-hint').innerText(),/可佈置題目共 4 題/);
+  assert.equal(await page.locator('#pick-topic option').count(),3,'章節下拉應為全部＋兩個章節');
+  assert.match(await page.locator('#pick-topic').innerText(),/一元二次方程（2 題）/,'章節要標示題數');
+  await page.locator('#pick-topic').selectOption({label:'一元二次方程（2 題）'});
+  assert.equal(await page.locator('#assignment-picks .pick-row').count(),2,'選章節後只顯示該章節的題目');
+  assert.match(await page.locator('#pick-subtopic').innerText(),/配方法/,'子分類要跟著章節連動');
+  await page.locator('#pick-subtopic').selectOption('配方法');
+  assert.equal(await page.locator('#assignment-picks .pick-row').count(),1,'選子分類後再收窄');
+  await page.locator('#pick-topic').selectOption('');
+  await page.locator('#pick-search').fill('畢氏');
+  assert.equal(await page.locator('#assignment-picks .pick-row').count(),1,'搜尋關鍵字應只留下符合的題目');
+  assert.match(await page.locator('#assignment-picks').innerText(),/畢氏定理應用/);
+  await page.locator('#pick-search').fill('不存在的關鍵字');
+  assert.equal(await page.locator('.pick-empty').count(),1,'找不到題目時要說明');
+  await page.locator('#pick-search').fill('畢氏');
+  // 勾選後換篩選條件，已選題目不能消失
+  await page.locator('#assignment-picks input[type=checkbox]').check();
+  assert.match(await page.locator('#selected-question-count').innerText(),/已選 1 題 · 6 分/);
+  await page.locator('#pick-search').fill('');
+  await page.locator('#pick-topic').selectOption({label:'幾何（2 題）'});
+  assert.match(await page.locator('#selected-question-count').innerText(),/已選 1 題/,'換章節不應清掉已選題目');
+  assert.match(await page.locator('#picked-chips').innerText(),/畢氏定理應用/,'已選題目要以標籤列出');
+  await page.screenshot({path:path.join(__dirname,'..','MathPath-佈置作業挑題.png'),fullPage:true});
+  await page.locator('.pick-chip').first().click();
+  assert.match(await page.locator('#selected-question-count').innerText(),/已選 0 題/,'標籤可移除已選題目');
+  await page.locator('#pick-topic').selectOption('');
+  assert.equal(await page.locator('#assignment-picks .pick-row').count(),4);
   await page.locator('#assignment-title').fill('一元二次方程模擬測驗');
   await page.locator('#assignment-kind').selectOption('quiz');
   await page.locator('#assignment-duration').fill('30');
@@ -733,6 +775,7 @@ const HANDWRITING=makePng(400,300);
   assert.equal(durationSent.kind,'quiz','應以測驗類型發布');
   assert.equal(durationSent.durationMinutes,30,'教師設定的時間限制應送出');
   assert.equal(durationSent.aiGrading,true,'AI 建議評分應由教師決定並送出');
+  assert.deepEqual(durationSent.questionIds,[1],'勾選的題目要正確送出（不受篩選影響）');
 
   // 訂正重做閉環：教師退回 → 學生看到要求 → 完成訂正後提交。
   await page.locator('[data-page=homework]').first().click();
@@ -834,6 +877,24 @@ const HANDWRITING=makePng(400,300);
   assert.match(await page.locator('.quiz-score').innerText(),/5 \/ 5 分/);
   assert.match(await page.locator('.learning-advice').first().innerText(),/下一步建議|下一步練習/,'提交後應顯示提升建議');
   await page.screenshot({path:path.join(__dirname,'..','MathPath-自助模擬測驗.png'),fullPage:true});
+
+  // 版面：內容較少的頁面不應在頁尾之前留下大片空白
+  await page.setViewportSize({width:1440,height:1000});
+  await page.locator('[data-page=mistakes]').first().click();
+  await page.locator('.page-heading').first().waitFor();
+  const footerGap = await page.evaluate(() => {
+    const main = document.querySelector('#main');
+    const kids = [...main.children].filter(el => el.getBoundingClientRect().height > 0);
+    const first = kids[0], last = kids[kids.length - 1], foot = document.querySelector('.app-footer');
+    const cs = getComputedStyle(main);
+    return { mainH: Math.round(main.getBoundingClientRect().height),
+      contentH: Math.round(last.getBoundingClientRect().bottom - first.getBoundingClientRect().top
+        + parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom)),
+      gap: Math.round(foot.getBoundingClientRect().top - last.getBoundingClientRect().bottom) };
+  });
+  assert.ok(footerGap.gap < 60, `內容與頁尾之間不應留下大片空白（實際 ${footerGap.gap}px）`);
+  assert.ok(footerGap.mainH - footerGap.contentH < 80,
+    `主內容不應被強制撐滿視窗高度（內容 ${footerGap.contentH}px，區塊 ${footerGap.mainH}px）`);
 
   await page.locator('#account').click();await page.locator('#logout-btn').click();await page.locator('#homework-login').waitFor();
   await login('teacher');
@@ -993,6 +1054,58 @@ const HANDWRITING=makePng(400,300);
   assert.equal(await page.locator('#result-root .result-score').count(), 0, '結果卡不應顯示分數');
   assert.equal(await page.locator('#result-root .solution-box').count(), 0, '批閱前不應顯示參考答案與詳解');
   assert.equal(await page.locator('#result-root .result-step').count(), 0, '批閱前不應顯示逐項評分');
+
+  // 情境五：作業有多題時，提交一題後可直接按「下一題」，不必先回到本份作業
+  const threeQuestions=[
+    {...assignmentQuestion,id:1,title:'第1題：因式分解解方程'},
+    {...assignmentQuestion,id:2,title:'第2題：配方法解方程'},
+    {...assignmentQuestion,id:3,title:'第3題：公式法解方程'}
+  ];
+  const justSubmitted={...awaitingAttempt,questionId:1,questionTitle:'第1題：因式分解解方程'};
+  await page.route('**/api/assignments/1', route => route.fulfill({json:{
+    assignment:{...assignment,aiGrading:true,questionCount:3,totalPoints:18}, questions:threeQuestions, attempts:[],
+    mySubmission:{status:'not_started',submittedAt:null,resubmittedAt:null,submitCount:0,late:false,correction:null},
+    report:{...awaitingReport,questionCount:3,pendingCount:0,awaitingReview:false}}}));
+  await page.route('**/api/attempts', route => route.request().method()==='POST'
+    ? route.fulfill({json:{attempt:justSubmitted,solution:null}}) : route.fallback());
+  await page.reload({waitUntil:'networkidle'});
+  await page.locator('[data-assignment]').first().click();
+  await page.locator('[data-assignment-q]').first().click();
+  await page.locator('#answer-area').waitFor({timeout:8000});
+  assert.match(await page.locator('.practice-question h2').innerText(),/第1題/,'應從第 1 題開始');
+  await page.locator('[data-answer-mode=text]').click();
+  await page.locator('#final-answer').fill('x=2 或 x=3');
+  await page.locator('#consent-ai').check();
+  await page.locator('#submit-answer').click();
+  await page.locator('.assignment-nav').waitFor({timeout:8000});
+  assert.match(await page.locator('.assignment-nav').innerText(),/已完成 1 \/ 3 題/,'提交後要顯示本份作業進度');
+  assert.match(await page.locator('[data-next-question]').innerText(),/下一題（第 2 \/ 3 題）/,'提交後要能直接前往下一題');
+  await page.setViewportSize({width:390,height:844});
+  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false,'作業逐題導覽在手機不應橫向溢出');
+  await page.setViewportSize({width:1440,height:1000});
+  await page.screenshot({path:path.join(__dirname,'..','MathPath-作業下一題.png'),fullPage:true});
+  await page.locator('[data-next-question]').click();
+  await page.locator('.practice-question h2').filter({hasText:'第2題'}).waitFor({timeout:8000});
+  assert.equal(await page.locator('#final-answer').inputValue(),'','換到下一題要清空答案欄');
+  assert.equal(await page.locator('.assignment-nav').count(),0,'尚未提交下一題前不顯示導覽');
+  // 最後一題提交後，改為提示可以正式提交
+  await page.route('**/api/assignments/1', route => route.fulfill({json:{
+    assignment:{...assignment,aiGrading:true,questionCount:3,totalPoints:18}, questions:threeQuestions,
+    attempts:[justSubmitted,{...justSubmitted,id:2,questionId:2},{...justSubmitted,id:3,questionId:3}],
+    mySubmission:{status:'not_started',submittedAt:null,resubmittedAt:null,submitCount:0,late:false,correction:null},
+    report:{...awaitingReport,questionCount:3,pendingCount:0,awaitingReview:false}}}));
+  await page.reload({waitUntil:'networkidle'});
+  await page.locator('[data-assignment]').first().click();
+  await page.locator('[data-assignment-q]').nth(2).click();
+  await page.locator('#answer-area').waitFor({timeout:8000});
+  await page.locator('[data-answer-mode=text]').click();
+  await page.locator('#final-answer').fill('x=1');
+  await page.locator('#consent-ai').check();
+  await page.locator('#submit-answer').click();
+  await page.locator('.assignment-nav').waitFor({timeout:8000});
+  assert.match(await page.locator('.assignment-nav').innerText(),/已完成 3 \/ 3 題/);
+  assert.equal(await page.locator('[data-next-question]').count(),0,'全部作答完不應再給下一題');
+  assert.match(await page.locator('.assignment-nav [data-assignment]').innerText(),/返回本份作業提交/);
 
   // ── 教師批閱：評語可留空；一鍵 AI 全部批閱；教師側邊欄無自主練習 ──
   const practiceQuestions=[
@@ -1167,5 +1280,5 @@ const HANDWRITING=makePng(400,300);
   await page.screenshot({path:path.join(__dirname,'..','MathPath-初始化失敗提示.png'),fullPage:true});
 
   assert.deepEqual(errors,[]);await browser.close();
-  console.log('PASS: answer modes (choice = click-only with single option list, fill-in = handwriting/text with math keyboard + always-visible rendered preview, upload = photo/PDF with a rear-camera button), AI grading policy (self-practice = AI instant score recorded without teacher review, no student use-ai toggle; teacher checkbox on assign, student read-only hint, external consent; homework/quiz scores, AI results, solution and advice hidden until the teacher reviews), AI similar-question drafting (teacher-only entry on bank card and practice panel, similar = same level and same question type vs advanced = one level up, distinct kind sent and labelled in the dialog, reference question expandable for comparison, draft preview with answer/steps/rubric, rubric shown with typeset math while the editor keeps raw LaTeX, nothing imported until the teacher confirms, no navigation after adding, repeated generation sends the previous summaries so the next draft differs), self-practice range picker (chapter + sub-chapter + question type, linked options, auto-widening, change-range keeps filters), teacher review with optional feedback, one-click AI review of a whole assignment (only for AI-enabled assignments), teacher sidebar without self-practice, calendar lower panel (centred divider label, panel content never flush to the card border, no horizontal overflow at 4 widths x 3 font scales), font scale switch (guest, persisted, 3 levels, no mobile overflow), login page (role cards, remember checked, remembered account), calendar (marks + entry from homework), question type (card badge, filter, draft qtype, rule analysis), full-auto split+import, homework, draft save/reload/restore, logout cleanup, weak-topic drill-down, results filters, CSV export, teacher annotation (pen/ellipse/arrow/highlight/undo/clear/save), AI suggested annotation with student read-back and teacher drag-to-adjust saved positions, correction loop (teacher return with note, student banner, pending guard, resubmit), self-serve mock exam (setup, countdown, per-question answer with mockId, submit + instant score + advice), AI endpoint page (test/save, key never read back), bulk student import (column-order auto-detect + header row, student id only with seat number and no name, generated passwords, per-line errors, class creation), data management (usage cards, four download entries, vacuum, school-year reset gated by a typed confirmation and hidden from students), student editing (only changed fields submitted, password reset warns about logout), archive restore (question merge vs replace, student archive with shared password and credential table), mobile layout, no JS errors. Fixture API only; no server started.');
+  console.log('PASS: answer modes (choice = click-only with single option list, fill-in = handwriting/text with math keyboard + always-visible rendered preview, upload = photo/PDF with a rear-camera button), AI grading policy (self-practice = AI instant score recorded without teacher review, no student use-ai toggle; teacher checkbox on assign, student read-only hint, external consent; homework/quiz scores, AI results, solution and advice hidden until the teacher reviews), AI similar-question drafting (teacher-only entry on bank card and practice panel, similar = same level and same question type vs advanced = one level up, distinct kind sent and labelled in the dialog, reference question expandable for comparison, draft preview with answer/steps/rubric, rubric shown with typeset math while the editor keeps raw LaTeX, nothing imported until the teacher confirms, no navigation after adding, repeated generation sends the previous summaries so the next draft differs), self-practice range picker (chapter + sub-chapter + question type, linked options, auto-widening, change-range keeps filters), teacher review with optional feedback, one-click AI review of a whole assignment (only for AI-enabled assignments), teacher sidebar without self-practice, calendar lower panel (centred divider label, panel content never flush to the card border, no horizontal overflow at 4 widths x 3 font scales), font scale switch (guest, persisted, 3 levels, no mobile overflow), login page (role cards, remember checked, remembered account), calendar (marks + entry from homework), question type (card badge, filter, draft qtype, rule analysis), full-auto split+import, homework (per-question navigation: next/previous question after submitting, progress count, submit prompt when all questions are done; assignment question picker filtered by chapter, sub-chapter and keyword with selection kept across filters), draft save/reload/restore, logout cleanup, weak-topic drill-down, results filters, CSV export, teacher annotation (pen/ellipse/arrow/highlight/undo/clear/save), AI suggested annotation with student read-back and teacher drag-to-adjust saved positions, correction loop (teacher return with note, student banner, pending guard, resubmit), self-serve mock exam (setup, countdown, per-question answer with mockId, submit + instant score + advice), AI endpoint page (test/save, key never read back), bulk student import (column-order auto-detect + header row, student id only with seat number and no name, generated passwords, per-line errors, class creation), data management (usage cards, four download entries, vacuum, school-year reset gated by a typed confirmation and hidden from students), student editing (only changed fields submitted, password reset warns about logout), archive restore (question merge vs replace, student archive with shared password and credential table), no dead space before the footer on short pages, mobile layout, no JS errors. Fixture API only; no server started.');
 })().catch(e=>{console.error(e);process.exit(1)});
