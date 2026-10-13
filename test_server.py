@@ -1480,13 +1480,106 @@ class APITests(unittest.TestCase):
         self.request('POST', '/api/questions/ai-figure', {'content': 'x', 'consentExternal': 'yes'},
                      cookie=self.teacher, expect=400)
         # 模型沒給圖形、說不需要圖形、或給出不安全的 SVG，都不會流到瀏覽器。
+        # （要用幾何題材，否則會先被題材檢查擋下。）
+        geo = {'content': 'x', 'topic': '幾何'}
         with patch.object(self.app.ai, 'call', return_value={'answer': 'x'}):
-            self.request('POST', '/api/questions/ai-figure', {'content': 'x'}, cookie=self.teacher, expect=502)
+            self.request('POST', '/api/questions/ai-figure', geo, cookie=self.teacher, expect=502)
         with patch.object(self.app.ai, 'call', return_value={'svg': ''}):
-            self.request('POST', '/api/questions/ai-figure', {'content': 'x'}, cookie=self.teacher, expect=422)
+            self.request('POST', '/api/questions/ai-figure', geo, cookie=self.teacher, expect=422)
         with patch.object(self.app.ai, 'call',
                           return_value={'svg': '<svg viewBox="0 0 10 10"><script>x</script></svg>'}):
-            self.request('POST', '/api/questions/ai-figure', {'content': 'x'}, cookie=self.teacher, expect=502)
+            self.request('POST', '/api/questions/ai-figure', geo, cookie=self.teacher, expect=502)
+
+    def test_ai_figure_only_for_geometry_and_vector_topics(self):
+        # 只有幾何與向量題材才畫圖；其他題材硬畫只會畫出與題目無關的圖。
+        self.app.ai.configured = True
+        self.app.ai.mode = 'local'
+        for topic in server.FIGURE_TOPICS:
+            self.assertTrue(server.figure_needed(topic), topic)
+        for topic in ('代數', '一元二次方程', '統計', '概率', '函數', '數列與級數', ''):
+            self.assertFalse(server.figure_needed(topic), topic)
+        svg = "<svg viewBox='0 0 400 300'><line x1='1' y1='1' x2='9' y2='9' stroke='#000'/></svg>"
+        with patch.object(self.app.ai, 'call') as ai:
+            for topic in ('代數', '統計', '概率', ''):
+                _, result, _ = self.request('POST', '/api/questions/ai-figure',
+                                            {'content': '解方程 $x^2=1$。', 'topic': topic},
+                                            cookie=self.teacher, expect=422)
+                self.assertIn('幾何', result['error'])
+                self.assertIn('手動插入', result['error'], '要告訴教師可以改用什麼')
+            ai.assert_not_called()
+        with patch.object(self.app.ai, 'call', return_value={'svg': svg}) as ai:
+            self.request('POST', '/api/questions/ai-figure',
+                         {'content': '兩直角邊 3、4，求斜邊。', 'topic': '幾何'},
+                         cookie=self.teacher, expect=200)
+            ai.assert_called_once()
+
+    def test_ai_figure_revision_uses_the_check_issues(self):
+        # 核對出問題後重畫：問題原文要進到提示，要求這次務必修正。
+        self.app.ai.configured = True
+        self.app.ai.mode = 'local'
+        svg = "<svg viewBox='0 0 400 300'><line x1='1' y1='1' x2='9' y2='9' stroke='#000'/></svg>"
+        with patch.object(self.app.ai, 'call', return_value={'svg': svg}) as ai:
+            self.request('POST', '/api/questions/ai-figure',
+                         {'content': '兩直角邊 3、4，求斜邊。', 'topic': '幾何',
+                          'issues': ['圖上標成 4、5', '缺少直角標記']},
+                         cookie=self.teacher, expect=200)
+            instruction = ai.call_args[0][0]
+            self.assertIn('圖上標成 4、5', instruction)
+            self.assertIn('缺少直角標記', instruction)
+        # issues 必須是清單；空清單不改變提示。
+        self.request('POST', '/api/questions/ai-figure',
+                     {'content': 'x', 'topic': '幾何', 'issues': '不是清單'},
+                     cookie=self.teacher, expect=400)
+        with patch.object(self.app.ai, 'call', return_value={'svg': svg}) as ai:
+            self.request('POST', '/api/questions/ai-figure',
+                         {'content': 'x', 'topic': '幾何', 'issues': []}, cookie=self.teacher, expect=200)
+            self.assertNotIn('上一版的圖形', ai.call_args[0][0])
+
+    def test_ai_figure_check_reports_mismatches(self):
+        # 題圖互相核對：用視覺模型比對題目與圖形，回報不符之處供教師決定是否重畫。
+        self.app.ai.configured = True
+        self.app.ai.mode = 'local'
+        self.app.ai.vision = ''
+        self.request('POST', '/api/questions/ai-figure-check',
+                     {'content': '兩直角邊 3、4，求斜邊。', 'image': png_url()},
+                     cookie=self.teacher, expect=409)
+        self.app.ai.vision = 'vision'
+        bad = {'ok': False, 'issues': ['圖上標成 4、5', '缺少直角標記'], 'advice': '把兩股標成 3 與 4，並補上直角記號。'}
+        with patch.object(self.app.ai, 'call', return_value=bad) as ai:
+            _, result, _ = self.request('POST', '/api/questions/ai-figure-check',
+                                        {'title': '直角三角形', 'content': '兩直角邊 3、4，求斜邊。',
+                                         'image': png_url()}, cookie=self.teacher, expect=200)
+            self.assertEqual(ai.call_args[1]['model'], 'vision', '核對要走視覺模型')
+            self.assertFalse(result['ok'])
+            self.assertEqual(result['issues'], bad['issues'])
+            self.assertIn('直角記號', result['advice'])
+        # 只有教師可以核對；參數要檢查。
+        self.request('POST', '/api/questions/ai-figure-check',
+                     {'content': 'x', 'image': png_url()}, cookie=self.student, expect=403)
+        self.request('POST', '/api/questions/ai-figure-check', {'content': 'x'}, cookie=self.teacher, expect=400)
+        self.request('POST', '/api/questions/ai-figure-check',
+                     {'content': 'x', 'image': 'not-an-image'}, cookie=self.teacher, expect=400)
+        self.request('POST', '/api/questions/ai-figure-check',
+                     {'content': 'x', 'image': png_url(), 'consentExternal': 'yes'},
+                     cookie=self.teacher, expect=400)
+        # 模型說沒問題卻又列出問題時，以有問題為準，避免教師被誤導。
+        with patch.object(self.app.ai, 'call',
+                          return_value={'ok': True, 'issues': ['邊長標錯'], 'advice': ''}):
+            _, result, _ = self.request('POST', '/api/questions/ai-figure-check',
+                                        {'content': 'x', 'image': png_url()}, cookie=self.teacher, expect=200)
+            self.assertFalse(result['ok'])
+        # 回應格式不對時要明確失敗，不能默默當成「沒問題」。
+        for bad_result in ({'issues': []}, {'ok': 'yes'}, {'ok': True, 'issues': 'x'}):
+            with patch.object(self.app.ai, 'call', return_value=bad_result):
+                if bad_result == {'ok': True, 'issues': 'x'}:
+                    _, result, _ = self.request('POST', '/api/questions/ai-figure-check',
+                                                {'content': 'x', 'image': png_url()},
+                                                cookie=self.teacher, expect=200)
+                    self.assertTrue(result['ok'], 'issues 型別不對時當作沒有問題')
+                    self.assertEqual(result['issues'], [])
+                else:
+                    self.request('POST', '/api/questions/ai-figure-check',
+                                 {'content': 'x', 'image': png_url()}, cookie=self.teacher, expect=502)
 
     def test_generate_external_consent_required_before_model_call(self):
         for index, base in enumerate(('https://external.invalid/v1', 'https://192.168.1.2/v1'), 1):

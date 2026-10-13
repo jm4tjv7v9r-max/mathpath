@@ -568,6 +568,16 @@ SVG_FONT_RE = re.compile(r"[A-Za-z0-9 ,'\-]{1,80}$")
 SVG_MAX_LENGTH = 60_000
 SVG_MAX_NODES = 400
 
+# 只有幾何與向量題材才需要圖形。其他題材（代數、統計、概率…）硬畫圖只會畫出
+# 與題目無關的圖，反而讓教師要花時間核對，所以直接不畫，改由教師手動插入。
+FIGURE_TOPICS = ('幾何', '三角形', '四邊形與多邊形', '圓', '立體圖形', '三角學',
+                 '坐標幾何', '軌跡與幾何證明', '向量')
+
+
+def figure_needed(topic):
+    """這道題需不需要圖形：只針對幾何與向量題材。"""
+    return topic in FIGURE_TOPICS
+
 FIGURE_INSTRUCTION = (
     '你是數學教材插圖設計師。請依題目內容畫出解題需要的圖形，'
     '只回傳 {"svg": "<svg …>…</svg>"} 一個 JSON 物件，不要任何說明文字。'
@@ -582,6 +592,22 @@ FIGURE_INSTRUCTION = (
     '標註要清楚且不可互相重疊。'
     '只畫圖形本身，不要把整道題目文字畫進圖裡（必要的邊長、角度、座標標註除外）。'
     '若這道題完全不需要圖形，回 {"svg": ""}。'
+)
+
+
+FIGURE_CHECK_INSTRUCTION = (
+    '你是數學科審題老師。下面是一道題目與一張為它畫的圖形，請核對「這張圖是否符合題目」。'
+    '逐項檢查：'
+    '① 圖形的類型是否與題目相符（題目說直角三角形，圖就必須是直角三角形）；'
+    '② 圖上標註的數值、邊長、角度、座標是否與題目一致；'
+    '③ 題目提到的元素（點、線、角、標記）是否都畫了；'
+    '④ 有沒有與題目無關的多餘元素；'
+    '⑤ 標註是否重疊、顛倒或難以辨識。'
+    '返回 {ok:bool, issues:[str], advice:str}。'
+    'ok 只有在圖形完全正確時才可以是 true；只要有一處不符就要 false。'
+    'issues 每項一句話，具體指出哪個數值或哪個元素不符（沒有問題就給空陣列）；'
+    'advice 是給繪圖者的修正指示（沒有問題就給空字串）。'
+    '只回報你實際看到的不符之處，不要客套、不要重述題目。'
 )
 
 
@@ -651,6 +677,34 @@ def sanitize_svg(raw):
     return text.replace('<svg', f'<svg xmlns="{SVG_NS}"', 1)
 
 
+def ai_figure_check(app, body):
+    """用視覺模型核對「題目 ↔ 圖形」是否相符；回報問題與修正指示，供教師決定是否重畫。"""
+    if not app.ai.configured or not app.ai.vision:
+        fail(409, '核對圖形需要視覺模型；請先在「設定與隱私」設定視覺模型，或自行核對圖形。')
+    content = text(body['content'], '題目內容')
+    title = text(body.get('title', ''), '題目標題', 200, empty=True)
+    image, _mime = validate_image(body['image'])
+    app.ai.consent(body.get('consentExternal'))
+    result = app.ai.call(FIGURE_CHECK_INSTRUCTION, {'question': {'title': title, 'content': content}},
+                         image=body['image'], model=app.ai.vision)
+    try:
+        fields(result, ('ok', 'issues', 'advice'), ('ok',))
+        if type(result['ok']) is not bool:
+            raise ValueError()
+        raw_issues = result.get('issues')
+        issues = ([text(v, '核對問題', 200, empty=False) for v in raw_issues][:6]
+                  if isinstance(raw_issues, list) else [])
+        advice = text(result.get('advice', ''), '修正指示', 600, empty=True)
+    except (APIError, ValueError, KeyError, TypeError):
+        fail(502, 'AI 核對沒有回傳可用的結果，請再試一次。')
+    if result['ok'] and issues:
+        # 模型自己說沒問題卻又列出問題時，以有問題為準，避免教師被誤導。
+        result_ok = False
+    else:
+        result_ok = result['ok']
+    return {'ok': result_ok, 'issues': issues, 'advice': advice, 'method': 'AI 核對'}
+
+
 def ai_figure_draft(app, body):
     """請 AI 依題目內容畫出圖形；只回傳消毒過的 SVG，由前端轉成圖形後交給教師核驗。"""
     if not app.ai.configured:
@@ -662,9 +716,20 @@ def ai_figure_draft(app, body):
     if subtopic and subtopic not in TOPIC_TREE.get(topic, ()):
         subtopic = ''
     qtype = body.get('qtype') if body.get('qtype') in QTYPES else classify_type(content)
+    if not figure_needed(topic):
+        fail(422, f'「{topic or "未分類"}」不是幾何或向量題材，AI 不會為它畫圖（避免畫出與題目無關的圖）；'
+                  '如仍需要附圖，請用「手動插入圖片」。')
+    raw_issues = body.get('issues')
+    issues = ([text(v, '核對問題', 200, empty=False) for v in raw_issues][:6]
+              if isinstance(raw_issues, list) else [])
     app.ai.consent(body.get('consentExternal'))
-    result = app.ai.call(FIGURE_INSTRUCTION, {'question': {'title': title, 'content': content,
-                                                          'topic': topic, 'subtopic': subtopic, 'qtype': qtype}})
+    instruction = FIGURE_INSTRUCTION
+    if issues:
+        # 上一版被核對出問題：把問題原文交給模型，要求這次務必修正。
+        instruction += ('上一版的圖形經核對後有以下不符之處，這次一定要全部修正，'
+                        '並再次確認所有標註與題目一致：' + '；'.join(issues) + '。')
+    result = app.ai.call(instruction, {'question': {'title': title, 'content': content,
+                                                    'topic': topic, 'subtopic': subtopic, 'qtype': qtype}})
     try:
         fields(result, ('svg',), ('svg',))
     except (APIError, ValueError, KeyError, TypeError):
@@ -3021,10 +3086,20 @@ class Application:
         if method == 'POST' and path == '/api/questions/ai-figure':
             # 教師：依題目內容請 AI 畫出圖形（回傳已消毒的 SVG，由前端轉成圖片）。
             self.teacher(user)
-            fields(body, ('title', 'content', 'topic', 'subtopic', 'qtype', 'consentExternal'), ('content',))
+            fields(body, ('title', 'content', 'topic', 'subtopic', 'qtype', 'issues', 'consentExternal'),
+                   ('content',))
             if 'consentExternal' in body and type(body['consentExternal']) is not bool:
                 fail(400, '外部上傳同意必須是布林值。')
+            if 'issues' in body and not isinstance(body['issues'], list):
+                fail(400, 'issues 必須是文字清單。')
             return ai_figure_draft(self, body), headers
+        if method == 'POST' and path == '/api/questions/ai-figure-check':
+            # 教師：用視覺模型核對「題目 ↔ 圖形」是否相符（題圖互相核對）。
+            self.teacher(user)
+            fields(body, ('title', 'content', 'image', 'consentExternal'), ('content', 'image'))
+            if 'consentExternal' in body and type(body['consentExternal']) is not bool:
+                fail(400, '外部上傳同意必須是布林值。')
+            return ai_figure_check(self, body), headers
         if method == 'POST' and path == '/api/papers/parse':
             self.teacher(user)
             fields(body, ('name', 'text', 'dataUrl', 'mime', 'consentExternal'), ('name',))

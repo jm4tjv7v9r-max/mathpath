@@ -306,3 +306,20 @@ button.danger:disabled{opacity:.6}
   .question-stem>.question-figure,.question-stem>.draft-figure{max-width:100%}
   .question-stem>.question-figure img,.question-stem>.draft-figure img{max-height:none}
 }
+
+/* 題目圖形工作室：預覽、題圖核對結果與各種插入方式 */
+.fig-question{font-size:calc(15px*var(--fs));line-height:1.85;color:#3d5145;background:#f7faf6;border:1px solid var(--border);border-radius:8px;padding:11px 13px;margin-bottom:12px}
+.fig-preview{display:grid;place-items:center;min-height:170px;border:1px dashed var(--border);border-radius:10px;background:#fcfdfb;padding:12px;margin-bottom:12px}
+.fig-preview img{max-width:100%;max-height:46vh;border-radius:8px;background:#fff;display:block}
+.fig-empty{color:#9dae9f;font-size:calc(14px*var(--fs))}
+.fig-actions{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:12px}
+.fig-actions .secondary{font-size:calc(14px*var(--fs));padding:9px 13px}
+.fig-manual-btn{display:inline-flex;align-items:center;gap:7px;cursor:pointer;font-size:calc(14px*var(--fs))}
+.fig-check{display:flex;gap:10px;align-items:flex-start;border-radius:8px;padding:11px 13px;margin-bottom:12px;font-size:calc(14px*var(--fs));line-height:1.75}
+.fig-check strong{display:block;margin-bottom:2px}
+.fig-check small{display:block;margin-top:5px;opacity:.85}
+.fig-check ul{margin:4px 0 0;padding-left:18px}
+.fig-check li{margin:2px 0}
+.fig-check svg{flex:0 0 auto;margin-top:2px}
+.fig-check.ok{background:#eef7f1;border:1px solid #cfe6d8;color:#2f6d55}
+.fig-check.bad{background:#fdf1ee;border:1px solid #f2d3c8;color:#a4482f}

@@ -1490,7 +1490,7 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   await page.route('**/api/session',route=>route.fulfill({json:{user:{id:2,name:'介面測試教師',role:'teacher'}}}));
   await page.route('**/api/homework',route=>route.fulfill({json:{classes:[{id:1,name:'中三甲班',studentCount:1,studentIds:[1]}],assignments:[],students:[student]}}));
   await page.route('**/api/state',route=>route.fulfill({json:{user:{id:2,name:'介面測試教師',role:'teacher'},
-    questions:[q],attempts:[],stats:{completed:0,accuracy:0,streak:0,minutes:0},ai,topics:['一元二次方程','幾何']}}));
+    questions:[q,{...q,id:2,title:'直角三角形求斜邊',topic:'幾何',subtopic:'點、線、面、體'}],attempts:[],stats:{completed:0,accuracy:0,streak:0,minutes:0},ai:{...ai,vision:'test-vision'},topics:['一元二次方程','幾何']}}));
   await page.route('**/api/papers/parse',route=>route.fulfill({json:{
     method:'AI 識別（1 題偵測到圖形，將自動裁到題目右邊）',
     notice:'需要教師確認題目內容、分類、難度、分值和參考答案後才可匯入；識別不代表答案已核驗。',
@@ -1552,27 +1552,65 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   assert.match(figuresSent.figures[0].figure,/^data:image\/(webp|png);base64,/,'送出的必須是裁好的圖形');
   console.log('PASS: 全自動匯入後由前端批次補上題目圖形');
 
-  // AI 依題目內容畫圖：後端回傳消毒過的 SVG，瀏覽器轉成圖片後貼回題目
-  let aiFigureSent=null,aiFigurePayload=null;
-  await page.route('**/api/questions/ai-figure',route=>{aiFigurePayload=route.request().postDataJSON();
-    return route.fulfill({json:{svg:"<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox='0 0 400 300' width='400' height='300'>"+
-      "<line x1='20' y1='280' x2='380' y2='280' stroke='#1f2d24' stroke-width='2'/>"+
-      "<circle cx='200' cy='140' r='60' stroke='#1f2d24' stroke-width='2' fill='none'/>"+
-      "<text x='196' y='146' font-size='14'>O</text></svg>",method:'AI 生成',notice:'草稿'}});});
+  // 題目圖形工作室：AI 只為幾何／向量題材畫圖、題圖互相核對、依核對結果重畫、手動插入圖片
+  let aiFigureSent=null,figureDraws=[],checkSent=null;
+  await page.route('**/api/questions/ai-figure',route=>{
+    figureDraws.push(route.request().postDataJSON());
+    const n=figureDraws.length;
+    return route.fulfill({json:{svg:`<svg xmlns="http://www.w3.org/2000/svg" viewBox='0 0 400 300' width='400' height='300'>`+
+      `<line x1='20' y1='280' x2='380' y2='280' stroke='#1f2d24' stroke-width='2'/>`+
+      `<circle cx='200' cy='140' r='${n===1?60:70}' stroke='#1f2d24' stroke-width='2' fill='none'/>`+
+      `<text x='196' y='146' font-size='14'>O</text></svg>`,method:'AI 生成',notice:'草稿'}});});
+  await page.route('**/api/questions/ai-figure-check',route=>{checkSent=route.request().postDataJSON();
+    return route.fulfill({json:{ok:false,issues:['圖上把 3 標成 4','缺少直角標記'],
+      advice:'兩股標成 3 與 4，並補上直角記號。',method:'AI 核對'}});});
   await page.route('**/api/questions/figures',route=>{aiFigureSent=route.request().postDataJSON();return route.fulfill({json:{updated:1}});});
   await page.evaluate(()=>navigate('bank'));
   await page.locator('[data-aifig]').first().waitFor({timeout:8000});
-  assert.match(await page.locator('[data-aifig]').first().innerText(),/AI 生成圖形/,'題庫卡片要有 AI 生成圖形（教師）');
-  await page.locator('[data-aifig]').first().click();
+  // 非幾何／向量題材：AI 畫圖停用並說明原因，但仍可手動插入圖片
+  await page.locator('[data-aifig="1"]').click();
+  await page.locator('.fig-preview').waitFor({timeout:8000});
+  assert.equal(await page.locator('#fig-draw').isDisabled(),true,'非幾何／向量題材不應能用 AI 畫圖');
+  assert.match(await page.locator('.modal').innerText(),/不是幾何或向量題材/,'要說明為什麼不能畫');
+  assert.equal(await page.locator('#fig-check').isDisabled(),true,'沒有圖形時不能核對');
+  assert.equal(await page.locator('#fig-apply').isDisabled(),true,'沒有圖形時不能套用');
+  await page.locator('#fig-manual').setInputFiles({name:'圖.png',mimeType:'image/png',buffer:HANDWRITING});
+  await page.waitForFunction(()=>{const i=document.querySelector('.fig-preview img');return !!(i&&i.complete&&i.naturalWidth>0);},{timeout:8000});
+  assert.equal(await page.locator('#fig-apply').isDisabled(),false,'插入圖片後才能使用');
+  await page.screenshot({path:path.join(__dirname,'..','MathPath-手動插入圖形.png'),fullPage:true});
+  await page.locator('#fig-apply').click();
   for(let i=0;i<50&&!aiFigureSent;i++)await page.waitForTimeout(100);
-  assert.ok(aiFigureSent,'AI 生成的圖形要寫回題目');
-  assert.equal(aiFigureSent.figures.length,1);
+  assert.ok(aiFigureSent,'手動插入的圖形要寫回題目');
   assert.equal(aiFigureSent.figures[0].id,1,'圖形要對應到該題');
-  assert.match(aiFigureSent.figures[0].figure,/^data:image\/(webp|png);base64,/,'SVG 要先轉成圖片再存');
-  assert.equal(aiFigurePayload.content,'解方程 $x^2-5x+6=0$。','要把題目內容送給 AI');
-  assert.match(await page.locator('#toast').innerText(),/已加入 AI 生成的圖形/);
-  await page.screenshot({path:path.join(__dirname,'..','MathPath-AI生成圖形.png'),fullPage:true});
-  console.log('PASS: AI 依題目內容生成圖形（SVG→圖片、貼回題目、教師可再生成或移除）');
+  assert.match(aiFigureSent.figures[0].figure,/^data:image\/(webp|png);base64,/);
+  // 幾何題：AI 畫圖 → 核對題目與圖形 → 依核對結果重畫
+  await page.locator('[data-aifig="2"]').click();
+  await page.locator('#fig-draw').waitFor({timeout:8000});
+  assert.equal(await page.locator('#fig-draw').isDisabled(),false,'幾何題要能用 AI 畫圖');
+  assert.match(await page.locator('#fig-draw').innerText(),/AI 生成圖形/);
+  await page.locator('#fig-draw').click();
+  await page.waitForFunction(()=>{const i=document.querySelector('.fig-preview img');return !!(i&&i.complete&&i.naturalWidth>0);},{timeout:8000});
+  assert.equal(figureDraws.length,1);
+  assert.equal(figureDraws[0].content,'解方程 $x^2-5x+6=0$。','要把題目內容送給 AI');
+  assert.equal(figureDraws[0].issues.length,0,'第一次生成不帶核對問題');
+  assert.equal(await page.locator('#fig-check').isDisabled(),false,'有圖形後才能核對');
+  await page.locator('#fig-check').click();
+  await page.waitForFunction(()=>!!document.querySelector('.fig-check.bad'),{timeout:8000});
+  assert.equal(checkSent.content,'解方程 $x^2-5x+6=0$。','核對要送題目內容');
+  assert.match(checkSent.image,/^data:image\/(webp|png);base64,/,'核對要送圖形');
+  assert.match(await page.locator('.fig-check.bad').innerText(),/圖上把 3 標成 4/,'要列出不符之處');
+  assert.match(await page.locator('.fig-check.bad').innerText(),/直角記號/,'要顯示修正指示');
+  await page.screenshot({path:path.join(__dirname,'..','MathPath-題圖核對.png'),fullPage:true});
+  await page.locator('#fig-fix').click();
+  for(let i=0;i<50&&figureDraws.length<2;i++)await page.waitForTimeout(100);
+  assert.equal(figureDraws.length,2,'依核對結果重畫要再呼叫一次');
+  assert.deepEqual(figureDraws[1].issues,['圖上把 3 標成 4','缺少直角標記'],'重畫要把核對問題帶上');
+  await page.waitForFunction(()=>!document.querySelector('.fig-check'),{timeout:8000});
+  assert.equal(await page.locator('.fig-check').count(),0,'重畫後核對結果要清掉，避免看到過期結論');
+  await page.locator('#fig-apply').click();
+  for(let i=0;i<50&&aiFigureSent.figures[0].id!==2;i++)await page.waitForTimeout(100);
+  assert.equal(aiFigureSent.figures[0].id,2,'幾何題的圖形要寫回該題');
+  console.log('PASS: 題目圖形工作室（只為幾何／向量題材畫圖、題圖互相核對、依核對結果重畫、手動插入圖片）');
 
 
 
@@ -1632,5 +1670,5 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   await page.screenshot({path:path.join(__dirname,'..','MathPath-初始化失敗提示.png'),fullPage:true});
 
   assert.deepEqual(errors,[]);await browser.close();
-  console.log('PASS: answer modes (choice = click-only with single option list, fill-in = handwriting/text with math keyboard + always-visible rendered preview, upload = photo/PDF with a rear-camera button), AI grading policy (self-practice = AI instant score recorded without teacher review, no student use-ai toggle; teacher checkbox on assign, student read-only hint, external consent; homework/quiz scores, AI results, solution and advice hidden until the teacher reviews), AI figure generation (teacher-only, sanitised SVG rasterised to an image and written back to the question), paper splitting with an image (the figure box reported by the vision model is cropped in the browser, placed to the right of the stem, figureBox stripped before import), question figures (a question that has a figure renders it to the right of the stem, same row, sized sanely, one figure per question, same on the practice page, click to open a zoom overlay dismissed by Esc), AI similar-question drafting (teacher-only entry on bank card and practice panel, similar = same level and same question type vs advanced = one level up, distinct kind sent and labelled in the dialog, reference question expandable for comparison, draft preview with answer/steps/rubric, rubric shown with typeset math while the editor keeps raw LaTeX, nothing imported until the teacher confirms, no navigation after adding, repeated generation sends the previous summaries so the next draft differs), self-practice range picker (chapter + sub-chapter + question type, linked options, auto-widening, change-range keeps filters), teacher review with optional feedback, one-click AI review of a whole assignment (only for AI-enabled assignments), teacher sidebar without self-practice, calendar lower panel (centred divider label, panel content never flush to the card border, no horizontal overflow at 4 widths x 3 font scales), font scale switch (guest, persisted, 3 levels, no mobile overflow), login page (role cards, remember checked, remembered account), calendar (marks + entry from homework), question type (card badge, filter, draft qtype, rule analysis), full-auto split+import, homework (per-question navigation: next/previous question after submitting, progress count, submit prompt when all questions are done; assignment question picker filtered by chapter, sub-chapter and keyword with selection kept across filters), draft save/reload/restore, logout cleanup, weak-topic drill-down, results filters, CSV export, teacher annotation (pen/ellipse/arrow/highlight/undo/clear/save), AI suggested annotation with student read-back and teacher drag-to-adjust saved positions, handwritten verdict stamp (red tick = all correct, red cross = all wrong, red tick with a stroke = partly correct) and AI comments placed on the sheet only where the paper is blank (never over the handwriting; dense pages fall back to the badge and the list below), correction loop (teacher return with note, student banner, pending guard, resubmit), self-serve mock exam (setup, countdown, per-question answer with mockId, submit + instant score + advice), AI endpoint page (test/save, key never read back), bulk student import (column-order auto-detect + header row, student id only with seat number and no name, generated passwords, per-line errors, class creation), data management (usage cards, four download entries, vacuum, school-year reset gated by a typed confirmation and hidden from students), student editing (only changed fields submitted, password reset warns about logout), archive restore (question merge vs replace, student archive with shared password and credential table), no dead space before the footer on short pages, mobile layout, no JS errors. Fixture API only; no server started.');
+  console.log('PASS: answer modes (choice = click-only with single option list, fill-in = handwriting/text with math keyboard + always-visible rendered preview, upload = photo/PDF with a rear-camera button), AI grading policy (self-practice = AI instant score recorded without teacher review, no student use-ai toggle; teacher checkbox on assign, student read-only hint, external consent; homework/quiz scores, AI results, solution and advice hidden until the teacher reviews), the figure studio (AI drawing only for geometry/vector topics, question-vs-figure checking by the vision model, redraw from the check issues, manual image insert), paper splitting with an image (the figure box reported by the vision model is cropped in the browser, placed to the right of the stem, figureBox stripped before import), question figures (a question that has a figure renders it to the right of the stem, same row, sized sanely, one figure per question, same on the practice page, click to open a zoom overlay dismissed by Esc), AI similar-question drafting (teacher-only entry on bank card and practice panel, similar = same level and same question type vs advanced = one level up, distinct kind sent and labelled in the dialog, reference question expandable for comparison, draft preview with answer/steps/rubric, rubric shown with typeset math while the editor keeps raw LaTeX, nothing imported until the teacher confirms, no navigation after adding, repeated generation sends the previous summaries so the next draft differs), self-practice range picker (chapter + sub-chapter + question type, linked options, auto-widening, change-range keeps filters), teacher review with optional feedback, one-click AI review of a whole assignment (only for AI-enabled assignments), teacher sidebar without self-practice, calendar lower panel (centred divider label, panel content never flush to the card border, no horizontal overflow at 4 widths x 3 font scales), font scale switch (guest, persisted, 3 levels, no mobile overflow), login page (role cards, remember checked, remembered account), calendar (marks + entry from homework), question type (card badge, filter, draft qtype, rule analysis), full-auto split+import, homework (per-question navigation: next/previous question after submitting, progress count, submit prompt when all questions are done; assignment question picker filtered by chapter, sub-chapter and keyword with selection kept across filters), draft save/reload/restore, logout cleanup, weak-topic drill-down, results filters, CSV export, teacher annotation (pen/ellipse/arrow/highlight/undo/clear/save), AI suggested annotation with student read-back and teacher drag-to-adjust saved positions, handwritten verdict stamp (red tick = all correct, red cross = all wrong, red tick with a stroke = partly correct) and AI comments placed on the sheet only where the paper is blank (never over the handwriting; dense pages fall back to the badge and the list below), correction loop (teacher return with note, student banner, pending guard, resubmit), self-serve mock exam (setup, countdown, per-question answer with mockId, submit + instant score + advice), AI endpoint page (test/save, key never read back), bulk student import (column-order auto-detect + header row, student id only with seat number and no name, generated passwords, per-line errors, class creation), data management (usage cards, four download entries, vacuum, school-year reset gated by a typed confirmation and hidden from students), student editing (only changed fields submitted, password reset warns about logout), archive restore (question merge vs replace, student archive with shared password and credential table), no dead space before the footer on short pages, mobile layout, no JS errors. Fixture API only; no server started.');
 })().catch(e=>{console.error(e);process.exit(1)});

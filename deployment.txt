@@ -86,6 +86,8 @@ stdlib http.server适合受控内网试用；生产应加入反代限流、资�
 
 32. AI 依题目内容画图（教师）：POST /api/questions/ai-figure（教师限定）接收 {title,content,topic,subtopic,qtype,consentExternal}，回传 {svg,method,notice}。提示要求模型只输出一个 JSON 物件 {"svg":"<svg …>"}，根元素 <svg viewBox='0 0 400 300'>，**属性一律用单引号**（避免 JSON 跳脱），只可用 g／line／polyline／polygon／path／rect／circle／ellipse／text／tspan，并要忠实反映题目的边长、角度、坐标与数值。后端一律经过 server.sanitize_svg() 消毒：只保留白名单元素与属性（viewBox／坐标／points／d／fill／stroke／stroke-width／stroke-dasharray／transform／font-size／text-anchor…），数值、颜色（#hex／色名／rgb()，**不接受 url(...)**）与列举值都逐个校验；script／style／defs／use／image／foreignObject／任何 on… 事件属性／外部链接一律移除，没有实际图形或解析失败就回 502，**宁可没有图也不让危险内容进浏览器**。模型说不需要图形回 422。前端把消毒后的 SVG 用 <img> 画到 canvas（2 倍）再转成 WebP，因此显示、LaTeX 导出与 R2 存储都不必为 SVG 另做一套。入口三处（教师）：题库卡片的「AI 生成图形／重新生成图形」与「移除图形」（写回 POST /api/questions/figures）、试卷拆题草稿卡的「AI 生成图形」、AI 生成变式题草稿弹窗的「AI 生成图形」；生成前若为外部模型会要求确认（只送题目内容，不含学生作答）。
 
+33. 题目图形工作室（题图互相核对＋手动插入）：AI 画图只针对**几何与向量题材**（server.FIGURE_TOPICS＝几何／三角形／四边形与多边形／圆／立体图形／三角学／坐标几何／轨迹与几何证明／向量，figure_needed()），其他题材（代数、统计、概率…）回 422 并提示改用「手动插入图片」——硬画只会画出与题目无关的图。教师端「题目图形」工作室把四件事放在一起：① AI 生成／重新生成；② **题图互相核对** POST /api/questions/ai-figure-check（教师限定，{title,content,image}，走视觉模型，回 {ok,issues,advice}；没有视觉模型回 409；ok=true 但 issues 非空时以「有问题」为准，避免教师被误导；回应格式不对回 502）；③ **依核对结果重画**（把 issues 原文并入提示，要求这次务必修正）；④ **手动插入图片**（选档或直接贴上图，Ctrl／⌘+V，自动缩到 1400px 转 WebP）。所有变更先留在工作室，按「使用这张图形」才写回题目（图形未改动时直接关闭，不会把题库的图形网址当成文件送回）。入口：题库卡片（AI 生成／手动插入／移除）、试卷拆题草稿卡、AI 生成变式题草稿弹窗。
+
 网络与上线状态：
 当前代码可本地运行，但未部署互联网，未配置真实AI模型。现有标准库服务不能直接作为公网生产部署方案；正式上线须生产服务、HTTPS、独立账户、权限审计、恶意文件隔离、持续备份、模型预算与并发队列。单实例SQLite适合受控试用；多实例互联网版须持久数据库与私有文件存储。
 
