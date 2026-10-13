@@ -302,7 +302,7 @@ class APITests(unittest.TestCase):
         self.assertEqual(len(state['questions']), 16)
         self.assertEqual(state['attempts'], [])
         self.assertEqual(state['stats'], {'completed': 0, 'accuracy': 0, 'streak': 0, 'minutes': 0})
-        self.assertEqual(state['ai'], {'configured': False, 'model': '', 'vision': '', 'mode': 'off', 'source': 'none', 'thinking': False})
+        self.assertEqual(state['ai'], {'configured': False, 'model': '', 'vision': '', 'draw': '', 'drawCustom': False, 'mode': 'off', 'source': 'none', 'thinking': False})
         for q in state['questions']:
             self.assertNotIn('answer', q)
             self.assertNotIn('steps', q)
@@ -631,7 +631,7 @@ class APITests(unittest.TestCase):
         self.request('POST', path, {'baseUrl': 'http://127.0.0.1:11434/v1', 'model': 'm'},
                      cookie=self.student, expect=403)
         _, body, _ = self.request('GET', path, cookie=self.teacher, expect=200)
-        self.assertEqual(body['active'], {'configured': False, 'model': '', 'vision': '', 'mode': 'off', 'source': 'none', 'thinking': False})
+        self.assertEqual(body['active'], {'configured': False, 'model': '', 'vision': '', 'draw': '', 'drawCustom': False, 'mode': 'off', 'source': 'none', 'thinking': False})
         self.assertTrue(body['canEdit'], '本機且未設權杖時應可編輯')
         self.assertFalse(body['tokenRequired'])
         self.assertFalse(body['env']['keySet'])
@@ -1750,6 +1750,75 @@ class APITests(unittest.TestCase):
                                 'givens': [{'key': 'AB', 'value': '4'}]}))))
         # 沒有讀到題目資料時不亂報。
         self.assertEqual(server.verify_against_question(None, bare), [])
+
+    def test_verify_no_extras_catches_invented_points(self):
+        # 教師最直接感受到的「圖跟題文差很遠」：模型自己加了輔助點或輔助線。
+        content = '在直角三角形 ABC 中，AB = 6，AC = 8，∠A = 90°，求 BC。'
+
+        def make(**over):
+            base = {'kind': 'triangle',
+                    'points': [{'name': 'A', 'x': 0, 'y': 0}, {'name': 'B', 'x': 6, 'y': 0},
+                               {'name': 'C', 'x': 0, 'y': 8}],
+                    'segments': [{'from': 'A', 'to': 'B'}, {'from': 'B', 'to': 'C'},
+                                 {'from': 'C', 'to': 'A'}],
+                    'marks': [{'type': 'right-angle', 'at': 'A', 'a': 'B', 'c': 'C'}]}
+            base.update(over)
+            return server.figure_spec(base)
+
+        self.assertEqual(server.verify_no_extras(content, make()), [],
+                         '乾淨的圖不可以被誤判，否則會白白重畫')
+        extra = make(points=[{'name': 'A', 'x': 0, 'y': 0}, {'name': 'B', 'x': 6, 'y': 0},
+                             {'name': 'C', 'x': 0, 'y': 8}, {'name': 'D', 'x': 3, 'y': 4}],
+                     segments=[{'from': 'A', 'to': 'B'}, {'from': 'B', 'to': 'C'},
+                               {'from': 'C', 'to': 'A'}, {'from': 'A', 'to': 'D'}])
+        self.assertIn('D', '；'.join(server.verify_no_extras(content, extra)))
+        # 題目沒有替頂點命名時，模型自己取名字不算多餘。
+        self.assertEqual(server.verify_no_extras('兩直角邊分別為 3 與 4，求斜邊。', extra), [])
+        # 孤立的點（沒有連到任何線）。
+        self.assertIn('沒有連到任何線', '；'.join(server.verify_no_extras(content, make(
+            points=[{'name': 'A', 'x': 0, 'y': 0}, {'name': 'B', 'x': 6, 'y': 0},
+                    {'name': 'C', 'x': 0, 'y': 8}, {'name': 'Z', 'x': 9, 'y': 9}],
+            segments=[{'from': 'A', 'to': 'B'}, {'from': 'B', 'to': 'C'}, {'from': 'C', 'to': 'A'}]))))
+        # 題目沒提到圓或座標軸，圖上就不該有。
+        joined = '；'.join(server.verify_no_extras(content, make(
+            points=[{'name': 'A', 'x': 0, 'y': 0}, {'name': 'B', 'x': 6, 'y': 0}],
+            segments=[{'from': 'A', 'to': 'B'}], marks=[],
+            circles=[{'center': 'A', 'through': 'B'}], axes={'x': True, 'y': True, 'origin': 'A'})))
+        self.assertIn('畫了圓', joined)
+        self.assertIn('坐標軸', joined)
+        # 座標題畫座標軸是合理的。
+        self.assertEqual(server.verify_no_extras('已知 A(3,1)、B(1,3)，求 AB。', make(
+            points=[{'name': 'A', 'x': 3, 'y': 1}, {'name': 'B', 'x': 1, 'y': 3}],
+            segments=[{'from': 'A', 'to': 'B'}], marks=[],
+            axes={'x': True, 'y': True, 'origin': 'A'})), [])
+        # 點名抽取：△ABC、AB、∠ABC 與單一字母都要算進去。
+        self.assertLessEqual({'A', 'B', 'C'}, server.question_point_names('△ABC 中，AB = 6，∠ABC = 90°'))
+
+    def test_ai_draw_model_can_be_set_separately(self):
+        # 畫圖比批改更吃模型能力，所以可以另外指定繪圖模型；沒指定就沿用文字模型。
+        self.app.ai.configure({'base_url': 'https://api.example.com', 'model': 'text-model',
+                               'vision_model': 'vision-model', 'draw_model': 'draw-model'})
+        self.assertEqual(self.app.ai.draw, 'draw-model')
+        self.assertEqual(self.app.ai.public()['draw'], 'draw-model')
+        self.assertTrue(self.app.ai.public()['drawCustom'])
+        spec = {'points': [{'name': 'A', 'x': 0, 'y': 0}, {'name': 'B', 'x': 6, 'y': 0},
+                           {'name': 'C', 'x': 0, 'y': 8}],
+                'segments': [{'from': 'A', 'to': 'B'}, {'from': 'B', 'to': 'C'}, {'from': 'C', 'to': 'A'}],
+                'labels': [{'text': '6', 'on': ['A', 'B']}, {'text': '8', 'on': ['A', 'C']}],
+                'givens': [{'key': 'AB', 'value': '6'}, {'key': 'AC', 'value': '8'}]}
+        with patch.object(self.app.ai, 'call', return_value=spec) as ai:
+            self.request('POST', '/api/questions/ai-figure',
+                         {'content': '在直角三角形 ABC 中，AB = 6，AC = 8。', 'topic': '幾何',
+                          'consentExternal': True},
+                         cookie=self.teacher, expect=200)
+            draws = [call for call in ai.call_args_list if '數學座標' in call.args[0]]
+            self.assertTrue(draws, '要有一次繪圖呼叫')
+            self.assertEqual(draws[0].kwargs.get('model'), 'draw-model', '畫圖要走指定的繪圖模型')
+        # 沒設定繪圖模型時沿用文字模型（由 AIClient 決定），對外顯示成文字模型。
+        self.app.ai.configure({'base_url': 'https://api.example.com', 'model': 'text-model'})
+        self.assertEqual(self.app.ai.draw, '')
+        self.assertEqual(self.app.ai.public()['draw'], 'text-model')
+        self.assertFalse(self.app.ai.public()['drawCustom'])
 
     def test_ai_figure_redraws_when_the_figure_ignores_the_question(self):
         # 端到端：圖跟題目差很遠時要自動帶著問題重畫，而不是把錯的圖交給教師。

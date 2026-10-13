@@ -611,6 +611,9 @@ FIGURE_SPEC_INSTRUCTION = (
     '若題目有座標軸或需要標出原點，就設定 axes。'
     '只畫題目真的需要的元素，不要加裝飾、不要加標題、不要畫底色、不要把題目文字畫進圖裡，'
     '也不要畫題目沒有提到的點、線、圓或數據。'
+    '尤其不要自己加輔助線、輔助點或額外的點名（P、Q、M、N…）：題目沒有提到的頂點就不要畫、'
+    '也不要命名。若題目沒有替頂點命名，才用 A、B、C… 依序命名，而且只命名真的有畫出來的頂點。'
+    '不要加座標軸，除非題目本身就是坐標幾何題。'
     '若這道題完全不需要圖形，回 {"needed": false}。'
 )
 
@@ -1300,6 +1303,60 @@ def verify_spec(spec):
     return issues[:FIGURE_MAX_ISSUES]
 
 
+def question_point_names(content):
+    """從題目文字抓出被當成點名使用的字母。
+
+    幾何題的點名慣例是單一大寫字母（A、B、C…），也會出現在 △ABC、AB、∠ABC 這類連寫符號裡；
+    這裡刻意抓得寬（寧可多算，也不要誤判圖上多畫了點）。
+    """
+    text = str(content or '')
+    names = set(re.findall(r'(?<![A-Za-z])([A-Z])(?![A-Za-z])', text))
+    for run in re.findall(r'(?<![A-Za-z])([A-Z]{2,6})(?![A-Za-z])', text):
+        names.update(run)
+    return names
+
+
+def verify_no_extras(content, spec):
+    """抓「圖上多畫了題目沒提到的東西」：多餘的點、點名、圓、弧、座標軸。
+
+    這是教師最直接感受到的「圖跟題文差很遠」——模型自己加了輔助點或輔助線。
+    """
+    issues = []
+    text = str(content or '')
+    named = question_point_names(text)
+    # 題目完全沒有替點命名時，模型本來就得自己取名字，這時不能怪它多畫點。
+    if len(named) >= 3:
+        extra = [p['name'] for p in spec['points']
+                 if len(p['name']) == 1 and p['name'] not in named]
+        if extra:
+            issues.append('圖上多了題目沒有提到的點：' + '、'.join(extra))
+    used = set()
+    for item in spec['segments']:
+        used.update((item['from'], item['to']))
+    for item in spec['rays']:
+        used.update((item['from'], item['through']))
+    for item in spec['circles']:
+        used.add(item['center'])
+        if 'through' in item:
+            used.add(item['through'])
+    for item in spec['arcs']:
+        used.update((item['center'], item['from'], item['to']))
+    for item in spec['marks']:
+        if 'at' in item:
+            used.update((item['at'], item['a'], item['c']))
+        else:
+            used.update((item['from'], item['to']))
+    orphan = [p['name'] for p in spec['points'] if p['name'] not in used]
+    if orphan:
+        issues.append('圖上這些點沒有連到任何線：' + '、'.join(orphan))
+    if not any(word in text for word in ('圓', '弧', '扇')) and (spec['circles'] or spec['arcs']):
+        issues.append('題目沒有提到圓或弧，圖上卻畫了圓')
+    has_coordinates = bool(re.search(r'[（(]\s*-?\d', text))
+    if spec['axes'] and not has_coordinates and not any(word in text for word in ('坐標', '座標')):
+        issues.append('題目沒有提到坐標軸，圖上卻畫了坐標軸')
+    return issues[:FIGURE_MAX_ISSUES]
+
+
 def question_facts(app, payload):
     """只讀題目文字、列出題目已給定的數據；失敗回 None（這是加分項，不該擋住生成）。"""
     try:
@@ -1492,7 +1549,7 @@ def ai_figure_draft(app, body):
         if issues:
             instruction += ('上一版圖形經檢查後有以下問題，這次一定要全部修正：'
                             + '；'.join(issues) + '。')
-        result = app.ai.call(instruction, payload, temperature=0.3)
+        result = app.ai.call(instruction, payload, temperature=0.3, model=app.ai.draw or None)
         rounds = index + 1
         if isinstance(result, dict) and result.get('needed') is False:
             if best is None:
@@ -1506,7 +1563,7 @@ def ai_figure_draft(app, body):
         if svg is None:
             issues = ['上一版規格畫不出合法的圖形，請檢查座標與元素是否合法。']
             continue
-        problems = verify_spec(spec)
+        problems = verify_spec(spec) + verify_no_extras(content, spec)
         if not fetched:
             # 題目不會變，讀一次就夠；讀不到就跳過這層檢查，不擋住生成。
             facts, fetched = question_facts(app, payload), True
@@ -2400,19 +2457,23 @@ def env_ai_config():
     return {'base_url': os.environ.get('MATH_AI_BASE_URL', ''), 'model': os.environ.get('MATH_AI_MODEL', ''),
             'api_key': os.environ.get('MATH_AI_API_KEY', ''),
             'vision_model': os.environ.get('MATH_AI_VISION_MODEL', ''),
+            # 畫圖是「讀題 → 輸出座標」的推理工作，對模型能力比批改敏感得多；
+            # 可以用 MATH_AI_DRAW_MODEL 指定較強的模型，沒設定就沿用文字模型。
+            'draw_model': os.environ.get('MATH_AI_DRAW_MODEL', ''),
             'thinking': os.environ.get('MATH_AI_THINKING', 'off').strip().lower() != 'off',
             'source': 'env'}
 
 
 def validate_ai_config(values):
-    """驗證端點設定；回傳 (base, model, key, vision, mode, endpoint, thinking)。無效時拋出 ValueError。"""
+    """驗證端點設定；回傳 (base, model, key, vision, draw, mode, endpoint, thinking)。無效時拋出 ValueError。"""
     base = (values.get('base_url') or '').strip().rstrip('/')
     model = (values.get('model') or '').strip()
     key = (values.get('api_key') or '').strip()
     vision = (values.get('vision_model') or '').strip()
+    draw = (values.get('draw_model') or '').strip()
     thinking = bool(values.get('thinking', False))
     if not base or not model:
-        return base, model, key, vision, 'off', None, thinking
+        return base, model, key, vision, draw, 'off', None, thinking
     parsed = urlsplit(base)
     parsed.port
     try:
@@ -2424,11 +2485,11 @@ def validate_ai_config(values):
             or (not loopback and parsed.scheme != 'https')):
         raise ValueError('AI 位址無效；非本機服務必須使用 HTTPS，且不可內嵌憑證。')
     if (any(c in key for c in '\r\n') or len(key) > 8192 or len(base) > 500
-            or len(model) > 200 or len(vision) > 200
-            or re.search(r'[\ud800-\udfff]', model + vision + key)):
+            or len(model) > 200 or len(vision) > 200 or len(draw) > 200
+            or re.search(r'[\ud800-\udfff]', model + vision + draw + key)):
         raise ValueError('AI 設定無效：欄位過長或包含無效字元。')
     endpoint = base if base.endswith('/chat/completions') else base + '/chat/completions'
-    return base, model, key, vision, ('local' if loopback else 'external'), endpoint, thinking
+    return base, model, key, vision, draw, ('local' if loopback else 'external'), endpoint, thinking
 
 
 def tiny_png_data_url():
@@ -2450,20 +2511,24 @@ class AIClient:
         self.opener = build_opener(ProxyHandler({}), NoRedirect())
         self.slots = threading.BoundedSemaphore(4)
         self.truncated = False
+        self.draw = ''
         self.configure(env_ai_config())
 
     def configure(self, values):
-        base, model, key, vision, mode, endpoint, thinking = validate_ai_config(values)
+        base, model, key, vision, draw, mode, endpoint, thinking = validate_ai_config(values)
         with self.lock:
             self.base, self.model, self.key, self.vision = base, model, key, vision
+            self.draw = draw
             self.configured, self.mode, self.endpoint = bool(base and model), mode, endpoint
             self.thinking = thinking
             self.source = (values.get('source') or 'env') if self.configured else 'none'
 
     def public(self):
         return {'configured': self.configured, 'model': self.model if self.configured else '',
-                'vision': self.vision if self.configured else '', 'mode': self.mode, 'source': self.source,
-                'thinking': self.thinking}
+                'vision': self.vision if self.configured else '',
+                'draw': (self.draw or self.model) if self.configured else '',
+                'drawCustom': bool(self.draw) if self.configured else False,
+                'mode': self.mode, 'source': self.source, 'thinking': self.thinking}
 
     def probe(self, vision=False):
         """以最小請求驗證端點；失敗直接拋錯，不偽造成功。"""
@@ -3128,6 +3193,7 @@ class Application:
             return None
         return {'base_url': saved.get('ai_base_url', ''), 'model': saved.get('ai_model', ''),
                 'api_key': saved.get('ai_api_key', ''), 'vision_model': saved.get('ai_vision_model', ''),
+                'draw_model': saved.get('ai_draw_model', ''),
                 'thinking': saved.get('ai_thinking', 'off') == 'on',
                 'source': 'saved'}
 
@@ -3647,13 +3713,16 @@ class Application:
                 return {'active': self.ai.public(), 'canEdit': self.can_manage_ai(ip),
                         'tokenRequired': expected, 'invalidSaved': bool(getattr(self.ai, 'invalid_saved', False)),
                         'env': {'baseUrl': env['base_url'], 'model': env['model'],
-                                'visionModel': env['vision_model'], 'keySet': bool(env['api_key']),
+                                'visionModel': env['vision_model'], 'drawModel': env['draw_model'],
+                                'keySet': bool(env['api_key']),
                                 'thinking': env['thinking']},
                         'saved': None if not saved else {'baseUrl': saved['base_url'], 'model': saved['model'],
                                                          'visionModel': saved['vision_model'],
+                                                         'drawModel': saved['draw_model'],
                                                          'keySet': bool(saved['api_key']),
                                                          'thinking': saved['thinking']}}, headers
-            fields(body, ('baseUrl', 'model', 'visionModel', 'apiKey', 'clearKey', 'thinking', 'adminToken'), ())
+            fields(body, ('baseUrl', 'model', 'visionModel', 'drawModel', 'apiKey', 'clearKey', 'thinking',
+                          'adminToken'), ())
             self.require_ai_admin(ip, body.get('adminToken'))
             for key in ('clearKey', 'thinking'):
                 if key in body and type(body[key]) is not bool:
@@ -3664,6 +3733,7 @@ class Application:
             base_url = text(body.get('baseUrl', ''), '端點位址', 500, empty=True)
             model = text(body.get('model', ''), '文字模型', 200, empty=True)
             vision_model = text(body.get('visionModel', ''), '視覺模型', 200, empty=True)
+            draw_model = text(body.get('drawModel', ''), '繪圖模型', 200, empty=True)
             if 'apiKey' in body:
                 api_key = text(body['apiKey'], 'API 金鑰', 8192, empty=True, strip=False)
             elif body.get('clearKey'):
@@ -3674,12 +3744,13 @@ class Application:
             try:
                 validate_ai_config({'base_url': base_url, 'model': model,
                                     'api_key': api_key, 'vision_model': vision_model,
-                                    'thinking': thinking})
+                                    'draw_model': draw_model, 'thinking': thinking})
             except ValueError as exc:
                 fail(400, str(exc))
             if base_url and model:
                 pairs = (('ai_base_url', base_url), ('ai_model', model),
-                         ('ai_vision_model', vision_model), ('ai_api_key', api_key),
+                         ('ai_vision_model', vision_model), ('ai_draw_model', draw_model),
+                         ('ai_api_key', api_key),
                          ('ai_thinking', 'on' if thinking else 'off'))
             else:
                 # 清空端點即代表取消 AI，一併移除已儲存的金鑰。
@@ -3692,7 +3763,7 @@ class Application:
             self.reload_ai()
             return {'active': self.ai.public(), 'saved': None if not pairs else
                     {'baseUrl': base_url, 'model': model, 'visionModel': vision_model,
-                     'keySet': bool(api_key), 'thinking': thinking}}, headers
+                     'drawModel': draw_model, 'keySet': bool(api_key), 'thinking': thinking}}, headers
         if method == 'POST' and path == '/api/ai-config/test':
             self.teacher(user)
             fields(body, ('baseUrl', 'model', 'visionModel', 'apiKey', 'vision', 'thinking', 'adminToken'),

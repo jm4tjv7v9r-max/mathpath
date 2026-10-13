@@ -92,11 +92,11 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
     else if(url.pathname==='/api/logout'){role=null;data={user:null};}
     else if(url.pathname==='/api/state')data={user,questions:[role==='teacher'?q:{...q,answer:undefined,steps:undefined}],attempts:role==='teacher'?[]:[graded(1,1,'一元二次方程',6,6),graded(2,2,'幾何',0,5)],stats:{completed:2,accuracy:55,streak:1,minutes:10},ai,topics:['一元二次方程','幾何']};
     else if(url.pathname==='/api/homework')data={classes:[{id:1,name:'中三甲班',studentCount:2,studentIds:[1,3]}],assignments:[assignment,quizAssignment],students:role==='teacher'?[student]:undefined,ai};
-    else if(url.pathname==='/api/ai-config'&&route.request().method()==='POST'){const sent=route.request().postDataJSON();savedKeySeen=sent.apiKey??null;aiConfigSaved=sent;const off=!sent.baseUrl&&!sent.model;return route.fulfill({json:{active:{configured:!off,model:off?'':'local-text',vision:off?'':'local-vision',mode:off?'off':'local',source:off?'none':'saved'},saved:off?null:{baseUrl:sent.baseUrl,model:sent.model,visionModel:sent.visionModel,keySet:true}}});}
+    else if(url.pathname==='/api/ai-config'&&route.request().method()==='POST'){const sent=route.request().postDataJSON();savedKeySeen=sent.apiKey??null;aiConfigSaved=sent;const off=!sent.baseUrl&&!sent.model;return route.fulfill({json:{active:{configured:!off,model:off?'':'local-text',vision:off?'':'local-vision',draw:off?'':'local-draw',drawCustom:!off,mode:off?'off':'local',source:off?'none':'saved'},saved:off?null:{baseUrl:sent.baseUrl,model:sent.model,visionModel:sent.visionModel,keySet:true}}});}
     else if(url.pathname==='/api/questions/ai-answer'){aiAnswerPayload=route.request().postDataJSON();return route.fulfill({json:{answer:'$x=2$ 或 $x=3$',steps:['寫成標準形式 $x^2-5x+6=0$。','分解為 $(x-2)(x-3)=0$。','得 $x=2$ 或 $x=3$。'],analysis:'考因式分解法；常見錯誤是符號處理不當。',rubric:[{label:'正確列式',percent:30},{label:'因式分解正確',percent:40},{label:'寫出兩個根',percent:30}],qtype:'解答題',options:[],method:'AI 生成'}});}
     else if(url.pathname==='/api/ai-config/economy'){const sent=route.request().postDataJSON();economySent=sent.economy;return route.fulfill({json:{active:{configured:true,model:'local-text',vision:'',mode:'local',source:'env',thinking:!sent.economy},economy:sent.economy}});}
     else if(url.pathname==='/api/ai-config/test'){const sent=route.request().postDataJSON();if(!sent.baseUrl||!sent.model)return route.fulfill({status:400,json:{error:'請提供端點與模型。'}});return route.fulfill({json:{ok:true,mode:'local',model:sent.model,testedVision:!!sent.vision}});}
-    else if(url.pathname==='/api/ai-config')data={active:{configured:!!aiConfigSaved,model:aiConfigSaved?'local-text':'',vision:aiConfigSaved?'local-vision':'',mode:aiConfigSaved?'local':'off',source:aiConfigSaved?'saved':'none'},canEdit:true,tokenRequired:false,invalidSaved:false,env:{baseUrl:'',model:'',visionModel:'',keySet:false},saved:aiConfigSaved?{baseUrl:aiConfigSaved.baseUrl,model:aiConfigSaved.model,visionModel:aiConfigSaved.visionModel,keySet:true}:null};
+    else if(url.pathname==='/api/ai-config')data={active:{configured:!!aiConfigSaved,model:aiConfigSaved?'local-text':'',vision:aiConfigSaved?'local-vision':'',draw:aiConfigSaved?'local-draw':'',drawCustom:!!aiConfigSaved,mode:aiConfigSaved?'local':'off',source:aiConfigSaved?'saved':'none'},canEdit:true,tokenRequired:false,invalidSaved:false,env:{baseUrl:'',model:'',visionModel:'',drawModel:'',keySet:false},saved:aiConfigSaved?{baseUrl:aiConfigSaved.baseUrl,model:aiConfigSaved.model,visionModel:aiConfigSaved.visionModel,drawModel:aiConfigSaved.drawModel,keySet:true}:null};
     else if(url.pathname==='/api/calendar'){const from=url.searchParams.get('from')||'';const pre=from.slice(0,8);const teacher=role==='teacher';
       data={from,to:url.searchParams.get('to'),events:[
         {date:`${pre}15`,event:'due',kind:'homework',title:'二次方程鞏固作業',assignmentId:1,classId:1,className:'中三甲班',dueAt:stamp,...(teacher?{submittedCount:1,studentCount:2}:{myStatus:'not_started'})},
@@ -772,6 +772,7 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   await page.locator('#ai-base').fill('http://127.0.0.1:11434/v1');
   await page.locator('#ai-model').fill('local-text');
   await page.locator('#ai-vision').fill('local-vision');
+  await page.locator('#ai-draw').fill('local-draw');
   await page.locator('#ai-key').fill('secret-key-123');
   await page.locator('#ai-test').click();
   await page.locator('#ai-test-result .hint-box').waitFor();
@@ -782,6 +783,8 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   await page.waitForFunction(()=>document.body.innerText.includes('介面儲存設定'));
   assert.equal(savedKeySeen,'secret-key-123','伺服器應收到金鑰');
   assert.equal(aiConfigSaved.visionModel,'local-vision');
+  assert.equal(aiConfigSaved.drawModel,'local-draw','繪圖模型要能另外指定');
+  assert.match(await page.locator('.metric-row').innerText(),/繪圖模型/,'要顯示目前用哪個模型畫圖');
   assert.equal(await page.locator('#ai-key').inputValue(),'','金鑰不得回讀到瀏覽器');
   assert.match(await page.locator('#ai-key').getAttribute('placeholder'),/已設定/);
   assert.ok(!(await page.locator('body').innerText()).includes('secret-key-123'),'金鑰不得顯示在頁面');
