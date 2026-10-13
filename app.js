@@ -149,6 +149,8 @@ function rubricProblem(items){
 }
 
 const paths = {
+ plus:'<path d="M12 5v14M5 12h14"/>',
+ newq:'<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z"/><path d="M14 3v5h5"/><path d="M12 12v5M9.5 14.5h5"/>',
  bank:'<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
  practice:'<path d="m16 3 5 5-12 12-6 1 1-6Z"/><path d="m14 5 5 5M4 15l5 5"/>',
  import:'<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6M8 15h8M12 11v8"/>',
@@ -661,7 +663,7 @@ const preview = [
 ];
 let S={user:null,questions:preview,attempts:[],stats:{completed:0,accuracy:0,streak:0,minutes:0},ai:{configured:false,mode:'off'},notice:''};
 let page='bank', topic='全部題目', subtopic='', search='', grade='', level='', qtype='', currentPage=1, viewMode='list', currentQuestion=null, recommendations=null, answerMode='hand', lastResult=null, lastSolution=null;
-let importStage=1, drafts=[], importMethod='', paperFile=null, paperName='', paperText='', figStrokes=[], figTool='pen', figDrawing=null, figImage=null, historyFilter='all';
+let importStage=1, drafts=[], importMethod='', paperFile=null, paperName='', paperText='', figImage=null, figSketch=null, figCanvasTools=null, historyFilter='all';
 // 題目圖形工作室的狀態；關閉視窗時要一起清掉（見 closeModal）。
 let figStudio=null;
 // 自主練習的範圍：先選章節（主分類／子分類）與題型，再開始練習。
@@ -698,7 +700,7 @@ function toast(msg){const t=$('#toast');t.textContent=msg;t.classList.add('show'
 async function api(path,body){let r;try{r=await fetch(path,{method:body===undefined?'GET':'POST',headers:body===undefined?{}:{'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body),credentials:'same-origin'});}catch{throw new Error('無法連接網站伺服器，請確認服務已啟動。');}let data;try{data=await r.json();}catch{throw new Error('伺服器回應無效，請透過啟動程式開啟網站。');}if(!r.ok){if(r.status===401 && !path.includes('login') && !path.includes('change-password')){S.user=null;loginModal();}throw new Error(data.error || '操作未完成，請再試。');}serverIssue='';return data;}
 async function refresh(){S=await api('/api/state');loadBookmarks();shell();}
 function empty(title,desc,button=''){return `<div class="empty">${icon('bank')}<h3>${title}</h3><p>${desc}</p>${button}</div>`;}
-function shell(){let nav=[['homework',S.user?.role==='teacher'?'作業與成績':'我的作業'],['calendar','日曆'],['mock','模擬測驗'],['bank','數學題庫'],['practice','自主練習'],['import','試卷拆題'],['mistakes',S.user?.role==='teacher'?'作答批閱':'我的錯題本'],['growth','學習足跡']];if(S.user?.role!=='student')nav=nav.filter(([id])=>id!=='mock');if(S.user?.role==='teacher'){nav=nav.filter(([id])=>id!=='practice');nav.push(['ai','模型端點']);}$('#nav').innerHTML=nav.map(([id,label])=>`<button class="nav-item ${page===id?'active':''}" data-page="${id}">${icon(id)}<span>${label}</span>${id==='bank'?`<span class="count">${S.user?S.questions.length:'示例'}</span>`:id==='import'?'<span class="new">教師</span>':''}</button>`).join('');$('#settings-nav').innerHTML=icon('settings')+'<span>設定與隱私</span>';$('#settings-nav').classList.toggle('active',page==='settings');$('#font-scale').innerHTML=fontScaleControl();$('#account').innerHTML=`<span class="avatar">${S.user?(S.user.role==='teacher'?'師':'學'):'M'}</span><span class="account-info">${S.user?esc(S.user.name):'訪客預覽'}<small>${S.user?(S.user.role==='teacher'?'教師工作空間':'中三數學學習者'):'登入後開始學習'}</small></span>${icon(S.user?'chevron':'logout')}`;$('#avatar').textContent=S.user?(S.user.role==='teacher'?'師':'學'):'M';const labels={homework:S.user?.role==='teacher'?'作業與成績':'我的作業',calendar:'日曆',mock:'模擬測驗',ai:'模型端點',bank:'數學題庫',practice:'自主練習',import:'試卷拆題',mistakes:S.user?.role==='teacher'?'作答批閱':'我的錯題本',growth:'學習足跡',settings:'設定與隱私'};$('#crumb').textContent=labels[page] || '數學題庫';}
+function shell(){let nav=[['homework',S.user?.role==='teacher'?'作業與成績':'我的作業'],['calendar','日曆'],['mock','模擬測驗'],['bank','數學題庫'],['practice','自主練習'],['import','試卷拆題'],['mistakes',S.user?.role==='teacher'?'作答批閱':'我的錯題本'],['growth','學習足跡']];if(S.user?.role!=='student')nav=nav.filter(([id])=>id!=='mock');if(S.user?.role==='teacher'){nav=nav.filter(([id])=>id!=='practice');const at=nav.findIndex(([id])=>id==='mistakes');nav.splice(at<0?nav.length:at,0,['newq','新增題目']);nav.push(['ai','模型端點']);}$('#nav').innerHTML=nav.map(([id,label])=>`<button class="nav-item ${page===id?'active':''}" data-page="${id}">${icon(id)}<span>${label}</span>${id==='bank'?`<span class="count">${S.user?S.questions.length:'示例'}</span>`:id==='import'?'<span class="new">教師</span>':''}</button>`).join('');$('#settings-nav').innerHTML=icon('settings')+'<span>設定與隱私</span>';$('#settings-nav').classList.toggle('active',page==='settings');$('#font-scale').innerHTML=fontScaleControl();$('#account').innerHTML=`<span class="avatar">${S.user?(S.user.role==='teacher'?'師':'學'):'M'}</span><span class="account-info">${S.user?esc(S.user.name):'訪客預覽'}<small>${S.user?(S.user.role==='teacher'?'教師工作空間':'中三數學學習者'):'登入後開始學習'}</small></span>${icon(S.user?'chevron':'logout')}`;$('#avatar').textContent=S.user?(S.user.role==='teacher'?'師':'學'):'M';const labels={homework:S.user?.role==='teacher'?'作業與成績':'我的作業',calendar:'日曆',mock:'模擬測驗',ai:'模型端點',bank:'數學題庫',practice:'自主練習',import:'試卷拆題',mistakes:S.user?.role==='teacher'?'作答批閱':'我的錯題本',growth:'學習足跡',newq:'新增題目',settings:'設定與隱私'};$('#crumb').textContent=labels[page] || '數學題庫';}
 
 let calCursor=null,calSelected=null;
 const calPad=n=>String(n).padStart(2,'0');
@@ -774,7 +776,7 @@ document.addEventListener('click',e=>{
   document.body.appendChild(box);
 });
 function questionCard(q,n){return `<article class="question-card"><span class="question-number">${String(n).padStart(2,'0')}</span><div class="question-body"><div class="question-top"><h3>${mathText(q.title)}</h3><span class="badge l${q.level}">${levels[q.level]}</span><span class="badge outline">${esc(q.qtype||'解答題')}</span><span class="badge outline">${q.points} 分</span></div>${stemHtml(q)}<div class="question-meta"><span>${esc(q.tags.slice(0,2).join(' · '))}</span><i class="separator"></i><span>${esc(q.source)}</span></div></div><div class="question-controls"><button class="bookmark ${bookmarks.has(q.id)?'saved':''}" data-save="${q.id}" aria-label="${bookmarks.has(q.id)?'取消收藏':'收藏題目'}" aria-pressed="${bookmarks.has(q.id)}">${icon('bookmark')}</button><button class="practice-btn" data-qid="${q.id}">開始練習 ${icon('chevron')}</button>${S.user?.role==='teacher'?`<button class="text-button ai-gen-entry" data-aigen="${q.id}" style="font-size:calc(12px*var(--fs))">${icon('spark')}AI 生成類似題</button><button class="text-button" data-aifig="${q.id}" style="font-size:calc(12px*var(--fs))">${icon('spark')}${q.figure?'重新生成圖形':'AI 生成圖形'}</button><button class="text-button" data-aifig-manual="${q.id}" style="font-size:calc(12px*var(--fs))">${icon('upload')}手動插入圖形</button>${q.figure?`<button class="text-button" data-aifig-clear="${q.id}" style="font-size:calc(12px*var(--fs))">移除圖形</button>`:''}`:''}</div></article>`;}
-function bank(){beginView();page='bank';assignmentContext=null;mockContext=null;stopQuizClock();shell();$('#main').innerHTML=`<div class="fade-in">${heading('QUESTION BANK','數學題庫','每一道題，都是通往理解的一步。',`<button class="secondary" data-action="collection">${icon('bookmark')}我的收藏</button>${S.user?.role==='teacher'?`<button class="secondary" id="export-latex">${icon('file')}匯出 LaTeX</button>`:''}<button class="primary" data-page="import">${icon('upload')}匯入試卷</button>`)}${!S.user?`<div class="field-hint" style="margin:-9px 0 17px">訪客預覽 · 以下為題庫示例，學習紀錄尚未開始。<button class="text-button" data-action="login" style="font-size:calc(13px*var(--fs));margin-left:8px">登入學習 ${icon('arrow')}</button></div>`:''}${hero()}${metrics()}<div class="bank-layout"><section class="panel bank-panel"><div class="panel-heading"><h2>精選題目 <span class="small-text" id="question-count"></span></h2><div class="segmented"><button data-view="list" class="${viewMode==='list'?'active':''}" aria-label="清單檢視">${icon('list')}</button><button data-view="grid" class="${viewMode==='grid'?'active':''}" aria-label="卡片檢視">${icon('bank')}</button></div></div><div class="filters"><label class="search-field">${icon('search')}<input id="question-search" value="${esc(search)}" placeholder="搜尋題目、知識點或試卷名稱…" aria-label="搜尋题目"></label><select id="grade-filter" aria-label="年級"><option value="">所有年級</option>${grades.map(g=>`<option ${grade===g?'selected':''}>${g}</option>`).join('')}</select><select id="level-filter" aria-label="難度"><option value="">所有難度</option>${[1,2,3].map(i=>`<option value="${i}" ${Number(level)===i?'selected':''}>${levels[i]}</option>`).join('')}</select><select id="qtype-filter" aria-label="題型"><option value="">所有題型</option>${qtypes.map(t=>`<option ${qtype===t?'selected':''}>${t}</option>`).join('')}</select></div><div class="topic-tabs">${['全部題目',...topics].map(t=>`<button class="topic-tab ${topic===t?'active':''}" data-topic="${t}">${t}</button>`).join('')}</div><div class="topic-tabs subtopic-tabs" style="display:${topic!=='全部題目'&&topic!=='我的收藏'&&subtopicsOf(topic).length?'flex':'none'}">${['全部子分類',...subtopicsOf(topic)].map(sb=>`<button class="subtopic-tab ${subtopic===sb?'active':''}" data-subtopic="${sb}">${sb}</button>`).join('')}</div><div class="question-list ${viewMode}" id="question-list"></div><div class="pagination" id="pagination"></div></section>${rightBank()}</div></div>`;renderList();$('#question-search').addEventListener('input',e=>{search=e.target.value;currentPage=1;renderList();});$('#grade-filter').addEventListener('change',e=>{grade=e.target.value;currentPage=1;renderList();});$('#level-filter').addEventListener('change',e=>{level=e.target.value;currentPage=1;renderList();});$('#qtype-filter').addEventListener('change',e=>{qtype=e.target.value;currentPage=1;renderList();});const lb=$('#export-latex');if(lb)lb.onclick=exportLatexDialog;}
+function bank(){beginView();page='bank';assignmentContext=null;mockContext=null;stopQuizClock();shell();$('#main').innerHTML=`<div class="fade-in">${heading('QUESTION BANK','數學題庫','每一道題，都是通往理解的一步。',`<button class="secondary" data-action="collection">${icon('bookmark')}我的收藏</button>${S.user?.role==='teacher'?`<button class="secondary" data-page="newq">${icon('plus')}新增題目</button><button class="secondary" id="export-latex">${icon('file')}匯出 LaTeX</button>`:''}<button class="primary" data-page="import">${icon('upload')}匯入試卷</button>`)}${!S.user?`<div class="field-hint" style="margin:-9px 0 17px">訪客預覽 · 以下為題庫示例，學習紀錄尚未開始。<button class="text-button" data-action="login" style="font-size:calc(13px*var(--fs));margin-left:8px">登入學習 ${icon('arrow')}</button></div>`:''}${hero()}${metrics()}<div class="bank-layout"><section class="panel bank-panel"><div class="panel-heading"><h2>精選題目 <span class="small-text" id="question-count"></span></h2><div class="segmented"><button data-view="list" class="${viewMode==='list'?'active':''}" aria-label="清單檢視">${icon('list')}</button><button data-view="grid" class="${viewMode==='grid'?'active':''}" aria-label="卡片檢視">${icon('bank')}</button></div></div><div class="filters"><label class="search-field">${icon('search')}<input id="question-search" value="${esc(search)}" placeholder="搜尋題目、知識點或試卷名稱…" aria-label="搜尋题目"></label><select id="grade-filter" aria-label="年級"><option value="">所有年級</option>${grades.map(g=>`<option ${grade===g?'selected':''}>${g}</option>`).join('')}</select><select id="level-filter" aria-label="難度"><option value="">所有難度</option>${[1,2,3].map(i=>`<option value="${i}" ${Number(level)===i?'selected':''}>${levels[i]}</option>`).join('')}</select><select id="qtype-filter" aria-label="題型"><option value="">所有題型</option>${qtypes.map(t=>`<option ${qtype===t?'selected':''}>${t}</option>`).join('')}</select></div><div class="topic-tabs">${['全部題目',...topics].map(t=>`<button class="topic-tab ${topic===t?'active':''}" data-topic="${t}">${t}</button>`).join('')}</div><div class="topic-tabs subtopic-tabs" style="display:${topic!=='全部題目'&&topic!=='我的收藏'&&subtopicsOf(topic).length?'flex':'none'}">${['全部子分類',...subtopicsOf(topic)].map(sb=>`<button class="subtopic-tab ${subtopic===sb?'active':''}" data-subtopic="${sb}">${sb}</button>`).join('')}</div><div class="question-list ${viewMode}" id="question-list"></div><div class="pagination" id="pagination"></div></section>${rightBank()}</div></div>`;renderList();$('#question-search').addEventListener('input',e=>{search=e.target.value;currentPage=1;renderList();});$('#grade-filter').addEventListener('change',e=>{grade=e.target.value;currentPage=1;renderList();});$('#level-filter').addEventListener('change',e=>{level=e.target.value;currentPage=1;renderList();});$('#qtype-filter').addEventListener('change',e=>{qtype=e.target.value;currentPage=1;renderList();});const lb=$('#export-latex');if(lb)lb.onclick=exportLatexDialog;}
 // ── 匯出 LaTeX（XeLaTeX 可編譯）──
 // 後端只回傳 .tex 文字；圖形由瀏覽器轉成 PNG（XeLaTeX 不支援 WebP），再用最小 ZIP 打包下載。
 const CRC_TABLE=(()=>{const t=new Uint32Array(256);for(let n=0;n<256;n++){let c=n;for(let k=0;k<8;k++)c=c&1?0xEDB88320^(c>>>1):c>>>1;t[n]=c>>>0;}return t;})();
@@ -1210,7 +1212,8 @@ function aiExternalOk(what){
 
 function openFigureStudio(ctx){
   figStudio={ctx,figure:ctx.figure||'',original:ctx.figure||'',check:null,busy:'',manual:false,
-             spec:null,issues:[],specIssues:[],rounds:0,history:[]};
+             spec:null,issues:[],specIssues:[],rounds:0,history:[],
+             drawing:false,sketch:newSketch(),sketchTools:null};
   renderFigureStudio();
 }
 
@@ -1255,6 +1258,17 @@ function renderFigureStudio(){
   <p class="modal-intro">${esc(ctx.title||'（未命名題目）')}${ctx.topic?` · ${esc(ctx.topic)}${ctx.subtopic?' · '+esc(ctx.subtopic):''}`:''}</p>
   <div class="fig-question">${mathText(ctx.content||'')}</div>
   <div class="fig-preview">${figure?`<img src="${figure}" alt="題目圖形">`:`<span class="fig-empty">尚未有圖形</span>`}</div>
+  <div class="fig-draw-panel"${figStudio.drawing?'':' hidden'}>
+    <div class="writing-toolbar" id="fig-sketch-toolbar"><div class="tool-group">
+      <button type="button" class="icon-btn active" data-sketch-tool="pen" aria-label="畫筆">${icon('practice')}</button>
+      <button type="button" class="icon-btn" data-sketch-tool="eraser" aria-label="橡皮擦">${icon('eraser')}</button>
+      <span style="height:20px;border-right:1px solid var(--border);margin:0 4px"></span>
+      <button type="button" class="icon-btn" id="fig-sketch-undo" aria-label="撤銷">${icon('undo')}</button>
+      <button type="button" class="icon-btn" id="fig-sketch-clear" aria-label="清除">${icon('trash')}</button>
+    </div><span class="small-text">AI 畫得不對時，可以直接在方格上自己畫</span></div>
+    <div class="canvas-wrap figure-canvas-wrap"><canvas id="fig-studio-canvas" width="900" height="420" aria-label="手繪題目圖形畫布"></canvas></div>
+    <div class="submit-row"><span class="small-text">按「套用手繪圖形」才會取代目前的圖</span><div class="row-actions"><button class="primary" id="fig-sketch-apply">${icon('check')}套用手繪圖形</button></div></div>
+  </div>
   ${checkHtml}
   ${readHtml}
   ${historyHtml}
@@ -1263,6 +1277,7 @@ function renderFigureStudio(){
     <button class="secondary" id="fig-draw" ${canDraw&&!busy?'':'disabled'} title="${canDraw?'':'只有幾何與向量題材會用 AI 畫圖'}">${icon('spark')}${busy==='draw'?(figStudio.note||'正在畫圖…'):(figure?'重新生成圖形':'AI 生成圖形')}</button>
     <button class="secondary" id="fig-check" ${canCheck&&!busy?'':'disabled'} title="${S.ai.vision?'':'尚未設定視覺模型，無法自動核對'}">${icon('search')}${busy==='check'?'核對中…':'核對題目與圖形'}</button>
     ${needFix?`<button class="secondary" id="fig-fix" ${busy?'disabled':''}>${icon('spark')}依核對結果重畫</button>`:''}
+    <button type="button" class="secondary" id="fig-sketch-btn">${icon('practice')}${figStudio.drawing?'收起手繪畫布':'手繪圖形'}</button>
     <button type="button" class="secondary" id="fig-manual-btn">${icon('image')}手動插入圖片</button><input type="file" id="fig-manual" accept="image/png,image/jpeg,image/webp" hidden>
     ${figure?`<button class="secondary" id="fig-clear">移除圖形</button>`:''}
   </div>
@@ -1274,6 +1289,31 @@ function renderFigureStudio(){
   $('#fig-check').onclick=checkFigureInStudio;
   const fix=$('#fig-fix');if(fix)fix.onclick=()=>drawFigureInStudio(true);
   const clr=$('#fig-clear');if(clr)clr.onclick=()=>{figStudio.figure='';figStudio.check=null;figStudio.spec=null;figStudio.issues=[];figStudio.specIssues=[];figStudio.rounds=0;figStudio.history=[];renderFigureStudio();};
+  // 手繪畫布：AI 畫得不對、或題目圖形本來就得自己畫時，教師可以直接在方格上畫。
+  const sketchBtn=$('#fig-sketch-btn');
+  if(sketchBtn)sketchBtn.onclick=()=>{figStudio.drawing=!figStudio.drawing;renderFigureStudio();};
+  const sketchCanvas=$('#fig-studio-canvas');
+  if(sketchCanvas){
+    figStudio.sketchTools=wireFigureCanvas(sketchCanvas,figStudio.sketch,()=>{});
+    $$('[data-sketch-tool]').forEach(b=>b.onclick=()=>{
+      figStudio.sketch.tool=b.dataset.sketchTool;
+      $$('[data-sketch-tool]').forEach(x=>x.classList.toggle('active',x===b));
+    });
+    const undo=$('#fig-sketch-undo'),clear=$('#fig-sketch-clear'),apply=$('#fig-sketch-apply');
+    if(undo)undo.onclick=()=>{if(!figStudio.sketchTools.undo())toast('沒有可撤銷的線條。');};
+    if(clear)clear.onclick=()=>figStudio.sketchTools.clear();
+    if(apply)apply.onclick=()=>{
+      if(!figStudio.sketch.strokes.length)return toast('畫布是空的，先在方格上畫出圖形。');
+      const data=imageDataUrl(sketchCanvas);
+      if(!data)return toast('手繪圖形無法轉成圖片，請再試一次。');
+      // 手繪圖沒有規格可比對，清掉自動檢查的結果，避免顯示過期的結論。
+      figStudio.figure=data;figStudio.check=null;figStudio.spec=null;
+      figStudio.issues=[];figStudio.specIssues=[];figStudio.rounds=0;figStudio.history=[];
+      figStudio.manual=true;figStudio.drawing=false;
+      renderFigureStudio();
+      toast('已套用手繪圖形；按「使用這張圖形」就會寫回題目，也可以先按「核對題目與圖形」檢查。');
+    };
+  }
   const manual=$('#fig-manual');
   $('#fig-manual-btn').onclick=()=>manual&&manual.click();
   if(manual)manual.onchange=async e=>{
@@ -1611,16 +1651,43 @@ document.addEventListener('paste',async e=>{
   try{figImage=await fitFigureImage(file);renderFigImage();toast('已貼上題目圖形。');}
   catch(err){toast(err.message);}
 });
-function drawFigure(){const c=$('#figure-canvas');if(!c)return;const ctx=c.getContext('2d');ctx.fillStyle='#fff';ctx.fillRect(0,0,c.width,c.height);ctx.strokeStyle='#e2ece6';ctx.lineWidth=1;for(let x=30;x<c.width;x+=30){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,c.height);ctx.stroke();}for(let y=30;y<c.height;y+=30){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(c.width,y);ctx.stroke();}ctx.lineCap='round';ctx.lineJoin='round';ctx.strokeStyle='#1d3b32';ctx.lineWidth=4;for(const st of figStrokes){if(!st.points||st.points.length<2)continue;ctx.beginPath();ctx.moveTo(st.points[0].x,st.points[0].y);for(const pt of st.points.slice(1))ctx.lineTo(pt.x,pt.y);ctx.stroke();}}
-function setFigTool(tool){figTool=tool;$$('[data-fig-tool]').forEach(b=>b.classList.toggle('active',b.dataset.figTool===tool));}
-function initFigureCanvas(){const c=$('#figure-canvas');if(!c)return;drawFigure();const pos=e=>{const r=c.getBoundingClientRect();return{x:(e.clientX-r.left)/r.width*c.width,y:(e.clientY-r.top)/r.height*c.height};};
+// 方格畫布：題目圖形工作室與試卷拆題的手動輸入共用同一套繪圖邏輯。
+function paintFigureCanvas(canvas,strokes){
+  if(!canvas)return;
+  const ctx=canvas.getContext('2d');
+  ctx.fillStyle='#fff';ctx.fillRect(0,0,canvas.width,canvas.height);
+  ctx.strokeStyle='#e2ece6';ctx.lineWidth=1;
+  for(let x=30;x<canvas.width;x+=30){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,canvas.height);ctx.stroke();}
+  for(let y=30;y<canvas.height;y+=30){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(canvas.width,y);ctx.stroke();}
+  ctx.lineCap='round';ctx.lineJoin='round';ctx.strokeStyle='#1d3b32';ctx.lineWidth=4;
+  for(const st of strokes){
+    if(!st.points||st.points.length<2)continue;
+    ctx.beginPath();ctx.moveTo(st.points[0].x,st.points[0].y);
+    for(const pt of st.points.slice(1))ctx.lineTo(pt.x,pt.y);
+    ctx.stroke();
+  }
+}
+// 接上指標事件。筆／橡皮放在 state.tool，工具列由呼叫端自己做，兩邊才不會互相打架。
+function wireFigureCanvas(canvas,state,onChange){
+  if(!canvas)return null;
+  paintFigureCanvas(canvas,state.strokes);
+  const pos=e=>{const r=canvas.getBoundingClientRect();return{x:(e.clientX-r.left)/r.width*canvas.width,y:(e.clientY-r.top)/r.height*canvas.height};};
+  canvas.onpointerdown=e=>{if(!e.isPrimary&&e.pointerType!=='mouse')return;e.preventDefault();state.drawing={type:state.tool,points:[pos(e)]};if(state.tool==='pen')state.strokes.push(state.drawing);try{canvas.setPointerCapture(e.pointerId);}catch(_){}};
+  canvas.onpointermove=e=>{if(!state.drawing)return;state.drawing.points.push(pos(e));if(state.drawing.type==='pen')paintFigureCanvas(canvas,state.strokes);};
+  canvas.onpointerup=canvas.onpointercancel=()=>{if(!state.drawing)return;const d=state.drawing;state.drawing=null;if(d.type==='eraser'){const pts=d.points;state.strokes=state.strokes.filter(st=>!(st.points||[]).some(q=>pts.some(p=>Math.hypot(p.x-q.x,p.y-q.y)<26)));}paintFigureCanvas(canvas,state.strokes);if(onChange)onChange();};
+  return {
+    undo(){if(!state.strokes.length)return false;state.strokes.pop();paintFigureCanvas(canvas,state.strokes);if(onChange)onChange();return true;},
+    clear(){state.strokes=[];paintFigureCanvas(canvas,state.strokes);if(onChange)onChange();},
+  };
+}
+function newSketch(){return {strokes:[],drawing:null,tool:'pen'};}
+function drawFigure(){paintFigureCanvas($('#figure-canvas'),figSketch?figSketch.strokes:[]);}
+function setFigTool(tool){if(figSketch)figSketch.tool=tool;$$('[data-fig-tool]').forEach(b=>b.classList.toggle('active',b.dataset.figTool===tool));}
+function initFigureCanvas(){const c=$('#figure-canvas');if(!c)return;figSketch=newSketch();figCanvasTools=wireFigureCanvas(c,figSketch,()=>{const st=$('#fig-status');if(st)st.textContent=figSketch.strokes.length?'已繪製圖形，會與題目一併儲存。':'圖形已清空；不畫圖也可直接加入題目。';});
 $$('[data-fig-tool]').forEach(b=>b.onclick=()=>setFigTool(b.dataset.figTool));
-c.onpointerdown=e=>{if(!e.isPrimary&&e.pointerType!=='mouse')return;e.preventDefault();const pt=pos(e);figDrawing={type:figTool,points:[pt]};if(figTool==='pen')figStrokes.push(figDrawing);try{c.setPointerCapture(e.pointerId);}catch(_){}};
-c.onpointermove=e=>{if(!figDrawing)return;const pt=pos(e);figDrawing.points.push(pt);if(figDrawing.type==='pen')drawFigure();};
-c.onpointerup=c.onpointercancel=()=>{if(!figDrawing)return;const d=figDrawing;figDrawing=null;if(d.type==='eraser'){const pts=d.points;figStrokes=figStrokes.filter(st=>!(st.points||[]).some(q=>pts.some(p=>Math.hypot(p.x-q.x,p.y-q.y)<26)));}drawFigure();const st=$('#fig-status');if(st)st.textContent=figStrokes.length?'已繪製圖形，會與題目一併儲存。':'圖形已清空；不畫圖也可直接加入題目。';};
 const undo=$('#fig-undo'),clear=$('#fig-clear');
-if(undo)undo.onclick=()=>{if(!figStrokes.length)return toast('沒有可撤銷的線條。');figStrokes.pop();drawFigure();};
-if(clear)clear.onclick=()=>{if(!figStrokes.length)return;figStrokes=[];drawFigure();$('#fig-status').textContent='圖形已清空；不畫圖也可直接加入題目。';};}
+if(undo)undo.onclick=()=>{if(!figCanvasTools.undo())toast('沒有可撤銷的線條。');};
+if(clear)clear.onclick=()=>figCanvasTools.clear();}
 function importPage(){page='import';shell();if(!S.user)return loginModal(importPage);if(importStage===1)figImage=null;if(S.user.role!=='teacher'){$('#main').innerHTML=heading('TEACHER WORKSPACE','試卷拆題','把一份試卷，變成可持續練習的知識庫。')+`<section class="panel">${empty('試卷匯入只限教師','學生可在題庫開始練習；教師可拆題、核驗及匯入新題。',`<button class="primary" data-page="bank">前往數學題庫 ${icon('arrow')}</button>`)}</section>`;return;}
 $('#main').innerHTML=`<div class="fade-in">${heading('PAPER TO PRACTICE','試卷拆題','匯入試卷，自動分割題目與分類；確認後，建立校本題庫。')}<div class="import-layout"><section class="panel import-panel"><div class="stepper">${[[1,'匯入試卷'],[2,'拆題與核驗'],[3,'確認入庫']].map(([n,t])=>`<div class="step ${importStage===n?'active':''}"><span>${n}</span>${t}</div>`).join('')}</div><div id="import-content"></div></section><div class="right-stack"><section class="panel right-panel"><h2>${icon('file')}從試卷到學習路徑</h2><ul class="feature-list"><li><strong>${icon('import')}拆分獨立題目</strong>按題號辨識主題，子題保留在原題內；先預覽再匯入。</li><li><strong>${icon('bank')}建立知識分類</strong>分類、難度與參考答案均可修改，教師保有最後決定權。</li><li><strong>${icon('spark')}鞏固與加深</strong>同知識點題庫推薦，AI 接入後可生成變式與進階題。</li></ul></section><section class="panel right-panel tip-panel"><h2>${icon('lock')}資料與辨識說明</h2><p>文字型 PDF 可直接提取。<br>掃描卷與照片需接入視覺 AI；未接入時請貼上題目文字。<br><br>辨識、分類及 AI 答案皆需教師核验，不能直接作正式評核。</p></section></div></div></div>`;renderImportContent();}
 // ── AI 生成答案（答案／詳解／詳細解釋／評分標準）──
@@ -1657,51 +1724,160 @@ async function aiFillDraft(i, btn){
     toast('AI 已生成答案、詳解、詳細解釋與評分標準，請核驗後匯入。');
   }catch(e){ toast(e.message); btn.disabled = false; btn.innerHTML = old; }
 }
-async function aiFillManual(btn){
-  const content = $('#manual-content').value.trim();
+async function aiFillQuestion(prefix, state, btn){
+  const el=id=>$('#'+prefix+'-'+id);
+  const content = el('content').value.trim();
   if(!content) return toast('請先填寫題目內容，AI 才能生成答案。');
   if(!S.ai.configured) return toast('AI 尚未設定：請先設定模型端點，或手動填寫答案。');
   if(!aiConfirmExternal()) return;
-  const qtype = $('#manual-qtype').value;
+  const qtype = el('qtype').value;
   const old = btn.innerHTML;
   btn.disabled = true; btn.innerHTML = icon('clock') + 'AI 生成中…';
   try{
-    const r = await aiGenerateForQuestion({title:$('#manual-title').value.trim(), content, qtype,
-      options: qtype==='選擇題' ? manualOptions.map(o=>String(o||'').trim()).filter(Boolean) : [],
-      points: Number($('#manual-points').value)||5,
-      topic: $('#manual-topic').value, subtopic: $('#manual-subtopic').value}, true);
-    if(r.answer) $('#manual-answer').value = r.answer;
-    $('#manual-steps').value = (r.steps||[]).join('\n');
-    $('#manual-analysis').value = r.analysis || '';
-    if(qtype==='選擇題' && (r.options||[]).length && !manualOptions.filter(Boolean).length){
-      manualOptions.length = 0; r.options.forEach(o=>manualOptions.push(o)); renderManualOptions();
+    const r = await aiGenerateForQuestion({title:el('title').value.trim(), content, qtype,
+      options: qtype==='選擇題' ? state.options.map(o=>String(o||'').trim()).filter(Boolean) : [],
+      points: Number(el('points').value)||5,
+      topic: el('topic').value, subtopic: el('subtopic').value}, true);
+    if(r.answer) el('answer').value = r.answer;
+    el('steps').value = (r.steps||[]).join('\n');
+    el('analysis').value = r.analysis || '';
+    if(qtype==='選擇題' && (r.options||[]).length && !state.options.filter(Boolean).length){
+      state.options.length = 0; r.options.forEach(o=>state.options.push(o)); renderQuestionOptions(prefix, state);
     }
-    const store = rubricStores.get('manual');
+    const store = rubricStores.get(prefix);
     const items = store ? store.items : null;
     if(items){ items.length = 0; (r.rubric||[]).forEach(x=>items.push(x)); }
-    rubricRender('manual');
+    rubricRender(prefix);
     toast('AI 已生成答案、詳解、詳細解釋與評分標準，請核驗後加入題目。');
   }catch(e){ toast(e.message); }
   finally{ btn.disabled = false; btn.innerHTML = old; }
 }
+// ── 教師手動新增題目 ──
+// 不必先匯入整份試卷：填好欄位、加上圖形，按「建立題目」就直接進題庫。
+// 圖形用題目圖形工作室（AI 生成／核對／手繪／上傳都在同一個地方）；
+// 工作室是彈窗，關掉之後這一頁的表單內容還在，不會被清掉。
+let newQuestionFigure='';
+function renderNewQuestionFigure(){
+  const box=$('#newq-figure-preview');if(!box)return;
+  box.innerHTML=newQuestionFigure?`<img src="${newQuestionFigure}" alt="題目圖形預覽">`:'';
+}
+function newQuestionPage(){
+  page='newq';shell();
+  if(!S.user)return loginModal(newQuestionPage);
+  if(S.user.role!=='teacher'){
+    $('#main').innerHTML=heading('NEW QUESTION','新增題目','新增題目只限教師。')+`<section class="panel">${empty('此頁只限教師','教師可以在這裡直接建立題目並存入題庫。',`<button class="primary" data-page="bank">前往數學題庫 ${icon('arrow')}</button>`)}</section>`;
+    return;
+  }
+  newQuestionFigure='';
+  const state={options:[],rubric:[]};
+  $('#main').innerHTML=`<div class="fade-in">${heading('NEW QUESTION','新增題目','不必先匯入整份試卷，直接建立一道題目；圖形可以用 AI 生成、自己手繪或上傳圖片。')}<div class="import-layout"><section class="panel import-panel"><div class="form-field"><label class="field-label">題目圖形（可選）</label><div class="fig-source-row"><button type="button" class="secondary" id="newq-figure-btn">${icon('image')}開啟題目圖形</button><button type="button" class="secondary" id="newq-figure-clear">移除圖形</button><span class="small-text">AI 生成、核對、手繪、貼上或上傳圖片都在同一個工作室</span></div><div id="newq-figure-preview" class="fig-image-preview"></div></div>${questionFormHtml('newq',{submitLabel:'建立題目'})}</section><div class="right-stack"><section class="panel right-panel"><h2>${icon('bulb')}出題小提示</h2><ul class="feature-list"><li><strong>${icon('spark')}AI 生成答案</strong>填好題目內容後可按「AI 生成答案與評分標準」，產生的內容仍可自行修改。</li><li><strong>${icon('image')}題目圖形</strong>AI 畫得不對時，可以在工作室裡直接手繪，也可以上傳課本截圖或貼上圖片。</li><li><strong>${icon('check')}建立之後</strong>題目直接進入題庫，可以立即用來佈置作業或讓學生練習。</li></ul></section></div></div></div>`;
+  renderNewQuestionFigure();
+  $('#newq-figure-btn').onclick=()=>openFigureStudio({
+    title:$('#newq-title').value.trim(),content:$('#newq-content').value.trim(),
+    topic:$('#newq-topic').value,subtopic:$('#newq-subtopic').value,qtype:$('#newq-qtype').value,
+    figure:newQuestionFigure||'',
+    apply:async figure=>{newQuestionFigure=figure||'';closeModal();renderNewQuestionFigure();
+      toast(figure?'已設定題目圖形。':'已移除題目圖形。');}});
+  $('#newq-figure-clear').onclick=()=>{newQuestionFigure='';renderNewQuestionFigure();toast('已移除題目圖形。');};
+  wireQuestionForm('newq',state,{figure:()=>newQuestionFigure||undefined,onSubmit:async draft=>{
+    const btn=$('#newq-add');
+    btn.disabled=true;btn.textContent='正在建立…';
+    try{
+      await api('/api/questions/import',{questions:[draft]});
+      await refresh();bank();
+      toast(`已新增題目「${draft.title}」，可以直接用來佈置作業。`);
+    }catch(e){
+      btn.disabled=false;btn.innerHTML=icon('check')+'建立題目';
+      $('#newq-error').textContent=e.message;
+    }
+  }});
+}
 
-// 手動輸入的選項編輯（僅選擇題）
-let manualOptions=[];
-let manualRubric=[];
-function renderManualOptions(){
-  const box=$('#manual-options');if(!box)return;
-  box.innerHTML=manualOptions.map((o,j)=>`<div class="option-row"><span class="option-letter">${OPTION_LETTERS[j]}</span><input value="${esc(o)}" maxlength="600" data-manual-option="${j}" placeholder="選項 ${OPTION_LETTERS[j]}"><button type="button" class="icon-btn" data-manual-drop="${j}" aria-label="刪除選項 ${OPTION_LETTERS[j]}">${icon('trash')}</button></div>`).join('');
-  const pv=$('#manual-options-preview');if(pv)pv.innerHTML=optionsPreviewHtml(manualOptions);
-  box.querySelectorAll('[data-manual-option]').forEach(inp=>inp.addEventListener('input',e=>{
-    manualOptions[Number(e.target.dataset.manualOption)]=e.target.value;
-    const p=$('#manual-options-preview');if(p)p.innerHTML=optionsPreviewHtml(manualOptions);
+// ── 題目表單（試卷拆題的手動輸入 與 題庫的「新增題目」共用） ──
+// prefix 用來組出欄位 id（manual／newq）；兩處不會同時出現在畫面上。
+function questionFormHtml(prefix, opts){
+  const o=opts||{};
+  const qtype=o.qtype||'選擇題';
+  return `<div class="form-grid">
+    <div class="form-field"><label class="field-label" for="${prefix}-title">題目標題</label><input id="${prefix}-title" maxlength="200" placeholder="例如：直角三角形求斜邊"></div>
+    <div class="form-field"><label class="field-label" for="${prefix}-topic">知識分類</label><select id="${prefix}-topic">${topics.map(t=>`<option>${t}</option>`).join('')}</select></div>
+    <div class="form-field"><label class="field-label" for="${prefix}-subtopic">子分類</label><select id="${prefix}-subtopic"></select></div>
+    <div class="form-field"><label class="field-label" for="${prefix}-grade">年級</label><select id="${prefix}-grade">${grades.map(g=>`<option${g==='中三'?' selected':''}>${g}</option>`).join('')}</select></div>
+    <div class="form-field"><label class="field-label" for="${prefix}-level">難度</label><select id="${prefix}-level">${[1,2,3].map(n=>`<option value="${n}">${levels[n]}</option>`).join('')}</select></div>
+    <div class="form-field"><label class="field-label" for="${prefix}-qtype">題型</label><select id="${prefix}-qtype">${qtypes.map(t=>`<option>${t}</option>`).join('')}</select></div>
+    <div class="form-field"><label class="field-label" for="${prefix}-points">分值</label><input id="${prefix}-points" type="number" min="1" max="100" value="5"></div>
+  </div>
+  <div class="form-field"><label class="field-label" for="${prefix}-content">題目內容</label><textarea class="answer-field import-text" id="${prefix}-content" maxlength="79000" placeholder="例如：直角三角形兩條直角邊長為 3 cm 和 4 cm，求斜邊長。"></textarea></div>
+  <div class="form-field" id="${prefix}-options-field" style="display:none"><label class="field-label">選項（選擇題 · 可增刪修改）<span class="small-text" style="font-weight:400">　2 至 10 個，學生作答時可直接點選</span></label><div class="option-list" id="${prefix}-options"></div><div class="option-actions"><button type="button" class="text-button" id="${prefix}-add-option">＋ 新增選項</button></div><div class="math-preview" id="${prefix}-options-preview"></div></div>
+  <div class="form-grid"><div class="form-field"><label class="field-label" for="${prefix}-answer">參考答案（可留空）</label><input id="${prefix}-answer" maxlength="4000" placeholder="例如：5 cm"></div><div class="form-field"><label class="field-label" for="${prefix}-hint">解題提示</label><input id="${prefix}-hint" maxlength="4000" placeholder="例如：用畢氏定理"></div></div>
+  <div class="form-field"><label class="field-label" for="${prefix}-steps">詳解步驟（每行一步）<span class="small-text" style="font-weight:400">　支援 LaTeX：$x^2-5x+6=0$</span></label><textarea class="answer-field import-text" id="${prefix}-steps" maxlength="40000" placeholder="第一步：設未知數…&#10;第二步：列式…&#10;第三步：求解並檢查…"></textarea></div>
+  <div class="form-field"><label class="field-label" for="${prefix}-analysis">詳細解釋（考點 · 解題思路 · 常見錯誤）</label><textarea class="answer-field import-text" id="${prefix}-analysis" maxlength="6000" placeholder="說明本題考什麼、解題關鍵與容易出錯的地方。"></textarea></div>
+  ${rubricFieldHtml(prefix, [], qtype)}
+  <div class="ai-answer-row"><button type="button" class="secondary" id="${prefix}-ai-answer">${icon('spark')}AI 生成答案與評分標準</button><span class="small-text">依題目內容自動產生答案、詳解、詳細解釋與評分標準百分比（可再修改）</span></div>
+  ${o.figureHtml||''}
+  <p class="error-text" id="${prefix}-error"></p>
+  <button class="secondary wide" id="${prefix}-add">${icon('check')}${o.submitLabel||'加入題目'}</button>`;
+}
+
+// 選擇題的選項編輯（可增刪、即時預覽）。
+function renderQuestionOptions(prefix, state){
+  const box=$('#'+prefix+'-options');if(!box)return;
+  box.innerHTML=state.options.map((o,j)=>`<div class="option-row"><span class="option-letter">${OPTION_LETTERS[j]}</span><input value="${esc(o)}" maxlength="600" data-option-index="${j}" placeholder="選項 ${OPTION_LETTERS[j]}"><button type="button" class="icon-btn" data-option-drop="${j}" aria-label="刪除選項 ${OPTION_LETTERS[j]}">${icon('trash')}</button></div>`).join('');
+  const preview=$('#'+prefix+'-options-preview');if(preview)preview.innerHTML=optionsPreviewHtml(state.options);
+  box.querySelectorAll('[data-option-index]').forEach(inp=>inp.addEventListener('input',e=>{
+    state.options[Number(e.target.dataset.optionIndex)]=e.target.value;
+    const p=$('#'+prefix+'-options-preview');if(p)p.innerHTML=optionsPreviewHtml(state.options);
   }));
-  box.querySelectorAll('[data-manual-drop]').forEach(b=>b.addEventListener('click',()=>{
-    manualOptions.splice(Number(b.dataset.manualDrop),1);renderManualOptions();
+  box.querySelectorAll('[data-option-drop]').forEach(b=>b.addEventListener('click',()=>{
+    state.options.splice(Number(b.dataset.optionDrop),1);renderQuestionOptions(prefix,state);
   }));
 }
 
-function renderImportContent(){const r=$('#import-content');if(importStage===1){r.innerHTML=`<div class="form-field"><label class="field-label" for="paper-name">試卷名稱</label><input id="paper-name" value="${esc(paperName)}" placeholder="例如：中三數學 · 第一學期測驗" maxlength="200"></div><label class="dropzone" id="paper-drop">${icon('upload')}<strong id="paper-filename">${paperFile?esc(paperFile.name):'點擊或拖入試卷檔案'}</strong><small>文字型 PDF / PNG / JPG · 最多 10 MB · 圖片會自動框出題目圖形並裁到題目右邊</small><input type="file" id="paper-upload" accept="application/pdf,image/png,image/jpeg" hidden></label><div class="divider-text"><span>或直接貼上題目文字</span></div><label class="field-label" for="paper-text">試卷內容<span class="small-text" style="font-weight:400">　數學式可用 LaTeX：$x^2-5x+6=0$、$\\frac{1}{2}$、$\\sqrt{3}$</span></label><textarea class="answer-field import-text" id="paper-text" placeholder="1. 解方程 $x^2-5x+6=0$。\n\n2. 直角三角形兩邊長為 $3\\text{cm}$ 及 $4\\text{cm}$，求斜邊長。\n\n3. 擲一枚公平骰子，求點數大於 4 的概率。" maxlength="79000">${esc(paperText)}</textarea><button class="text-button" id="sample-paper" style="font-size:calc(14px*var(--fs));margin-top:12px">填入示例試卷 ${icon('arrow')}</button>${S.ai.mode==='external'?`<label class="checkbox-line"><input type="checkbox" id="paper-consent">允許將試卷傳送到學校配置的外部 AI（未同意時，文字只用本地規則處理）</label>`:''}<div id="parse-error"></div><div class="submit-row"><span class="small-text">${S.ai.configured?'可用 AI 識別，仍需核驗':'本地規則拆題 · 分類結果需核驗'}</span><div class="row-actions"><button class="secondary" id="parse-paper">先拆分預覽 ${icon('spark')}</button><button class="primary" id="auto-import-paper">全自動拆分並匯入 ${icon('check')}</button></div></div><div class="divider-text"><span>或手動輸入題目並繪製圖形</span></div><div class="manual-entry"><div class="form-grid"><div class="form-field"><label class="field-label" for="manual-title">題目標題</label><input id="manual-title" maxlength="200" placeholder="例如：直角三角形求斜邊"></div><div class="form-field"><label class="field-label" for="manual-topic">知識分類</label><select id="manual-topic">${topics.map(t=>`<option>${t}</option>`).join('')}</select></div><div class="form-field"><label class="field-label" for="manual-subtopic">子分類</label><select id="manual-subtopic"></select></div><div class="form-field"><label class="field-label" for="manual-grade">年級</label><select id="manual-grade">${grades.map(g=>`<option${g==='中三'?' selected':''}>${g}</option>`).join('')}</select></div><div class="form-field"><label class="field-label" for="manual-level">難度</label><select id="manual-level">${[1,2,3].map(n=>`<option value="${n}">${levels[n]}</option>`).join('')}</select></div><div class="form-field"><label class="field-label" for="manual-qtype">題型</label><select id="manual-qtype">${qtypes.map(t=>`<option>${t}</option>`).join('')}</select></div><div class="form-field"><label class="field-label" for="manual-points">分值</label><input id="manual-points" type="number" min="1" max="100" value="5"></div></div><div class="form-field"><label class="field-label" for="manual-content">題目內容</label><textarea class="answer-field import-text" id="manual-content" maxlength="79000" placeholder="例如：直角三角形兩條直角邊長為 3 cm 和 4 cm，求斜邊長。"></textarea></div><div class="form-field" id="manual-options-field" style="display:none"><label class="field-label">選項（選擇題 · 可增刪修改）<span class="small-text" style="font-weight:400">　2 至 10 個，學生作答時可直接點選</span></label><div class="option-list" id="manual-options"></div><div class="option-actions"><button type="button" class="text-button" id="manual-add-option">＋ 新增選項</button></div><div class="math-preview" id="manual-options-preview"></div></div><div class="form-grid"><div class="form-field"><label class="field-label" for="manual-answer">參考答案（可留空）</label><input id="manual-answer" maxlength="4000" placeholder="例如：5 cm"></div><div class="form-field"><label class="field-label" for="manual-hint">解題提示</label><input id="manual-hint" maxlength="4000" placeholder="例如：用畢氏定理"></div></div><div class="form-field"><label class="field-label" for="manual-steps">詳解步驟（每行一步）<span class="small-text" style="font-weight:400">　支援 LaTeX：$x^2-5x+6=0$</span></label><textarea class="answer-field import-text" id="manual-steps" maxlength="40000" placeholder="第一步：設未知數…&#10;第二步：列式…&#10;第三步：求解並檢查…"></textarea></div><div class="form-field"><label class="field-label" for="manual-analysis">詳細解釋（考點 · 解題思路 · 常見錯誤）</label><textarea class="answer-field import-text" id="manual-analysis" maxlength="6000" placeholder="說明本題考什麼、解題關鍵與容易出錯的地方。"></textarea></div>${rubricFieldHtml('manual', [], '選擇題')}<div class="ai-answer-row"><button type="button" class="secondary" id="manual-ai-answer">${icon('spark')}AI 生成答案與評分標準</button><span class="small-text">依題目內容自動產生答案、詳解、詳細解釋與評分標準百分比（可再修改）</span></div><div class="form-field"><label class="field-label">題目圖形（可選）</label><div class="fig-source-row"><label class="secondary fig-upload" for="fig-upload">${icon('image')}上傳圖形圖片<input id="fig-upload" type="file" accept="image/png,image/jpeg,image/webp" hidden></label><span class="small-text">可直接貼上截圖（Ctrl/⌘+V）；上傳後會取代手繪圖，最多 2 MB。</span></div><div id="fig-image-preview" class="fig-image-preview"></div><div class="writing-toolbar" id="fig-toolbar"><div class="tool-group"><button class="icon-btn active" data-fig-tool="pen" aria-label="畫筆">${icon('practice')}</button><button class="icon-btn" data-fig-tool="eraser" aria-label="橡皮擦">${icon('eraser')}</button><span style="height:20px;border-right:1px solid var(--border);margin:0 4px"></span><button class="icon-btn" id="fig-undo" aria-label="撤銷">${icon('undo')}</button><button class="icon-btn" id="fig-clear" aria-label="清除">${icon('trash')}</button></div><span class="small-text">在方格上畫出三角形、坐標軸等圖形</span></div><div class="canvas-wrap figure-canvas-wrap"><canvas id="figure-canvas" width="900" height="420" aria-label="題目圖形畫布"></canvas></div><p class="field-hint" id="fig-status">圖形會與題目一併儲存；不畫圖也可直接加入題目。</p></div><p class="error-text" id="manual-error"></p><button class="secondary wide" id="manual-add">${icon('check')}加入這道題目</button></div>`;$('#paper-name').oninput=e=>paperName=e.target.value;$('#paper-text').oninput=e=>{paperText=e.target.value;if(paperText.trim()){paperFile=null;$('#paper-filename').textContent='已使用貼上文字（不會同時提交檔案）';}};$('#sample-paper').onclick=()=>{paperName='中三數學 · 示例練習卷';paperText='1. 解方程 $x^2-5x+6=0$。\n\n2. 直角三角形兩條直角邊長為 $3\\text{ cm}$ 和 $4\\text{ cm}$，求斜邊長。\n\n3. 擲一枚公平骰子，求點數大於 4 的概率。\n\n4. 已知 $f(x)=2x+1$，求 $f(3)$。';paperFile=null;renderImportContent();};const select=async f=>{try{const dataUrl=await fileData(f,['application/pdf','image/png','image/jpeg']);paperFile={name:f.name,mime:f.type,dataUrl};paperText='';if(!paperName)paperName=f.name.replace(/\.[^.]+$/,'');renderImportContent();}catch(e){toast(e.message);}};$('#paper-upload').onchange=e=>select(e.target.files[0]);const d=$('#paper-drop');d.ondragover=e=>{e.preventDefault();d.classList.add('dragover');};d.ondragleave=()=>d.classList.remove('dragover');d.ondrop=e=>{e.preventDefault();select(e.dataTransfer.files[0]);};$('#parse-paper').onclick=parsePaper;$('#auto-import-paper').onclick=autoImportPaper;
+// 接上題目表單：分類連動、選項編輯、AI 生成答案、評分標準、送出。
+// state = {options:[], rubric:[]}；圖形由呼叫端自己處理（兩邊的圖形來源不同）。
+function wireQuestionForm(prefix, state, opts){
+  const o=opts||{};
+  const el=id=>$('#'+prefix+'-'+id);
+  const syncSub=()=>{const sel=el('subtopic');if(!sel)return;const cur=sel.value;
+    sel.innerHTML=subtopicsOf(el('topic').value).map(v=>`<option${v===cur?' selected':''}>${esc(v)}</option>`).join('');};
+  el('topic').onchange=syncSub;syncSub();
+  if(el('add-option'))el('add-option').onclick=()=>{
+    if(state.options.length>=OPTION_LETTERS.length)return toast(`最多 ${OPTION_LETTERS.length} 個選項。`);
+    state.options.push('');renderQuestionOptions(prefix,state);
+    const box=el('options'),last=box&&box.querySelector('input:last-of-type');if(last)last.focus();
+  };
+  el('qtype').addEventListener('change',e=>{
+    const isChoice=e.target.value==='選擇題';
+    const field=el('options-field');if(field)field.style.display=isChoice?'block':'none';
+    if(isChoice&&!state.options.length){state.options=['','','',''];renderQuestionOptions(prefix,state);}
+    // 選擇題／填空題是客觀題，隱藏評分標準（也不需要 AI 評分步驟）。
+    toggleRubricField(prefix,e.target.value);
+  });
+  renderQuestionOptions(prefix,state);
+  rubricBind(prefix,state.rubric);
+  if(el('ai-answer'))el('ai-answer').onclick=()=>aiFillQuestion(prefix,state,el('ai-answer'));
+  el('add').onclick=()=>{
+    const title=el('title').value.trim(),content=el('content').value.trim();
+    if(!title)return el('error').textContent='請填寫題目標題。';
+    if(!content)return el('error').textContent='請填寫題目內容。';
+    el('error').textContent='';
+    const qtype=el('qtype').value;
+    o.onSubmit({title,content,topic:el('topic').value,subtopic:el('subtopic').value,
+      level:Number(el('level').value),grade:el('grade').value,qtype,
+      points:Number(el('points').value)||5,answer:el('answer').value.trim(),
+      steps:el('steps').value.split('\n').map(x=>x.trim()).filter(Boolean),
+      analysis:el('analysis').value.trim(),
+      rubric:isObjectiveQtype(qtype)?[]:cleanRubric(state.rubric),
+      options:qtype==='選擇題'?state.options.map(x=>String(x||'').trim()).filter(Boolean):[],
+      hint:el('hint').value.trim(),source:o.source||'手動輸入',tags:[],
+      figure:o.figure?o.figure():undefined});
+  };
+}
+
+const manualState={options:[],rubric:[]};
+function renderImportContent(){const r=$('#import-content');if(importStage===1){
+  const manualFigureHtml=`<div class="form-field"><label class="field-label">題目圖形（可選）</label><div class="fig-source-row"><label class="secondary fig-upload" for="fig-upload">${icon('image')}上傳圖形圖片<input id="fig-upload" type="file" accept="image/png,image/jpeg,image/webp" hidden></label><span class="small-text">可直接貼上截圖（Ctrl/⌘+V）；上傳後會取代手繪圖，最多 4 MB。</span></div><div id="fig-image-preview" class="fig-image-preview"></div><div class="writing-toolbar" id="fig-toolbar"><div class="tool-group"><button type="button" class="icon-btn active" data-fig-tool="pen" aria-label="畫筆">${icon('practice')}</button><button type="button" class="icon-btn" data-fig-tool="eraser" aria-label="橡皮擦">${icon('eraser')}</button><span style="height:20px;border-right:1px solid var(--border);margin:0 4px"></span><button type="button" class="icon-btn" id="fig-undo" aria-label="撤銷">${icon('undo')}</button><button type="button" class="icon-btn" id="fig-clear" aria-label="清除">${icon('trash')}</button></div><span class="small-text">在方格上畫出三角形、坐標軸等圖形</span></div><div class="canvas-wrap figure-canvas-wrap"><canvas id="figure-canvas" width="900" height="420" aria-label="題目圖形畫布"></canvas></div><p class="field-hint" id="fig-status">圖形會與題目一併儲存；不畫圖也可直接加入題目。</p></div>`;
+  const manualForm=questionFormHtml('manual',{submitLabel:'加入這道題目',figureHtml:manualFigureHtml});r.innerHTML=`<div class="form-field"><label class="field-label" for="paper-name">試卷名稱</label><input id="paper-name" value="${esc(paperName)}" placeholder="例如：中三數學 · 第一學期測驗" maxlength="200"></div><label class="dropzone" id="paper-drop">${icon('upload')}<strong id="paper-filename">${paperFile?esc(paperFile.name):'點擊或拖入試卷檔案'}</strong><small>文字型 PDF / PNG / JPG · 最多 10 MB · 圖片會自動框出題目圖形並裁到題目右邊</small><input type="file" id="paper-upload" accept="application/pdf,image/png,image/jpeg" hidden></label><div class="divider-text"><span>或直接貼上題目文字</span></div><label class="field-label" for="paper-text">試卷內容<span class="small-text" style="font-weight:400">　數學式可用 LaTeX：$x^2-5x+6=0$、$\\frac{1}{2}$、$\\sqrt{3}$</span></label><textarea class="answer-field import-text" id="paper-text" placeholder="1. 解方程 $x^2-5x+6=0$。\n\n2. 直角三角形兩邊長為 $3\\text{cm}$ 及 $4\\text{cm}$，求斜邊長。\n\n3. 擲一枚公平骰子，求點數大於 4 的概率。" maxlength="79000">${esc(paperText)}</textarea><button class="text-button" id="sample-paper" style="font-size:calc(14px*var(--fs));margin-top:12px">填入示例試卷 ${icon('arrow')}</button>${S.ai.mode==='external'?`<label class="checkbox-line"><input type="checkbox" id="paper-consent">允許將試卷傳送到學校配置的外部 AI（未同意時，文字只用本地規則處理）</label>`:''}<div id="parse-error"></div><div class="submit-row"><span class="small-text">${S.ai.configured?'可用 AI 識別，仍需核驗':'本地規則拆題 · 分類結果需核驗'}</span><div class="row-actions"><button class="secondary" id="parse-paper">先拆分預覽 ${icon('spark')}</button><button class="primary" id="auto-import-paper">全自動拆分並匯入 ${icon('check')}</button></div></div><div class="divider-text"><span>或手動輸入題目並繪製圖形</span></div><div class="manual-entry">${manualForm}</div>`;$('#paper-name').oninput=e=>paperName=e.target.value;$('#paper-text').oninput=e=>{paperText=e.target.value;if(paperText.trim()){paperFile=null;$('#paper-filename').textContent='已使用貼上文字（不會同時提交檔案）';}};$('#sample-paper').onclick=()=>{paperName='中三數學 · 示例練習卷';paperText='1. 解方程 $x^2-5x+6=0$。\n\n2. 直角三角形兩條直角邊長為 $3\\text{ cm}$ 和 $4\\text{ cm}$，求斜邊長。\n\n3. 擲一枚公平骰子，求點數大於 4 的概率。\n\n4. 已知 $f(x)=2x+1$，求 $f(3)$。';paperFile=null;renderImportContent();};const select=async f=>{try{const dataUrl=await fileData(f,['application/pdf','image/png','image/jpeg']);paperFile={name:f.name,mime:f.type,dataUrl};paperText='';if(!paperName)paperName=f.name.replace(/\.[^.]+$/,'');renderImportContent();}catch(e){toast(e.message);}};$('#paper-upload').onchange=e=>select(e.target.files[0]);const d=$('#paper-drop');d.ondragover=e=>{e.preventDefault();d.classList.add('dragover');};d.ondragleave=()=>d.classList.remove('dragover');d.ondrop=e=>{e.preventDefault();select(e.dataTransfer.files[0]);};$('#parse-paper').onclick=parsePaper;$('#auto-import-paper').onclick=autoImportPaper;
 initFigureCanvas();
 renderFigImage();
 const figInput=$('#fig-upload');
@@ -1713,30 +1889,16 @@ if(figInput)figInput.onchange=async e=>{
   try{figImage=await fitFigureImage(f);renderFigImage();toast('已加入題目圖形，可繼續填寫其他欄位。');}
   catch(err){toast(err.message);}
 };
-const syncSub=()=>{const t=$('#manual-topic').value,sel=$('#manual-subtopic'),cur=sel.value;sel.innerHTML=subtopicsOf(t).map(v=>`<option${v===cur?' selected':''}>${esc(v)}</option>`).join('');};
-$('#manual-topic').onchange=syncSub;syncSub();
-if($('#manual-add-option'))$('#manual-add-option').onclick=()=>{
-  if(manualOptions.length>=OPTION_LETTERS.length)return toast(`最多 ${OPTION_LETTERS.length} 個選項。`);
-  manualOptions.push('');renderManualOptions();
-  const box=$('#manual-options'),last=box&&box.querySelector('input:last-of-type');if(last)last.focus();
-};
-if($('#manual-qtype'))$('#manual-qtype').addEventListener('change',e=>{
-  const isChoice=e.target.value==='選擇題';
-  const f=$('#manual-options-field');if(f)f.style.display=isChoice?'block':'none';
-  if(isChoice&&!manualOptions.length){manualOptions=['','','',''];renderManualOptions();}
-  // 選擇題／填空題是客觀題，隱藏評分標準（也不需要 AI 評分步驟）。
-  toggleRubricField('manual', e.target.value);
-});
-renderManualOptions();
-rubricBind('manual', manualRubric);
-if($('#manual-ai-answer'))$('#manual-ai-answer').onclick=()=>aiFillManual($('#manual-ai-answer'));
-$('#manual-add').onclick=()=>{const title=$('#manual-title').value.trim(),content=$('#manual-content').value.trim();
-if(!title)return $('#manual-error').textContent='請填寫題目標題。';
-if(!content)return $('#manual-error').textContent='請填寫題目內容。';
-$('#manual-error').textContent='';
-const mq=$('#manual-qtype').value;drafts.push({title,content,topic:$('#manual-topic').value,subtopic:$('#manual-subtopic').value,level:Number($('#manual-level').value),grade:$('#manual-grade').value,qtype:mq,points:Number($('#manual-points').value)||5,answer:$('#manual-answer').value.trim(),steps:$('#manual-steps').value.split('\n').map(x=>x.trim()).filter(Boolean),analysis:$('#manual-analysis').value.trim(),rubric:isObjectiveQtype(mq)?[]:cleanRubric(manualRubric),options:mq==='選擇題'?manualOptions.map(o=>String(o||'').trim()).filter(Boolean):[],hint:$('#manual-hint').value.trim(),source:'手動輸入',tags:[],figure:(figImage||figStrokes.length)?figureDataUrl():undefined});
-$('#manual-title').value='';$('#manual-content').value='';$('#manual-answer').value='';$('#manual-hint').value='';$('#manual-steps').value='';$('#manual-analysis').value='';manualOptions=[];renderManualOptions();manualRubric.length=0;rubricRender('manual');figStrokes=[];figImage=null;drawFigure();renderFigImage();setFigTool('pen');
-importStage=2;importPage();toast('已加入題目，請核驗後匯入。');};}else if(importStage===2){r.innerHTML=`<div class="section-head"><div><h2 style="font-size:calc(18px*var(--fs))">已拆分 ${drafts.length} 道題目</h2><p>請逐題確認原文、分類、難度、分值及參考答案。</p>${importMethod?`<p class="small-text">拆分方式：${esc(importMethod)}</p>`:''}</div></div><div class="import-warning">辨識結果不是答案核驗。參考答案空白的題目會交由教師批閱；若要啟用答案核對，請填寫正確答案。若 AI 在試卷圖片中框出圖形，已自動裁好放在題目右邊，可逐題確認或按「移除圖形」拿掉。</div><div id="draft-list">${drafts.map((q,i)=>`<article class="draft-card" data-draft="${i}"><div class="draft-top"><strong>題目 ${String(i+1).padStart(2,'0')} · 待教師核驗</strong><button class="icon-btn" data-remove-draft="${i}" aria-label="移除此題">${icon('trash')}</button></div><div class="form-field"><label class="field-label">題目標題</label><input data-field="title" value="${esc(q.title)}" maxlength="200"></div><div class="question-stem draft-stem"><div class="question-stem-text"><div class="form-field"><label class="field-label">題目內容（可修正分割結果）<span class="small-text" style="font-weight:400">　下方即時預覽渲染後的數學式</span></label><textarea class="answer-field" data-field="content" maxlength="60000">${esc(q.content)}</textarea><div class="math-preview" data-preview="${i}">${mathText(q.content)}</div></div></div>${q.figure?`<div class="draft-figure"><img src="${q.figure}" alt="題目圖形"><button class="text-button" data-remove-figure="${i}">移除圖形</button></div>`:''}</div><div class="form-grid"><div class="form-field"><label class="field-label">知識分類</label><select data-field="topic">${topics.map(t=>`<option ${q.topic===t?'selected':''}>${t}</option>`).join('')}</select></div><div class="form-field"><label class="field-label">子分類</label><select data-field="subtopic">${subtopicsOf(q.topic).map(v=>`<option ${(q.subtopic||'')===v?'selected':''}>${esc(v)}</option>`).join('')}</select></div><div class="form-field"><label class="field-label">題型</label><select data-field="qtype">${qtypes.map(t=>`<option ${(q.qtype||'解答題')===t?'selected':''}>${t}</option>`).join('')}</select></div><div class="form-field"><label class="field-label">難度</label><select data-field="level">${[1,2,3].map(n=>`<option value="${n}" ${q.level===n?'selected':''}>${levels[n]}</option>`).join('')}</select></div><div class="form-field"><label class="field-label">分值</label><input data-field="points" type="number" min="1" max="100" value="${q.points}"></div><div class="form-field"><label class="field-label">參考答案（可留空）</label><input data-field="answer" value="${esc(q.answer)}" maxlength="4000"></div></div><div class="form-field options-field" data-options-field="${i}" style="display:${q.qtype==='選擇題'?'block':'none'}"><label class="field-label">選項（選擇題 · 可增刪修改）</label><div class="option-list" data-option-list="${i}"></div><div class="option-actions"><button type="button" class="text-button" data-add-option="${i}">＋ 新增選項</button><span class="small-text">支援 2 至 10 個選項，學生作答時可直接點選</span></div></div><div class="form-field"><label class="field-label">解題提示</label><input data-field="hint" value="${esc(q.hint)}" maxlength="4000"></div><div class="form-field"><label class="field-label">詳解步驟（每行一步）<span class="small-text" style="font-weight:400">　支援 LaTeX：$x^2-5x+6=0$</span></label><textarea class="answer-field" data-field="steps" maxlength="40000">${esc((q.steps||[]).join('\n'))}</textarea><div class="math-preview" data-steps-preview="${i}">${(q.steps||[]).map(st=>`<div class="preview-option">${mathText(st)}</div>`).join('')}</div></div><div class="form-field"><label class="field-label">詳細解釋（考點 · 解題思路 · 常見錯誤）</label><textarea class="answer-field" data-field="analysis" maxlength="6000">${esc(q.analysis||'')}</textarea><div class="math-preview" data-analysis-preview="${i}">${mathText(q.analysis||'')}</div></div><div class="form-field" data-rubric-field="draft-${i}"${isObjectiveQtype(q.qtype)?' style="display:none"':''}>${rubricEditorHtml('draft-'+i, q.rubric||[])}</div><div class="form-field objective-note" data-objective-note="draft-${i}"${isObjectiveQtype(q.qtype)?'':' style="display:none"'}>客觀題（選擇題／填空題）以「答案是否正確」評分，不需要評分標準，也不會產生 AI 評分步驟。</div><div class="ai-answer-row"><button type="button" class="secondary" data-ai-answer="${i}">${icon('spark')}AI 生成答案與評分標準</button><span class="small-text">依題目自動產生答案、詳解、詳細解釋與評分標準百分比（可再修改）</span></div><div class="ai-answer-row"><button type="button" class="secondary" data-ai-figure="${i}">${icon('spark')}AI 生成圖形</button><button type="button" class="secondary" data-fig-manual="${i}">${icon('upload')}手動插入圖形</button><span class="small-text">AI 只為幾何／向量題材畫圖，畫好可核對題目與圖形是否相符，或自行插入圖片</span></div></article>`).join('')}</div><label class="checkbox-line"><input type="checkbox" id="confirm-drafts">我已確認題目內容、分類與評分依據，允許加入校本題庫。</label><div id="import-error"></div><div class="submit-row"><button class="secondary" id="back-import">返回修改來源</button><button class="primary" id="save-drafts">確認匯入 ${drafts.length} 題 ${icon('check')}</button></div>`;$$('[data-field]').forEach(f=>f.oninput=e=>{const card=e.target.closest('[data-draft]'),i=Number(card.dataset.draft),k=e.target.dataset.field;drafts[i][k]=k==='steps'?e.target.value.split('\n').map(x=>x.trim()).filter(Boolean):['level','points'].includes(k)?Number(e.target.value):e.target.value;if(k==='steps'||k==='analysis'){const pv=card.querySelector(k==='steps'?'[data-steps-preview]':'[data-analysis-preview]');if(pv)pv.innerHTML=k==='steps'?(drafts[i].steps||[]).map(x=>`<div class="preview-option">${mathText(x)}</div>`).join(''):mathText(e.target.value);}});$$('[data-field="topic"]').forEach(f=>f.onchange=e=>{const card=e.target.closest('[data-draft]'),sub=card&&card.querySelector('[data-field="subtopic"]');if(sub){sub.innerHTML=subtopicsOf(e.target.value).map(v=>`<option>${esc(v)}</option>`).join('');drafts[Number(card.dataset.draft)].subtopic=sub.value;}});
+wireQuestionForm('manual',manualState,{
+  figure:()=>(figImage||(figSketch&&figSketch.strokes.length))?figureDataUrl():undefined,
+  onSubmit:draft=>{
+    drafts.push(draft);
+    ['title','content','answer','hint','steps','analysis'].forEach(f=>{$('#manual-'+f).value='';});
+    manualState.options=[];renderQuestionOptions('manual',manualState);
+    manualState.rubric.length=0;rubricRender('manual');
+    figImage=null;initFigureCanvas();setFigTool('pen');renderFigImage();
+    importStage=2;importPage();toast('已加入題目，請核驗後匯入。');
+  }});}else if(importStage===2){r.innerHTML=`<div class="section-head"><div><h2 style="font-size:calc(18px*var(--fs))">已拆分 ${drafts.length} 道題目</h2><p>請逐題確認原文、分類、難度、分值及參考答案。</p>${importMethod?`<p class="small-text">拆分方式：${esc(importMethod)}</p>`:''}</div></div><div class="import-warning">辨識結果不是答案核驗。參考答案空白的題目會交由教師批閱；若要啟用答案核對，請填寫正確答案。若 AI 在試卷圖片中框出圖形，已自動裁好放在題目右邊，可逐題確認或按「移除圖形」拿掉。</div><div id="draft-list">${drafts.map((q,i)=>`<article class="draft-card" data-draft="${i}"><div class="draft-top"><strong>題目 ${String(i+1).padStart(2,'0')} · 待教師核驗</strong><button class="icon-btn" data-remove-draft="${i}" aria-label="移除此題">${icon('trash')}</button></div><div class="form-field"><label class="field-label">題目標題</label><input data-field="title" value="${esc(q.title)}" maxlength="200"></div><div class="question-stem draft-stem"><div class="question-stem-text"><div class="form-field"><label class="field-label">題目內容（可修正分割結果）<span class="small-text" style="font-weight:400">　下方即時預覽渲染後的數學式</span></label><textarea class="answer-field" data-field="content" maxlength="60000">${esc(q.content)}</textarea><div class="math-preview" data-preview="${i}">${mathText(q.content)}</div></div></div>${q.figure?`<div class="draft-figure"><img src="${q.figure}" alt="題目圖形"><button class="text-button" data-remove-figure="${i}">移除圖形</button></div>`:''}</div><div class="form-grid"><div class="form-field"><label class="field-label">知識分類</label><select data-field="topic">${topics.map(t=>`<option ${q.topic===t?'selected':''}>${t}</option>`).join('')}</select></div><div class="form-field"><label class="field-label">子分類</label><select data-field="subtopic">${subtopicsOf(q.topic).map(v=>`<option ${(q.subtopic||'')===v?'selected':''}>${esc(v)}</option>`).join('')}</select></div><div class="form-field"><label class="field-label">題型</label><select data-field="qtype">${qtypes.map(t=>`<option ${(q.qtype||'解答題')===t?'selected':''}>${t}</option>`).join('')}</select></div><div class="form-field"><label class="field-label">難度</label><select data-field="level">${[1,2,3].map(n=>`<option value="${n}" ${q.level===n?'selected':''}>${levels[n]}</option>`).join('')}</select></div><div class="form-field"><label class="field-label">分值</label><input data-field="points" type="number" min="1" max="100" value="${q.points}"></div><div class="form-field"><label class="field-label">參考答案（可留空）</label><input data-field="answer" value="${esc(q.answer)}" maxlength="4000"></div></div><div class="form-field options-field" data-options-field="${i}" style="display:${q.qtype==='選擇題'?'block':'none'}"><label class="field-label">選項（選擇題 · 可增刪修改）</label><div class="option-list" data-option-list="${i}"></div><div class="option-actions"><button type="button" class="text-button" data-add-option="${i}">＋ 新增選項</button><span class="small-text">支援 2 至 10 個選項，學生作答時可直接點選</span></div></div><div class="form-field"><label class="field-label">解題提示</label><input data-field="hint" value="${esc(q.hint)}" maxlength="4000"></div><div class="form-field"><label class="field-label">詳解步驟（每行一步）<span class="small-text" style="font-weight:400">　支援 LaTeX：$x^2-5x+6=0$</span></label><textarea class="answer-field" data-field="steps" maxlength="40000">${esc((q.steps||[]).join('\n'))}</textarea><div class="math-preview" data-steps-preview="${i}">${(q.steps||[]).map(st=>`<div class="preview-option">${mathText(st)}</div>`).join('')}</div></div><div class="form-field"><label class="field-label">詳細解釋（考點 · 解題思路 · 常見錯誤）</label><textarea class="answer-field" data-field="analysis" maxlength="6000">${esc(q.analysis||'')}</textarea><div class="math-preview" data-analysis-preview="${i}">${mathText(q.analysis||'')}</div></div><div class="form-field" data-rubric-field="draft-${i}"${isObjectiveQtype(q.qtype)?' style="display:none"':''}>${rubricEditorHtml('draft-'+i, q.rubric||[])}</div><div class="form-field objective-note" data-objective-note="draft-${i}"${isObjectiveQtype(q.qtype)?'':' style="display:none"'}>客觀題（選擇題／填空題）以「答案是否正確」評分，不需要評分標準，也不會產生 AI 評分步驟。</div><div class="ai-answer-row"><button type="button" class="secondary" data-ai-answer="${i}">${icon('spark')}AI 生成答案與評分標準</button><span class="small-text">依題目自動產生答案、詳解、詳細解釋與評分標準百分比（可再修改）</span></div><div class="ai-answer-row"><button type="button" class="secondary" data-ai-figure="${i}">${icon('spark')}AI 生成圖形</button><button type="button" class="secondary" data-fig-manual="${i}">${icon('upload')}手動插入圖形</button><span class="small-text">AI 只為幾何／向量題材畫圖，畫好可核對題目與圖形是否相符，或自行插入圖片</span></div></article>`).join('')}</div><label class="checkbox-line"><input type="checkbox" id="confirm-drafts">我已確認題目內容、分類與評分依據，允許加入校本題庫。</label><div id="import-error"></div><div class="submit-row"><button class="secondary" id="back-import">返回修改來源</button><button class="primary" id="save-drafts">確認匯入 ${drafts.length} 題 ${icon('check')}</button></div>`;$$('[data-field]').forEach(f=>f.oninput=e=>{const card=e.target.closest('[data-draft]'),i=Number(card.dataset.draft),k=e.target.dataset.field;drafts[i][k]=k==='steps'?e.target.value.split('\n').map(x=>x.trim()).filter(Boolean):['level','points'].includes(k)?Number(e.target.value):e.target.value;if(k==='steps'||k==='analysis'){const pv=card.querySelector(k==='steps'?'[data-steps-preview]':'[data-analysis-preview]');if(pv)pv.innerHTML=k==='steps'?(drafts[i].steps||[]).map(x=>`<div class="preview-option">${mathText(x)}</div>`).join(''):mathText(e.target.value);}});$$('[data-field="topic"]').forEach(f=>f.onchange=e=>{const card=e.target.closest('[data-draft]'),sub=card&&card.querySelector('[data-field="subtopic"]');if(sub){sub.innerHTML=subtopicsOf(e.target.value).map(v=>`<option>${esc(v)}</option>`).join('');drafts[Number(card.dataset.draft)].subtopic=sub.value;}});
 // 選項編輯：每個草稿的選項輸入列 ＋ 即時渲染預覽
 function renderDraftOptions(i){
   const box=document.querySelector(`[data-option-list="${i}"]`);
@@ -2175,7 +2337,7 @@ $('#bulk-template').onclick=()=>{const order=$('#bulk-order')?$('#bulk-order').v
 $('#bulk-class-toggle').onchange=e=>{$('#bulk-class-field').hidden=!e.target.checked;};
 $('#bulk-submit').onclick=async()=>{const {rows,errors}=bulkPreview();if(errors.length)return toast('請先修正名單格式錯誤。');if(!rows.length)return toast('請輸入至少一位學生。');if(rows.length>200)return toast('每批最多200位學生。');const makeClass=$('#bulk-class-toggle').checked,className=$('#bulk-class-name').value.trim();if(makeClass&&!className)return toast('請填寫班級名稱，或取消建立班級。');const b=$('#bulk-submit');b.disabled=true;b.textContent='正在建立…';try{const {users:created}=await api('/api/users/bulk',{students:rows.map(r=>({username:r.username,name:r.name,seat:r.seat,password:r.password}))});let classNote='';if(makeClass){try{const {class:room}=await api('/api/classes',{name:className,studentIds:created.map(u=>u.id)});classNote=`<div class="hint-box" style="margin-top:12px">已同時建立班級「${esc(room.name)}」，共 ${room.studentCount} 位學生，可直接佈置作業。</div>`;}catch(err){classNote=`<div class="inline-error" style="margin-top:12px">帳戶已建立，但班級未建立：${esc(err.message)}可在「作業與成績」重新建立班級。</div>`;}}const merged=rows.map((r,i)=>({username:r.username,password:r.password,name:(created[i]&&created[i].name)||r.name||r.username,seat:(created[i]&&created[i].seat)||r.seat||''}));const hasName=merged.some(r=>r.name!==r.username),hasSeat=merged.some(r=>r.seat);const cols=[['學號',r=>r.username]].concat(hasName?[['姓名',r=>r.name]]:[],hasSeat?[['班內號',r=>r.seat]]:[],[['密碼',r=>r.password]]);const text=[cols.map(c=>c[0]).join('\t'),...merged.map(r=>cols.map(c=>c[1](r)).join('\t'))].join('\n');$('#bulk-result').innerHTML=`<div class="import-warning">已建立 ${created.length} 個帳戶${merged.some(r=>r.name===r.username)?`（${merged.filter(r=>r.name===r.username).length} 個未填姓名，以學號顯示）`:""}。密碼只會顯示這一次，請立即複製並私下發給學生。</div>${classNote}<pre class="code-block">${esc(text)}</pre><button class="secondary wide" id="bulk-copy" style="margin-top:10px">${icon('file')}複製帳號密碼</button>`;$('#bulk-copy').onclick=async()=>{try{await navigator.clipboard.writeText(text);toast('已複製，請妥善保管。');}catch{toast('無法自動複製，請手動選取。');}};$('#bulk-students').value='';$('#bulk-class-toggle').checked=false;$('#bulk-class-field').hidden=true;$('#bulk-class-name').value='';bulkPreview();toast(`已建立 ${created.length} 個學生帳戶。`);}catch(err){$('#bulk-error').textContent=err.message;}finally{b.disabled=false;b.innerHTML=icon('upload')+'批次建立學生帳戶';}};}catch(e){toast(e.message);}}
 function deploymentHelp(){modal(`<p class="eyebrow">SERVER SETUP</p><h2>啟動與部署說明</h2><p class="modal-intro">資料保存在網站伺服器；實際位置由管理員確認。以下是可選部署方式，不代表目前網站的部署狀態。</p><h3>本機預覽</h3><p class="info-note">雙擊 start.command，或用 Python 3 啟動：</p><pre class="code-block">python3 server.py --host 127.0.0.1 --port 8765</pre><p class="info-note">瀏覽器開啟 http://127.0.0.1:8765。</p><h3>校內連線</h3><p class="info-note">由資訊人員將 --host 設為伺服器的校內 IP，並限制防火牆只允許校內來源；正式使用需反向代理 HTTPS。不要把演示帳戶直接用於全校。</p><h3>目前帳戶範圍</h3><p class="info-note">初始演示配置包含學生與教師帳戶；實際帳戶由管理員確認。教師可在「設定與隱私」建立獨立學生帳戶，避免共用作答紀錄。可在「作業與成績」建立班級並發布作業；校內單一登入及批量帳戶管理仍可再擴充。</p><div class="import-warning">資料保存在網站伺服器；實際位置由管理員確認。預設資料庫路徑為 data/mathpath.sqlite3；備份及保存年限應按學校規定安排。AI 必須另行配置，未配置時手写作答由教師批閱。</div>`);}
-function navigate(target){if(busy)return toast('目前操作正在進行，請等待完成。');preserveDraft();if(page==='practice'&&strokes.length&&target!=='practice'&&!lastResult&&!confirm('尚未提交的手寫內容未保存。確定離開？'))return;beginView();$('#sidebar').classList.remove('open');if(target!=='practice'){assignmentContext=null;mockContext=null;stopQuizClock();}page=target;switch(target){case'homework':homeworkPage();break;case'calendar':calendarPage();break;case'mock':mockPage();break;case'ai':aiConfigPage();break;case'bank':bank();break;case'practice':practice();break;case'import':importPage();break;case'mistakes':recordsPage();break;case'growth':growthPage();break;case'settings':settingsPage();break;default:bank();}window.scrollTo({top:0,behavior:'instant'});}
+function navigate(target){if(busy)return toast('目前操作正在進行，請等待完成。');preserveDraft();if(page==='practice'&&strokes.length&&target!=='practice'&&!lastResult&&!confirm('尚未提交的手寫內容未保存。確定離開？'))return;beginView();$('#sidebar').classList.remove('open');if(target!=='practice'){assignmentContext=null;mockContext=null;stopQuizClock();}page=target;switch(target){case'homework':homeworkPage();break;case'calendar':calendarPage();break;case'mock':mockPage();break;case'ai':aiConfigPage();break;case'bank':bank();break;case'practice':practice();break;case'import':importPage();break;case'newq':newQuestionPage();break;case'mistakes':recordsPage();break;case'growth':growthPage();break;case'settings':settingsPage();break;default:bank();}window.scrollTo({top:0,behavior:'instant'});}
 document.addEventListener('click',e=>{const b=e.target.closest('button');if(!b||b.disabled)return;if(b.dataset.fontScale){applyFontScale(b.dataset.fontScale);shell();toast(`字體已設為「${FONT_SCALES.find(([id])=>id===b.dataset.fontScale)[1]}」，只影響這台裝置。`);return;}if(b.dataset.page)return navigate(b.dataset.page);if(b.dataset.assignment)return assignmentPage(Number(b.dataset.assignment));if(b.dataset.mock)return mockExamPage(Number(b.dataset.mock));if(b.dataset.mockQ)return openMockQuestion(Number(b.dataset.mockQ));if(b.dataset.results)return resultsPage(Number(b.dataset.results));if(b.dataset.assignmentQ)return openAssignmentQuestion(Number(b.dataset.assignmentQ));if(b.dataset.nextQuestion)return openAssignmentQuestion(Number(b.dataset.nextQuestion));if(b.dataset.prevQuestion)return openAssignmentQuestion(Number(b.dataset.prevQuestion));if(b.dataset.qid)return openQuestion(b.dataset.qid);if(b.dataset.topic){topic=b.dataset.topic;subtopic='';currentPage=1;return bank();}if(b.dataset.subtopic){subtopic=b.dataset.subtopic;currentPage=1;return bank();}if(b.dataset.pagination){currentPage=Number(b.dataset.pagination);return renderList();}if(b.dataset.view){viewMode=b.dataset.view;return bank();}if(b.dataset.save){const id=Number(b.dataset.save);if(bookmarks.has(id))bookmarks.delete(id);else bookmarks.add(id);saveBookmarks();b.classList.toggle('saved',bookmarks.has(id));b.setAttribute('aria-pressed',String(bookmarks.has(id)));toast(bookmarks.has(id)?'已收藏題目（本瀏覽器）':'已取消收藏');if(page==='bank'&&topic==='我的收藏')renderList();return;}if(b.dataset.answerMode){if(busy)return toast('正在保存作答，請等待完成。');preserveDraft();answerMode=b.dataset.answerMode;$$('[data-answer-mode]').forEach(x=>x.classList.toggle('active',x===b));renderAnswerArea();return;}if(b.dataset.generate)return generateQuestion(b.dataset.generate,currentQuestion&&currentQuestion.id);if(b.dataset.aigen)return aiGenerateModal(b.dataset.aigen);if(b.dataset.aifig)return openFigureStudioForQuestion(b.dataset.aifig);if(b.dataset.aifigManual)return openFigureStudioForQuestion(b.dataset.aifigManual,true);if(b.dataset.aifigClear)return clearQuestionFigure(b.dataset.aifigClear);if(b.dataset.genKind)return generateQuestion(b.dataset.genKind,b.dataset.genQid);if(b.dataset.removeDraft){drafts.splice(Number(b.dataset.removeDraft),1);return renderImportContent();}if(b.dataset.history){historyFilter=b.dataset.history;return recordsPage();}if(b.dataset.review)return reviewModal(b.dataset.review);
 if(b.dataset.editUser)return editStudentModal(Number(b.dataset.editUser));switch(b.dataset.action){case'login':loginModal();break;case'close-modal':closeModal();break;case'collection':topic='我的收藏';search='';currentPage=1;bank();break;case'start':requireLogin(()=>{const a=S.attempts.find(a=>a.status==='graded'&&a.score<a.maxScore);openQuestion(a?.questionId||S.questions[0]?.id||1);});break;case'hand-demo':openQuestion(1);break;}});
 $('#account').onclick=accountModal;$('#avatar').onclick=accountModal;$('#menu-btn').onclick=()=>$('#sidebar').classList.toggle('open');$('#help-btn').innerHTML=icon('help');$('#help-btn').onclick=()=>modal(`<p class="eyebrow">LEARN WITH MATHPATH</p><h2>讓練習真正帶來理解</h2><ul class="feature-list"><li><strong>01 · 選一個知識點</strong>在題庫搜尋、篩選難度，從基礎題開始。</li><li><strong>02 · 寫出解題過程</strong>用滑鼠或觸控筆手寫、輸入文字，或上傳紙本手稿。</li><li><strong>03 · 看回饋，再練一次</strong>接入 AI 可取得建議評分；教師可覆核並給簡要建議。</li><li><strong>04 · 相似鞏固，進階加深</strong>做同知識點題目，練到能說清楚原因，再挑戰進階題。</li></ul><div class="import-warning">資料保存在網站伺服器；實際位置由管理員確認。作業分數與 AI 建議須教師覆核；自主練習可即時評分，未配置 AI 的手稿待批閱。所有學習紀錄均來自實際提交。</div>`);

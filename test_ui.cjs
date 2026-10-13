@@ -530,14 +530,14 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   // 手動新增選擇題：切到選擇題應出現選項編輯，可增刪並即時預覽
   await page.locator('#manual-qtype').selectOption('選擇題');
   await page.locator('#manual-options-field').waitFor({state:'visible',timeout:5000});
-  assert.equal(await page.locator('#manual-options [data-manual-option]').count(), 4, '選擇題預設 4 個選項欄');
+  assert.equal(await page.locator('#manual-options [data-option-index]').count(), 4, '選擇題預設 4 個選項欄');
   await page.locator('#manual-add-option').click();
-  assert.equal(await page.locator('#manual-options [data-manual-option]').count(), 5, '可新增第 5 個選項');
-  await page.locator('#manual-options [data-manual-option]').last().fill('$x=6$');
+  assert.equal(await page.locator('#manual-options [data-option-index]').count(), 5, '可新增第 5 個選項');
+  await page.locator('#manual-options [data-option-index]').last().fill('$x=6$');
   await page.waitForTimeout(200);
   assert.ok(await page.locator('#manual-options-preview .katex').count() > 0, '選項預覽應渲染數學式');
-  await page.locator('#manual-options [data-manual-drop]').last().click();
-  assert.equal(await page.locator('#manual-options [data-manual-option]').count(), 4, '可刪除選項');
+  await page.locator('#manual-options [data-option-drop]').last().click();
+  assert.equal(await page.locator('#manual-options [data-option-index]').count(), 4, '可刪除選項');
   await page.locator('#manual-qtype').selectOption('解答題');
   assert.equal(await page.locator('#manual-options-field').isVisible(), false, '非選擇題應隱藏選項編輯');
 
@@ -1449,6 +1449,7 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
     const out=[];assignmentContext={id:91};mockContext=null;out.push(draftKey());assignmentContext=null;mockContext={id:7};out.push(draftKey());mockContext=null;out.push(draftKey());return out;
   }),['mathpath_draft_1_91_301','mathpath_draft_1_mock_7_301','mathpath_draft_1_practice_301']);
 
+  if(errors.length)throw new Error('PAGE ERRORS: '+errors.join(' || '));
   // 延迟 FileReader：读取时阻止提交，切题丢弃结果，键盘可选／移除并保留恢复逻辑。
   await page.evaluate(()=>{assignmentContext=null;mockContext=null;currentQuestion=window.regressionQs[0];practice();answerMode='upload';renderAnswerArea();window.realFileData=fileData;fileData=()=>new Promise(resolve=>{window.releaseFileRead=resolve;});});
   await page.locator('#answer-select').focus();const chooser=page.waitForEvent('filechooser');await page.keyboard.press('Enter');const fileChooser=await chooser;
@@ -1627,6 +1628,37 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   assert.match(await page.locator('.fig-read-grid').innerText(),/圖上畫的/);
   assert.match(await page.locator('#toast').innerText(),/核對通過/,'要告訴教師已經自動核對通過');
   await page.screenshot({path:path.join(__dirname,'..','MathPath-題圖核對.png'),fullPage:true});
+  // AI 畫得不對時，教師可以直接在方格上自己畫，套用後取代 AI 的圖
+  const aiFigureSrc=await page.locator('.fig-preview img').getAttribute('src');
+  assert.equal(await page.locator('.fig-draw-panel').isHidden(),true,'手繪畫布預設收起');
+  await page.locator('#fig-sketch-btn').click();
+  await page.waitForFunction(()=>!document.querySelector('.fig-draw-panel').hidden);
+  assert.match(await page.locator('#fig-sketch-btn').innerText(),/收起手繪畫布/);
+  // 點按鈕或截圖都可能捲動頁面，畫之前一定要重新量畫布位置。
+  const drawSketch=async()=>{
+    await page.locator('#fig-studio-canvas').scrollIntoViewIfNeeded();
+    const b=await page.locator('#fig-studio-canvas').boundingBox();
+    await page.mouse.move(b.x+60,b.y+40);await page.mouse.down();await page.mouse.move(b.x+220,b.y+170,{steps:8});await page.mouse.up();
+    await page.mouse.move(b.x+220,b.y+170);await page.mouse.down();await page.mouse.move(b.x+60,b.y+170,{steps:8});await page.mouse.up();
+  };
+  await page.locator('[data-sketch-tool=pen]').click();
+  await drawSketch();
+  assert.equal(await page.evaluate(()=>figStudio.sketch.strokes.length),2,'手繪線條要記錄在工作室狀態裡');
+  await page.screenshot({path:path.join(__dirname,'..','MathPath-教師手繪圖形.png'),fullPage:true});
+  await page.locator('#fig-sketch-undo').click();
+  assert.equal(await page.evaluate(()=>figStudio.sketch.strokes.length),1,'撤銷要拿掉最後一筆');
+  await page.locator('#fig-sketch-clear').click();
+  assert.equal(await page.evaluate(()=>figStudio.sketch.strokes.length),0,'清除要清空畫布');
+  await page.locator('#fig-sketch-apply').click();
+  assert.match(await page.locator('#toast').innerText(),/畫布是空的/,'空畫布不能套用');
+  await drawSketch();
+  assert.equal(await page.evaluate(()=>figStudio.sketch.strokes.length),2,'重畫後要有兩筆線條');
+  await page.locator('#fig-sketch-apply').click();
+  await page.waitForFunction(prev=>{const i=document.querySelector('.fig-preview img');return !!(i&&i.complete&&i.naturalWidth>0&&i.src!==prev);},aiFigureSrc,{timeout:8000});
+  assert.equal(await page.locator('.fig-draw-panel').isHidden(),true,'套用後畫布要收起');
+  assert.match(await page.locator('#fig-sketch-btn').innerText(),/手繪圖形/);
+  assert.match(await page.locator('#toast').innerText(),/已套用手繪圖形/);
+  assert.equal(await page.locator('.fig-check').count(),0,'手繪圖沒有規格可比對，舊的自動檢查結果要清掉');
   await page.locator('#fig-apply').click();
   for(let i=0;i<50&&aiFigureSent.figures[0].id!==2;i++)await page.waitForTimeout(100);
   assert.equal(aiFigureSent.figures[0].id,2,'幾何題的圖形要寫回該題');
@@ -1662,6 +1694,45 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   assert.equal(afterClose.open,false,'關閉工作室後貼上圖片不應把視窗叫回來');
   assert.equal(afterClose.prevented,false,'未開工作室時不應攔掉貼上事件');
   console.log('PASS: 題目圖形工作室（AI 只出規格、程式繪圖、自動核對與重畫、手動插入圖片、關閉後不留狀態）');
+
+  // 教師手動新增題目：不必先匯入整份試卷，圖形用工作室（AI 生成／手繪／上傳）
+  await page.locator('[data-page=newq]').first().click();
+  await page.locator('#newq-title').waitFor({timeout:8000});
+  assert.equal(await page.locator('#newq-title').count(),1,'題庫要能進到「新增題目」表單');
+  await page.locator('#newq-title').fill('圓的切線長度');
+  await page.locator('#newq-content').fill('已知圓 O 的半徑為 3 cm，P 為圓外一點，PT 為切線，OP = 5 cm，求 PT。');
+  await page.locator('#newq-topic').selectOption('幾何');
+  await page.locator('#newq-qtype').selectOption('解答題');
+  await page.locator('#newq-points').fill('6');
+  await page.locator('#newq-answer').fill('4 cm');
+  // 圖形：開工作室 → 手繪 → 套用 → 使用這張圖形；工作室是彈窗，關掉後表單內容要還在
+  await page.locator('#newq-figure-btn').click();
+  await page.locator('#fig-sketch-btn').waitFor({timeout:8000});
+  await page.locator('#fig-sketch-btn').click();
+  await page.locator('#fig-studio-canvas').scrollIntoViewIfNeeded();
+  const nbox=await page.locator('#fig-studio-canvas').boundingBox();
+  await page.mouse.move(nbox.x+60,nbox.y+60);await page.mouse.down();await page.mouse.move(nbox.x+220,nbox.y+160,{steps:8});await page.mouse.up();
+  await page.locator('#fig-sketch-apply').click();
+  assert.match(await page.locator('.fig-preview img').getAttribute('src'),/^data:image\/(webp|png);base64,/,'手繪圖形要成為工作室目前的圖');
+  await page.locator('#fig-apply').click();
+  await page.waitForFunction(()=>!!document.querySelector('#newq-figure-preview img'),{timeout:8000});
+  assert.match(await page.locator('#newq-figure-preview img').getAttribute('src'),/^data:image\/(webp|png);base64,/,'手繪圖形要顯示在新增題目的表單上');
+  assert.equal(await page.locator('#newq-title').inputValue(),'圓的切線長度','關閉工作室後表單內容要保留');
+  assert.equal(await page.locator('#newq-points').inputValue(),'6','關閉工作室後表單內容要保留');
+  await page.screenshot({path:path.join(__dirname,'..','MathPath-新增題目.png'),fullPage:true});
+  const beforeNew=importedQuestions?importedQuestions.length:0;
+  await page.locator('#newq-add').click();
+  for(let i=0;i<60&&(importedQuestions?importedQuestions.length:0)===beforeNew;i++)await page.waitForTimeout(100);
+  const created=importedQuestions[importedQuestions.length-1];
+  assert.equal(created.title,'圓的切線長度','要送出剛填的題目');
+  assert.equal(created.topic,'幾何');
+  assert.equal(created.qtype,'解答題');
+  assert.equal(created.points,6);
+  assert.equal(created.source,'手動輸入');
+  assert.match(created.figure,/^data:image\/(webp|png);base64,/,'圖形要一起送出');
+  assert.match(await page.locator('#toast').innerText(),/已新增題目/,'建立後要提示');
+  assert.equal(await page.locator('#question-list').count(),1,'建立後要回到題庫');
+  console.log('PASS: 教師手動新增題目（表單、工作室手繪圖形、建立後直接進題庫）');
 
 
 

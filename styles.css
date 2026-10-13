@@ -331,4 +331,8 @@ button.danger:disabled{opacity:.6}
 .fig-read ul{margin:0;padding-left:17px}
 .fig-read li{margin:2px 0;word-break:break-word}
 .fig-spec{margin:8px 0 0;padding:9px 11px;background:#f6f8f5;border-radius:6px;font-size:calc(12px*var(--fs));line-height:1.6;color:#4a5c50;max-height:240px;overflow:auto;white-space:pre-wrap;word-break:break-word}
+.fig-draw-panel{margin-bottom:12px;padding:12px;border:1px solid var(--border);border-radius:10px;background:#fcfdfb}
+.fig-draw-panel[hidden]{display:none}
+.fig-draw-panel .canvas-wrap{margin-top:10px}
+.fig-draw-panel .writing-toolbar{margin-bottom:0}
 @media (max-width:640px){.fig-read-grid{grid-template-columns:minmax(0,1fr)}}
