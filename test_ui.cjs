@@ -578,7 +578,7 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
 
   await page.locator('#figure-canvas').scrollIntoViewIfNeeded();
   const fbox=await page.locator('#figure-canvas').boundingBox();
-  await page.locator('[data-fig-tool=pen]').click();
+  await page.locator('#fig-toolbar [data-tool=pen]').click();
   await page.mouse.move(fbox.x+70,fbox.y+40);await page.mouse.down();await page.mouse.move(fbox.x+200,fbox.y+150,{steps:8});await page.mouse.up();
   await page.mouse.move(fbox.x+200,fbox.y+150);await page.mouse.down();await page.mouse.move(fbox.x+70,fbox.y+150,{steps:8});await page.mouse.up();
   assert.match(await page.locator('#fig-status').innerText(),/已繪製圖形/,'畫圖後應提示已繪製');
@@ -1634,25 +1634,63 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   await page.locator('#fig-sketch-btn').click();
   await page.waitForFunction(()=>!document.querySelector('.fig-draw-panel').hidden);
   assert.match(await page.locator('#fig-sketch-btn').innerText(),/收起手繪畫布/);
-  // 點按鈕或截圖都可能捲動頁面，畫之前一定要重新量畫布位置。
-  const drawSketch=async()=>{
+  // 畫布在畫面上會被縮放，所以一律用「佔畫布幾成」的相對座標，不要用固定像素。
+  const sketchBox=async()=>{
     await page.locator('#fig-studio-canvas').scrollIntoViewIfNeeded();
-    const b=await page.locator('#fig-studio-canvas').boundingBox();
-    await page.mouse.move(b.x+60,b.y+40);await page.mouse.down();await page.mouse.move(b.x+220,b.y+170,{steps:8});await page.mouse.up();
-    await page.mouse.move(b.x+220,b.y+170);await page.mouse.down();await page.mouse.move(b.x+60,b.y+170,{steps:8});await page.mouse.up();
+    return await page.locator('#fig-studio-canvas').boundingBox();
   };
-  await page.locator('[data-sketch-tool=pen]').click();
-  await drawSketch();
+  const at=(b,fx,fy)=>[b.x+b.width*fx,b.y+b.height*fy];
+  const dragOnSketch=async(tool,from,to)=>{
+    await page.locator(`#fig-studio-toolbar [data-tool=${tool}]`).click();
+    const b=await sketchBox();
+    const p0=at(b,...from),p1=at(b,...to);
+    await page.mouse.move(p0[0],p0[1]);await page.mouse.down();
+    await page.mouse.move(p1[0],p1[1],{steps:6});await page.mouse.up();
+  };
+  const penOnSketch=async()=>{
+    const b=await sketchBox();
+    const p0=at(b,0.10,0.15),p1=at(b,0.35,0.55),p2=at(b,0.10,0.55);
+    await page.mouse.move(p0[0],p0[1]);await page.mouse.down();await page.mouse.move(p1[0],p1[1],{steps:8});await page.mouse.up();
+    await page.mouse.move(p1[0],p1[1]);await page.mouse.down();await page.mouse.move(p2[0],p2[1],{steps:8});await page.mouse.up();
+  };
+  await page.locator('#fig-studio-toolbar [data-tool=pen]').click();
+  await penOnSketch();
   assert.equal(await page.evaluate(()=>figStudio.sketch.strokes.length),2,'手繪線條要記錄在工作室狀態裡');
+  assert.equal(await page.evaluate(()=>figStudio.sketch.strokes.every(x=>x.type==='pen')),true,'自由筆的型別要是 pen');
+  // 直線、虛線、圓：拖曳就畫出來
+  await dragOnSketch('line',[0.08,0.78],[0.42,0.78]);
+  await dragOnSketch('dashed',[0.08,0.90],[0.42,0.90]);
+  await dragOnSketch('circle',[0.62,0.45],[0.76,0.45]);
+  assert.deepEqual(await page.evaluate(()=>figStudio.sketch.strokes.map(x=>x.type+(x.dashed?'-dashed':''))),
+    ['pen','pen','line','line-dashed','circle'],'要有自由筆、直線、虛線與圓');
+  // 畫布會被縮放，所以只驗「圓的半徑是拖曳出來的實際長度」而不是固定像素。
+  assert.ok(await page.evaluate(()=>{const c=figStudio.sketch.strokes[4];
+    return Math.hypot(c.points[1].x-c.points[0].x,c.points[1].y-c.points[0].y)>40;}),'圓要有實際半徑');
+  // 點名稱：選了才出現輸入框，放完自動換下一個字母
+  assert.equal(await page.locator('#fig-studio-label-field').isHidden(),true,'沒選點名稱時不顯示輸入框');
+  await page.locator('#fig-studio-toolbar [data-tool=label]').click();
+  await page.waitForFunction(()=>!document.querySelector('#fig-studio-label-field').hidden);
+  assert.equal(await page.locator('#fig-studio-label-text').inputValue(),'A','預設要放 A');
+  const lbox=await sketchBox();
+  const l0=at(lbox,0.15,0.20),l1=at(lbox,0.30,0.35);
+  await page.mouse.click(l0[0],l0[1]);
+  await page.mouse.click(l1[0],l1[1]);
+  assert.deepEqual(await page.evaluate(()=>figStudio.sketch.strokes.filter(x=>x.type==='label').map(x=>x.text)),
+    ['A','B'],'放完 A 要自動換 B');
+  assert.equal(await page.locator('#fig-studio-label-text').inputValue(),'C','連續放第三個要換 C');
   await page.screenshot({path:path.join(__dirname,'..','MathPath-教師手繪圖形.png'),fullPage:true});
-  await page.locator('#fig-sketch-undo').click();
-  assert.equal(await page.evaluate(()=>figStudio.sketch.strokes.length),1,'撤銷要拿掉最後一筆');
-  await page.locator('#fig-sketch-clear').click();
+  await page.locator('#fig-studio-undo').click();
+  assert.equal(await page.evaluate(()=>figStudio.sketch.strokes.length),6,'撤銷要拿掉最後一筆（點名稱）');
+  await page.locator('#fig-studio-clear').click();
   assert.equal(await page.evaluate(()=>figStudio.sketch.strokes.length),0,'清除要清空畫布');
   await page.locator('#fig-sketch-apply').click();
   assert.match(await page.locator('#toast').innerText(),/畫布是空的/,'空畫布不能套用');
-  await drawSketch();
-  assert.equal(await page.evaluate(()=>figStudio.sketch.strokes.length),2,'重畫後要有兩筆線條');
+  // 再畫一版（自由筆＋直線＋圓）套用，取代 AI 的圖
+  await page.locator('#fig-studio-toolbar [data-tool=pen]').click();
+  await penOnSketch();
+  await dragOnSketch('line',[0.08,0.78],[0.42,0.78]);
+  await dragOnSketch('circle',[0.62,0.45],[0.76,0.45]);
+  assert.equal(await page.evaluate(()=>figStudio.sketch.strokes.length),4,'重畫要有自由筆、直線與圓');
   await page.locator('#fig-sketch-apply').click();
   await page.waitForFunction(prev=>{const i=document.querySelector('.fig-preview img');return !!(i&&i.complete&&i.naturalWidth>0&&i.src!==prev);},aiFigureSrc,{timeout:8000});
   assert.equal(await page.locator('.fig-draw-panel').isHidden(),true,'套用後畫布要收起');
