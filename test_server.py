@@ -1338,6 +1338,100 @@ class APITests(unittest.TestCase):
             self.request('POST', '/api/papers/parse', {'name': '圖片', 'dataUrl': png_url(), 'mime': 'image/png'}, cookie=self.teacher, expect=403)
             ai.assert_not_called()
 
+    def test_figure_box_rejects_unusable_boxes(self):
+        # 圖形範圍只做基本檢查；真正換算與裁切在瀏覽器（那裡才有原圖尺寸）。
+        good = {'x': 0.1, 'y': 0.2, 'w': 0.3, 'h': 0.4}
+        self.assertEqual(server.figure_box(good), good)
+        # 像素座標也接受（前端按原圖尺寸換算）。
+        self.assertEqual(server.figure_box({'x': 120, 'y': 40, 'w': 300, 'h': 200}),
+                         {'x': 120.0, 'y': 40.0, 'w': 300.0, 'h': 200.0})
+        for bad in (None, 'x', [], 3,
+                    {'x': 0.1, 'y': 0.2, 'w': 0.3},
+                    {'x': 0.1, 'y': 0.2, 'w': 0, 'h': 0.4},
+                    {'x': -0.1, 'y': 0.2, 'w': 0.3, 'h': 0.4},
+                    {'x': True, 'y': 0, 'w': 1, 'h': 1},
+                    {'x': float('nan'), 'y': 0, 'w': 1, 'h': 1},
+                    {'x': 0, 'y': 0, 'w': 10 ** 6, 'h': 1}):
+            self.assertIsNone(server.figure_box(bad), bad)
+
+    def test_paper_split_reports_figure_boxes_without_storing_them(self):
+        # 拆題（圖片）時要求模型回報圖形範圍：草稿帶 figureBox，題目本身不帶圖，
+        # 圖形範圍也不會被當成題目欄位寫進 payload。
+        self.app.ai.configured = True
+        self.app.ai.mode = 'local'
+        self.app.ai.vision = 'vision'
+        with_figure = {**self.draft, 'title': '附圖題', 'figure': {'x': 0.6, 'y': 0.2, 'w': 0.3, 'h': 0.25}}
+        without = {**self.draft, 'title': '無圖題', 'figure': None}
+        with patch.object(self.app.ai, 'call', return_value={'drafts': [with_figure, without]}) as ai:
+            _, result, _ = self.request('POST', '/api/papers/parse',
+                                        {'name': '圖片卷', 'dataUrl': png_url(), 'mime': 'image/png'},
+                                        cookie=self.teacher, expect=200)
+        self.assertEqual(ai.call_args[1]['model'], 'vision', '圖片要走視覺模型')
+        self.assertIn('figure', ai.call_args[0][0], '圖片拆題的提示要要求圖形範圍')
+        self.assertEqual(result['drafts'][0]['figureBox'], {'x': 0.6, 'y': 0.2, 'w': 0.3, 'h': 0.25})
+        self.assertNotIn('figureBox', result['drafts'][1], '沒有圖形的題目不應有 figureBox')
+        self.assertNotIn('figure', result['drafts'][0], '圖形範圍不是題目欄位，不應混進題目')
+        self.assertIn('圖形', result['method'], '拆分方式要說明偵測到圖形')
+        # 模型回報的範圍不合法時當作沒有圖形，而不是整題失敗。
+        with patch.object(self.app.ai, 'call',
+                          return_value={'drafts': [{**self.draft, 'title': '壞框', 'figure': {'x': 1}}]}):
+            _, broken, _ = self.request('POST', '/api/papers/parse',
+                                        {'name': '圖片卷', 'dataUrl': png_url(), 'mime': 'image/png'},
+                                        cookie=self.teacher, expect=200)
+        self.assertNotIn('figureBox', broken['drafts'][0])
+        # 貼上文字時不可能有圖形範圍，提示也不該要求 figure。
+        with patch.object(self.app.ai, 'call', return_value={'drafts': [without]}) as ai:
+            self.request('POST', '/api/papers/parse', {'name': '文字卷', 'text': '1. 解 $x^2=1$。'},
+                         cookie=self.teacher, expect=200)
+            self.assertNotIn('figure', ai.call_args[0][0])
+
+    def test_auto_import_returns_figure_boxes_for_the_browser_to_crop(self):
+        # 全自動匯入：題目已寫入題庫，圖形改由前端裁好後用 /api/questions/figures 補上。
+        self.app.ai.configured = True
+        self.app.ai.mode = 'local'
+        self.app.ai.vision = 'vision'
+        box = {'x': 0.5, 'y': 0.5, 'w': 0.2, 'h': 0.2}
+        with patch.object(self.app.ai, 'call',
+                          return_value={'drafts': [{**self.draft, 'title': '附圖題', 'figure': box}]}):
+            _, result, _ = self.request('POST', '/api/papers/auto-import',
+                                        {'name': '圖片卷', 'dataUrl': png_url(), 'mime': 'image/png'},
+                                        cookie=self.teacher, expect=200)
+        self.assertEqual(result['count'], 1)
+        self.assertEqual(result['figureBoxes'], [box])
+        qid = result['questions'][0]['id']
+        with self.app.db() as db:
+            payload = json.loads(db.execute('SELECT payload FROM questions WHERE id=?', (qid,)).fetchone()[0])
+        self.assertNotIn('figureBox', payload, '圖形範圍不可以寫進題目 payload')
+        # 前端裁好圖後批次貼回題目。
+        _, applied, _ = self.request('POST', '/api/questions/figures',
+                                     {'figures': [{'id': qid, 'figure': png_url()}]},
+                                     cookie=self.teacher, expect=200)
+        self.assertEqual(applied['updated'], 1)
+        with self.app.db() as db:
+            stored = db.execute('SELECT figure,figure_mime FROM questions WHERE id=?', (qid,)).fetchone()
+        self.assertIsNotNone(stored['figure'], '設定圖形後題目要有圖形')
+        self.assertEqual(stored['figure_mime'], 'image/png')
+        # 學生不能設定題目圖形；參數與題號都要檢查。
+        self.request('POST', '/api/questions/figures',
+                     {'figures': [{'id': qid, 'figure': png_url()}]}, cookie=self.student, expect=403)
+        self.request('POST', '/api/questions/figures', {'figures': []}, cookie=self.teacher, expect=400)
+        self.request('POST', '/api/questions/figures', {'figures': [{'id': qid}]},
+                     cookie=self.teacher, expect=400)
+        self.request('POST', '/api/questions/figures', {'figures': [{'id': qid, 'figure': png_url()}] * 101},
+                     cookie=self.teacher, expect=400)
+        self.request('POST', '/api/questions/figures',
+                     {'figures': [{'id': 999999, 'figure': png_url()}]}, cookie=self.teacher, expect=404)
+        with self.app.db() as db:
+            self.assertIsNotNone(db.execute('SELECT figure FROM questions WHERE id=?', (qid,)).fetchone()[0],
+                                 '題號不存在時不可先改到其他題目')
+        # 空字串＝清空圖形（教師可以拿掉 AI 框錯的圖）。
+        _, cleared, _ = self.request('POST', '/api/questions/figures',
+                                     {'figures': [{'id': qid, 'figure': ''}]},
+                                     cookie=self.teacher, expect=200)
+        self.assertEqual(cleared['updated'], 1)
+        with self.app.db() as db:
+            self.assertIsNone(db.execute('SELECT figure FROM questions WHERE id=?', (qid,)).fetchone()[0])
+
     def test_generate_external_consent_required_before_model_call(self):
         for index, base in enumerate(('https://external.invalid/v1', 'https://192.168.1.2/v1'), 1):
             # 每次用不同標題，避免第二輪因為「與先前生成過的題目重複」而被擋下。

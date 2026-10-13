@@ -391,7 +391,7 @@ def paper_chunks(value, limit=PARSE_CHUNK_CHARS, max_chunks=PARSE_MAX_CHUNKS):
     return chunks or [value]
 
 
-def parse_instruction(total_chunks=1, index=0):
+def parse_instruction(total_chunks=1, index=0, with_figure=False):
     """拆題用的指令；長試卷分段時只處理本段，並要求精簡輸出以免被截斷。"""
     prefix = ''
     if total_chunks > 1:
@@ -416,7 +416,12 @@ def parse_instruction(total_chunks=1, index=0):
             f'子分類清單：{json.dumps(TOPIC_TREE, ensure_ascii=False)}；'
             f'qtype 只能是{"、".join(QTYPES)}；'
             f'grade 只能是以下之一：{GRADE_HINT}，依題目難度與課程階段判斷。'
-            '無法確定的參考答案留空，不要捏造。')
+            + ('若某題附有圖形（幾何圖、函數圖、統計圖、表格或插圖），為該題加上 figure 欄位：'
+               '{x,y,w,h} 是該圖形在整張試卷圖片中的範圍，x、y 為左上角、w、h 為寬與高，'
+               '一律用 0 至 1 的比例（例如 {x:0.62,y:0.18,w:0.3,h:0.24}）；'
+               '範圍要完整包含圖內的文字與標註，但不要包含題目文字；'
+               '沒有圖形的題目 figure 填 null。' if with_figure else '')
+            + '無法確定的參考答案留空，不要捏造。')
 
 
 def paper_drafts(app, name, body):
@@ -450,9 +455,10 @@ def paper_drafts(app, name, body):
         # 長試卷分段處理：單次請求的輸出會隨題數暴增，容易超過模型輸出上限而被截斷。
         chunks = [value] if image else paper_chunks(value)
         drafts, skipped, failures, truncated = [], 0, 0, False
+        figure_count = 0
         for index, chunk in enumerate(chunks):
             try:
-                result = app.ai.call(parse_instruction(len(chunks), index),
+                result = app.ai.call(parse_instruction(len(chunks), index, bool(image)),
                                      {'name': name, 'text': chunk}, image=image,
                                      model=app.ai.vision if image else None)
             except APIError as exc:
@@ -475,14 +481,23 @@ def paper_drafts(app, name, body):
                 continue
             # AI 常有多餘欄位或型別小瑕疵，逐題寬容修正；救不回來的題目跳過而不是整批失敗。
             for item in items:
+                # 圖形範圍必須在寬容修正之前取出：coerce_ai_draft 會把白名單以外的欄位濾掉。
+                # 只做檢查與正規化，實際裁切交由瀏覽器（那裡才有原圖尺寸）。
+                box = figure_box(item.get('figure')) if image else None
                 fixed = coerce_ai_draft(item)
                 if fixed is None:
                     skipped += 1
                     continue
                 try:
-                    drafts.append(question_valid(fixed))
+                    draft = question_valid(fixed)
                 except APIError:
                     skipped += 1
+                    continue
+                if box:
+                    # figureBox 不是題目欄位，只在草稿階段存在；匯入前由前端轉成 figure。
+                    draft['figureBox'] = box
+                    figure_count += 1
+                drafts.append(draft)
         if not drafts:
             fail(502, 'AI 沒有辨識出可用的題目（可能是題目文字不足或格式不清）。'
                       '請貼上含有編號的完整題目，或改用手動輸入。')
@@ -493,6 +508,8 @@ def paper_drafts(app, name, body):
             notes.append('AI 回應曾被截斷，已保留可讀取的題目；建議分批拆分')
         if failures:
             notes.append(f'有 {failures} 段未能處理，請檢查該段題目')
+        if figure_count:
+            notes.append(f'{figure_count} 題偵測到圖形，將自動裁到題目右邊')
         return drafts, 'AI 識別' + ('（' + '；'.join(notes) + '）' if notes else '')
     return rule_parse(name, value), '規則拆題'
 
@@ -652,6 +669,26 @@ def normalize_draft(value):
 def draft_summary(question):
     """變式題摘要鍵：以「標題＋題面」判斷是否與先前生成過的題目重複。"""
     return normalize_draft(f'{question.get("title", "")}{question.get("content", "")}')
+
+
+# 拆題時模型回報的圖形範圍：接受 0–1 比例或像素座標，只做基本檢查。
+# 真正的換算與裁切在瀏覽器做（那裡才有原圖尺寸），寧可沒有圖，也不要裁錯位置。
+def figure_box(raw):
+    if not isinstance(raw, dict):
+        return None
+    values = []
+    for key in ('x', 'y', 'w', 'h'):
+        value = raw.get(key)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        value = float(value)
+        if not math.isfinite(value) or not 0 <= value <= 100000:
+            return None
+        values.append(round(value, 6))
+    x, y, w, h = values
+    if w <= 0 or h <= 0:
+        return None
+    return {'x': x, 'y': y, 'w': w, 'h': h}
 
 
 def coerce_ai_draft(raw):
@@ -2853,13 +2890,43 @@ class Application:
             if 'consentExternal' in body and type(body['consentExternal']) is not bool:
                 fail(400, '外部上傳同意必須是布林值。')
             drafts, method = paper_drafts(self, name, body)
+            # figureBox 是拆題階段的中間產物，不是題目欄位；先取出再匯入，
+            # 由前端裁好圖形後呼叫 POST /api/questions/figures 補上。
+            boxes = [q.pop('figureBox', None) for q in drafts]
             for q in drafts:
                 q['tags'] = list(dict.fromkeys([*q.get('tags', []), '自動匯入', '待核驗']))[:20]
             with self.db() as db:
                 saved = [self.insert_question(db, q) for q in drafts]
             return {'count': len(saved), 'method': method,
                     'questions': [self.question_public(q, user) for q in saved],
+                    'figureBoxes': boxes,
                     'notice': '已全自動拆分並匯入題庫，全部標示為「自動匯入 · 待核驗」；請在題庫核對題型、分類與參考答案。'}, headers
+        if method == 'POST' and path == '/api/questions/figures':
+            # 教師批次設定題目圖形：拆題時由瀏覽器裁好圖後貼回題目（也支援清空）。
+            self.teacher(user)
+            fields(body, ('figures',), ('figures',))
+            items = body['figures']
+            if not isinstance(items, list) or not 1 <= len(items) <= 100:
+                fail(400, 'figures 必須是 1 至 100 筆的清單。')
+            prepared = []
+            for item in items:
+                fields(item, ('id', 'figure'), ('id', 'figure'))
+                qid = number(item['id'], '題目編號', 1, 2 ** 63 - 1, True)
+                figure, mime = decode_figure(item['figure'])
+                prepared.append((qid, figure, mime))
+            with self.db() as db:
+                # 先確認所有題號都存在再寫入，避免中途 404 造成一半更新一半沒有。
+                for qid, _, _ in prepared:
+                    if db.execute('SELECT 1 FROM questions WHERE id=?', (qid,)).fetchone() is None:
+                        fail(404, f'找不到題目 {qid}，請重新整理題庫後再試。')
+                for qid, figure, mime in prepared:
+                    figure_key = None
+                    if figure is not None and self.storage.mode == 'r2':
+                        figure_key = self.storage.put('figures', figure, mime)
+                        figure = None
+                    db.execute('UPDATE questions SET figure=?,figure_mime=?,figure_key=? WHERE id=?',
+                               (figure, mime, figure_key, qid))
+            return {'updated': len(prepared)}, headers
         if method == 'POST' and path == '/api/questions/latex':
             # 教師匯出：把題庫題目轉成可用 XeLaTeX 編譯的 .tex。
             # 圖形不在此回傳（二進位），由前端把 /api/questions/{id}/figure 轉成 PNG 後打包成 zip。
