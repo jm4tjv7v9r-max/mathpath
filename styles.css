@@ -46,6 +46,7 @@ input::placeholder,textarea::placeholder,.search-field input::placeholder,.canva
 .cal-marks{display:flex;flex-direction:column;gap:3px;width:100%;min-width:0;align-items:flex-start}
 .cal-mark{font-size:calc(11px*var(--fs));border-radius:6px;padding:2px 7px;max-width:100%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.5}
 .cal-mark.hw{background:#e6f2ea;color:#2f6d55}
+.cal-mark.due{background:#fdeaea;color:#a33b3b}
 .cal-mark.quiz{background:#fdeee0;color:#a4632a}
 .cal-event{display:flex;align-items:center;gap:12px;padding:12px;border:1px solid var(--border);border-radius:10px;margin-bottom:10px;background:#fff}
 .cal-event.quiz{border-left:4px solid #d99447}

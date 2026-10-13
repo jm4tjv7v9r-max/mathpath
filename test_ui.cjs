@@ -337,13 +337,19 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   // 日曆：標出作業與測驗
   await page.locator('[data-page=calendar]').first().click();
   await page.locator('.cal-grid').waitFor();
-  assert.match(await page.locator('.cal-mark.hw').first().innerText(),/作業 1/,'日曆應標出作業');
-  assert.match(await page.locator('.cal-mark.quiz').first().innerText(),/測驗 1/,'日曆應標出測驗');
+  // 同一份作業的「發布」與「截止」是兩筆事件：標記要講清楚是哪一種，
+  // 「本月作業／本月測驗」也只能算一份（之前把事件數當作業數，一份作業會被算成兩份）。
+  const calMetrics=await page.locator('.metric-row').innerText();
+  assert.match(calMetrics,/本月作業\s*1\s*項/,'本月作業只能算一份（實際：'+calMetrics.replace(/\s+/g,' ')+'）');
+  assert.match(calMetrics,/本月測驗\s*1\s*項/,'本月測驗只能算一份');
+  assert.match(calMetrics,/本月事件\s*2\s*項/,'事件數仍把發布與截止分開算');
+  assert.match(await page.locator('.cal-mark.due').first().innerText(),/1 項作業截止/,'作業截止日要標明是作業且截止');
+  assert.match(await page.locator('.cal-mark.quiz').first().innerText(),/1 項測驗/,'日曆要標出測驗');
   await page.locator('.cal-cell:has(.cal-mark.quiz)').click();
   await page.locator('.cal-event.quiz').waitFor();
   const quizText=await page.locator('.cal-event.quiz').innerText();
   assert.match(quizText,/一元二次方程測驗/);assert.match(quizText,/發布/);assert.match(quizText,/已交 0 \/ 2 人/);
-  await page.locator('.cal-cell:has(.cal-mark.hw)').click();
+  await page.locator('.cal-cell:has(.cal-mark.due)').click();
   await page.locator('.cal-event.hw').waitFor();
   assert.match(await page.locator('.cal-event.hw').innerText(),/截止/);
   // 教師可在日曆加入提醒事項
@@ -354,7 +360,7 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   assert.ok(noteCreated&&noteCreated.title==='收齊作業','應送出提醒標題');
   assert.match(noteCreated.date,/^\d{4}-\d{2}-\d{2}$/,'提醒須帶日期');
   assert.match(await page.locator('.cal-note').innerText(),/收齊作業/);
-  assert.match(await page.locator('.cal-mark.note').first().innerText(),/提醒 1/,'日曆格子應標出提醒');
+  assert.match(await page.locator('.cal-mark.note').first().innerText(),/1 則提醒/,'日曆格子應標出提醒');
   await page.screenshot({path:path.join(__dirname,'..','MathPath-日曆提醒.png'),fullPage:true});
   await page.locator('[data-note-del="41"]').click();
   await page.waitForFunction(()=>document.querySelectorAll('.cal-note').length===0);
@@ -1917,6 +1923,69 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   await page.screenshot({path:path.join(__dirname,'..','MathPath-練習頁圖形靠右.png'),fullPage:true});
   await page.evaluate(()=>navigate('bank'));
   console.log('PASS: 題目圖形（有圖形的題目把圖形排在題目右邊、練習頁一致、點擊可放大檢視）');
+
+  // 教師的「作答批閱」不應出現「再練一次」（那是學生的錯題本功能）
+  const teacherAttempts=[{...graded(5,1,'一元二次方程',6,6),student:{id:1,name:'介面測試學生',username:'student'}},
+                         {...handwritten,id:9}];
+  await page.route('**/api/session',route=>route.fulfill({json:{user:{id:2,name:'介面測試教師',role:'teacher'}}}));
+  await page.route('**/api/state', route => route.fulfill({json:{user:{id:2,name:'介面測試教師',role:'teacher'},
+    questions:[q,{...q,id:2,title:'直角三角形求斜邊',topic:'幾何'}],attempts:teacherAttempts,
+    stats:{completed:2,accuracy:55,streak:1,minutes:10},ai,topics:['一元二次方程','幾何']}}));
+  await page.reload({waitUntil:'networkidle'});
+  await page.evaluate(()=>navigate('mistakes'));
+  await page.locator('.record').first().waitFor({timeout:8000});
+  assert.match(await page.locator('#main').innerText(),/作答批閱/,'教師要進入作答批閱頁');
+  assert.ok((await page.locator('.record').count())>=2,'教師要看到學生的作答紀錄');
+  assert.equal(await page.locator('.record-actions [data-qid]').count(),0,'教師的作答批閱不應出現「再練一次」');
+  assert.match(await page.locator('.record-actions').first().innerText(),/查看與批閱/,'教師要有「查看與批閱」');
+  // 對照：學生的錯題本仍保留「再練一次」
+  await page.route('**/api/session',route=>route.fulfill({json:{user:{id:1,name:'介面測試學生',role:'student'}}}));
+  await page.route('**/api/state', route => route.fulfill({json:{user:{id:1,name:'介面測試學生',role:'student'},
+    questions:[q,{...q,id:2,title:'直角三角形求斜邊',topic:'幾何'}],attempts:teacherAttempts,
+    stats:{completed:2,accuracy:55,streak:1,minutes:10},ai,topics:['一元二次方程','幾何']}}));
+  await page.reload({waitUntil:'networkidle'});
+  await page.evaluate(()=>navigate('mistakes'));
+  await page.locator('.record-actions [data-qid]').first().waitFor({timeout:8000});
+  assert.match(await page.locator('.record-actions').first().innerText(),/再練一次/,'學生的錯題本仍要能再練一次');
+  console.log('PASS: 教師作答批閱不顯示「再練一次」（學生的錯題本仍保留）');
+
+  // 日曆：同一份作業的「發布」與「截止」是兩筆事件，
+  // 不該被數成兩份作業、也不該看起來像同一份作業重複列在好幾天。
+  const calNow=new Date(),calY=calNow.getFullYear(),calM=calNow.getMonth();
+  const calDim=new Date(calY,calM+1,0).getDate();
+  const calIso=d=>`${calY}-${String(calM+1).padStart(2,'0')}-${String(Math.min(d,calDim)).padStart(2,'0')}`;
+  const calEvents=[
+    {date:calIso(8),event:'published',kind:'homework',title:'課後練習一',assignmentId:1,classId:1,className:'中三甲班',dueAt:`${calIso(20)}T23:59`,myStatus:'pending'},
+    {date:calIso(20),event:'due',kind:'homework',title:'課後練習一',assignmentId:1,classId:1,className:'中三甲班',dueAt:`${calIso(20)}T23:59`,myStatus:'pending'},
+    {date:calIso(13),event:'due',kind:'quiz',title:'模擬測驗二',assignmentId:2,classId:1,className:'中三甲班',dueAt:`${calIso(13)}T20:00`,myStatus:null},
+  ];
+  // ⚠️ `**/api/calendar` 這種 glob 不會匹配帶 `?from=...&to=...` 的網址，
+  // 要用完整主機樣式並在處理式裡判斷路徑；後註冊的路由優先（見 route 探測）。
+  await page.route('https://mathpath.test/**',async route=>{
+    const url=new URL(route.request().url());
+    if(url.pathname!=='/api/calendar')return route.fallback();
+    return route.fulfill({json:{events:calEvents,notes:[]}});
+  });
+  await page.evaluate(()=>navigate('calendar'));
+  await page.locator('.cal-grid').waitFor({timeout:8000});
+  const metricText=await page.locator('.metric-row').innerText();
+  assert.match(metricText,/本月作業\s*1\s*項/,'同一份作業的發布與截止只能算一份作業（實際：'+metricText.replace(/\s+/g,' ')+'）');
+  assert.match(metricText,/本月測驗\s*1\s*項/,'測驗也只能算一份');
+  assert.match(metricText,/本月事件\s*3\s*項/,'事件數仍要把發布與截止分開算');
+  const cellMark=async d=>{
+    const cell=page.locator(`.cal-cell[data-cal-date="${calIso(d)}"]`);
+    return (await cell.locator('.cal-mark').allInnerTexts()).join('+');
+  };
+  assert.equal(await cellMark(8),'1 項作業','發布日要寫明是作業，不是「作業 1」這種像名稱的寫法');
+  assert.equal(await cellMark(13),'1 項測驗截止','測驗截止日要寫明是測驗且是截止');
+  assert.equal(await cellMark(20),'1 項作業截止','作業截止日要寫明是截止，看起來才不像同一份作業重複出現');
+  await page.screenshot({path:path.join(__dirname,'..','MathPath-日曆發布與截止.png'),fullPage:true});
+  // 點截止日，詳細資訊要標明「截止」，讓教師知道為什麼這天也有這份作業
+  await page.locator(`.cal-cell[data-cal-date="${calIso(20)}"]`).click();
+  await page.locator('.cal-event').first().waitFor({timeout:8000});
+  assert.match(await page.locator('.cal-event').first().innerText(),/截止/,'截止日的詳細資訊要標明截止');
+  assert.match(await page.locator('.cal-event').first().innerText(),/課後練習一/,'詳細資訊仍要列出作業名稱');
+  console.log('PASS: 日曆把發布與截止分開標示，作業數不再把同一份作業算兩次');
 
   // 伺服器初始化失敗時，登入視窗要直接顯示原因，不能只說「正在初始化」
   await page.route('**/api/session', route => route.fulfill({status:503,json:{error:'伺服器初始化失敗：MATH_STUDENT_PASSWORD 必須是 10 至 256 個字元、且不可只有空白的密碼。'}}));
