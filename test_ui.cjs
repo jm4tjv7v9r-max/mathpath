@@ -1779,6 +1779,59 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   assert.equal(afterClose.prevented,false,'未開工作室時不應攔掉貼上事件');
   console.log('PASS: 題目圖形工作室（AI 只出規格、程式繪圖、自動核對與重畫、手動插入圖片、關閉後不留狀態）');
 
+  // AI 變式題草稿：生成／重新生成圖形後，草稿彈窗要看得見那張圖。
+  // （以前只把圖寫進 draft.figure，預覽卻沒有輸出圖形，畫面上完全看不出來有沒有更新。）
+  let draftDraws=0;
+  await page.route('**/api/questions/2/generate',route=>route.fulfill({json:{draft:{
+    title:'相似：三角形求斜邊',content:'如圖，直角三角形兩邊長 3 cm 與 4 cm，求斜邊。',topic:'幾何',subtopic:'三角形',
+    grade:'中三',points:6,level:1,qtype:'解答題',options:[],answer:'5 cm',steps:['用畢氏定理'],hint:'畢氏定理。',
+    analysis:'畢氏定理。',rubric:[],source:'AI 生成 · 待核驗',tags:['AI 生成'],figure:''}}}));
+  await page.route('**/api/questions/ai-figure',route=>{draftDraws++;
+    return route.fulfill({json:{svg:`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 300" width="400" height="300">`+
+      `<circle cx='200' cy='140' r='${draftDraws===1?60:70}' stroke='#1f2d24' stroke-width='2' fill='none'/>`+
+      `<text x='196' y='146' font-size='14'>O</text></svg>`,
+      spec:FIGURE_SPEC,issues:[],rounds:1,method:'AI 生成',notice:'這是草稿'}});});
+  await page.route('**/api/questions/ai-figure-check',route=>route.fulfill({json:{ok:true,issues:[],advice:'',
+    question:{shape:'直角三角形',values:[{key:'AB',value:'3'}],marks:['直角記號']},
+    figure:{shape:'直角三角形',values:[{key:'AB',value:'3'}],marks:['直角記號']},method:'AI 核對'}}));
+  await page.evaluate(()=>navigate('bank'));
+  await page.locator('[data-aigen="2"]').click();
+  await page.locator('[data-gen-kind="similar"]').first().click();
+  await page.locator('.draft-card').waitFor({timeout:8000});
+  assert.equal(await page.locator('.draft-figure img').count(),0,'草稿剛生成時不應有圖形');
+  await page.locator('#ai-draft-figure').click();
+  await page.locator('#fig-draw').waitFor({timeout:8000});
+  await page.locator('#fig-draw').click();
+  await page.waitForFunction(()=>!!document.querySelector('.fig-preview img'),{timeout:20000});
+  await page.locator('#fig-apply').click();
+  await page.locator('.draft-figure img').waitFor({timeout:8000});
+  const draftSrc=await page.locator('.draft-figure img').getAttribute('src');
+  assert.match(draftSrc,/^data:image\//,'生成圖形後草稿彈窗要顯示圖形');
+  assert.match(await page.locator('#ai-draft-figure').innerText(),/重新生成圖形/,'有圖形後按鈕要改成「重新生成圖形」');
+  // 重新生成：彈窗裡的圖要真的換掉（這正是「重畫時沒有更新」的回歸測試）
+  await page.locator('#ai-draft-figure').click();
+  await page.locator('#fig-draw').waitFor({timeout:8000});
+  await page.locator('#fig-draw').click();
+  await page.waitForFunction(prev=>{const i=document.querySelector('.fig-preview img');
+    return !!(i&&i.complete&&i.src!==prev);},draftSrc,{timeout:20000});
+  await page.locator('#fig-apply').click();
+  await page.waitForFunction(prev=>{const i=document.querySelector('.draft-figure img');
+    return !!i&&i.src!==prev;},draftSrc,{timeout:10000});
+  console.log('PASS: AI 變式題草稿生成／重新生成圖形後彈窗即時顯示新圖');
+  // 移除圖形：工作室清空後「使用這張圖形」要還能按，才把移除送得出去
+  await page.locator('#ai-draft-figure').click();
+  await page.locator('#fig-draw').waitFor({timeout:8000});
+  await page.locator('#fig-clear').click();
+  await page.waitForFunction(()=>!!document.querySelector('.fig-empty'),{timeout:8000});
+  assert.equal(await page.locator('#fig-apply').isDisabled(),false,'清空圖形後「移除這張圖形」要能按');
+  assert.match(await page.locator('#fig-apply').innerText(),/移除這張圖形/,'清空後按鈕要說明是移除');
+  await page.locator('#fig-apply').click();
+  await page.waitForFunction(()=>!document.querySelector('.draft-figure img'),{timeout:10000});
+  assert.match(await page.locator('#ai-draft-figure').innerText(),/AI 生成圖形/,'移除後按鈕要回到「AI 生成圖形」');
+  await page.locator('[data-action=close-modal]').first().click();
+  await page.locator('.modal').waitFor({state:'hidden'});
+  console.log('PASS: 圖形工作室移除圖形可正常送出');
+
   // 教師手動新增題目：不必先匯入整份試卷，圖形用工作室（AI 生成／手繪／上傳）
   await page.locator('[data-page=newq]').first().click();
   await page.locator('#newq-title').waitFor({timeout:8000});

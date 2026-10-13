@@ -1246,6 +1246,10 @@ function readingHtml(block){
 function renderFigureStudio(){
   if(!figStudio)return;
   const {ctx,figure,check,busy,spec,issues}=figStudio;
+  // 原本有圖、現在被清空了：這時「使用這張圖形」的意義是移除，必須能按下去把移除送出，
+  // 不然按了「移除圖形」之後按鈕變 disabled，移除動作就卡在工作室裡送不出去。
+  const original=figStudio.original||'';
+  const willRemove=!figure&&!!original;
   const canDraw=figureNeeded(ctx.topic);
   const canCheck=!!figure&&!!S.ai.configured&&!!S.ai.vision;
   const needFix=!!(figure&&issues.length);
@@ -1283,7 +1287,7 @@ function renderFigureStudio(){
   ${canDraw?'':'<p class="field-hint">這道題的分類「'+esc(ctx.topic||'未分類')+'」不是幾何或向量題材，AI 不會為它畫圖（避免畫出與題目無關的圖）；如仍需要附圖，請用「手動插入圖片」。</p>'}
   ${S.ai.configured?(S.ai.vision?'':'<p class="field-hint">尚未設定視覺模型，暫時不能自動核對圖形；仍可自行核對後使用。</p>'):'<p class="field-hint">尚未接入 AI，只能手動插入圖片。</p>'}
   <p class="field-hint">手動插入：按「手動插入圖片」選檔，或直接在本視窗貼上截圖（Ctrl／⌘ + V）。</p>
-  <div class="submit-row"><span class="small-text">按「使用這張圖形」才會寫回題目</span><div class="row-actions"><button class="primary" id="fig-apply" ${figure?'':'disabled'}>${icon('check')}使用這張圖形</button><button class="secondary" id="fig-close">關閉</button></div></div>`,true);
+  <div class="submit-row"><span class="small-text">按「${willRemove?'移除這張圖形':'使用這張圖形'}」才會寫回題目</span><div class="row-actions"><button class="primary" id="fig-apply" ${figure||willRemove?'':'disabled'}>${icon('check')}${willRemove?'移除這張圖形':'使用這張圖形'}</button><button class="secondary" id="fig-close">關閉</button></div></div>`,true);
   $('#fig-draw').onclick=()=>drawFigureInStudio(false);
   $('#fig-check').onclick=checkFigureInStudio;
   const fix=$('#fig-fix');if(fix)fix.onclick=()=>drawFigureInStudio(true);
@@ -1545,8 +1549,7 @@ function aiDraftPreview(q){
   return `<div class="draft-card">
   <div class="draft-top"><strong>${mathText(q.title||'（未命名題目）')}</strong></div>
   <div class="question-top"><span class="badge l${q.level}">${levels[q.level]||''}</span><span class="badge outline">${esc(q.qtype||'解答題')}</span><span class="badge outline">${q.points} 分</span></div>
-  <div class="question-formula">${mathText(q.content||'')}</div>
-  ${optionsHtml(q)}
+  <div class="question-stem"><div class="question-stem-text"><div class="question-formula">${mathText(q.content||'')}</div>${optionsHtml(q)}</div>${q.figure?`<div class="draft-figure"><img src="${q.figure}" alt="題目圖形"></div>`:''}</div>
   <div class="question-meta"><span>${esc(q.topic||'')}${q.subtopic?' · '+esc(q.subtopic):''}</span><i class="separator"></i><span>${esc(q.grade||'')}</span></div>
   <div class="draft-section"><span>參考答案</span><p>${mathText(q.answer||'（無）')}</p></div>
   ${steps?`<div class="draft-section"><span>詳解步驟</span><ol>${steps}</ol></div>`:''}
