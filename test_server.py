@@ -1432,6 +1432,62 @@ class APITests(unittest.TestCase):
         with self.app.db() as db:
             self.assertIsNone(db.execute('SELECT figure FROM questions WHERE id=?', (qid,)).fetchone()[0])
 
+    def test_sanitize_svg_keeps_geometry_and_drops_everything_else(self):
+        # AI 畫的圖會直接畫進教師端頁面，所以只保留白名單的幾何元素與屬性。
+        good = ("<svg viewBox='0 0 400 300' width='400' height='300'>"
+                "<line x1='20' y1='280' x2='380' y2='280' stroke='#1f2d24' stroke-width='2'/>"
+                "<text x='370' y='296' font-size='14'>x</text></svg>")
+        out = server.sanitize_svg(good)
+        self.assertIn('<line', out)
+        self.assertIn('xmlns="http://www.w3.org/2000/svg"', out, '轉成圖片需要命名空間')
+        self.assertIsNotNone(server.sanitize_svg("```xml\n" + good + "\n```"), '模型用圍欄包住也要能取出')
+        unsafe = ("<svg viewBox='0 0 10 10'><script>alert(1)</script><line x1='1' y1='1' x2='9' y2='9' stroke='#000'/></svg>",
+                  "<svg viewBox='0 0 10 10' onload='alert(1)'><rect x='1' y='1' width='9' height='9' fill='#000'/></svg>",
+                  "<svg viewBox='0 0 10 10'><image href='https://x/y.png'/><circle cx='5' cy='5' r='4' stroke='#000'/></svg>",
+                  "<svg viewBox='0 0 10 10'><foreignObject><div>x</div></foreignObject><circle cx='5' cy='5' r='4' stroke='#000'/></svg>",
+                  "<svg viewBox='0 0 10 10'><rect x='1' y='1' width='9' height='9' fill='url(#evil)'/><circle cx='5' cy='5' r='4' stroke='#000'/></svg>",
+                  "<svg viewBox='0 0 10 10' foo='bar'><circle cx='5' cy='5' r='4' stroke='#000' onclick='x()'/></svg>")
+        for raw in unsafe:
+            cleaned = server.sanitize_svg(raw)
+            self.assertIsNotNone(cleaned, raw)
+            for bad in ('script', 'onload', 'onclick', 'href', 'foreignObject', 'url(', 'foo='):
+                self.assertNotIn(bad, cleaned, f'{bad} 不應留在消毒後的 SVG：{cleaned}')
+        # 沒有圖形、不是 SVG、壞掉的一律回 None（寧可沒有圖，也不要畫錯或畫出危險內容）。
+        for raw in ('', '<html><body>x</body></html>', "<svg viewBox='0 0 10 10'><g></g></svg>",
+                    "<svg viewBox='0 0 10 10'><circle cx='5' cy='5'", None, 123, 'x' * 70000):
+            self.assertIsNone(server.sanitize_svg(raw), raw)
+
+    def test_ai_figure_endpoint_sanitises_and_guards(self):
+        self.app.ai.configured = False
+        self.request('POST', '/api/questions/ai-figure', {'content': '兩直角邊 3、4，求斜邊。'},
+                     cookie=self.teacher, expect=409)
+        self.app.ai.configured = True
+        self.app.ai.mode = 'local'
+        svg = "<svg viewBox='0 0 400 300'><line x1='1' y1='1' x2='9' y2='9' stroke='#000'/></svg>"
+        with patch.object(self.app.ai, 'call', return_value={'svg': svg}) as ai:
+            _, result, _ = self.request('POST', '/api/questions/ai-figure',
+                                        {'title': '直角三角形', 'content': '兩直角邊 3、4，求斜邊。',
+                                         'topic': '幾何', 'qtype': '解答題'},
+                                        cookie=self.teacher, expect=200)
+            self.assertIn('<line', result['svg'])
+            self.assertEqual(result['method'], 'AI 生成')
+            instruction = ai.call_args[0][0]
+            self.assertIn('單引號', instruction, '要提醒模型用單引號，避免 JSON 跳脫問題')
+            self.assertIn('viewBox', instruction)
+        # 只有教師可以生成題目圖形；參數要檢查。
+        self.request('POST', '/api/questions/ai-figure', {'content': 'x'}, cookie=self.student, expect=403)
+        self.request('POST', '/api/questions/ai-figure', {}, cookie=self.teacher, expect=400)
+        self.request('POST', '/api/questions/ai-figure', {'content': 'x', 'consentExternal': 'yes'},
+                     cookie=self.teacher, expect=400)
+        # 模型沒給圖形、說不需要圖形、或給出不安全的 SVG，都不會流到瀏覽器。
+        with patch.object(self.app.ai, 'call', return_value={'answer': 'x'}):
+            self.request('POST', '/api/questions/ai-figure', {'content': 'x'}, cookie=self.teacher, expect=502)
+        with patch.object(self.app.ai, 'call', return_value={'svg': ''}):
+            self.request('POST', '/api/questions/ai-figure', {'content': 'x'}, cookie=self.teacher, expect=422)
+        with patch.object(self.app.ai, 'call',
+                          return_value={'svg': '<svg viewBox="0 0 10 10"><script>x</script></svg>'}):
+            self.request('POST', '/api/questions/ai-figure', {'content': 'x'}, cookie=self.teacher, expect=502)
+
     def test_generate_external_consent_required_before_model_call(self):
         for index, base in enumerate(('https://external.invalid/v1', 'https://192.168.1.2/v1'), 1):
             # 每次用不同標題，避免第二輪因為「與先前生成過的題目重複」而被擋下。

@@ -84,6 +84,8 @@ stdlib http.server适合受控内网试用；生产应加入反代限流、资�
 
 31. 拆题时自动框出题目图形（图片试券）：上传图片（PNG／JPEG）并接入视觉模型时，拆题提示会额外要求模型为每题回报 figure:{x,y,w,h}——图形在整张试卷图片中的范围（0 至 1 比例，或像素坐标亦可）。后端只做检查与正规化（server.figure_box，接受 0–1 比例或像素坐标，缺栏、负值、布尔、NaN 或过大一律视为没有图形，**不会因此让整题失败**），把结果放在草稿的 figureBox；实际裁切在浏览器做（那里才有原图尺寸），裁好后写回 draft.figure，因此图形本身不经过服务器。裁切会留 1.2% 边距以免切掉标注；框小于 4% 视为模型乱框，宁可留空让教师自己补图。草稿卡的图形显示在「题目内容」右边，可逐题确认或按「移除图形」拿掉。**figureBox 不是题目栏位**：汇入前由前端清掉（否则会被栏位白名单挡下），全自动汇入则先取出再入库，由前端裁好后呼叫 POST /api/questions/figures（教师限定，1–100 笔，{figures:[{id,figure}]}，空字符串＝清空图形；题号不存在回 404 且不会改到其他题目）。贴上的文字与 PDF（目前只抽文字）不会产生图形范围，提示也不会要求 figure。
 
+32. AI 依题目内容画图（教师）：POST /api/questions/ai-figure（教师限定）接收 {title,content,topic,subtopic,qtype,consentExternal}，回传 {svg,method,notice}。提示要求模型只输出一个 JSON 物件 {"svg":"<svg …>"}，根元素 <svg viewBox='0 0 400 300'>，**属性一律用单引号**（避免 JSON 跳脱），只可用 g／line／polyline／polygon／path／rect／circle／ellipse／text／tspan，并要忠实反映题目的边长、角度、坐标与数值。后端一律经过 server.sanitize_svg() 消毒：只保留白名单元素与属性（viewBox／坐标／points／d／fill／stroke／stroke-width／stroke-dasharray／transform／font-size／text-anchor…），数值、颜色（#hex／色名／rgb()，**不接受 url(...)**）与列举值都逐个校验；script／style／defs／use／image／foreignObject／任何 on… 事件属性／外部链接一律移除，没有实际图形或解析失败就回 502，**宁可没有图也不让危险内容进浏览器**。模型说不需要图形回 422。前端把消毒后的 SVG 用 <img> 画到 canvas（2 倍）再转成 WebP，因此显示、LaTeX 导出与 R2 存储都不必为 SVG 另做一套。入口三处（教师）：题库卡片的「AI 生成图形／重新生成图形」与「移除图形」（写回 POST /api/questions/figures）、试卷拆题草稿卡的「AI 生成图形」、AI 生成变式题草稿弹窗的「AI 生成图形」；生成前若为外部模型会要求确认（只送题目内容，不含学生作答）。
+
 网络与上线状态：
 当前代码可本地运行，但未部署互联网，未配置真实AI模型。现有标准库服务不能直接作为公网生产部署方案；正式上线须生产服务、HTTPS、独立账户、权限审计、恶意文件隔离、持续备份、模型预算与并发队列。单实例SQLite适合受控试用；多实例互联网版须持久数据库与私有文件存储。
 

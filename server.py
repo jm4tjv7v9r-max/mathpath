@@ -2,6 +2,7 @@
 """MathPath 本地持久化后端；不需要第三方服务，PDF 抽文可选 pypdf。"""
 import argparse
 import base64
+import xml.etree.ElementTree as ET
 import binascii
 from collections import defaultdict, deque
 from contextlib import contextmanager
@@ -533,6 +534,150 @@ def coerce_ai_answer(result, qtype, options):
     if options:
         answer = normalize_choice_answer(answer, options)
     return {'answer': answer[:4000], 'steps': steps, 'analysis': analysis[:6000], 'rubric': rubric}
+
+
+# AI 生成的題目圖形：只接受純幾何的 SVG 子集。
+# 教師端會把 SVG 畫進頁面，所以模型帶回來的任何指令碼、外部引用與事件屬性一律移除，
+# 只保留白名單元素與屬性；過不了就當作沒有圖形，不讓它進到瀏覽器。
+SVG_NS = 'http://www.w3.org/2000/svg'
+SVG_TAGS = ('svg', 'g', 'line', 'polyline', 'polygon', 'path', 'rect', 'circle', 'ellipse', 'text', 'tspan')
+SVG_SHAPES = ('line', 'polyline', 'polygon', 'path', 'rect', 'circle', 'ellipse', 'text')
+SVG_DROP = ('script', 'style', 'defs', 'use', 'image', 'foreignObject', 'a', 'animate', 'animateTransform',
+            'set', 'filter', 'mask', 'pattern', 'marker', 'clipPath', 'symbol', 'switch', 'title', 'desc')
+SVG_ATTRS = {'viewBox', 'width', 'height', 'x', 'y', 'x1', 'y1', 'x2', 'y2', 'cx', 'cy', 'r', 'rx', 'ry',
+             'points', 'd', 'fill', 'stroke', 'stroke-width', 'stroke-dasharray', 'stroke-linecap',
+             'stroke-linejoin', 'stroke-opacity', 'fill-opacity', 'opacity', 'transform', 'font-size',
+             'font-family', 'text-anchor', 'dominant-baseline', 'font-weight', 'font-style', 'dx', 'dy'}
+SVG_NUMBERS = ('x', 'y', 'x1', 'y1', 'x2', 'y2', 'cx', 'cy', 'r', 'rx', 'ry', 'width', 'height',
+               'stroke-width', 'stroke-opacity', 'fill-opacity', 'opacity', 'font-size', 'dx', 'dy')
+SVG_COLORS = ('fill', 'stroke')
+SVG_PATTERNS = {'points': r'[0-9eE+\-.,\s]{1,4000}',
+                'd': r'[MmLlHhVvCcSsQqTtAaZz0-9eE+\-.,\s]{1,4000}',
+                'stroke-dasharray': r'[0-9.,\s]{1,120}',
+                'transform': r'[a-zA-Z()0-9.,\s\-]{1,200}'}
+SVG_ENUMS = {'stroke-linecap': ('butt', 'round', 'square'),
+             'stroke-linejoin': ('miter', 'round', 'bevel'),
+             'text-anchor': ('start', 'middle', 'end'),
+             'dominant-baseline': ('auto', 'middle', 'central', 'hanging', 'text-before-edge', 'text-after-edge'),
+             'font-weight': ('normal', 'bold', '400', '500', '600', '700', '800', '900'),
+             'font-style': ('normal', 'italic')}
+SVG_NUMBER_RE = re.compile(r'-?\d{1,7}(?:\.\d{1,6})?$')
+SVG_VIEWBOX_RE = re.compile(r'-?\d{1,7}(?:\.\d{1,6})?(?:[ ,]+-?\d{1,7}(?:\.\d{1,6})?){3}$')
+SVG_COLOR_RE = re.compile(r'#[0-9a-fA-F]{3,8}$|[a-zA-Z]{3,20}$|rgb\(\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*\d{1,3}\s*\)$')
+SVG_FONT_RE = re.compile(r"[A-Za-z0-9 ,'\-]{1,80}$")
+SVG_MAX_LENGTH = 60_000
+SVG_MAX_NODES = 400
+
+FIGURE_INSTRUCTION = (
+    '你是數學教材插圖設計師。請依題目內容畫出解題需要的圖形，'
+    '只回傳 {"svg": "<svg …>…</svg>"} 一個 JSON 物件，不要任何說明文字。'
+    'SVG 規則：'
+    "根元素用 <svg viewBox='0 0 400 300' width='400' height='300'>（屬性一律用單引號，避免 JSON 跳脫問題）。"
+    '只可以用這些元素：g、line、polyline、polygon、path、rect、circle、ellipse、text、tspan。'
+    '不要用 script、style、defs、use、image、foreignObject、外部連結或任何 on… 事件屬性。'
+    '線條用 stroke="#1f2d24" stroke-width="2" fill="none"；虛線用 stroke-dasharray="5 4"；'
+    '標註文字用 <text>，font-size="14"，深色；座標軸要有箭頭與原點標示 O。'
+    '不要畫底色、外框或標題。'
+    '圖形必須忠實反映題目的數據：邊長、角度、座標、數值、比例都要與題目一致，'
+    '標註要清楚且不可互相重疊。'
+    '只畫圖形本身，不要把整道題目文字畫進圖裡（必要的邊長、角度、座標標註除外）。'
+    '若這道題完全不需要圖形，回 {"svg": ""}。'
+)
+
+
+def _svg_attr_ok(name, value):
+    value = value.strip()
+    if name == 'viewBox':
+        return bool(SVG_VIEWBOX_RE.fullmatch(value))
+    if name in SVG_NUMBERS:
+        return bool(SVG_NUMBER_RE.fullmatch(value))
+    if name in SVG_COLORS:
+        return bool(SVG_COLOR_RE.fullmatch(value))
+    if name == 'font-family':
+        return bool(SVG_FONT_RE.fullmatch(value))
+    if name in SVG_PATTERNS:
+        return bool(re.fullmatch(SVG_PATTERNS[name], value))
+    if name in SVG_ENUMS:
+        return value.lower() in SVG_ENUMS[name]
+    return False
+
+
+def sanitize_svg(raw):
+    """把 AI 回傳的 SVG 消毒成只含幾何元素的安全子集；不合法或沒有圖形就回 None。"""
+    if not isinstance(raw, str) or len(raw) > SVG_MAX_LENGTH:
+        return None
+    match = re.search(r'<svg\b.*?</svg\s*>', raw, re.S | re.I)
+    if not match:
+        return None
+    try:
+        root = ET.fromstring(match.group(0))
+    except ET.ParseError:
+        return None
+    if root.tag.split('}')[-1] != 'svg':
+        return None
+    state = {'nodes': 0}
+
+    def clean(node):
+        state['nodes'] += 1
+        if state['nodes'] > SVG_MAX_NODES:
+            raise ValueError('too many nodes')
+        tag = node.tag.split('}')[-1]
+        if tag not in SVG_TAGS:
+            return None
+        out = ET.Element(tag)
+        for key, value in node.attrib.items():
+            name = key.split('}')[-1]
+            if name in SVG_ATTRS and isinstance(value, str) and _svg_attr_ok(name, value):
+                out.set(name, value.strip())
+        for child in list(node):
+            if child.tag.split('}')[-1] in SVG_DROP:
+                continue
+            cleaned = clean(child)
+            if cleaned is not None:
+                out.append(cleaned)
+        if tag in ('text', 'tspan') and node.text and node.text.strip():
+            out.text = node.text.strip()[:120]
+        return out
+
+    try:
+        cleaned = clean(root)
+    except ValueError:
+        return None
+    if cleaned is None or not any(child.tag in SVG_SHAPES for child in cleaned.iter()):
+        return None
+    text = ET.tostring(cleaned, encoding='unicode')
+    if len(text) > SVG_MAX_LENGTH:
+        return None
+    return text.replace('<svg', f'<svg xmlns="{SVG_NS}"', 1)
+
+
+def ai_figure_draft(app, body):
+    """請 AI 依題目內容畫出圖形；只回傳消毒過的 SVG，由前端轉成圖形後交給教師核驗。"""
+    if not app.ai.configured:
+        fail(409, '尚未設定 AI 模型；請先設定模型端點，或自行上傳題目圖形。')
+    content = text(body['content'], '題目內容')
+    title = text(body.get('title', ''), '題目標題', 200, empty=True)
+    topic = body.get('topic') if body.get('topic') in TOPICS else ''
+    subtopic = body.get('subtopic') if isinstance(body.get('subtopic'), str) else ''
+    if subtopic and subtopic not in TOPIC_TREE.get(topic, ()):
+        subtopic = ''
+    qtype = body.get('qtype') if body.get('qtype') in QTYPES else classify_type(content)
+    app.ai.consent(body.get('consentExternal'))
+    result = app.ai.call(FIGURE_INSTRUCTION, {'question': {'title': title, 'content': content,
+                                                          'topic': topic, 'subtopic': subtopic, 'qtype': qtype}})
+    try:
+        fields(result, ('svg',), ('svg',))
+    except (APIError, ValueError, KeyError, TypeError):
+        fail(502, 'AI 沒有產生可用的圖形，請再試一次或自行上傳圖片。')
+    if not isinstance(result['svg'], str):
+        fail(502, 'AI 沒有產生可用的圖形，請再試一次或自行上傳圖片。')
+    if not result['svg'].strip():
+        fail(422, 'AI 判斷這道題不需要圖形；如需附圖，請自行上傳或貼上圖片。')
+    svg = sanitize_svg(result['svg'])
+    if svg is None:
+        fail(502, 'AI 產生的圖形格式不完整（只接受純幾何的 SVG），請再試一次。')
+    return {'svg': svg, 'method': 'AI 生成',
+            'notice': '這是 AI 依題目內容畫的圖形草稿，請核對數據與標註後再決定是否使用。'}
 
 
 def ai_answer_draft(app, body):
@@ -2873,6 +3018,13 @@ class Application:
             if 'consentExternal' in body and type(body['consentExternal']) is not bool:
                 fail(400, '外部上傳同意必須是布林值。')
             return ai_answer_draft(self, body), headers
+        if method == 'POST' and path == '/api/questions/ai-figure':
+            # 教師：依題目內容請 AI 畫出圖形（回傳已消毒的 SVG，由前端轉成圖片）。
+            self.teacher(user)
+            fields(body, ('title', 'content', 'topic', 'subtopic', 'qtype', 'consentExternal'), ('content',))
+            if 'consentExternal' in body and type(body['consentExternal']) is not bool:
+                fail(400, '外部上傳同意必須是布林值。')
+            return ai_figure_draft(self, body), headers
         if method == 'POST' and path == '/api/papers/parse':
             self.teacher(user)
             fields(body, ('name', 'text', 'dataUrl', 'mime', 'consentExternal'), ('name',))
