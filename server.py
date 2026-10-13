@@ -606,10 +606,26 @@ FIGURE_SPEC_INSTRUCTION = (
     '標了記號就代表那些邊真的相等或平行，必須與座標相符。'
     'labels 用來標註題目給的數值：用 "on":["A","B"] 表示標在該線段中間，'
     '用 "at":"B" 表示標在該點旁邊，或直接給 x、y；文字要短（例如 6、3.5、60°）。'
-    'givens 列出題目給的每一個已知條件，key 用符號（AB、∠ABC、r…），value 用題目寫的數值。'
+    '題目給的每一個數值（邊長、角度、半徑、座標…）都必須用 labels 標在圖上，一個都不能漏。'
+    'givens 必須完整列出題目給的每一個已知條件，key 用符號（AB、∠ABC、r…），value 用題目寫的數值。'
     '若題目有座標軸或需要標出原點，就設定 axes。'
-    '只畫題目真的需要的元素，不要加裝飾、不要加標題、不要畫底色、不要把題目文字畫進圖裡。'
+    '只畫題目真的需要的元素，不要加裝飾、不要加標題、不要畫底色、不要把題目文字畫進圖裡，'
+    '也不要畫題目沒有提到的點、線、圓或數據。'
     '若這道題完全不需要圖形，回 {"needed": false}。'
+)
+
+
+# 獨立讀題：只列出題目「已經給定」的數據。用處是不依賴模型自己填的 givens，
+# 也能核對規格有沒有真的把題目的數據畫上去（模型漏填 givens 時這個檢查仍然有效）。
+FIGURE_QUESTION_INSTRUCTION = (
+    '你是數學科審題老師。下面是一道題目的文字，請只讀出題目「已經給定」的數據。'
+    '不要解題、不要畫圖、不要補充題目沒有寫的數字。'
+    '回傳 {shape:str, values:[{key:str,value:str}], marks:[str]}。'
+    'shape：題目描述的圖形類型（例如「直角三角形」「平行四邊形」「圓」「坐標平面」）。'
+    'values：key 用符號（AB、∠ABC、r、A…；沒有符號就用「邊長」「半徑」這類簡短名稱），'
+    'value 用題目寫的數值（6、90°、(0,0)）。'
+    'marks：題目提到的記號或性質（直角、等長、平行、切線、虛線…），沒有就給空陣列。'
+    '只列題目明文寫出的數據；題目沒寫的不要列，也不要列出要求解的未知數。'
 )
 
 
@@ -1284,6 +1300,63 @@ def verify_spec(spec):
     return issues[:FIGURE_MAX_ISSUES]
 
 
+def question_facts(app, payload):
+    """只讀題目文字、列出題目已給定的數據；失敗回 None（這是加分項，不該擋住生成）。"""
+    try:
+        result = app.ai.call(FIGURE_QUESTION_INSTRUCTION, payload, temperature=0)
+    except APIError:
+        return None
+    reading = _reading(result)
+    if reading is None or not (reading['shape'] or reading['values'] or reading['marks']):
+        return None
+    return reading
+
+
+def verify_against_question(facts, spec):
+    """核對「題目給的數據」有沒有真的畫進圖裡。
+
+    這是不依賴模型自填 givens 的把關：模型漏填 givens、或把圖畫成與題目無關的形狀時，
+    這裡照樣會抓到，教師才不會拿到一張跟題目差很遠的圖。
+    """
+    if not facts:
+        return []
+    issues = []
+    shape = facts['shape']
+    if ('圓' in shape and '圓錐' not in shape and '圓柱' not in shape
+            and not (spec['circles'] or spec['arcs'])):
+        issues.append(f'題目是「{shape}」，圖上沒有畫圓')
+    if '三角形' in shape and (len(spec['points']) < 3 or len(spec['segments']) < 3):
+        issues.append(f'題目是「{shape}」，圖上沒有三角形')
+    if ('四邊形' in shape or '梯形' in shape) and (
+            len(spec['points']) < 4 or len(spec['segments']) < 4):
+        issues.append(f'題目是「{shape}」，圖上沒有四邊形')
+    given = {_norm_key(item['key']): item['value'] for item in spec['givens']}
+    known = ' '.join([item['text'] for item in spec['labels']]
+                     + [mark.get('text', '') for mark in spec['marks'] if mark['type'] == 'angle']
+                     + list(given.values()))
+    known_numbers = _numbers(known)
+    right_angle = any(mark['type'] == 'right-angle' for mark in spec['marks'])
+    for item in facts['values']:
+        numbers = _numbers(item['value'])
+        if not numbers:
+            continue
+        key = _norm_key(item['key'])
+        if key and key in given:
+            if _values_differ(item['value'], given[key]):
+                issues.append(f'題目說 {item["key"]} = {item["value"]}，圖上的規格卻寫成 {given[key]}')
+            continue
+        if numbers == [90.0] and right_angle:
+            continue  # 直角用直角記號表示就夠了，不一定要另外寫 90°
+        if all(any(abs(one - other) <= max(0.01, 0.01 * max(abs(one), abs(other)))
+                   for other in known_numbers) for one in numbers):
+            continue
+        issues.append(f'題目給的 {item["key"]} = {item["value"]} 沒有標在圖上' if key
+                      else f'題目給的數值 {item["value"]} 沒有標在圖上')
+    if '直角' in ' '.join(facts['marks']) and not right_angle:
+        issues.append('題目提到直角，圖上沒有直角記號')
+    return issues[:FIGURE_MAX_ISSUES]
+
+
 def _reading(block):
     if not isinstance(block, dict):
         return None
@@ -1413,7 +1486,7 @@ def ai_figure_draft(app, body):
     app.ai.consent(body.get('consentExternal'))
     payload = {'question': {'title': title, 'content': content, 'topic': topic,
                             'subtopic': subtopic, 'qtype': qtype}}
-    best, rounds = None, 0
+    best, rounds, facts, fetched = None, 0, None, False
     for index in range(FIGURE_SPEC_ATTEMPTS):
         instruction = FIGURE_SPEC_INSTRUCTION
         if issues:
@@ -1434,6 +1507,10 @@ def ai_figure_draft(app, body):
             issues = ['上一版規格畫不出合法的圖形，請檢查座標與元素是否合法。']
             continue
         problems = verify_spec(spec)
+        if not fetched:
+            # 題目不會變，讀一次就夠；讀不到就跳過這層檢查，不擋住生成。
+            facts, fetched = question_facts(app, payload), True
+        problems = (problems + verify_against_question(facts, spec))[:FIGURE_MAX_ISSUES]
         if best is None or len(problems) < len(best['issues']):
             best = {'svg': svg, 'spec': spec, 'issues': problems}
         if not problems:

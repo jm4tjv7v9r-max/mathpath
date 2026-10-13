@@ -1482,9 +1482,10 @@ class APITests(unittest.TestCase):
             self.assertEqual(result['issues'], [], '規格本身正確時不該留下疑慮')
             self.assertEqual(result['spec']['kind'], 'triangle')
             self.assertEqual(len(result['spec']['points']), 3)
-            instruction = ai.call_args[0][0]
-            self.assertIn('數學座標', instruction, '要告訴模型用數學座標，不要自己算像素')
-            self.assertIn('不要輸出 SVG', instruction)
+            instructions = [call.args[0] for call in ai.call_args_list]
+            self.assertTrue(any('數學座標' in one for one in instructions),
+                            '要告訴模型用數學座標，不要自己算像素')
+            self.assertTrue(any('不要輸出 SVG' in one for one in instructions))
         # 只有教師可以生成題目圖形；參數要檢查。
         self.request('POST', '/api/questions/ai-figure', {'content': 'x'}, cookie=self.student, expect=403)
         self.request('POST', '/api/questions/ai-figure', {}, cookie=self.teacher, expect=400)
@@ -1602,7 +1603,9 @@ class APITests(unittest.TestCase):
             self.request('POST', '/api/questions/ai-figure',
                          {'content': '兩直角邊 3、4，求斜邊。', 'topic': '幾何'},
                          cookie=self.teacher, expect=200)
-            ai.assert_called_once()
+            # 一次生成＝一次規格 ＋ 一次獨立讀題核對。
+            self.assertEqual(ai.call_count, 2)
+            self.assertTrue(any('數學座標' in call.args[0] for call in ai.call_args_list))
 
     def test_ai_figure_revision_uses_the_check_issues(self):
         # 核對出問題後重畫：問題原文要進到提示，要求這次務必修正。
@@ -1616,9 +1619,9 @@ class APITests(unittest.TestCase):
                          {'content': '兩直角邊 3、4，求斜邊。', 'topic': '幾何',
                           'issues': ['圖上標成 4、5', '缺少直角標記']},
                          cookie=self.teacher, expect=200)
-            instruction = ai.call_args[0][0]
-            self.assertIn('圖上標成 4、5', instruction)
-            self.assertIn('缺少直角標記', instruction)
+            instructions = [call.args[0] for call in ai.call_args_list]
+            self.assertTrue(any('圖上標成 4、5' in one for one in instructions))
+            self.assertTrue(any('缺少直角標記' in one for one in instructions))
         # issues 必須是清單；空清單不改變提示。
         self.request('POST', '/api/questions/ai-figure',
                      {'content': 'x', 'topic': '幾何', 'issues': '不是清單'},
@@ -1626,7 +1629,7 @@ class APITests(unittest.TestCase):
         with patch.object(self.app.ai, 'call', return_value=spec) as ai:
             self.request('POST', '/api/questions/ai-figure',
                          {'content': 'x', 'topic': '幾何', 'issues': []}, cookie=self.teacher, expect=200)
-            self.assertNotIn('上一版圖形', ai.call_args[0][0])
+            self.assertFalse(any('上一版圖形' in call.args[0] for call in ai.call_args_list))
 
     def test_ai_figure_check_compares_question_and_figure_readings(self):
         # 反向謄寫核對：模型分別讀出「題目說的」與「圖上畫的」，差異由程式比對出來。
@@ -1710,6 +1713,69 @@ class APITests(unittest.TestCase):
         self.assertIsNone(server.figure_read(
             {'question': {'shape': 'x'}, 'figure': {'shape': '', 'values': [], 'marks': []}}))
         self.assertIsNone(server.figure_read('x'))
+
+    def test_verify_against_question_catches_a_figure_that_ignores_the_data(self):
+        # 模型漏填 givens 時還是要抓到「圖跟題目差很遠」——靠獨立讀題的數據比對。
+        bare = server.figure_spec({'kind': 'triangle',
+                                   'points': [{'name': 'A', 'x': 0, 'y': 0}, {'name': 'B', 'x': 6, 'y': 0},
+                                              {'name': 'C', 'x': 6, 'y': 8}],
+                                   'segments': [{'from': 'A', 'to': 'B'}, {'from': 'B', 'to': 'C'},
+                                                {'from': 'C', 'to': 'A'}]})
+        facts = {'shape': '直角三角形',
+                 'values': [{'key': 'AB', 'value': '6'}, {'key': 'BC', 'value': '8'},
+                            {'key': '∠B', 'value': '90°'}],
+                 'marks': ['直角']}
+        joined = '；'.join(server.verify_against_question(facts, bare))
+        self.assertIn('AB = 6 沒有標在圖上', joined)
+        self.assertIn('BC = 8 沒有標在圖上', joined)
+        self.assertIn('沒有直角記號', joined)
+        # 標齊了就沒有問題（直角用直角記號表示即可，不必另外寫 90°）。
+        good = server.figure_spec({'kind': 'triangle',
+                                   'points': [{'name': 'A', 'x': 0, 'y': 0}, {'name': 'B', 'x': 6, 'y': 0},
+                                              {'name': 'C', 'x': 6, 'y': 8}],
+                                   'segments': [{'from': 'A', 'to': 'B'}, {'from': 'B', 'to': 'C'},
+                                                {'from': 'C', 'to': 'A'}],
+                                   'marks': [{'type': 'right-angle', 'at': 'B', 'a': 'A', 'c': 'C'}],
+                                   'labels': [{'text': '6', 'on': ['A', 'B']}, {'text': '8', 'on': ['B', 'C']}],
+                                   'givens': [{'key': 'AB', 'value': '6'}, {'key': 'BC', 'value': '8'}]})
+        self.assertEqual(server.verify_against_question(facts, good), [])
+        # 題目是圓、圖卻畫成三角形。
+        self.assertIn('沒有畫圓', '；'.join(server.verify_against_question(
+            {'shape': '圓', 'values': [], 'marks': []}, bare)))
+        # 規格自己寫的 givens 與題目不符。
+        self.assertIn('卻寫成 4', '；'.join(server.verify_against_question(
+            {'shape': '', 'values': [{'key': 'AB', 'value': '6'}], 'marks': []},
+            server.figure_spec({'points': [{'name': 'A', 'x': 0, 'y': 0}, {'name': 'B', 'x': 4, 'y': 0}],
+                                'segments': [{'from': 'A', 'to': 'B'}],
+                                'givens': [{'key': 'AB', 'value': '4'}]}))))
+        # 沒有讀到題目資料時不亂報。
+        self.assertEqual(server.verify_against_question(None, bare), [])
+
+    def test_ai_figure_redraws_when_the_figure_ignores_the_question(self):
+        # 端到端：圖跟題目差很遠時要自動帶著問題重畫，而不是把錯的圖交給教師。
+        self.app.ai.configured = True
+        self.app.ai.mode = 'local'
+        spec = {'kind': 'triangle',
+                'points': [{'name': 'A', 'x': 0, 'y': 0}, {'name': 'B', 'x': 6, 'y': 0},
+                           {'name': 'C', 'x': 6, 'y': 8}],
+                'segments': [{'from': 'A', 'to': 'B'}, {'from': 'B', 'to': 'C'}, {'from': 'C', 'to': 'A'}]}
+        facts = {'shape': '直角三角形', 'values': [{'key': 'AB', 'value': '6'}], 'marks': ['直角']}
+        seen = []
+
+        def fake(instruction, payload, image=None, model=None, temperature=None):
+            seen.append(instruction)
+            return facts if '只讀出題目' in instruction else spec
+
+        with patch.object(self.app.ai, 'call', side_effect=fake):
+            _, result, _ = self.request('POST', '/api/questions/ai-figure',
+                                        {'content': '直角三角形中 AB = 6，求斜邊。', 'topic': '幾何'},
+                                        cookie=self.teacher, expect=200)
+        self.assertIn('沒有標在圖上', '；'.join(result['issues']))
+        self.assertIn('務必人工核對', result['notice'], '還有疑慮時要提醒教師')
+        redraws = [one for one in seen if '上一版圖形' in one]
+        self.assertTrue(redraws, '要帶著問題重畫')
+        self.assertIn('沒有標在圖上', redraws[0])
+        self.assertEqual(len([one for one in seen if '只讀出題目' in one]), 1, '題目不會變，讀一次就夠')
 
     def test_generate_external_consent_required_before_model_call(self):
         for index, base in enumerate(('https://external.invalid/v1', 'https://192.168.1.2/v1'), 1):

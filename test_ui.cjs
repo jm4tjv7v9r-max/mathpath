@@ -23,7 +23,7 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
 (async () => {
   const browser = await chromium.launch({headless:true,args:['--disable-features=Rlz','--disable-background-networking','--disable-breakpad','--no-first-run','--no-default-browser-check']});
   const page = await browser.newPage({viewport:{width:1440,height:1000}});
-  const errors=[];page.on('pageerror',e=>errors.push(e.message));page.on('dialog',d=>d.accept());
+  const errors=[],dialogs=[];page.on('pageerror',e=>errors.push(e.message));page.on('dialog',d=>{dialogs.push(d.message());d.accept();});
   await page.emulateMedia({reducedMotion:'reduce'});
   let role=null;
   const q={id:1,title:'因式分解解二次方程',content:'解方程 $x^2-5x+6=0$。',topic:'一元二次方程',grade:'中三',points:6,level:1,qtype:'選擇題',source:'校本題庫',tags:['因式分解'],hint:'利用零乘積性質。',answer:'C',options:['$x=1$ 或 $x=6$','$x=-2$ 或 $x=-3$','$x=2$ 或 $x=3$','$x=1$ 或 $x=-6$'],steps:['分解為 $(x-2)(x-3)=0$。','概率為 $\\dfrac{1}{3}$，長度 $5\\text{ cm}$。']};
@@ -1553,7 +1553,7 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   console.log('PASS: 全自動匯入後由前端批次補上題目圖形');
 
   // 題目圖形工作室：AI 只輸出規格（程式繪圖）→ 自動核對 → 不符就自動重畫
-  let aiFigureSent=null,figureDraws=[],checkSent=null,checkCount=0;
+  let aiFigureSent=null,figureDraws=[],checkSent=null,checkCount=0,figureSaves=0;
   const FIGURE_SPEC={kind:'circle',points:[{name:'O',x:0,y:0},{name:'A',x:3,y:0}],
     segments:[],circles:[{center:'O',through:'A'}],marks:[],labels:[],givens:[]};
   await page.route('**/api/questions/ai-figure',route=>{
@@ -1563,10 +1563,11 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
       `<circle cx='200' cy='140' r='${figureDraws.length===1?60:70}' stroke='#1f2d24' stroke-width='2' fill='none'/>`+
       `<text x='196' y='146' font-size='14'>O</text></svg>`,
       spec:FIGURE_SPEC,issues:[],rounds:1,method:'AI 生成',notice:'這是草稿'}});});
-  // 第一次核對故意不通過，用來驗證「自動重畫並複驗」的迴圈。
+  // 第一次核對故意不通過，用來驗證「自動重畫並複驗」的迴圈；
+  // 之後（第 3 次起）也一律不通過，用來驗證「還有疑慮時存檔要先確認」。
   await page.route('**/api/questions/ai-figure-check',route=>{
     checkSent=route.request().postDataJSON();checkCount++;
-    const bad=checkCount===1;
+    const bad=checkCount===1||checkCount>=3;
     return route.fulfill({json:{ok:!bad,
       issues:bad?['圖上把 3 標成 4','缺少直角標記']:[],
       advice:bad?'請依下列不符之處重畫：圖上把 3 標成 4。':'',
@@ -1574,7 +1575,7 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
       figure:bad?{shape:'三角形',values:[{key:'AB',value:'4'}],marks:[]}
                 :{shape:'直角三角形',values:[{key:'AB',value:'3'}],marks:['直角記號']},
       method:'AI 核對'}});});
-  await page.route('**/api/questions/figures',route=>{aiFigureSent=route.request().postDataJSON();return route.fulfill({json:{updated:1}});});
+  await page.route('**/api/questions/figures',route=>{aiFigureSent=route.request().postDataJSON();figureSaves++;return route.fulfill({json:{updated:1}});});
   await page.evaluate(()=>navigate('bank'));
   await page.locator('[data-aifig]').first().waitFor({timeout:8000});
   // 非幾何／向量題材：AI 畫圖停用並說明原因，但仍可手動插入圖片
@@ -1626,6 +1627,20 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   await page.locator('#fig-apply').click();
   for(let i=0;i<50&&aiFigureSent.figures[0].id!==2;i++)await page.waitForTimeout(100);
   assert.equal(aiFigureSent.figures[0].id,2,'幾何題的圖形要寫回該題');
+  // 自動重畫也救不回來時（圖仍與題目差很遠）：還是可以存，但必須先把疑慮講清楚、要求確認
+  await page.locator('[data-aifig="2"]').click();
+  await page.locator('#fig-draw').waitFor({timeout:8000});
+  await page.locator('#fig-draw').click();
+  await page.waitForFunction(()=>!!document.querySelector('.fig-check.bad'),{timeout:20000});
+  assert.match(await page.locator('.fig-check.bad').innerText(),/圖上把 3 標成 4/,'要列出還剩下的疑慮');
+  assert.match(await page.locator('#toast').innerText(),/請人工核對/,'要提醒教師還有疑慮');
+  const dialogsBefore=dialogs.length,savesBefore=figureSaves;
+  await page.locator('#fig-apply').click();
+  for(let i=0;i<50&&dialogs.length===dialogsBefore;i++)await page.waitForTimeout(100);
+  assert.ok(dialogs.length>dialogsBefore,'還有疑慮時存檔要先確認');
+  assert.match(dialogs[dialogs.length-1],/疑慮/);
+  for(let i=0;i<50&&figureSaves===savesBefore;i++)await page.waitForTimeout(100);
+  assert.equal(figureSaves,savesBefore+1,'確認後仍要能存檔');
   // 用 × 關閉後狀態要清掉：否則之後在任何地方貼上圖片都會把工作室叫回來、還把貼上事件吃掉
   await page.locator('[data-aifig="2"]').click();
   await page.locator('.fig-preview').waitFor({timeout:8000});

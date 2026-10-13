@@ -1295,6 +1295,11 @@ function renderFigureStudio(){
     const studio=figStudio,btn=$('#fig-apply');
     // 圖形沒有改動就不必寫回（題庫題目的 figure 是網址，直接送回會被當成無效檔案）。
     if(studio.figure===studio.original){figStudio=null;closeModal();return;}
+    // 還有疑慮就先講清楚，避免教師順手把跟題目差很遠的圖存進題庫。
+    if(studio.issues.length&&!confirm(`這張圖仍有 ${studio.issues.length} 個疑慮：\n\n`
+        +studio.issues.map(x=>'・'+x).join('\n')+'\n\n確定要使用嗎？')){
+      return;
+    }
     btn.disabled=true;btn.textContent='正在儲存…';
     try{await studio.ctx.apply(studio.figure);figStudio=null;}
     catch(e){btn.disabled=false;btn.innerHTML=icon('check')+'使用這張圖形';toast(e.message);}
