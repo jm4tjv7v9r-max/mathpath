@@ -1371,7 +1371,7 @@ class HomeworkTests(unittest.TestCase):
         self.assertTrue(after['suggestion'].get('nextStep'))
         # 提交後不能重新開始
         self.error(403, 'POST', f'/api/assignments/{aid}/start', {}, self.student)
-        # 逾時後不能再作答，也不能提交
+        # 逾時後不能再作答，但「封存已收到的作答」仍要成功（前端到期自動提交會走這條）。
         aid2 = self.assignment((1,), kind='quiz', durationMinutes=1)
         self.call('POST', f'/api/assignments/{aid2}/start', {}, self.student)
         with self.app.db() as db:
@@ -1382,7 +1382,10 @@ class HomeworkTests(unittest.TestCase):
         self.assertEqual(expired['remainingSeconds'], 0)
         self.error(403, 'POST', '/api/attempts',
                    {'questionId': 1, 'answerText': 'x=2或3', 'assignmentId': aid2})
-        self.error(403, 'POST', f'/api/assignments/{aid2}/submit', {}, self.student)
+        sealed = self.finalize(aid2)
+        self.assertEqual(sealed['mySubmission']['status'], 'submitted', '到期自動提交要成功封存，不再回 403')
+        self.error(403, 'POST', '/api/attempts',
+                   {'questionId': 1, 'answerText': 'x=2或3', 'assignmentId': aid2})
         # 不限時的作業不受影響
         aid3 = self.assignment((1,))
         self.assertIsNone(self.detail(aid3)['assignment']['durationMinutes'])

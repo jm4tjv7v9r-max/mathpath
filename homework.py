@@ -228,6 +228,9 @@ class Homework:
     def can_access_attempt(db, row, user):
         if user['role'] != 'teacher':
             return row['user_id'] == user['id']
+        if 'mock_id' in row.keys() and row['mock_id'] is not None:
+            # 自助測驗只供本人查看，教師不能透過作答/圖片/批註接口繞過測驗權限。
+            return False
         if row['assignment_id'] is None:
             return True
         owner = db.execute('SELECT teacher_id FROM assignments WHERE id=?', (row['assignment_id'],)).fetchone()
@@ -300,6 +303,10 @@ class Homework:
                 'aiScore': source_sum('ai_score'), 'ruleScore': source_sum('rule_score')}
 
     def aggregate_suggestion(self, db, questions, rows):
+        if not questions:
+            return {'source': 'rules', 'strength': '這份記錄沒有可讀取的題目快照。',
+                    'focus': '請教師檢查歸檔還原結果。', 'nextStep': '補齊題目後再開始作答。',
+                    'recommended': [], 'notice': '尚無可評分的題目，不產生分數。'}
         if not rows:
             q = questions[0]
             suggestion = self.rule_suggestion(db, q, {'score': None, 'max_score': q['points'],
@@ -405,8 +412,11 @@ class Homework:
             item['submittedCount'], item['gradedCount'] = summary['submittedCount'], summary['fullyGradedCount']
         else:
             item['myStatus'] = self.submission(db, row['id'], user['id'])['status']
-            sums = self.sums(self.latest(db, row['id'], user['id']))
+            latest = self.latest(db, row['id'], user['id'])
+            sums = self.sums([r for r in latest if r['teacher_reviewed']])
             item['myScore'], item['myConfirmedScore'] = sums['score'], sums['confirmedScore']
+            item['myScoredPoints'] = sums['totalScoredPoints']
+            item['awaitingReview'] = any(not r['teacher_reviewed'] for r in latest)
         if detail:
             item.update(description=row['description'], allowLate=bool(row['allow_late']))
         return item
@@ -699,8 +709,20 @@ class Homework:
                 assignment = self.get_assignment(db, aid, user)
                 current = self.submission(db, aid, user['id'])
                 if current['status'] != 'submitted':
-                    self.assert_open(db, aid, user)
                     correction = self.open_correction(db, aid, user['id'])
+                    timed_out = bool(current['expired'] and current['startedAt'] and not correction)
+                    if not timed_out:
+                        self.assert_open(db, aid, user)
+                    else:
+                        # 到期只封存已接收作答，不再接受新答案；未答題明確留空待教師處理。
+                        latest_ids = {r['question_id'] for r in self.latest(db, aid, user['id'])}
+                        for q in self.questions(db, aid):
+                            if q['id'] not in latest_ids:
+                                db.execute('INSERT INTO attempts(user_id,question_id,answer_text,score,max_score,status,'
+                                           'feedback,submitted_at,method,assignment_id,suggestion) VALUES(?,?,?,?,?,?,?,?,?,?,?)',
+                                           (user['id'], q['id'], '', None, q['points'], 'pending',
+                                            '測驗到期時此題未作答，等待教師處理；未自動記零分。', self.utc_now(),
+                                            'pending-teacher', aid, '{}'))
                     if correction:
                         required = json.loads(correction['question_ids']) or [q['id'] for q in self.questions(db, aid)]
                         latest = {r['question_id']: r for r in self.latest(db, aid, user['id'])}

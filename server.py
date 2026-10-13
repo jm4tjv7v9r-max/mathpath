@@ -13,6 +13,7 @@ from html import unescape as html_unescape
 from http.cookies import CookieError, SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import io
+import latex
 import ipaddress
 import json
 import math
@@ -1866,39 +1867,87 @@ def pdf_embedded_jpeg(data, limit=40, minimum=5_000):
     return None
 
 
-def student_pdf_answer(data):
-    """學生上傳 PDF 作答：回 (answer_text, image_bytes, mime)。
+PDF_RENDER_LOCK = threading.Lock()  # PDFium 不是執行緒安全，單次完整渲染序列化。
 
-    先讀文字層（打字後匯出的 PDF）；沒有文字層（掃描檔）就取出內嵌的 JPEG 當作答圖片。
-    兩者都取不到時回 (None, None, None)，由呼叫端提示改用手機拍照。
+
+def student_pdf_answer(data):
+    """逐頁渲染 PDF 全部可見內容；文字層與掃描內容都保留，不只取第一張 JPEG。
+
+    使用 PDFium 的 RGB 緩衝區與標準庫 PNG 編碼，不需要 Pillow/NumPy。
+    單題最多 8 頁；超出像素/檔案限制明確拒絕，不截斷頁面。
     """
     if not data.startswith(b'%PDF-'):
         fail(400, '檔案內容不是有效 PDF。')
     try:
+        import pypdfium2 as pdfium
         from pypdf import PdfReader
     except ImportError:
-        fail(422, '伺服器未安裝 pypdf，無法讀取 PDF；請改用手機拍照上傳。')
+        fail(422, 'PDF 頁面渲染尚未安裝，不能確保完整保存；請改用相片上傳或請管理員安裝 requirements.txt。')
     try:
         reader = PdfReader(io.BytesIO(data))
         if reader.is_encrypted:
-            fail(422, '不支援加密 PDF，請先解密或改用手機拍照上傳。')
-        if len(reader.pages) > 30:
-            fail(413, 'PDF 最多 30 頁，請分次上傳。')
-        chunks, length = [], 0
-        for page in reader.pages:
-            chunk = page.extract_text() or ''
-            length += len(chunk)
-            if length > MAX_TEXT:
-                fail(413, 'PDF 文字超過 80,000 字，請分次上傳。')
-            chunks.append(chunk)
+            fail(422, '不支援加密 PDF，請先解密或改用相片上傳。')
+        if not 1 <= len(reader.pages) <= 8:
+            fail(413, '每題 PDF 最多 8 頁，請分開按題目提交；不會只保存前幾頁。')
+        chunks = [p.extract_text() or '' for p in reader.pages]
         extracted = '\n'.join(chunks).strip()
+        if len(extracted) > MAX_TEXT:
+            fail(413, 'PDF 文字超過 80,000 字，請分開提交。')
+        if extracted:
+            # 打字後匯出的 PDF：文字層就是作答內容，不必再存一份頁面圖。
+            return extracted, None, None
+        pages = []
+        ink = 0
+        with PDF_RENDER_LOCK:
+            doc = pdfium.PdfDocument(data)
+            try:
+                for i in range(len(doc)):
+                    page = doc[i]
+                    try:
+                        pw, ph = page.get_size()
+                        if not (math.isfinite(pw) and math.isfinite(ph) and pw > 0 and ph > 0):
+                            fail(422, 'PDF 頁面尺寸無效。')
+                        scale = min(2.0, 1200 / pw, 1600 / ph)
+                        bitmap = page.render(scale=scale, force_bitmap_format=pdfium.raw.FPDFBitmap_BGR,
+                                             rev_byteorder=True, fill_color=(255, 255, 255, 255))
+                        try:
+                            rows = [bytes(bitmap.buffer[y * bitmap.stride:y * bitmap.stride + bitmap.width * 3])
+                                    for y in range(bitmap.height)]
+                            pages.append((bitmap.width, bitmap.height, rows))
+                            for row in rows[::3]:
+                                for i in range(0, len(row) - 2, 3):
+                                    if row[i] + row[i + 1] + row[i + 2] < 600:
+                                        ink += 1
+                        finally:
+                            bitmap.close()
+                    finally:
+                        page.close()
+            finally:
+                doc.close()
+        if ink < 20:
+            fail(400, '這份 PDF 沒有可讀取的文字或內容（可能是空白頁）；請改用手機拍照上傳，'
+                      '或確認檔案內容後再提交。')
+        width = max(p[0] for p in pages)
+        height = sum(p[1] for p in pages) + 24 * (len(pages) - 1)
+        if width * height > 16_000_000 or height > 20000:
+            fail(413, 'PDF 頁面總尺寸過大，請分開按題目提交。')
+        raw = bytearray()
+        for i, (w, h, rows) in enumerate(pages):
+            if i:
+                raw.extend((b'\x00' + b'\xdd\xdd\xdd' * width) * 24)
+            for row in rows:
+                raw.extend(b'\x00' + row + b'\xff\xff\xff' * (width - w))
+        def chunk(kind, payload):
+            return struct.pack('>I', len(payload)) + kind + payload + struct.pack('>I', zlib.crc32(kind + payload) & 0xffffffff)
+        image = (b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', width, height, 8, 2, 0, 0, 0))
+                 + chunk(b'IDAT', zlib.compress(raw, 6)) + chunk(b'IEND', b''))
+        if len(image) > MAX_FILE:
+            fail(413, 'PDF 完整頁面圖片超過 10 MB，請分開按題目提交。')
+        return None, image, 'image/png'
     except APIError:
         raise
     except Exception:
-        fail(422, 'PDF 無法讀取，請改用手機拍照上傳。')
-    if extracted:
-        return extracted, None, None
-    return None, pdf_embedded_jpeg(data), 'image/jpeg'
+        fail(422, 'PDF 無法完整渲染，未提交；請改用相片上傳。')
 
 
 class Application:
@@ -2651,7 +2700,7 @@ class Application:
             with self.db() as db:
                 questions = [self.question_public(self.question_row(r), user) for r in db.execute('SELECT * FROM questions ORDER BY id')]
                 if user['role'] == 'teacher':
-                    rows = db.execute('SELECT a.* FROM attempts a WHERE a.assignment_id IS NULL OR EXISTS '
+                    rows = db.execute('SELECT a.* FROM attempts a WHERE (a.assignment_id IS NULL AND a.mock_id IS NULL) OR EXISTS '
                                       '(SELECT 1 FROM assignments h WHERE h.id=a.assignment_id AND h.teacher_id=?) '
                                       'ORDER BY a.id DESC', (user['id'],)).fetchall()
                 else:
@@ -2811,6 +2860,39 @@ class Application:
             return {'count': len(saved), 'method': method,
                     'questions': [self.question_public(q, user) for q in saved],
                     'notice': '已全自動拆分並匯入題庫，全部標示為「自動匯入 · 待核驗」；請在題庫核對題型、分類與參考答案。'}, headers
+        if method == 'POST' and path == '/api/questions/latex':
+            # 教師匯出：把題庫題目轉成可用 XeLaTeX 編譯的 .tex。
+            # 圖形不在此回傳（二進位），由前端把 /api/questions/{id}/figure 轉成 PNG 後打包成 zip。
+            self.teacher(user)
+            fields(body, ('questionIds', 'includeAnswers', 'title'), ('questionIds',))
+            raw_ids = body['questionIds']
+            if not isinstance(raw_ids, list) or not 1 <= len(raw_ids) <= 200:
+                fail(400, 'questionIds 必須是 1 至 200 題的清單。')
+            if 'includeAnswers' in body and type(body['includeAnswers']) is not bool:
+                fail(400, 'includeAnswers 必須是布林值。')
+            title = text(body.get('title') or 'MathPath 題庫匯出', '匯出標題', 200, empty=True) or 'MathPath 題庫匯出'
+            ids, seen = [], set()
+            for value in raw_ids:
+                qid = number(value, '題目編號', 1, 2 ** 63 - 1, True)
+                if qid not in seen:
+                    seen.add(qid)
+                    ids.append(qid)
+            with self.db() as db:
+                rows = []
+                for qid in ids:
+                    row = db.execute('SELECT * FROM questions WHERE id=?', (qid,)).fetchone()
+                    if row is None:
+                        fail(404, f'找不到題目 {qid}，請重新整理題庫後再匯出。')
+                    rows.append(self.question_row(row))
+            figures = {q['id']: f'figures/q{q["id"]}.png' for q in rows if q.get('figure')}
+            tex = latex.document(rows, title=title,
+                                 date=datetime.now(timezone.utc).date().isoformat(),
+                                 include_answers=body.get('includeAnswers', True),
+                                 figures=figures)
+            return {'tex': tex, 'count': len(rows),
+                    'figures': [{'id': qid, 'path': path_, 'url': f'/api/questions/{qid}/figure'}
+                                for qid, path_ in sorted(figures.items())],
+                    'notice': '請用 XeLaTeX 編譯（xelatex questions.tex）；圖形已放在 figures/ 資料夾。'}, headers
         if method == 'POST' and path == '/api/questions/import':
             self.teacher(user)
             fields(body, ('questions',), ('questions',))
@@ -2848,11 +2930,11 @@ class Application:
                     extracted, embedded, embedded_mime = student_pdf_answer(pdf_bytes)
                     if extracted:
                         answer = (answer + '\n' + extracted).strip() if answer else extracted
-                    elif embedded:
+                    if embedded:
                         image, mime = validate_image('data:%s;base64,%s'
                                                      % (embedded_mime, base64.b64encode(embedded).decode()))
                         ai_image = 'data:%s;base64,%s' % (mime, base64.b64encode(image).decode())
-                    else:
+                    elif not extracted:
                         fail(400, '這份 PDF 沒有可讀取的文字或圖片（可能是純掃描或加密檔）；'
                                   '請改用手機拍照上傳，或先把 PDF 頁面另存成圖片。')
                 else:
@@ -2881,13 +2963,30 @@ class Application:
             else:
                 ai_grading = True
                 practice_mode = True
+            if self.ai.configured and ai_grading:
+                self.ai.consent(body.get('consentExternal'))
+            has_image = image is not None
             image_key = None
-            if image is not None and self.storage.mode == 'r2':
+            if has_image and self.storage.mode == 'r2':
+                # 物件儲存不可用時要如實回報 503（由學生重試），不做半套保存。
                 image_key = self.storage.put('attempts', image, mime)
                 image = None
+            # 先接收保存，再呼叫模型：等待 AI 期間跨過截止／正式提交都不會丟掉原作答。
+            with self.db() as db:
+                db.execute('BEGIN IMMEDIATE')
+                if assignment_id is not None:
+                    self.homework.assert_open(db, assignment_id, user, qid)
+                if mock_id is not None:
+                    self.mock.assert_open(db, mock_id, user, qid)
+                cur = db.execute('INSERT INTO attempts(user_id,question_id,answer_text,image,image_mime,image_key,'
+                                 'score,max_score,status,feedback,submitted_at,method,assignment_id,mock_id,suggestion) '
+                                 'VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                                 (user['id'], qid, answer, image, mime, image_key, None, q['points'], 'pending',
+                                  '作答已接收，等待評分。', utc_now(), 'pending-teacher', assignment_id, mock_id, '{}'))
+                accepted_id = cur.lastrowid
             score, status, ai_steps = None, 'pending', []
             method = 'pending-teacher'
-            feedback = '手寫圖片尚未批閱，等待教師評分；沒有產生 AI 成績。' if image else '此題尚無參考答案，等待教師批閱。'
+            feedback = '手寫圖片尚未批閱，等待教師評分；沒有產生 AI 成績。' if has_image else '此題尚無參考答案，等待教師批閱。'
             fallback_note = ''
             ai_failed = False
             if self.ai.configured and ai_grading:
@@ -2908,31 +3007,45 @@ class Application:
                         # 避免教師把規則分數誤當成 AI 建議分數。
                         ai_failed = True
                         feedback = f'AI 建議評分暫時無法使用（{exc.message}）作答已保存，改由教師批閱。'
-                    if image is not None:
+                    if has_image:
                         feedback = 'AI 暫時無法辨識手寫內容，作答已保存；此題需教師批閱。'
-            if method == 'pending-teacher' and not ai_failed and image is None and q['answer'].strip():
+            if method == 'pending-teacher' and not ai_failed and not has_image and q['answer'].strip():
                 correct = final_correct(answer, q['answer'])
                 score = q['points'] if correct else 0
                 status, method = 'graded', 'rule-final'
                 feedback = ('規則評分：最終答案與參考答案嚴格等價。' if correct else '規則評分：未能確認最終答案與參考答案嚴格等價，記0分；可請教師覆核。') + '僅檢查最終答案，未批改推導步驟，也未使用 AI。' + fallback_note
             with self.db() as db:
                 db.execute('BEGIN IMMEDIATE')
-                # 与正式提交串行化；耗时模型调用后重新检查权限和截止时间。
+                fresh = db.execute('SELECT * FROM attempts WHERE id=?', (accepted_id,)).fetchone()
+                if fresh is None:
+                    fail(409, '作答記錄已被管理員變更，請重新整理確認。')
+                late = False
                 if assignment_id is not None:
-                    self.homework.assert_open(db, assignment_id, user)
-                if mock_id is not None:
-                    self.mock.assert_open(db, mock_id, user)
-                suggestion = self.homework.rule_suggestion(db, q, {
-                    'score': score, 'max_score': q['points'], 'status': status,
-                    'feedback': feedback, 'method': method})
-                cur = db.execute('INSERT INTO attempts(user_id,question_id,answer_text,image,image_mime,image_key,score,max_score,status,feedback,submitted_at,method,ai_steps,assignment_id,mock_id,ai_score,rule_score,suggestion) '
-                                 'VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
-                                 (user['id'], qid, answer, image, mime, image_key, score, q['points'], status, feedback, utc_now(), method,
-                                  json.dumps(ai_steps, ensure_ascii=False), assignment_id, mock_id,
-                                  score if method in ('ai-advisory', 'ai-practice') else None,
-                                  score if method == 'rule-final' else None, json.dumps(suggestion, ensure_ascii=False)))
-                row = db.execute('SELECT * FROM attempts WHERE id=?', (cur.lastrowid,)).fetchone()
-            if method in ('ai-advisory', 'ai-practice'):
+                    # 作答已在截止前接收；但若教師／系統在模型執行期間正式提交，
+                    # 這筆遲到的作答要撤回，避免提交後仍可新增紀錄。
+                    recipient = db.execute('SELECT * FROM assignment_recipients WHERE assignment_id=? AND user_id=?',
+                                           (assignment_id, user['id'])).fetchone()
+                    correction = self.homework.open_correction(db, assignment_id, user['id'])
+                    late = bool(recipient and recipient['submitted_at'] is not None and not correction)
+                if not late:
+                    # 教師若已在 AI 執行期間完成覆核，不可被後到的模型結果覆蓋。
+                    if not fresh['teacher_reviewed']:
+                        suggestion = self.homework.rule_suggestion(db, q, {
+                            'score': score, 'max_score': q['points'], 'status': status,
+                            'feedback': feedback, 'method': method})
+                        db.execute('UPDATE attempts SET score=?,status=?,feedback=?,method=?,ai_steps=?,ai_score=?,'
+                                   'rule_score=?,suggestion=? WHERE id=? AND teacher_reviewed=0',
+                                   (score, status, feedback, method, json.dumps(ai_steps, ensure_ascii=False),
+                                    score if method in ('ai-advisory', 'ai-practice') else None,
+                                    score if method == 'rule-final' else None,
+                                    json.dumps(suggestion, ensure_ascii=False), accepted_id))
+                row = db.execute('SELECT * FROM attempts WHERE id=?', (accepted_id,)).fetchone()
+            if late:
+                # 撤回這筆遲到的作答：要用獨立交易，否則 fail() 會連同刪除一起回滾。
+                with self.db() as db:
+                    db.execute('DELETE FROM attempts WHERE id=?', (accepted_id,))
+                fail(403, '已正式提交的作業不能再次作答。')
+            if method in ('ai-advisory', 'ai-practice') and not row['teacher_reviewed']:
                 self.homework.ai_suggestion(q, row, body.get('consentExternal'))
             with self.db() as db:
                 attempt = self.attempt_public(db, db.execute('SELECT * FROM attempts WHERE id=?', (row['id'],)).fetchone(), user)

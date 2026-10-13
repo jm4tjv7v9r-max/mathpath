@@ -8,6 +8,7 @@
 - 歸檔**不含密碼雜湊**：學生帳號在新學年重建，舊密碼無法也無需還原。
 """
 import base64
+from bisect import bisect_right
 import json
 import os
 import pathlib
@@ -463,6 +464,8 @@ class DataAdmin:
             self.fail(400, '這不是 MathPath 的學生作業歸檔（缺少 format 標記）。')
         question_map = self.question_id_map()
         users, classes, assignments, exams = {}, {}, {}, {}
+        assignment_questions, mock_questions = {}, {}
+        corrections, attempt_ids = [], {}
         written, skipped, credentials, bad_images = {}, {}, [], 0
         def bump(bucket, key):
             bucket[key] = bucket.get(key, 0) + 1
@@ -471,6 +474,18 @@ class DataAdmin:
             if db.execute('SELECT 1 FROM questions WHERE id=?', (new_id,)).fetchone():
                 return new_id
             return None
+        def snapshot_payload(value, qid):
+            try:
+                payload = json.loads(value)
+            except (ValueError, TypeError):
+                return None
+            if (not isinstance(payload, dict)
+                    or not all(isinstance(payload.get(k), str) for k in ('title', 'content', 'topic'))
+                    or type(payload.get('points')) is not int or payload['points'] <= 0
+                    or type(payload.get('level')) is not int):
+                return None
+            payload['id'] = qid
+            return json.dumps(payload, ensure_ascii=False)
         processed = 0
         with self.app.db() as db:
             for record in self.iter_jsonl(path):
@@ -489,9 +504,10 @@ class DataAdmin:
                     if not re.fullmatch(r'[A-Za-z0-9_.-]{3,40}', username):
                         bump(skipped, 'student')
                         continue
-                    existing = db.execute('SELECT id FROM users WHERE username=?', (username,)).fetchone()
+                    existing = db.execute('SELECT id,role FROM users WHERE username=?', (username,)).fetchone()
                     if existing:
-                        users[record.get('id')] = existing[0]
+                        if existing['role'] == 'student':
+                            users[record.get('id')] = existing['id']
                         bump(skipped, 'student')
                         continue
                     seat = self.seat_value(record.get('seat'))
@@ -537,12 +553,16 @@ class DataAdmin:
                 elif kind == 'assignmentQuestion':
                     aid = assignments.get(record.get('assignment_id'))
                     qid = question_exists(db, record.get('question_id'))
-                    if not aid or not qid:
+                    payload = snapshot_payload(record.get('payload'), qid)
+                    if not aid or not qid or payload is None:
                         bump(skipped, 'assignmentQuestion')
                         continue
-                    db.execute('INSERT OR IGNORE INTO assignment_questions(assignment_id,question_id,position,payload)'
-                               ' VALUES(?,?,?,?)',
-                               (aid, qid, record.get('position') or 0, record.get('payload') or '{}'))
+                    cur = db.execute('INSERT OR IGNORE INTO assignment_questions(assignment_id,question_id,position,payload)'
+                                     ' VALUES(?,?,?,?)', (aid, qid, record.get('position') or 0, payload))
+                    if not cur.rowcount:
+                        bump(skipped, 'assignmentQuestion')
+                        continue
+                    assignment_questions.setdefault(aid, {})[record.get('question_id')] = qid
                     bump(written, 'assignmentQuestion')
                 elif kind == 'assignmentRecipient':
                     aid, uid = assignments.get(record.get('assignment_id')), users.get(record.get('user_id'))
@@ -556,16 +576,10 @@ class DataAdmin:
                                 record.get('started_at')))
                     bump(written, 'assignmentRecipient')
                 elif kind == 'correction':
-                    aid, uid = assignments.get(record.get('assignment_id')), users.get(record.get('user_id'))
-                    if not aid or not uid:
-                        bump(skipped, 'correction')
-                        continue
-                    db.execute('INSERT INTO corrections(assignment_id,user_id,requested_by,note,question_ids,'
-                               'min_attempt_id,round,requested_at,resolved_at) VALUES(?,?,?,?,?,?,?,?,?)',
-                               (aid, uid, teacher_id, str(record.get('note') or ''), str(record.get('question_ids') or '[]'),
-                                int(record.get('min_attempt_id') or 0), int(record.get('round') or 1),
-                                str(record.get('requested_at') or self.utc_now()), record.get('resolved_at')))
-                    bump(written, 'correction')
+                    # 只暂存订正元数据；作答及图片仍逐行恢复，最后才能换算作答阈值。
+                    corrections.append({k: record.get(k) for k in
+                                        ('assignment_id', 'user_id', 'note', 'question_ids', 'min_attempt_id',
+                                         'round', 'requested_at', 'resolved_at')})
                 elif kind == 'mockExam':
                     uid = users.get(record.get('user_id'))
                     if not uid:
@@ -587,16 +601,27 @@ class DataAdmin:
                 elif kind == 'mockQuestion':
                     eid = exams.get(record.get('exam_id'))
                     qid = question_exists(db, record.get('question_id'))
-                    if not eid or not qid:
+                    payload = snapshot_payload(record.get('payload'), qid)
+                    if not eid or not qid or payload is None:
                         bump(skipped, 'mockQuestion')
                         continue
-                    db.execute('INSERT OR IGNORE INTO mock_questions(exam_id,question_id,position,payload)'
-                               ' VALUES(?,?,?,?)', (eid, qid, record.get('position') or 0, record.get('payload') or '{}'))
+                    cur = db.execute('INSERT OR IGNORE INTO mock_questions(exam_id,question_id,position,payload)'
+                                     ' VALUES(?,?,?,?)', (eid, qid, record.get('position') or 0, payload))
+                    if not cur.rowcount:
+                        bump(skipped, 'mockQuestion')
+                        continue
+                    mock_questions.setdefault(eid, {})[record.get('question_id')] = qid
                     bump(written, 'mockQuestion')
                 elif kind == 'attempt':
                     uid = users.get(record.get('user_id'))
                     qid = question_exists(db, record.get('question_id'))
-                    if not uid or not qid:
+                    old_aid, old_eid = record.get('assignment_id'), record.get('mock_id')
+                    aid, eid = assignments.get(old_aid), exams.get(old_eid)
+                    if (not uid or not qid
+                            or (old_aid is not None and (not aid or record.get('question_id') not in
+                                                        assignment_questions.get(aid, {})))
+                            or (old_eid is not None and (not eid or record.get('question_id') not in
+                                                        mock_questions.get(eid, {})))):
                         bump(skipped, 'attempt')
                         continue
                     image, image_mime = self.decode_optional_image(record.get('image'))
@@ -606,7 +631,7 @@ class DataAdmin:
                     image, image_key = self.put_blob('attempts', image, image_mime)
                     annotation, annotation_key = self.put_blob('attempts', annotation, annotation_mime)
                     reviewed = int(record.get('teacher_reviewed') or 0)
-                    db.execute(
+                    cur = db.execute(
                         'INSERT INTO attempts(user_id,question_id,answer_text,image,image_mime,score,max_score,status,'
                         'feedback,submitted_at,method,ai_steps,teacher_reviewed,reviewed_by,reviewed_at,assignment_id,'
                         'ai_score,rule_score,teacher_confirmed_score,suggestion,annotation,annotation_mime,image_key,'
@@ -618,15 +643,59 @@ class DataAdmin:
                          str(record.get('feedback') or ''), str(record.get('submitted_at') or self.utc_now()),
                          str(record.get('method') or 'pending-teacher'), record.get('ai_steps') or '[]',
                          reviewed, teacher_id if reviewed else None, record.get('reviewed_at'),
-                         assignments.get(record.get('assignment_id')) if record.get('assignment_id') else None,
+                         aid,
                          record.get('ai_score'), record.get('rule_score'), record.get('teacher_confirmed_score'),
                          record.get('suggestion') or '{}', annotation, annotation_mime, image_key, annotation_key,
                          record.get('annotation_at'), record.get('ai_annotation') or '{}',
                          record.get('ai_annotation_at'),
-                         exams.get(record.get('mock_id')) if record.get('mock_id') else None))
+                         eid))
+                    if aid and type(record.get('id')) is int:
+                        attempt_ids.setdefault((aid, uid), []).append((record['id'], cur.lastrowid))
                     bump(written, 'attempt')
                 else:
                     bump(skipped, 'unknown')
+            # 按原编号建立每个作业学生的前缀最大新编号，不混入其他学生、作业或自主练习。
+            for key, pairs in attempt_ids.items():
+                pairs.sort()
+                old_ids, maxima, maximum = [], [], 0
+                for old_id, new_id in pairs:
+                    old_ids.append(old_id)
+                    maximum = max(maximum, new_id)
+                    maxima.append(maximum)
+                attempt_ids[key] = (old_ids, maxima)
+            for record in corrections:
+                processed += 1
+                if processed % RESTORE_COMMIT_EVERY == 0:
+                    db.commit()
+                aid, uid = assignments.get(record['assignment_id']), users.get(record['user_id'])
+                try:
+                    old_qids = json.loads(record['question_ids'])
+                    old_min = int(record['min_attempt_id'] or 0)
+                    round_no = int(record['round'] or 1)
+                except (ValueError, TypeError):
+                    bump(skipped, 'correction')
+                    continue
+                if (not aid or not uid or not isinstance(old_qids, list)
+                        or any(type(q) is not int for q in old_qids)):
+                    bump(skipped, 'correction')
+                    continue
+                related = assignment_questions.get(aid, {})
+                if old_qids:
+                    qids = list(dict.fromkeys(related[q] for q in old_qids if q in related))
+                else:
+                    qids = list(dict.fromkeys(related.values()))
+                # 空列表在订正接口代表全部题目；过滤后为空必须跳过，不能意外扩大订正范围。
+                if not qids:
+                    bump(skipped, 'correction')
+                    continue
+                old_ids, maxima = attempt_ids.get((aid, uid), ([], []))
+                index = bisect_right(old_ids, old_min) - 1
+                minimum = maxima[index] if index >= 0 else 0
+                db.execute('INSERT INTO corrections(assignment_id,user_id,requested_by,note,question_ids,'
+                           'min_attempt_id,round,requested_at,resolved_at) VALUES(?,?,?,?,?,?,?,?,?)',
+                           (aid, uid, teacher_id, str(record['note'] or ''), json.dumps(qids), minimum,
+                            round_no, str(record['requested_at'] or self.utc_now()), record['resolved_at']))
+                bump(written, 'correction')
         return {'written': written, 'skipped': skipped, 'credentials': credentials,
                 'usedSharedPassword': initial is not None, 'unreadableImages': bad_images,
                 'questionMapApplied': bool(question_map), 'notice': RESTORE_NOTICE}

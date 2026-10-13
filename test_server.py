@@ -76,19 +76,30 @@ def text_pdf_url(text='x=3'):
     ])
 
 
-def scanned_pdf_url():
-    """掃描檔：沒有文字層，只有一張內嵌的 JPEG。"""
+def scanned_pdf_url(page_count=1):
+    """掃描檔：沒有文字層，只有內嵌的 JPEG；可指定頁數。"""
     jpeg = jpeg_bytes()
     content = b'q 100 0 0 100 0 0 cm /Im0 Do Q'
-    return pdf_url([
-        b'<< /Type /Catalog /Pages 2 0 R >>',
-        b'<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
-        b'<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] '
-        b'/Resources << /XObject << /Im0 4 0 R >> >> /Contents 5 0 R >>',
-        b'<< /Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceRGB '
-        b'/BitsPerComponent 8 /Filter /DCTDecode /Length %d >>\nstream\n' % len(jpeg) + jpeg + b'\nendstream',
-        b'<< /Length %d >>\nstream\n' % len(content) + content + b'\nendstream',
-    ])
+    first_page = 3
+    image_id = first_page + page_count
+    content_ids = [image_id + 1 + i for i in range(page_count)]
+    page_ids = [first_page + i for i in range(page_count)]
+    objects = [b'<< /Type /Catalog /Pages 2 0 R >>',
+               b'<< /Type /Pages /Kids [' + b' '.join(b'%d 0 R' % p for p in page_ids) + b'] /Count %d >>' % page_count]
+    for index, pid in enumerate(page_ids):
+        objects.append(b'<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] '
+                       b'/Resources << /XObject << /Im0 %d 0 R >> >> /Contents %d 0 R >>'
+                       % (image_id, content_ids[index]))
+    objects.append(b'<< /Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceRGB '
+                   b'/BitsPerComponent 8 /Filter /DCTDecode /Length %d >>\nstream\n' % len(jpeg) + jpeg + b'\nendstream')
+    for _ in content_ids:
+        objects.append(b'<< /Length %d >>\nstream\n' % len(content) + content + b'\nendstream')
+    return pdf_url(objects)
+
+
+def png_size(data):
+    """讀 PNG 的 IHDR 取得 (寬, 高)，用來驗證多頁是否真的都渲染進去。"""
+    return struct.unpack('>II', data[16:24])
 
 
 def blank_pdf_url():
@@ -1084,8 +1095,16 @@ class APITests(unittest.TestCase):
         with self.app.db() as db:
             row2 = db.execute('SELECT image, image_mime FROM attempts WHERE id=?',
                               (scanned_attempt['id'],)).fetchone()
-        self.assertTrue(bytes(row2['image']).startswith(b'\xff\xd8'))
-        self.assertEqual(row2['image_mime'], 'image/jpeg')
+        self.assertTrue(bytes(row2['image']).startswith(b'\x89PNG'))
+        self.assertEqual(row2['image_mime'], 'image/png')
+        # 多頁掃描檔必須完整渲染每一頁，不能只留第一張內嵌圖片。
+        two = self.submit('', image=scanned_pdf_url(2))
+        with self.app.db() as db:
+            row3 = db.execute('SELECT image FROM attempts WHERE id=?', (two['id'],)).fetchone()
+        one_size = png_size(bytes(row2['image']))
+        two_size = png_size(bytes(row3['image']))
+        self.assertEqual(two_size[0], one_size[0], '兩頁寬度應一致')
+        self.assertGreater(two_size[1], one_size[1] * 1.8, '兩頁高度應接近單頁兩倍（兩頁都保留）')
         # 沒有文字也沒有圖片時要講清楚怎麼做，不能假裝成功。
         self.request('POST', '/api/attempts', {'questionId': 1, 'answerText': '', 'image': blank_pdf_url()},
                      cookie=self.student, expect=400)

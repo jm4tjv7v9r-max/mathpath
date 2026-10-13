@@ -19,7 +19,7 @@ const HANDWRITING=makePng(400,300);
 const INK_HANDWRITING=makeInkPng(400,300);
 const FULL_INK_HANDWRITING=makeInkPng(400,300,1);
 (async () => {
-  const browser = await chromium.launch({channel:'chrome',headless:true,args:['--disable-features=Rlz','--disable-background-networking','--disable-breakpad','--no-first-run','--no-default-browser-check']});
+  const browser = await chromium.launch({headless:true,args:['--disable-features=Rlz','--disable-background-networking','--disable-breakpad','--no-first-run','--no-default-browser-check']});
   const page = await browser.newPage({viewport:{width:1440,height:1000}});
   const errors=[];page.on('pageerror',e=>errors.push(e.message));page.on('dialog',d=>d.accept());
   await page.emulateMedia({reducedMotion:'reduce'});
@@ -35,16 +35,17 @@ const FULL_INK_HANDWRITING=makeInkPng(400,300,1);
   const handwritten={id:9,questionId:1,questionTitle:'因式分解解二次方程',topic:'一元二次方程',score:null,maxScore:6,status:'pending',feedback:'手寫圖片尚未批閱，等待教師評分。',submittedAt:stamp,answerText:'',gradingMethod:'pending-teacher',steps:[],teacherReviewed:false,image:'/api/attempts/9/image',student:{id:1,name:'介面測試學生',username:'student'},suggestion:advice};
   let annotated=false,studentSubmitted=false,aiMarked=false,aiAdjusted=null,autoImported=null,parsedSeen=null,savedKeySeen=null,aiConfigSaved=null,economySent=null,aiAnswerPayload=null,correction=null,returned=null,rememberSent=null,importedQuestions=null;
   let mockStarted=null,mockState=null,mockAttempt=null,mockAttemptBody=null;
+  let mockDeadline=new Date(Date.now()+900000).toISOString(),quizDeadline=new Date(Date.now()+1800000).toISOString();
   let calendarNotes=[],noteCreated=null;
   const assignmentQuestion={...q,qtype:'解答題',options:[]};
   const mockQuestion={id:11,title:'模擬題：直角三角形',content:'直角三角形兩邊長為3 cm及4 cm，求斜邊長。',topic:'幾何',level:1,grade:'中三',points:5,qtype:'解答題',hint:'用畢氏定理',source:'校本題庫',tags:['幾何']};
-  const mockExam=()=>({id:7,topic:mockStarted&&mockStarted.topic||'幾何',level:null,qtype:'解答題',minutes:mockStarted?mockStarted.minutes:15,questionCount:1,createdAt:stamp,startedAt:stamp,expiresAt:stamp,submittedAt:mockState&&mockState.submitted?stamp:null,expired:false,status:mockState&&mockState.submitted?'submitted':'in_progress',remainingSeconds:mockState&&mockState.submitted?0:(mockStarted?mockStarted.minutes*60:900)});
+  const mockExam=()=>({id:7,topic:mockStarted&&mockStarted.topic||'幾何',level:null,qtype:'解答題',minutes:mockStarted?mockStarted.minutes:15,questionCount:1,createdAt:stamp,startedAt:stamp,expiresAt:mockDeadline,submittedAt:mockState&&mockState.submitted?stamp:null,expired:false,status:mockState&&mockState.submitted?'submitted':'in_progress',remainingSeconds:mockState&&mockState.submitted?0:(mockStarted?mockStarted.minutes*60:900)});
   const mockReport=()=>({score:5,maxScore:5,percent:100,totalScoredPoints:5,pendingCount:0,confirmedScore:null,confirmedCount:0,aiScore:null,ruleScore:5,topicStats:[{topic:'幾何',scoredCount:1,totalCount:1,score:5,maxScore:5,percent:100}],suggestion:advice,answeredCount:1});
   let quizStarted=false,quizSubmitted=false,quizStartSeen=0,durationSent=null;
   let reviewSent=null,aiReviewSent=null,bulkSent=null,resetSent=null,vacuumCalled=0;
   let editSent=null;const restoreSent={};let aiGenerated=null;
   const quizReport=()=>({score:quizSubmitted?6:null,maxScore:6,totalScoredPoints:quizSubmitted?6:0,pendingCount:0,confirmedScore:null,confirmedCount:0,gradedCount:quizSubmitted?1:0,questionCount:1,percent:quizSubmitted?100:null,aiScore:null,ruleScore:quizSubmitted?6:null,topicStats:[],suggestion:advice});
-  const quizSub=()=>({status:quizSubmitted?'submitted':'not_started',submittedAt:quizSubmitted?stamp:null,resubmittedAt:null,submitCount:quizSubmitted?1:0,late:false,correction:null,startedAt:quizStarted?stamp:null,expiresAt:quizStarted?'2099-01-01T00:30:00Z':null,remainingSeconds:quizStarted?1800:null,timeUsedSeconds:quizStarted?0:null,expired:false});
+  const quizSub=()=>({status:quizSubmitted?'submitted':'not_started',submittedAt:quizSubmitted?stamp:null,resubmittedAt:null,submitCount:quizSubmitted?1:0,late:false,correction:null,startedAt:quizStarted?stamp:null,expiresAt:quizStarted?quizDeadline:null,remainingSeconds:quizStarted?1800:null,timeUsedSeconds:quizStarted?0:null,expired:false});
   const AI_ISSUE={x:0.3,y:0.4,label:'符號錯誤',comment:'這裡應為負號'};
   const attemptFixture=()=>({...handwritten,...(annotated?{annotation:'/api/attempts/9/annotation',annotationAt:stamp}:{}),...(aiMarked?{aiAnnotation:{issues:aiAdjusted?aiAdjusted.issues:[AI_ISSUE],summary:aiAdjusted?aiAdjusted.summary:'主要在符號處理',...(aiAdjusted?{adjusted:true}:{}),at:stamp}}:{})});
   await page.route('https://mathpath.test/**',async route=>{
@@ -57,7 +58,7 @@ const FULL_INK_HANDWRITING=makeInkPng(400,300,1);
     if(url.pathname==='/api/calendar/notes'&&route.request().method()==='POST'){noteCreated=route.request().postDataJSON();const created={id:41,date:noteCreated.date,title:noteCreated.title,note:noteCreated.note||'',kind:'reminder',createdAt:stamp};calendarNotes=calendarNotes.concat([created]);return route.fulfill({json:{note:created}});}
     if(url.pathname==='/api/calendar/notes/41/delete'){calendarNotes=calendarNotes.filter(n=>n.id!==41);return route.fulfill({json:{deleted:41}});}
     if(url.pathname==='/api/mock'&&route.request().method()==='GET'){return route.fulfill({json:{exams:mockState&&mockState.submitted?[{id:7,topic:'幾何',level:1,qtype:'解答題',minutes:15,questionCount:1,createdAt:stamp,startedAt:stamp,expiresAt:stamp,submittedAt:stamp,expired:false,status:'submitted',score:5,maxScore:5,percent:100,pendingCount:0}]:[],options:{topics:['幾何','代數','統計'],subtopics:{'幾何':['勾股定理','相似'],'代數':['一元一次方程']},counts:[5,10,15,20],minutes:[5,10,15,20,30,45,60],maxQuestions:20,maxMinutes:180,available:16,qtypes:['解答題']},ai}});}
-    if(url.pathname==='/api/mock'&&route.request().method()==='POST'){mockStarted=route.request().postDataJSON();mockState={submitted:false};return route.fulfill({json:{exam:mockExam(),questions:[mockQuestion],notice:'已開始計時。'}});}
+    if(url.pathname==='/api/mock'&&route.request().method()==='POST'){mockStarted=route.request().postDataJSON();mockDeadline=new Date(Date.now()+mockStarted.minutes*60000).toISOString();mockState={submitted:false};return route.fulfill({json:{exam:mockExam(),questions:[mockQuestion],notice:'已開始計時。'}});}
     if(url.pathname==='/api/mock/7'&&route.request().method()==='GET'){return route.fulfill({json:{exam:mockExam(),questions:[mockQuestion],attempts:mockAttempt?[mockAttempt]:[],report:mockState&&mockState.submitted?mockReport():null,notice:'只供你本人查看。'}});}
     if(url.pathname==='/api/mock/7/submit'){mockState={submitted:true};return route.fulfill({json:{exam:mockExam(),report:mockReport(),notice:'已提交並即時計分。'}});}
     if(url.pathname==='/api/attempts'&&route.request().method()==='POST'){mockAttemptBody=route.request().postDataJSON();mockAttempt={id:31,questionId:11,questionTitle:'模擬題：直角三角形',topic:'幾何',score:5,maxScore:5,status:'graded',feedback:'規則評分：最終答案與參考答案嚴格等價。',submittedAt:stamp,answerText:'5 cm',gradingMethod:'rule-final',steps:[],teacherReviewed:false,mockId:7,suggestion:advice};return route.fulfill({json:{attempt:mockAttempt}});}
@@ -101,7 +102,7 @@ const FULL_INK_HANDWRITING=makeInkPng(400,300,1);
       ],notes:calendarNotes};}
     else if(url.pathname==='/api/papers/parse'){parsedSeen=route.request().postDataJSON();data={method:'規則拆題',notice:'需要教師確認題目內容、分類、難度、分值和參考答案後才可匯入；識別不代表答案已核驗。',drafts:[{title:'自動卷 · 第1題',content:'已知集合 $A=\\{x\\mid -1<x\\le 3\\}$，求元素個數。',topic:'代數',subtopic:'',level:1,grade:'中三',qtype:'選擇題',points:6,answer:'$3$',steps:['元素為 $0,1,2,3$。'],hint:'數一數。',analysis:'規則分析：題型為選擇題，知識點為代數；參考答案留空，需教師核對。',source:'自動卷',tags:['教師待確認']}]};}
     else if(url.pathname==='/api/papers/auto-import'){autoImported=route.request().postDataJSON();return route.fulfill({json:{count:2,method:'規則拆題',questions:[],notice:'已全自動拆分並匯入題庫，全部標示為「自動匯入 · 待核驗」；請在題庫核對題型、分類與參考答案。'}});}
-    else if(url.pathname==='/api/assignments/2/start'){quizStartSeen++;quizStarted=true;return route.fulfill({json:{mySubmission:quizSub()}});}
+    else if(url.pathname==='/api/assignments/2/start'){quizStartSeen++;quizDeadline=new Date(Date.now()+1800000).toISOString();quizStarted=true;return route.fulfill({json:{mySubmission:quizSub()}});}
     else if(url.pathname==='/api/assignments/2/submit'){quizSubmitted=true;return route.fulfill({json:{report:{score:6,maxScore:6,totalScoredPoints:6,pendingCount:0,confirmedScore:null,confirmedCount:0,gradedCount:1,questionCount:1,percent:100,aiScore:null,ruleScore:6,topicStats:[],suggestion:advice},mySubmission:quizSub()}});}
     else if(url.pathname==='/api/assignments/2')data={assignment:quizAssignment,questions:[q],attempts:quizStarted?[graded(21,1,'一元二次方程',6,6)]:[],mySubmission:quizSub(),report:quizReport()};
     else if(url.pathname==='/api/assignments'&&route.request().method()==='POST'){durationSent=route.request().postDataJSON();return route.fulfill({json:{assignment:quizAssignment}});}
@@ -597,6 +598,17 @@ const FULL_INK_HANDWRITING=makeInkPng(400,300,1);
   await page.waitForTimeout(200);
   assert.match(await manualCard.locator('[data-rubric-total]').innerText(), /總和 100%/, '修正後總和應為 100%');
   assert.match(await page.locator('.draft-figure img').getAttribute('src'),/^data:image\/(png|webp);base64,/,'草稿應顯示手繪圖形（PNG 或 WebP）');
+  const draftFigSide=await page.evaluate(()=>{
+    const card=[...document.querySelectorAll('.draft-card')].find(c=>c.querySelector('.draft-figure'));
+    if(!card)return null;
+    const stem=card.querySelector('.question-stem');
+    if(!stem)return null;
+    const t=stem.querySelector('.question-stem-text').getBoundingClientRect();
+    const f=stem.querySelector('.draft-figure').getBoundingClientRect();
+    return f.left>=t.right-2;
+  });
+  assert.equal(draftFigSide,true,'匯入草稿卡的題目圖形也要放在題目內容的右邊');
+  await page.screenshot({path:path.join(__dirname,'..','MathPath-拆題草稿圖形靠右.png'),fullPage:true});
   await page.locator('#confirm-drafts').check();
   await page.locator('#save-drafts').click();
   await page.locator('.success-panel').waitFor();
@@ -895,8 +907,10 @@ const FULL_INK_HANDWRITING=makeInkPng(400,300,1);
   await page.waitForFunction(()=>{const el=document.querySelector('[data-quiz-clock]');return !!el&&/^\d{2}:\d{2}$/.test(el.textContent);});
   assert.equal(quizStartSeen,1,'應呼叫開始測驗一次');
   assert.match(await page.locator('[data-quiz-clock]').first().innerText(),/^(29|30):[0-5]\d$/,'倒數應由 30 分鐘開始');
+  const assignmentDeadlineBefore=await page.evaluate(()=>quizClock.deadline);
   await page.locator('[data-assignment-q]').first().click();
   await page.locator('.quiz-clock-chip').waitFor();
+  assert.equal(await page.evaluate(()=>quizClock.deadline),assignmentDeadlineBefore,'切题不得延长作业时限');
   assert.match(await page.locator('.quiz-clock-chip').innerText(),/^\d{2}:\d{2}$/,'解題頁應顯示倒數');
   await page.locator('.back-button[data-assignment]').click();
   await page.locator('#finalize-assignment').waitFor();
@@ -1276,6 +1290,8 @@ const FULL_INK_HANDWRITING=makeInkPng(400,300,1);
   const genBtn=page.locator('[data-aigen]').first();
   await genBtn.waitFor({timeout:8000});
   const importBefore=importedQuestions?importedQuestions.length:0;
+  let verifiedImport=null;
+  await page.route('**/api/questions/import',async route=>{verifiedImport=route.request().postDataJSON();await route.fallback();});
   await genBtn.click();
   await page.locator('[data-gen-kind=similar]').waitFor();
   await page.locator('[data-gen-kind=similar]').click();
@@ -1298,12 +1314,15 @@ const FULL_INK_HANDWRITING=makeInkPng(400,300,1);
   assert.equal(aiGenerated.kind,'similar','應依教師選擇生成相似題');
   assert.ok(aiGenerated.qid>0,'應以教師點選的那道題為參考題');
   assert.equal(aiGenerated.consentExternal,false,'內部模型不應要求外部上傳同意');
+  await page.locator('#ai-draft-save').scrollIntoViewIfNeeded();
   await page.screenshot({path:path.join(__dirname,'..','MathPath-AI生成題目草稿.png'),fullPage:true});
   await page.locator('#ai-draft-save').click();
   await page.locator('.modal').waitFor({state:'detached',timeout:8000});
   assert.equal(importedQuestions.length,1,'教師確認後才把草稿送進題庫匯入');
   assert.equal(importedQuestions[0].title,'AI 生成 · 相似題');
-  assert.equal(importedQuestions[0].source,'AI 生成 · 待核驗','加入題庫後應標示為 AI 生成待核驗');
+  assert.equal(verifiedImport.teacher,true,'核驗匯入必須使用教師模式');
+  assert.equal(importedQuestions[0].source,'AI 生成 · 教師已核驗','加入題庫後應標示為教師已核驗');
+  assert.deepEqual(importedQuestions[0].tags,[],'教師核驗後應清除待核驗標籤');
   // 加入題庫後不應跳轉到該題：教師留在題庫頁，可以繼續生成或挑下一道參考題。
   assert.match(await page.locator('#main').innerText(),/數學題庫/,'加入題庫後應留在題庫頁，不跳轉到題目');
   assert.equal(await page.locator('#answer-area').count(),0,'加入題庫後不應跳到作答頁');
@@ -1341,6 +1360,175 @@ const FULL_INK_HANDWRITING=makeInkPng(400,300,1);
   assert.match(await page.locator('.modal .modal-intro').innerText(),/高一級/);
   await page.locator('#ai-draft-cancel').click();
   await page.locator('.modal').waitFor({state:'detached',timeout:8000});
+  // ── 本轮限定前端修复回归 ──
+  await page.locator('#avatar').focus();await page.keyboard.press('Enter');
+  await page.locator('.modal').waitFor();
+  assert.equal(await page.locator('#avatar').evaluate(el=>el.tagName),'BUTTON','头像必须可通过键盘操作');
+  assert.equal(await page.locator('.modal').evaluate(el=>el.getAttribute('aria-labelledby')===el.querySelector('h2').id),true);
+  assert.equal(await page.locator('.modal h2').evaluate(el=>document.activeElement===el),true,'初始焦点应落在标题');
+  await page.keyboard.press('Shift+Tab');
+  assert.equal(await page.locator('#logout-btn').evaluate(el=>document.activeElement===el),true,'标题按 Shift+Tab 应转到最后一个控件');
+  await page.keyboard.press('Escape');
+  assert.equal(await page.locator('#avatar').evaluate(el=>document.activeElement===el),true,'关闭后恢复头像焦点');
+  const contrast=await page.evaluate(()=>{
+    const rgb=s=>s.match(/\d+/g).slice(0,3).map(Number),lum=c=>c.map(v=>{v/=255;return v<=.04045?v/12.92:((v+.055)/1.055)**2.4;}).reduce((a,v,i)=>a+v*[.2126,.7152,.0722][i],0);
+    const f=lum(rgb(getComputedStyle(document.querySelector('.field-hint')).color));return (1.05)/(f+.05);
+  });
+  assert.ok(contrast>=4.5,'次要文字对白色背景至少 4.5:1');
+  assert.match(await page.locator('.app-footer').innerText(),/資料保存在網站伺服器；實際位置由管理員確認/);
+  assert.doesNotMatch(await page.locator('#main').innerText(),/未公开|未公開到互聯網|尚未部署互聯網/);
+
+  // 核验必须复制草稿，不能修改原对象。
+  await page.evaluate(()=>{
+    window.originalVerifiedDraft={title:'副本核验测试',content:'1+1',topic:'代數',grade:'中三',qtype:'填空題',points:1,level:1,answer:'2',source:'AI 生成 · 待核驗',tags:['待教師核驗','保留标签'],steps:[]};
+    window.originalVerifiedJson=JSON.stringify(window.originalVerifiedDraft);aiDraftModal(window.originalVerifiedDraft,'similar',1);
+  });
+  await page.locator('#ai-draft-save').click();await page.locator('.modal').waitFor({state:'detached'});
+  assert.equal(await page.evaluate(()=>JSON.stringify(window.originalVerifiedDraft)===window.originalVerifiedJson),true,'原始草稿不可变');
+  assert.deepEqual(verifiedImport.questions[0].tags,['保留标签']);assert.equal(verifiedImport.teacher,true);
+
+  // 75 题分页；第 31 个选择被主动拒绝，筛选保留已选并回到第一页。
+  await page.evaluate(()=>{
+    window.savedRegressionQuestions=S.questions;
+    S.questions=Array.from({length:75},(_,i)=>({id:200+i,title:`分页题 ${i+1}`,content:'1+1',topic:i<60?'代數':'幾何',subtopic:'',qtype:'填空題',grade:'中三',level:1,points:1,answer:'2',source:'教師已核驗',tags:[]}));
+    HW={classes:[{id:1,name:'测试班',studentCount:1}]};createAssignmentModal();
+  });
+  assert.equal(await page.locator('#assignment-picks .pick-row').count(),60);
+  await page.locator('[data-pick-page="2"]').click();assert.equal(await page.locator('#assignment-picks .pick-row').count(),15);
+  await page.locator('[name=assignment-questions]').first().check();
+  await page.locator('[data-pick-page="1"]').click();
+  for(let i=0;i<29;i++)await page.locator('[name=assignment-questions]').nth(i).check();
+  await page.locator('[name=assignment-questions]').nth(29).click();
+  assert.equal(await page.locator('[name=assignment-questions]').nth(29).isChecked(),false,'不能选第 31 题');
+  assert.match(await page.locator('#selected-question-count').innerText(),/已選 30 題/);
+  await page.locator('[data-pick-page="2"]').click();await page.locator('#pick-search').fill('分页题 61');
+  assert.equal(await page.locator('[name=assignment-questions]').first().isChecked(),true,'筛选不得丢掉第 61 题选择');
+  assert.match(await page.locator('.pick-pagination').innerText(),/第 1 \/ 1 頁/);
+  await page.keyboard.press('Escape');await page.evaluate(()=>{S.questions=window.savedRegressionQuestions;});
+
+  await page.locator('#account').click();await page.locator('#logout-btn').click();await page.waitForSelector('#homework-login');await login('student');
+  // 旧模测列表／详情、作业详情和推荐响应不得覆盖已切换的题库。
+  for(const [url,expression] of [['**/api/mock','mockPage()'],['**/api/mock/7','mockExamPage(7)'],['**/api/assignments/1','assignmentPage(1)'],['**/api/questions/101/recommendations','openQuestion(101)']]){
+    let release,started;const gate=new Promise(resolve=>{release=resolve;}),seen=new Promise(resolve=>{started=resolve;});
+    const delayed=async route=>{started();await gate;await route.fallback();};await page.route(url,delayed);
+    await page.evaluate(expr=>{window.staleRequest=eval(expr);},expression);await seen;
+    await page.evaluate(()=>navigate('bank'));release();await page.evaluate(()=>window.staleRequest);
+    assert.equal(await page.evaluate(()=>page),'bank','旧响应不能改变当前页面');
+    assert.match(await page.locator('#main h1').innerText(),/數學題庫/);await page.unroute(url,delayed);
+  }
+
+  // 订正范围只计最新 id > minAttemptId，拒绝内部越界、已提交、未开始／已到期入口。
+  await page.evaluate(()=>{
+    window.regressionQs=Array.from({length:3},(_,i)=>({...S.questions[0],id:301+i,title:`订正题 ${i+1}`,qtype:'解答題',options:[]}));
+    assignmentDetail={assignment:{id:91,title:'范围测试',kind:'quiz',durationMinutes:1,dueAt:'2000-01-01',allowLate:false},questions:window.regressionQs,attempts:[{id:21,questionId:301},{id:10,questionId:302},{id:99,questionId:303},{id:9,questionId:301}],mySubmission:{status:'submitted',startedAt:null,expired:true,correction:{questionIds:[301,302],minAttemptId:10}}};
+    assignmentContext=assignmentDetail.assignment;
+  });
+  assert.deepEqual(await page.evaluate(()=>[...assignmentAnsweredIds()]),[301]);
+  await page.evaluate(()=>{assignmentDetail.mySubmission.correction.questionIds=[];});
+  assert.deepEqual(await page.evaluate(()=>[...assignmentAnsweredIds()]),[],'空订正范围不能误作全部题目');
+  await page.evaluate(()=>{assignmentDetail.mySubmission.correction.questionIds=[301,302];});
+  await page.evaluate(()=>openAssignmentQuestion(303));assert.equal(await page.locator('#answer-area').count(),0,'订正范围外不能进入');
+  await page.evaluate(()=>openAssignmentQuestion(301));await page.locator('#answer-area').waitFor();
+  assert.equal(await page.evaluate(()=>mockContext),null,'作业入口必须清理模测上下文');
+  assert.match(await page.evaluate(()=>assignmentNavHtml()),/已完成 1 \/ 2 題/);
+  assert.doesNotMatch(await page.evaluate(()=>assignmentNavHtml()),/data-next-question="303"|data-prev-question="303"/);
+  await page.evaluate(()=>{assignmentDetail.mySubmission.correction=null;});
+  await page.evaluate(()=>openAssignmentQuestion(302));assert.equal(await page.evaluate(()=>currentQuestion.id),301,'已提交非订正必须锁定');
+  await page.evaluate(()=>{assignmentDetail.mySubmission.status='not_started';});
+  await page.evaluate(()=>openAssignmentQuestion(302));assert.equal(await page.evaluate(()=>currentQuestion.id),301,'尚未开始不能进入');
+  await page.evaluate(()=>{assignmentDetail.mySubmission.startedAt=new Date().toISOString();});
+  await page.evaluate(()=>openAssignmentQuestion(302));assert.equal(await page.evaluate(()=>currentQuestion.id),301,'已到期不能进入');
+
+  // 同一题的三种草稿键隔离，保留旧作业／自主练习键。
+  assert.deepEqual(await page.evaluate(()=>{
+    const out=[];assignmentContext={id:91};mockContext=null;out.push(draftKey());assignmentContext=null;mockContext={id:7};out.push(draftKey());mockContext=null;out.push(draftKey());return out;
+  }),['mathpath_draft_1_91_301','mathpath_draft_1_mock_7_301','mathpath_draft_1_practice_301']);
+
+  // 延迟 FileReader：读取时阻止提交，切题丢弃结果，键盘可选／移除并保留恢复逻辑。
+  await page.evaluate(()=>{assignmentContext=null;mockContext=null;currentQuestion=window.regressionQs[0];practice();answerMode='upload';renderAnswerArea();window.realFileData=fileData;fileData=()=>new Promise(resolve=>{window.releaseFileRead=resolve;});});
+  await page.locator('#answer-select').focus();const chooser=page.waitForEvent('filechooser');await page.keyboard.press('Enter');const fileChooser=await chooser;
+  await fileChooser.setFiles({name:'slow.png',mimeType:'image/png',buffer:HANDWRITING});
+  assert.match(await page.locator('#answer-read-status').innerText(),/正在讀取/);assert.equal(await page.locator('#submit-answer').isDisabled(),true);
+  await page.evaluate(()=>{currentQuestion=window.regressionQs[1];answerFile=null;practice();window.releaseFileRead('data:image/png;base64,c3RhbGU=');});
+  assert.equal(await page.evaluate(()=>answerFile),null,'旧题读取结果应丢弃');
+  await page.evaluate(()=>{fileData=window.realFileData;answerMode='upload';renderAnswerArea();});
+  await page.locator('#answer-upload').setInputFiles({name:'fresh.png',mimeType:'image/png',buffer:HANDWRITING});
+  await page.waitForFunction(()=>!!answerFile&&!uploadReading);await page.evaluate(()=>saveDraft());
+  await page.evaluate(()=>{answerFile=null;restoreDraft();});assert.equal(await page.locator('#answer-area img').count(),1,'上传草稿仍能恢复');
+  await page.locator('#answer-remove').focus();await page.keyboard.press('Enter');assert.equal(await page.evaluate(()=>answerFile),null);
+
+  // deadline 使用服务器时间；相同 target 切题／返回不得延长；到零不访问 null。
+  await page.evaluate(()=>{navigate('bank');startQuizClock({kind:'assignment',id:92},60,new Date(Date.now()+5000).toISOString());window.deadlineBefore=quizClock.deadline;startQuizClock({kind:'assignment',id:92},999);});
+  assert.equal(await page.evaluate(()=>quizClock.deadline===window.deadlineBefore),true);
+  const serverDeadlineUsed=await page.evaluate(()=>quizClock.deadline-Date.now());assert.ok(serverDeadlineUsed>0&&serverDeadlineUsed<=5000,'应优先采用服务端绝对截止时间，而非 remainingSeconds');
+  await page.evaluate(()=>stopQuizClock());
+  let expiryCount=0;
+  const expiryRoute=route=>{expiryCount++;return route.fulfill({json:{ok:true}});};await page.route('**/api/assignments/92/submit',expiryRoute);
+  await page.evaluate(()=>{window.expiryPromise=startQuizClock({kind:'assignment',id:92},99,new Date(Date.now()-1).toISOString());});
+  await page.waitForFunction(()=>quizSubmitting.size===0);assert.equal(expiryCount,1);assert.equal(await page.evaluate(()=>quizClock),null);
+  await page.route('**/api/assignments/93/submit',route=>route.fulfill({status:503,json:{error:'封存服务测试失败'}}));
+  await page.evaluate(()=>autoSubmitQuiz({kind:'assignment',id:93}));assert.match(await page.locator('#toast').innerText(),/自動封存失敗.*封存服务测试失败/);
+  assert.doesNotMatch(await page.locator('#toast').innerText(),/即時計分/);
+
+  // 保存中的作答先结束，再自动封存；不并发提交、不循环等待。
+  let finishAttempt,attemptSeen;const saving=new Promise(resolve=>{finishAttempt=resolve;}),saveSeen=new Promise(resolve=>{attemptSeen=resolve;});let autoAfterSave=0;
+  const heldAttempt=async route=>{attemptSeen();await saving;await route.fulfill({json:{attempt:{...graded(800,301,'代數',1,1),assignmentId:94}}});};
+  await page.route('**/api/attempts',heldAttempt);
+  await page.route('**/api/assignments/94/submit',route=>{autoAfterSave++;return route.fulfill({status:503,json:{error:'封存重试测试'}});});
+  await page.evaluate(()=>{assignmentDetail={assignment:{id:94,title:'busy 测试'},mySubmission:{},questions:window.regressionQs,attempts:[]};assignmentContext=assignmentDetail.assignment;mockContext=null;currentQuestion=window.regressionQs[0];answerFile=null;practice();$('#final-answer').value='2';window.savingAnswer=submitAnswer();});await saveSeen;
+  await page.evaluate(()=>startQuizClock({kind:'assignment',id:94},0,new Date(Date.now()-1).toISOString()));
+  assert.equal(autoAfterSave,0,'busy 时不能提前封存');assert.equal(await page.evaluate(()=>pendingQuizSubmission.id),94);
+  finishAttempt();await page.evaluate(()=>window.savingAnswer);assert.equal(autoAfterSave,1,'保存结束后应封存一次');
+  assert.equal(await page.evaluate(()=>pendingQuizSubmission),null);assert.equal(await page.evaluate(()=>busy),false);
+  assert.match(await page.locator('#result-root').innerText(),/自動封存失敗/);await page.unroute('**/api/attempts',heldAttempt);
+  await page.evaluate(()=>{preserveDraft();navigate('bank');});
+  console.log('PASS: 本轮订正边界、绝对截止时间、busy 封存协调、异步页面与上传防串、草稿隔离、75题分页/30题上限、AI核验副本、键盘焦点与文字对比度回归');
+
+  // 有圖形的題目：圖形要放在題目右邊（不再排在題目下方），點一下可放大檢視
+  const FIG='data:image/png;base64,'+HANDWRITING.toString('base64');
+  await page.route('**/api/session',route=>route.fulfill({json:{user:{id:1,name:'介面測試學生',role:'student'}}}));
+  await page.route('**/api/state',route=>route.fulfill({json:{user:{id:1,name:'介面測試學生',role:'student'},
+    questions:[{...q,answer:undefined,steps:undefined,figure:FIG}],attempts:[],
+    stats:{completed:0,accuracy:0,streak:0,minutes:0},ai,topics:['一元二次方程','幾何']}}));
+  await page.reload({waitUntil:'networkidle'});
+  await page.locator('[data-page=bank]').first().click();
+  await page.locator('.question-card').first().waitFor({timeout:8000});
+  await page.waitForFunction(()=>{const i=document.querySelector('.question-card .question-figure img');return !!(i&&i.complete&&i.naturalWidth>0);},{timeout:8000});
+  const figBox=await page.evaluate(()=>{
+    const stem=document.querySelector('.question-card .question-stem');
+    if(!stem)return null;
+    const t=stem.querySelector('.question-stem-text').getBoundingClientRect();
+    const f=stem.querySelector('.question-figure').getBoundingClientRect();
+    return {rightOfText:f.left>=t.right-2,rowAligned:Math.abs(f.top-t.top)<80,width:Math.round(f.width)};
+  });
+  assert.ok(figBox,'有圖形的題目應產生 .question-stem（題面與圖形並排）');
+  assert.equal(figBox.rightOfText,true,'題目圖形要在題目文字的右邊');
+  assert.equal(figBox.rowAligned,true,'圖形要與題目文字同一列（並排），不是排在題目下方');
+  assert.ok(figBox.width>=120&&figBox.width<=470,`圖形寬度要合理（實際 ${figBox.width}px）`);
+  assert.equal(await page.locator('.question-card .question-figure').count(),1,'圖形只渲染一次');
+  await page.screenshot({path:path.join(__dirname,'..','MathPath-題目圖形靠右.png'),fullPage:true});
+  await page.locator('.question-card .question-figure img').first().click();
+  await page.locator('.figure-zoom').waitFor({timeout:5000});
+  assert.equal(await page.locator('.figure-zoom img').count(),1,'放大檢視要顯示圖形');
+  await page.screenshot({path:path.join(__dirname,'..','MathPath-題目圖形放大.png')});
+  await page.keyboard.press('Escape');
+  await page.locator('.figure-zoom').waitFor({state:'detached',timeout:5000});
+  // 練習頁同樣並排，且作答區不重複列選項
+  await page.locator('.question-card .practice-btn').first().click();
+  await page.locator('.practice-question').waitFor({timeout:8000});
+  const practiceFig=await page.evaluate(()=>{
+    const stem=document.querySelector('.practice-question .question-stem');
+    if(!stem)return null;
+    const t=stem.querySelector('.question-stem-text').getBoundingClientRect();
+    const f=stem.querySelector('.question-figure').getBoundingClientRect();
+    return {rightOfText:f.left>=t.right-2};
+  });
+  assert.ok(practiceFig&&practiceFig.rightOfText,'練習頁的題目圖形同樣要在題目右邊');
+  assert.equal(await page.locator('.practice-question .choice-options').count(),0,'題目區不因加入圖形而重複列選項');
+  await page.screenshot({path:path.join(__dirname,'..','MathPath-練習頁圖形靠右.png'),fullPage:true});
+  await page.evaluate(()=>navigate('bank'));
+  console.log('PASS: 題目圖形（有圖形的題目把圖形排在題目右邊、練習頁一致、點擊可放大檢視）');
+
   // 伺服器初始化失敗時，登入視窗要直接顯示原因，不能只說「正在初始化」
   await page.route('**/api/session', route => route.fulfill({status:503,json:{error:'伺服器初始化失敗：MATH_STUDENT_PASSWORD 必須是 10 至 256 個字元、且不可只有空白的密碼。'}}));
   await page.reload({waitUntil:'networkidle'});
@@ -1352,5 +1540,5 @@ const FULL_INK_HANDWRITING=makeInkPng(400,300,1);
   await page.screenshot({path:path.join(__dirname,'..','MathPath-初始化失敗提示.png'),fullPage:true});
 
   assert.deepEqual(errors,[]);await browser.close();
-  console.log('PASS: answer modes (choice = click-only with single option list, fill-in = handwriting/text with math keyboard + always-visible rendered preview, upload = photo/PDF with a rear-camera button), AI grading policy (self-practice = AI instant score recorded without teacher review, no student use-ai toggle; teacher checkbox on assign, student read-only hint, external consent; homework/quiz scores, AI results, solution and advice hidden until the teacher reviews), AI similar-question drafting (teacher-only entry on bank card and practice panel, similar = same level and same question type vs advanced = one level up, distinct kind sent and labelled in the dialog, reference question expandable for comparison, draft preview with answer/steps/rubric, rubric shown with typeset math while the editor keeps raw LaTeX, nothing imported until the teacher confirms, no navigation after adding, repeated generation sends the previous summaries so the next draft differs), self-practice range picker (chapter + sub-chapter + question type, linked options, auto-widening, change-range keeps filters), teacher review with optional feedback, one-click AI review of a whole assignment (only for AI-enabled assignments), teacher sidebar without self-practice, calendar lower panel (centred divider label, panel content never flush to the card border, no horizontal overflow at 4 widths x 3 font scales), font scale switch (guest, persisted, 3 levels, no mobile overflow), login page (role cards, remember checked, remembered account), calendar (marks + entry from homework), question type (card badge, filter, draft qtype, rule analysis), full-auto split+import, homework (per-question navigation: next/previous question after submitting, progress count, submit prompt when all questions are done; assignment question picker filtered by chapter, sub-chapter and keyword with selection kept across filters), draft save/reload/restore, logout cleanup, weak-topic drill-down, results filters, CSV export, teacher annotation (pen/ellipse/arrow/highlight/undo/clear/save), AI suggested annotation with student read-back and teacher drag-to-adjust saved positions, handwritten verdict stamp (red tick = all correct, red cross = all wrong, red tick with a stroke = partly correct) and AI comments placed on the sheet only where the paper is blank (never over the handwriting; dense pages fall back to the badge and the list below), correction loop (teacher return with note, student banner, pending guard, resubmit), self-serve mock exam (setup, countdown, per-question answer with mockId, submit + instant score + advice), AI endpoint page (test/save, key never read back), bulk student import (column-order auto-detect + header row, student id only with seat number and no name, generated passwords, per-line errors, class creation), data management (usage cards, four download entries, vacuum, school-year reset gated by a typed confirmation and hidden from students), student editing (only changed fields submitted, password reset warns about logout), archive restore (question merge vs replace, student archive with shared password and credential table), no dead space before the footer on short pages, mobile layout, no JS errors. Fixture API only; no server started.');
+  console.log('PASS: answer modes (choice = click-only with single option list, fill-in = handwriting/text with math keyboard + always-visible rendered preview, upload = photo/PDF with a rear-camera button), AI grading policy (self-practice = AI instant score recorded without teacher review, no student use-ai toggle; teacher checkbox on assign, student read-only hint, external consent; homework/quiz scores, AI results, solution and advice hidden until the teacher reviews), question figures (a question that has a figure renders it to the right of the stem, same row, sized sanely, one figure per question, same on the practice page, click to open a zoom overlay dismissed by Esc), AI similar-question drafting (teacher-only entry on bank card and practice panel, similar = same level and same question type vs advanced = one level up, distinct kind sent and labelled in the dialog, reference question expandable for comparison, draft preview with answer/steps/rubric, rubric shown with typeset math while the editor keeps raw LaTeX, nothing imported until the teacher confirms, no navigation after adding, repeated generation sends the previous summaries so the next draft differs), self-practice range picker (chapter + sub-chapter + question type, linked options, auto-widening, change-range keeps filters), teacher review with optional feedback, one-click AI review of a whole assignment (only for AI-enabled assignments), teacher sidebar without self-practice, calendar lower panel (centred divider label, panel content never flush to the card border, no horizontal overflow at 4 widths x 3 font scales), font scale switch (guest, persisted, 3 levels, no mobile overflow), login page (role cards, remember checked, remembered account), calendar (marks + entry from homework), question type (card badge, filter, draft qtype, rule analysis), full-auto split+import, homework (per-question navigation: next/previous question after submitting, progress count, submit prompt when all questions are done; assignment question picker filtered by chapter, sub-chapter and keyword with selection kept across filters), draft save/reload/restore, logout cleanup, weak-topic drill-down, results filters, CSV export, teacher annotation (pen/ellipse/arrow/highlight/undo/clear/save), AI suggested annotation with student read-back and teacher drag-to-adjust saved positions, handwritten verdict stamp (red tick = all correct, red cross = all wrong, red tick with a stroke = partly correct) and AI comments placed on the sheet only where the paper is blank (never over the handwriting; dense pages fall back to the badge and the list below), correction loop (teacher return with note, student banner, pending guard, resubmit), self-serve mock exam (setup, countdown, per-question answer with mockId, submit + instant score + advice), AI endpoint page (test/save, key never read back), bulk student import (column-order auto-detect + header row, student id only with seat number and no name, generated passwords, per-line errors, class creation), data management (usage cards, four download entries, vacuum, school-year reset gated by a typed confirmation and hidden from students), student editing (only changed fields submitted, password reset warns about logout), archive restore (question merge vs replace, student archive with shared password and credential table), no dead space before the footer on short pages, mobile layout, no JS errors. Fixture API only; no server started.');
 })().catch(e=>{console.error(e);process.exit(1)});

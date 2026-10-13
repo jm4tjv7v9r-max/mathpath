@@ -4,6 +4,7 @@
 簽名標頭格式，以及設定不完整或端點不可用時的行為。所有資料都在臨時目錄。
 """
 import base64
+from contextlib import contextmanager
 import hashlib
 import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -188,6 +189,309 @@ class StorageTests(unittest.TestCase):
             key = db.execute('SELECT image_key FROM attempts WHERE id=?', (attempt['id'],)).fetchone()['image_key']
         self.assertTrue(key.startswith('school-a/attempts/'))
         self.assertTrue(any(p.startswith('/mathpath/school-a/') for _, p, _ in FakeS3.requests))
+
+
+class RestoreAuditTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix='mathpath-restore-audit-')
+        self.addCleanup(self.tmp.cleanup)
+        env = patch.dict('os.environ', {}, clear=True)
+        env.start()
+        self.addCleanup(env.stop)
+        self.app = server.Application(Path(self.tmp.name) / 'data')
+        self.app.safe_initialize()
+        self.assertIsNone(self.app.init_error)
+        self.assertEqual(self.app.storage.mode, 'db')
+        with self.app.db() as db:
+            self.teacher = db.execute('SELECT * FROM users WHERE id=2').fetchone()
+            self.snapshot = self.app.get_question(db, 1)
+            self.snapshot.update(id=100, title='归档题目快照', content='归档题面不能替换成当前题库')
+            for qid in (200, 201, 202):
+                payload = dict(server.seed_questions()[0], title=f'当前题库 {qid}')
+                db.execute('INSERT INTO questions(id,payload) VALUES(?,?)', (qid, json.dumps(payload)))
+            db.execute('INSERT INTO meta(key,value) VALUES(?,?)',
+                       ('question_id_map', json.dumps({'100': 200, '101': 201, '102': 202, '103': 200})))
+        self.stamp = '2020-01-01T00:00:00Z'
+
+    def call(self, method, path, body=None, user=None):
+        if user is None:
+            with self.app.db() as db:
+                user = db.execute("SELECT * FROM users WHERE username='archive_student'").fetchone()
+        return self.app.dispatch(method, path, body or {}, user, None, '127.0.0.1')[0]
+
+    def records(self):
+        return [
+            {'type': 'student', 'id': 10, 'username': 'archive_student', 'role': 'student'},
+            {'type': 'class', 'id': 20, 'name': '归档班级'},
+            {'type': 'classStudent', 'class_id': 20, 'user_id': 10},
+            {'type': 'assignment', 'id': 30, 'class_id': 20, 'title': '归档作业', 'due_at': self.stamp},
+            self.question(),
+            {'type': 'assignmentRecipient', 'assignment_id': 30, 'user_id': 10,
+             'submitted_at': self.stamp, 'submit_count': 1},
+        ]
+
+    def question(self, qid=100, kind='assignmentQuestion', **overrides):
+        payload = dict(self.snapshot, id=qid)
+        record = {'type': kind, 'question_id': qid, 'position': qid, 'payload': json.dumps(payload)}
+        record['assignment_id' if kind == 'assignmentQuestion' else 'exam_id'] = 30 if kind == 'assignmentQuestion' else 40
+        return {**record, **overrides}
+
+    def correction(self, minimum=1000, qids=(100,), **overrides):
+        return {'type': 'correction', 'assignment_id': 30, 'user_id': 10, 'note': '请重新作答',
+                'question_ids': json.dumps(list(qids)), 'min_attempt_id': minimum,
+                'round': 1, 'requested_at': self.stamp, **overrides}
+
+    def attempt(self, old_id=1000, **overrides):
+        return {'type': 'attempt', 'id': old_id, 'user_id': 10, 'question_id': 100,
+                'assignment_id': 30, 'answer_text': str(old_id), 'max_score': 6, 'score': 6,
+                'status': 'graded', 'method': 'rule-final', 'submitted_at': self.stamp,
+                'teacher_reviewed': 1, 'teacher_confirmed_score': 6, **overrides}
+
+    def exam(self, **overrides):
+        return {'type': 'mockExam', 'id': 40, 'user_id': 10, 'minutes': 30, 'question_count': 1,
+                'created_at': self.stamp, 'started_at': self.stamp, 'expires_at': self.stamp,
+                'submitted_at': self.stamp, **overrides}
+
+    def restore(self, records):
+        path = Path(self.tmp.name) / 'students.jsonl'
+        with path.open('wb') as handle:
+            handle.write(json.dumps({'format': 'mathpath-student-archive', 'version': 1}).encode() + b'\n')
+            for record in records:
+                handle.write(self.app.dataadmin.line(record['type'], record))
+        return self.app.dataadmin.restore_students(path, self.teacher['id'], 'Restore-test-password')
+
+    def ids(self):
+        with self.app.db() as db:
+            aid = db.execute('SELECT id FROM assignments ORDER BY id LIMIT 1').fetchone()[0]
+            uid = db.execute("SELECT id FROM users WHERE username='archive_student'").fetchone()[0]
+        return aid, uid
+
+    def test_remapped_snapshots_reports_and_open_correction_can_finish(self):
+        records = self.records() + [
+            self.correction(1000, round=1, resolved_at=self.stamp),
+            self.correction(1001, round=2),
+            self.exam(), self.question(kind='mockQuestion'),
+            self.attempt(1000), self.attempt(1001),
+            self.attempt(1002, assignment_id=None, mock_id=40),
+        ]
+        out = self.restore(records)
+        self.assertEqual(out['written']['correction'], 2)
+        self.assertTrue(out['questionMapApplied'])
+        aid, uid = self.ids()
+        with self.app.db() as db:
+            for table in ('assignment_questions', 'mock_questions'):
+                row = db.execute(f'SELECT question_id,payload FROM {table}').fetchone()
+                self.assertEqual(row['question_id'], 200)
+                self.assertEqual(json.loads(row['payload']), dict(self.snapshot, id=200))
+            attempts = db.execute('SELECT * FROM attempts WHERE assignment_id=? ORDER BY id', (aid,)).fetchall()
+            self.assertLess(attempts[0]['id'], 1000)
+            corrections = db.execute('SELECT * FROM corrections ORDER BY id').fetchall()
+            self.assertEqual([c['min_attempt_id'] for c in corrections], [a['id'] for a in attempts])
+            self.assertGreater(attempts[1]['id'], corrections[0]['min_attempt_id'])
+            self.assertIsNotNone(corrections[0]['resolved_at'])
+            self.assertIsNone(corrections[1]['resolved_at'])
+            self.assertTrue(all(json.loads(c['question_ids']) == [200] for c in corrections))
+            self.assertTrue(all(c['requested_by'] == self.teacher['id'] and c['user_id'] == uid for c in corrections))
+            eid = db.execute('SELECT id FROM mock_exams').fetchone()[0]
+        # 经真实 API 读回报告，旧快照 id 会在 topic_stats 中触发 KeyError。
+        for user in (None, self.teacher):
+            detail = self.call('GET', f'/api/assignments/{aid}', user=user)
+            self.assertEqual(detail['questions'][0]['id'], 200)
+            if user is None:
+                self.assertEqual(detail['report']['score'], 6)
+                self.assertEqual(detail['mySubmission']['correction']['minAttemptId'], attempts[1]['id'])
+        self.assertEqual(self.call('GET', f'/api/assignments/{aid}/results', user=self.teacher)['summary']['correctionCount'], 1)
+        self.assertEqual(self.call('GET', f'/api/mock/{eid}')['report']['score'], 6)
+        # 不能沿用阈值内的旧作答，重新作答后才可完成开放订正。
+        with self.assertRaises(server.APIError) as error:
+            self.call('POST', f'/api/assignments/{aid}/submit')
+        self.assertEqual(error.exception.status, 400)
+        fresh = self.call('POST', '/api/attempts', {'assignmentId': aid, 'questionId': 200,
+                                                 'answerText': 'x=2或3'})['attempt']
+        self.assertGreater(fresh['id'], attempts[1]['id'])
+        done = self.call('POST', f'/api/assignments/{aid}/submit')
+        self.assertEqual(done['mySubmission']['status'], 'submitted')
+        self.assertEqual(done['mySubmission']['submitCount'], 2)
+        self.assertIsNone(done['mySubmission']['correction'])
+        with self.app.db() as db:
+            self.assertIsNotNone(db.execute('SELECT resolved_at FROM corrections WHERE round=2').fetchone()[0])
+
+    def test_threshold_uses_only_restored_assignment_student_and_original_boundary(self):
+        records = self.records() + [
+            {'type': 'student', 'id': 11, 'username': 'other_archive_student', 'role': 'student'},
+            {'type': 'assignment', 'id': 31, 'class_id': 20, 'title': '其他作业'},
+            self.question(assignment_id=31), self.question(102), self.exam(), self.question(kind='mockQuestion'),
+        ]
+        for minimum in (0, 950, 975, 1000, 1050, 1100):
+            records.append(self.correction(minimum, note=str(minimum), resolved_at=self.stamp))
+        records += [self.attempt(900), self.attempt(975, question_id=102), self.attempt(1000), self.attempt(1100),
+                    self.attempt(1001, user_id=11), self.attempt(1002, assignment_id=31),
+                    self.attempt(1003, assignment_id=None), self.attempt(1004, assignment_id=None, mock_id=40),
+                    self.attempt(1049, question_id=999)]
+        out = self.restore(records)
+        self.assertEqual(out['skipped']['attempt'], 1)
+        aid, uid = self.ids()
+        with self.app.db() as db:
+            own = {int(r['answer_text']): r['id'] for r in db.execute(
+                'SELECT * FROM attempts WHERE assignment_id=? AND user_id=?', (aid, uid))}
+            markers = {int(r['note']): r['min_attempt_id'] for r in db.execute('SELECT * FROM corrections')}
+        self.assertEqual(markers, {0: 0, 950: own[900], 975: own[975], 1000: own[1000],
+                                   1050: own[1000], 1100: own[1100]})
+        self.assertGreater(own[1100], markers[1050], '原阈值之后的恢复作答仍是新订正作答')
+
+    def test_archived_post_threshold_attempt_can_finish_correction_without_another_attempt(self):
+        self.restore(self.records() + [self.correction(1000), self.attempt(1000), self.attempt(1001)])
+        aid, _ = self.ids()
+        with self.app.db() as db:
+            marker = db.execute('SELECT min_attempt_id FROM corrections').fetchone()[0]
+            latest = db.execute('SELECT MAX(id) FROM attempts').fetchone()[0]
+        self.assertGreater(latest, marker)
+        self.assertEqual(self.call('POST', f'/api/assignments/{aid}/submit')['mySubmission']['status'], 'submitted')
+        with self.app.db() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM attempts').fetchone()[0], 2)
+
+    def test_existing_student_is_reused_but_previous_restore_attempts_do_not_set_new_threshold(self):
+        records = self.records() + [self.correction(1000), self.attempt(1000)]
+        self.restore(records)
+        _, uid = self.ids()
+        out = self.restore(records)
+        self.assertEqual(out['skipped']['student'], 1)
+        self.assertEqual(out['credentials'], [])
+        with self.app.db() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM users WHERE id=?', (uid,)).fetchone()[0], 1)
+            rows = db.execute('SELECT * FROM corrections ORDER BY id').fetchall()
+            for row in rows:
+                self.assertEqual(row['user_id'], uid)
+                own_max = db.execute('SELECT MAX(id) FROM attempts WHERE assignment_id=? AND user_id=?',
+                                     (row['assignment_id'], uid)).fetchone()[0]
+                self.assertEqual(row['min_attempt_id'], own_max)
+            self.assertGreater(rows[1]['min_attempt_id'], rows[0]['min_attempt_id'])
+
+    def test_threshold_is_maximum_new_id_not_nearest_old_id(self):
+        self.restore(self.records() + [self.correction(1000, resolved_at=self.stamp),
+                                       self.attempt(1000), self.attempt(900)])
+        with self.app.db() as db:
+            maximum = db.execute('SELECT MAX(id) FROM attempts').fetchone()[0]
+            self.assertEqual(db.execute('SELECT min_attempt_id FROM corrections').fetchone()[0], maximum)
+
+    def test_invalid_snapshots_and_unrestored_questions_are_reported_not_fabricated(self):
+        records = self.records() + [self.exam(), self.question(kind='mockQuestion')]
+        invalid = ('not-json', '[]', 'null', '{}', json.dumps({'id': 101, 'title': '缺字段'}), None)
+        for payload in invalid:
+            records.extend([self.question(101, payload=payload), self.question(101, kind='mockQuestion', payload=payload)])
+        # 103 与 100 映射到同一题，INSERT OR IGNORE 不算成功恢复的 103。
+        records += [self.question(103), self.question(103, kind='mockQuestion'),
+                    self.question(999), self.question(999, kind='mockQuestion'),
+                    self.correction(qids=(100, 101, 103, 2, 999)),
+                    self.correction(qids=(101,)), self.correction(qids=(103,)),
+                    self.correction(qids=(), note='旧空范围代表全部'),
+                    self.correction(question_ids='not-json'), self.correction(question_ids='{}'),
+                    self.correction(question_ids='[true]'),
+                    self.attempt(), self.attempt(1001, question_id=101),
+                    self.attempt(1002, question_id=101, assignment_id=None, mock_id=40)]
+        out = self.restore(records)
+        self.assertEqual(out['written']['assignmentQuestion'], 1)
+        self.assertEqual(out['written']['mockQuestion'], 1)
+        self.assertEqual(out['skipped']['assignmentQuestion'], len(invalid) + 2)
+        self.assertEqual(out['skipped']['mockQuestion'], len(invalid) + 2)
+        self.assertEqual(out['skipped']['attempt'], 2)
+        self.assertEqual(out['skipped']['correction'], 5)
+        with self.app.db() as db:
+            rows = db.execute('SELECT question_ids FROM corrections').fetchall()
+            self.assertEqual([json.loads(r[0]) for r in rows], [[200], [200]])
+            self.assertEqual(db.execute('SELECT count(*) FROM assignment_questions').fetchone()[0], 1)
+            self.assertEqual(db.execute('SELECT count(*) FROM mock_questions').fetchone()[0], 1)
+
+    def test_unrestored_assignment_or_mock_attempt_never_becomes_public_practice(self):
+        records = self.records() + [
+            {'type': 'assignment', 'id': 99, 'class_id': 999},
+            self.exam(id=98, user_id=999),
+            self.attempt(1000, assignment_id=99, image=PNG),
+            self.attempt(1001, assignment_id=None, mock_id=98, image=PNG),
+            self.attempt(1002, assignment_id=0),
+            self.attempt(1003, assignment_id=None, mock_id=0),
+            self.attempt(1004, assignment_id=None),
+        ]
+        with patch.object(self.app.dataadmin, 'decode_optional_image', wraps=self.app.dataadmin.decode_optional_image) as decode:
+            out = self.restore(records)
+        self.assertEqual(out['skipped']['assignment'], 1)
+        self.assertEqual(out['skipped']['mockExam'], 1)
+        self.assertEqual(out['skipped']['attempt'], 4)
+        self.assertEqual(decode.call_count, 2, '跳过所属对象丢失的作答时，不解码或上传图片')
+        with self.app.db() as db:
+            rows = db.execute('SELECT * FROM attempts').fetchall()
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]['answer_text'], '1004')
+            self.assertIsNone(rows[0]['assignment_id'])
+            self.assertIsNone(rows[0]['mock_id'])
+
+    def test_existing_teacher_username_is_not_mapped_to_student(self):
+        records = self.records()
+        records[0]['username'] = self.teacher['username']
+        records += [self.exam(), self.correction(), self.attempt()]
+        before = dict(self.teacher)
+        out = self.restore(records)
+        self.assertEqual(out['credentials'], [])
+        self.assertEqual(out['skipped']['student'], 1)
+        for kind in ('classStudent', 'assignmentRecipient', 'mockExam', 'correction', 'attempt'):
+            self.assertEqual(out['skipped'][kind], 1)
+        with self.app.db() as db:
+            self.assertEqual(dict(db.execute('SELECT * FROM users WHERE id=?', (before['id'],)).fetchone()), before)
+            self.assertEqual(db.execute('SELECT count(*) FROM users').fetchone()[0], 2)
+            for table in ('class_students', 'assignment_recipients', 'mock_exams', 'corrections', 'attempts'):
+                self.assertEqual(db.execute(f'SELECT count(*) FROM {table}').fetchone()[0], 0)
+
+    def test_images_remain_streamed_and_deferred_corrections_commit_in_400_batches(self):
+        real_db, real_iter = self.app.db, self.app.dataadmin.iter_jsonl
+        commits, decoded = [], []
+        total = 405
+
+        class Connection:
+            def __init__(self, db):
+                self.db = db
+
+            def execute(self, *args):
+                return self.db.execute(*args)
+
+            def commit(self):
+                commits.append((self.db.execute('SELECT count(*) FROM attempts').fetchone()[0],
+                                self.db.execute('SELECT count(*) FROM corrections').fetchone()[0]))
+                self.db.commit()
+
+        @contextmanager
+        def tracked_db():
+            with real_db() as db:
+                yield Connection(db)
+
+        def streaming(path):
+            count = 0
+            for record in real_iter(path):
+                if record.get('type') == 'attempt':
+                    self.assertEqual(len(decoded), count, '读取下一张图片前，上一笔必须已经解码并写入')
+                    count += 1
+                yield record
+            if count:
+                self.assertEqual(len(decoded), total)
+
+        def decode(value):
+            if value:
+                decoded.append(value)
+                return PNG_BYTES, 'image/png'
+            return None, None
+
+        records = self.records() + [self.correction(1000, resolved_at=self.stamp, round=i + 1) for i in range(total)]
+        records += [self.attempt(1000 + i, image=PNG) for i in range(total)]
+        with patch.object(self.app, 'db', tracked_db), patch.object(self.app.dataadmin, 'iter_jsonl', streaming), \
+                patch.object(self.app.dataadmin, 'decode_optional_image', side_effect=decode):
+            out = self.restore(records)
+        self.assertEqual(out['written']['attempt'], total)
+        self.assertEqual(out['written']['correction'], total)
+        # 含文件头共817行，原流在400、800行提交；延迟订正阶段在累计1200处再次提交。
+        self.assertEqual(commits, [(0, 0), (387, 0), (405, 382)])
+        with real_db() as db:
+            self.assertEqual(db.execute('SELECT count(image) FROM attempts').fetchone()[0], total)
+            self.assertEqual(db.execute('SELECT count(*) FROM corrections').fetchone()[0], total)
+            self.assertEqual(db.execute('PRAGMA foreign_key_check').fetchall(), [])
 
 
 if __name__ == '__main__':
