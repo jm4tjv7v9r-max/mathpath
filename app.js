@@ -1181,16 +1181,16 @@ function svgToDataUrl(svg,scale=2){
     img.src=url;
   });
 }
-// 依題目內容請 AI 畫圖，回傳可直接使用的圖片資料；失敗回 null（訊息已提示）。
-async function aiFigureData(payload,btn){
+// 依題目內容請 AI 畫圖：後端先產生「圖形規格」（數學座標），再由程式畫成 SVG。
+// 回傳 {figure, spec, issues, rounds}；失敗回 null（訊息已提示）。
+async function aiFigureData(payload,btn,label){
   if(S.user?.role!=='teacher')return toast('只有教師可以生成題目圖形。'),null;
   if(!S.ai.configured)return toast('AI 尚未接入。請在「設定與隱私」查看管理員配置說明。'),null;
-  if(!aiExternalOk('生成圖形'))return null;
   const old=btn?btn.innerHTML:'';
-  if(btn){btn.disabled=true;btn.innerHTML=icon('clock')+'正在畫圖…';}
+  if(btn){btn.disabled=true;btn.innerHTML=icon('clock')+(label||'正在畫圖…');}
   try{
-    const {svg}=await api('/api/questions/ai-figure',{...payload,consentExternal:S.ai.mode==='external'});
-    return await svgToDataUrl(svg);
+    const r=await api('/api/questions/ai-figure',{...payload,consentExternal:S.ai.mode==='external'});
+    return {...r,figure:await svgToDataUrl(r.svg)};
   }catch(e){toast(e.message);return null;}
   finally{if(btn){btn.disabled=false;btn.innerHTML=old;}}
 }
@@ -1199,34 +1199,68 @@ async function aiFigureData(payload,btn){
 // 有問題就依核對結果重畫，或隨時手動插入自己的圖片。所有變更都留在這裡，
 // 按「使用這張圖形」才會寫回題目。
 const FIGURE_TOPICS=['幾何','三角形','四邊形與多邊形','圓','立體圖形','三角學','坐標幾何','軌跡與幾何證明','向量'];
+const FIGURE_ROUNDS=3;
+const FIGURE_ISSUE_LIMIT=6;
 
 function figureNeeded(topic){return FIGURE_TOPICS.includes(topic);}
-// 外部模型要先取得同意；核對與生成都會把題目內容（及圖形）送出。
+// 外部模型要先取得同意；生成與核對都會把題目內容（及圖形）送出。
 function aiExternalOk(what){
   return !(S.ai.mode==='external'&&!confirm(`${what}會將題目內容與圖形（不含學生作答）傳送至學校配置的外部 AI，是否繼續？`));
 }
 
 function openFigureStudio(ctx){
-  figStudio={ctx,figure:ctx.figure||'',original:ctx.figure||'',check:null,busy:'',manual:false};
+  figStudio={ctx,figure:ctx.figure||'',original:ctx.figure||'',check:null,busy:'',manual:false,
+             spec:null,issues:[],specIssues:[],rounds:0,history:[]};
   renderFigureStudio();
+}
+
+// 手動插入的圖片沒有規格可比對，清掉自動檢查的結果，避免顯示過期的結論。
+function setManualFigure(figure){
+  figStudio.figure=figure;figStudio.check=null;figStudio.spec=null;
+  figStudio.issues=[];figStudio.specIssues=[];figStudio.rounds=0;figStudio.history=[];
+  figStudio.manual=true;renderFigureStudio();
+}
+
+async function runFigureCheck(ctx,figure){
+  return await api('/api/questions/ai-figure-check',
+                   {title:ctx.title,content:ctx.content,image:figure,consentExternal:S.ai.mode==='external'});
+}
+
+// 把核對結果的「讀到的資料」排成可讀的內容。
+function readingHtml(block){
+  if(!block)return '<span class="small-text">（沒有讀到資料）</span>';
+  const rows=(block.values||[]).map(v=>`<li><b>${esc(v.key)}</b> = ${esc(v.value)}</li>`).join('');
+  const marks=(block.marks||[]).length?`<div class="small-text">記號：${esc(block.marks.join('、'))}</div>`:'';
+  return (block.shape?`<div class="fig-read-shape">${esc(block.shape)}</div>`:'')
+       + (rows?`<ul>${rows}</ul>`:'') + marks;
 }
 
 function renderFigureStudio(){
   if(!figStudio)return;
-  const {ctx,figure,check,busy}=figStudio;
+  const {ctx,figure,check,busy,spec,issues}=figStudio;
   const canDraw=figureNeeded(ctx.topic);
   const canCheck=!!figure&&!!S.ai.configured&&!!S.ai.vision;
-  const needFix=!!(check&&!check.ok);
-  const checkHtml=!check?'':(check.ok
-    ?`<div class="fig-check ok">${icon('check')}<div><strong>核對結果：圖形與題目相符</strong><small>AI 用視覺模型比對題目與圖形，沒有發現不符之處；仍請自己再看一眼。</small></div></div>`
-    :`<div class="fig-check bad">${icon('warn')}<div><strong>核對結果：發現 ${check.issues.length} 個問題</strong><ul>${check.issues.map(x=>`<li>${esc(x)}</li>`).join('')}</ul>${check.advice?`<small>修正指示：${esc(check.advice)}</small>`:''}</div></div>`);
+  const needFix=!!(figure&&issues.length);
+  const checkHtml=!issues.length
+    ? (figStudio.rounds?`<div class="fig-check ok">${icon('check')}<div><strong>核對結果：圖形與題目相符</strong><small>共比對 ${figStudio.rounds} 輪，題目與圖上的數據一致；仍請自己再看一眼。</small></div></div>`:'')
+    : `<div class="fig-check bad">${icon('warn')}<div><strong>核對結果：發現 ${issues.length} 個疑慮</strong><ul>${issues.map(x=>`<li>${esc(x)}</li>`).join('')}</ul>${check&&check.advice?`<small>修正指示：${esc(check.advice)}</small>`:''}</div></div>`;
+  const readHtml=check?`<details class="fig-read"><summary>AI 分別讀到的資料</summary>
+    <div class="fig-read-grid"><div><strong>題目說的</strong>${readingHtml(check.question)}</div>
+    <div><strong>圖上畫的</strong>${readingHtml(check.figure)}</div></div>
+    <small class="small-text">兩邊由視覺模型分開讀出，再由系統逐項比對；它不判斷「像不像」，只讀出看到的數據。</small></details>`:'';
+  const historyHtml=(figStudio.history||[]).length>1
+    ?`<details class="fig-read"><summary>自動修正紀錄（共 ${figStudio.history.length} 輪）</summary><ul>${figStudio.history.map(h=>`<li>第 ${h.round} 輪：${h.issues.length?esc(h.issues.join('；')):'沒有發現問題'}</li>`).join('')}</ul></details>`:'';
+  const specHtml=spec?`<details class="fig-read"><summary>圖形規格（數學座標，程式依此繪圖）</summary><pre class="fig-spec">${esc(JSON.stringify(spec,null,1))}</pre></details>`:'';
   modal(`<p class="eyebrow">FIGURE</p><h2>題目圖形</h2>
   <p class="modal-intro">${esc(ctx.title||'（未命名題目）')}${ctx.topic?` · ${esc(ctx.topic)}${ctx.subtopic?' · '+esc(ctx.subtopic):''}`:''}</p>
   <div class="fig-question">${mathText(ctx.content||'')}</div>
   <div class="fig-preview">${figure?`<img src="${figure}" alt="題目圖形">`:`<span class="fig-empty">尚未有圖形</span>`}</div>
   ${checkHtml}
+  ${readHtml}
+  ${historyHtml}
+  ${specHtml}
   <div class="fig-actions">
-    <button class="secondary" id="fig-draw" ${canDraw&&!busy?'':'disabled'} title="${canDraw?'':'只有幾何與向量題材會用 AI 畫圖'}">${icon('spark')}${busy==='draw'?'正在畫圖…':(figure?'重新生成圖形':'AI 生成圖形')}</button>
+    <button class="secondary" id="fig-draw" ${canDraw&&!busy?'':'disabled'} title="${canDraw?'':'只有幾何與向量題材會用 AI 畫圖'}">${icon('spark')}${busy==='draw'?(figStudio.note||'正在畫圖…'):(figure?'重新生成圖形':'AI 生成圖形')}</button>
     <button class="secondary" id="fig-check" ${canCheck&&!busy?'':'disabled'} title="${S.ai.vision?'':'尚未設定視覺模型，無法自動核對'}">${icon('search')}${busy==='check'?'核對中…':'核對題目與圖形'}</button>
     ${needFix?`<button class="secondary" id="fig-fix" ${busy?'disabled':''}>${icon('spark')}依核對結果重畫</button>`:''}
     <button type="button" class="secondary" id="fig-manual-btn">${icon('image')}手動插入圖片</button><input type="file" id="fig-manual" accept="image/png,image/jpeg,image/webp" hidden>
@@ -1239,7 +1273,7 @@ function renderFigureStudio(){
   $('#fig-draw').onclick=()=>drawFigureInStudio(false);
   $('#fig-check').onclick=checkFigureInStudio;
   const fix=$('#fig-fix');if(fix)fix.onclick=()=>drawFigureInStudio(true);
-  const clr=$('#fig-clear');if(clr)clr.onclick=()=>{figStudio.figure='';figStudio.check=null;renderFigureStudio();};
+  const clr=$('#fig-clear');if(clr)clr.onclick=()=>{figStudio.figure='';figStudio.check=null;figStudio.spec=null;figStudio.issues=[];figStudio.specIssues=[];figStudio.rounds=0;figStudio.history=[];renderFigureStudio();};
   const manual=$('#fig-manual');
   $('#fig-manual-btn').onclick=()=>manual&&manual.click();
   if(manual)manual.onchange=async e=>{
@@ -1253,7 +1287,7 @@ function renderFigureStudio(){
     if(f.size>12*1024*1024){
       return toast('圖片不可超過 12 MB；手機相片可先裁剪，或直接截圖後貼上。');
     }
-    try{figStudio.figure=await fitFigureImage(f);figStudio.check=null;figStudio.manual=true;renderFigureStudio();toast('已插入圖片，可再按「核對題目與圖形」。');}
+    try{setManualFigure(await fitFigureImage(f));toast('已插入圖片，可再按「核對題目與圖形」。');}
     catch(err){toast(err.message);}
   };
   $('#fig-close').onclick=()=>{figStudio=null;closeModal();};
@@ -1270,29 +1304,56 @@ function renderFigureStudio(){
 async function drawFigureInStudio(useIssues){
   if(!figStudio)return;
   const {ctx}=figStudio;
-  const issues=(useIssues&&figStudio.check)?figStudio.check.issues:[];
+  let issues=(useIssues&&figStudio.issues)?figStudio.issues.slice(0,FIGURE_ISSUE_LIMIT):[];
+  if(!aiExternalOk('生成圖形與核對圖形'))return;
+  const canCheck=!!S.ai.configured&&!!S.ai.vision;
   // 開始重畫就先把舊的核對結果收起來，避免教師看到已經過期的核對結論。
-  figStudio.check=null;
-  figStudio.busy='draw';renderFigureStudio();
-  const figure=await aiFigureData({title:ctx.title,content:ctx.content,topic:ctx.topic,subtopic:ctx.subtopic,
-                                   qtype:ctx.qtype,issues},null);
-  figStudio.busy='';
-  if(!figure){renderFigureStudio();return;}
-  figStudio.figure=figure;figStudio.check=null;figStudio.manual=false;
+  figStudio.check=null;figStudio.issues=[];figStudio.specIssues=[];
+  figStudio.rounds=0;figStudio.history=[];
+  figStudio.busy='draw';figStudio.note='正在畫圖…';renderFigureStudio();
+  let best=null;
+  for(let round=1;round<=FIGURE_ROUNDS;round++){
+    figStudio.busy='draw';figStudio.note=`正在畫圖…（第 ${round} 輪）`;renderFigureStudio();
+    const draft=await aiFigureData({title:ctx.title,content:ctx.content,topic:ctx.topic,subtopic:ctx.subtopic,
+                                    qtype:ctx.qtype,issues},null,figStudio.note);
+    if(!draft)break;
+    const specIssues=[...(draft.issues||[])];
+    let check=null,found=specIssues.slice();
+    if(canCheck){
+      figStudio.busy='check';figStudio.note='';renderFigureStudio();
+      try{
+        check=await runFigureCheck(ctx,draft.figure);
+        found=found.concat(check.issues||[]);
+      }catch(e){toast(e.message);}
+    }
+    figStudio.history.push({round,issues:found.slice()});
+    const candidate={figure:draft.figure,spec:draft.spec,check,specIssues,issues:found,round};
+    if(!best||candidate.issues.length<best.issues.length)best=candidate;
+    if(!found.length)break;
+    issues=found.slice(0,FIGURE_ISSUE_LIMIT);
+  }
+  figStudio.busy='';figStudio.note='';
+  if(!best){renderFigureStudio();return;}
+  figStudio.figure=best.figure;figStudio.spec=best.spec;figStudio.check=best.check;
+  figStudio.specIssues=best.specIssues;figStudio.issues=best.issues;
+  figStudio.rounds=best.round;figStudio.manual=false;
   renderFigureStudio();
-  toast(issues.length?'已依核對結果重畫，請再核對一次。':'已生成圖形，建議按「核對題目與圖形」確認是否相符。');
+  toast(best.issues.length
+    ? `已試 ${best.round} 輪，仍有 ${best.issues.length} 個疑慮，請人工核對或自行換圖。`
+    : (canCheck?`已生成圖形並自動核對通過（共 ${best.round} 輪）。`:'已生成圖形，建議按「核對題目與圖形」確認是否相符。'));
 }
 
 async function checkFigureInStudio(){
   if(!figStudio||!figStudio.figure)return toast('請先有圖形才能核對。');
   if(!S.ai.vision)return toast('核對圖形需要視覺模型，請先到「設定與隱私」設定。');
   if(!aiExternalOk('核對圖形'))return;
-  const {ctx,figure}=figStudio;
+  const {ctx,figure,specIssues}=figStudio;
   figStudio.busy='check';renderFigureStudio();
   try{
-    const r=await api('/api/questions/ai-figure-check',{title:ctx.title,content:ctx.content,image:figure,
-                                                      consentExternal:S.ai.mode==='external'});
-    figStudio.check=r;figStudio.busy='';renderFigureStudio();
+    const r=await runFigureCheck(ctx,figure);
+    figStudio.check=r;figStudio.busy='';
+    figStudio.issues=[...(specIssues||[]),...(r.issues||[])].slice(0,FIGURE_ISSUE_LIMIT);
+    renderFigureStudio();
     toast(r.ok?'核對結果：圖形與題目相符。':`核對發現 ${r.issues.length} 個問題，可按「依核對結果重畫」。`);
   }catch(e){figStudio.busy='';renderFigureStudio();toast(e.message);}
 }
@@ -1307,7 +1368,7 @@ document.addEventListener('paste',async e=>{
   const file=item.getAsFile();
   if(!file)return;
   e.preventDefault();
-  try{figStudio.figure=await fitFigureImage(file);figStudio.check=null;figStudio.manual=true;renderFigureStudio();toast('已插入貼上的圖片。');}
+  try{setManualFigure(await fitFigureImage(file));toast('已插入貼上的圖片。');}
   catch(err){toast(err.message);}
 });
 

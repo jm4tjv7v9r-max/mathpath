@@ -9,6 +9,7 @@ import json
 import math
 import os
 from pathlib import Path
+import re
 import sqlite3
 import subprocess
 import struct
@@ -1457,38 +1458,127 @@ class APITests(unittest.TestCase):
                     "<svg viewBox='0 0 10 10'><circle cx='5' cy='5'", None, 123, 'x' * 70000):
             self.assertIsNone(server.sanitize_svg(raw), raw)
 
-    def test_ai_figure_endpoint_sanitises_and_guards(self):
+    def test_ai_figure_endpoint_builds_svg_from_spec(self):
         self.app.ai.configured = False
         self.request('POST', '/api/questions/ai-figure', {'content': '兩直角邊 3、4，求斜邊。'},
                      cookie=self.teacher, expect=409)
         self.app.ai.configured = True
         self.app.ai.mode = 'local'
-        svg = "<svg viewBox='0 0 400 300'><line x1='1' y1='1' x2='9' y2='9' stroke='#000'/></svg>"
-        with patch.object(self.app.ai, 'call', return_value={'svg': svg}) as ai:
+        spec = {'needed': True, 'kind': 'triangle',
+                'points': [{'name': 'A', 'x': 0, 'y': 0}, {'name': 'B', 'x': 4, 'y': 0},
+                           {'name': 'C', 'x': 0, 'y': 3}],
+                'segments': [{'from': 'A', 'to': 'B'}, {'from': 'B', 'to': 'C'}, {'from': 'C', 'to': 'A'}],
+                'marks': [{'type': 'right-angle', 'at': 'A', 'a': 'B', 'c': 'C'}],
+                'labels': [{'text': '4', 'on': ['A', 'B']}],
+                'givens': [{'key': 'AB', 'value': '4'}, {'key': 'AC', 'value': '3'}]}
+        with patch.object(self.app.ai, 'call', return_value=spec) as ai:
             _, result, _ = self.request('POST', '/api/questions/ai-figure',
                                         {'title': '直角三角形', 'content': '兩直角邊 3、4，求斜邊。',
                                          'topic': '幾何', 'qtype': '解答題'},
                                         cookie=self.teacher, expect=200)
-            self.assertIn('<line', result['svg'])
+            self.assertIn('<svg', result['svg'])
+            self.assertIn('xmlns="http://www.w3.org/2000/svg"', result['svg'])
             self.assertEqual(result['method'], 'AI 生成')
+            self.assertEqual(result['issues'], [], '規格本身正確時不該留下疑慮')
+            self.assertEqual(result['spec']['kind'], 'triangle')
+            self.assertEqual(len(result['spec']['points']), 3)
             instruction = ai.call_args[0][0]
-            self.assertIn('單引號', instruction, '要提醒模型用單引號，避免 JSON 跳脫問題')
-            self.assertIn('viewBox', instruction)
+            self.assertIn('數學座標', instruction, '要告訴模型用數學座標，不要自己算像素')
+            self.assertIn('不要輸出 SVG', instruction)
         # 只有教師可以生成題目圖形；參數要檢查。
         self.request('POST', '/api/questions/ai-figure', {'content': 'x'}, cookie=self.student, expect=403)
         self.request('POST', '/api/questions/ai-figure', {}, cookie=self.teacher, expect=400)
         self.request('POST', '/api/questions/ai-figure', {'content': 'x', 'consentExternal': 'yes'},
                      cookie=self.teacher, expect=400)
-        # 模型沒給圖形、說不需要圖形、或給出不安全的 SVG，都不會流到瀏覽器。
+        # 模型說不需要圖形、回不出可用規格，都不會流到瀏覽器。
         # （要用幾何題材，否則會先被題材檢查擋下。）
         geo = {'content': 'x', 'topic': '幾何'}
-        with patch.object(self.app.ai, 'call', return_value={'answer': 'x'}):
-            self.request('POST', '/api/questions/ai-figure', geo, cookie=self.teacher, expect=502)
-        with patch.object(self.app.ai, 'call', return_value={'svg': ''}):
+        with patch.object(self.app.ai, 'call', return_value={'needed': False}):
             self.request('POST', '/api/questions/ai-figure', geo, cookie=self.teacher, expect=422)
-        with patch.object(self.app.ai, 'call',
-                          return_value={'svg': '<svg viewBox="0 0 10 10"><script>x</script></svg>'}):
+        with patch.object(self.app.ai, 'call', return_value={'answer': 'x'}) as ai:
             self.request('POST', '/api/questions/ai-figure', geo, cookie=self.teacher, expect=502)
+            self.assertEqual(ai.call_count, server.FIGURE_SPEC_ATTEMPTS, '畫不出來時要重試到上限')
+        with patch.object(self.app.ai, 'call',
+                          return_value={'points': [{'name': 'A', 'x': 0, 'y': 0}], 'segments': []}):
+            self.request('POST', '/api/questions/ai-figure', geo, cookie=self.teacher, expect=502)
+
+    def test_ai_figure_spec_drops_unusable_parts(self):
+        # 不合法或引用不存在頂點的內容一律丟掉，寧可少畫一個元素，也不要畫錯位置。
+        spec = server.figure_spec({
+            'points': [{'name': 'A', 'x': 0, 'y': 0}, {'name': 'B', 'x': '4', 'y': 0},
+                       {'name': 'C', 'x': 'x', 'y': 1}, {'name': 'A', 'x': 9, 'y': 9},
+                       {'name': '1bad!', 'x': 1, 'y': 1}],
+            'segments': [{'from': 'A', 'to': 'B'}, {'from': 'A', 'to': 'Z'}, ['B', 'B'], ['A', 'B', 'C']],
+            'circles': [{'center': 'A', 'through': 'B'}, {'center': 'Q', 'through': 'B'}],
+            'marks': [{'type': 'tick', 'from': 'A', 'to': 'B', 'count': 9},
+                      {'type': 'nope', 'from': 'A', 'to': 'B'}],
+            'labels': [{'text': '4', 'on': ['A', 'B']}, {'text': 'x', 'at': 'Q'}, {'text': ''}],
+            'givens': [{'key': 'AB', 'value': 4}, {'key': '', 'value': '1'}]})
+        self.assertEqual([p['name'] for p in spec['points']], ['A', 'B'])
+        self.assertEqual(spec['segments'], [{'from': 'A', 'to': 'B', 'dashed': False}])
+        self.assertEqual(spec['circles'], [{'center': 'A', 'through': 'B'}])
+        self.assertEqual(spec['marks'], [{'type': 'tick', 'from': 'A', 'to': 'B', 'count': 1}])
+        self.assertEqual(spec['labels'], [{'text': '4', 'on': ['A', 'B']}])
+        self.assertEqual(spec['givens'], [{'key': 'AB', 'value': '4'}])
+        # 沒有頂點、沒有形狀、不是字典，都回 None。
+        for bad in ({'points': [{'name': 'A', 'x': 0, 'y': 0}]}, {'points': []}, {'points': 'x'}, None, 5):
+            self.assertIsNone(server.figure_spec(bad), bad)
+
+    def test_render_spec_svg_keeps_proportions_and_passes_the_whitelist(self):
+        spec = server.figure_spec({
+            'points': [{'name': 'A', 'x': 0, 'y': 0}, {'name': 'B', 'x': 4, 'y': 0},
+                       {'name': 'C', 'x': 0, 'y': 3}],
+            'segments': [{'from': 'A', 'to': 'B'}, {'from': 'B', 'to': 'C'}, {'from': 'C', 'to': 'A'}],
+            'labels': [{'text': '4', 'on': ['A', 'B']}, {'text': '3', 'on': ['A', 'C']}]})
+        svg = server.render_spec_svg(spec)
+        self.assertIn('xmlns="http://www.w3.org/2000/svg"', svg)
+        cleaned = server.sanitize_svg(svg)
+        self.assertIsNotNone(cleaned, '程式自己畫的圖必須直接通過消毒白名單')
+        self.assertEqual(cleaned.count('<line'), 3, '三條邊都要留下來')
+        # 4:3:5 的三角形，畫出來的像素長度比也必須是 4:3:5（同一個比例尺，不會被拉歪）。
+        sides = sorted(((float(x2) - float(x1)) ** 2 + (float(y2) - float(y1)) ** 2) ** 0.5
+                       for x1, y1, x2, y2 in re.findall(
+                           r'<line x1="([-\d.]+)" y1="([-\d.]+)" x2="([-\d.]+)" y2="([-\d.]+)"', svg))
+        self.assertEqual(len(sides), 3)
+        self.assertAlmostEqual(sides[0] / sides[1], 3 / 4, places=2)
+        self.assertAlmostEqual(sides[1] / sides[2], 4 / 5, places=2)
+
+    def test_verify_spec_flags_only_definite_errors(self):
+        base = {'points': [{'name': 'A', 'x': 0, 'y': 0}, {'name': 'B', 'x': 4, 'y': 0},
+                           {'name': 'C', 'x': 0, 'y': 3}],
+                'segments': [{'from': 'A', 'to': 'B'}, {'from': 'B', 'to': 'C'}, {'from': 'C', 'to': 'A'}],
+                'marks': [{'type': 'right-angle', 'at': 'A', 'a': 'B', 'c': 'C'}],
+                'givens': [{'key': 'AB', 'value': '4'}, {'key': '∠BAC', 'value': '90°'}]}
+
+        def make(**over):
+            return server.figure_spec({**base, **over})
+
+        self.assertEqual(server.verify_spec(make()), [], '正確的圖不可以被誤判，否則會白白重畫')
+        # 標了直角但實際不是直角。
+        not_right = {'points': [{'name': 'A', 'x': 0, 'y': 0}, {'name': 'B', 'x': 4, 'y': 0},
+                                {'name': 'C', 'x': 3, 'y': 3}]}
+        self.assertIn('直角', '；'.join(server.verify_spec(make(**not_right))))
+        # 題目說 AB=4，規格卻把兩點畫在距離 9 的位置。
+        self.assertIn('AB', '；'.join(server.verify_spec(make(givens=[{'key': 'AB', 'value': '9'}]))))
+        # 角度弧線寫的度數與實際夾角不符。
+        self.assertIn('60°', '；'.join(server.verify_spec(
+            make(marks=[{'type': 'angle', 'at': 'A', 'a': 'B', 'c': 'C', 'text': '60°'}], givens=[]))))
+        # 兩個頂點畫在同一個位置。
+        self.assertIn('同一個位置', '；'.join(server.verify_spec(make(
+            points=[{'name': 'A', 'x': 0, 'y': 0}, {'name': 'B', 'x': 0, 'y': 0}, {'name': 'C', 'x': 0, 'y': 3}],
+            marks=[], givens=[]))))
+        # 標了等長記號，但兩邊長度不同。
+        ticks = {'points': [{'name': 'A', 'x': 0, 'y': 0}, {'name': 'B', 'x': 4, 'y': 0},
+                            {'name': 'C', 'x': 0, 'y': 3}, {'name': 'D', 'x': 0, 'y': 6}],
+                 'segments': [{'from': 'A', 'to': 'B'}, {'from': 'A', 'to': 'C'}, {'from': 'C', 'to': 'D'}],
+                 'marks': [{'type': 'tick', 'from': 'A', 'to': 'B', 'count': 1},
+                           {'type': 'tick', 'from': 'A', 'to': 'C', 'count': 1}],
+                 'givens': []}
+        self.assertIn('等長', '；'.join(server.verify_spec(make(**ticks))))
+        # 標了平行記號，但兩條線不平行。
+        self.assertIn('平行', '；'.join(server.verify_spec(make(**{
+            'marks': [{'type': 'parallel', 'from': 'A', 'to': 'B', 'count': 1},
+                      {'type': 'parallel', 'from': 'B', 'to': 'C', 'count': 1}], 'givens': []}))))
 
     def test_ai_figure_only_for_geometry_and_vector_topics(self):
         # 只有幾何與向量題材才畫圖；其他題材硬畫只會畫出與題目無關的圖。
@@ -1498,7 +1588,8 @@ class APITests(unittest.TestCase):
             self.assertTrue(server.figure_needed(topic), topic)
         for topic in ('代數', '一元二次方程', '統計', '概率', '函數', '數列與級數', ''):
             self.assertFalse(server.figure_needed(topic), topic)
-        svg = "<svg viewBox='0 0 400 300'><line x1='1' y1='1' x2='9' y2='9' stroke='#000'/></svg>"
+        spec = {'points': [{'name': 'A', 'x': 0, 'y': 0}, {'name': 'B', 'x': 4, 'y': 0}],
+                'segments': [{'from': 'A', 'to': 'B'}]}
         with patch.object(self.app.ai, 'call') as ai:
             for topic in ('代數', '統計', '概率', ''):
                 _, result, _ = self.request('POST', '/api/questions/ai-figure',
@@ -1507,7 +1598,7 @@ class APITests(unittest.TestCase):
                 self.assertIn('幾何', result['error'])
                 self.assertIn('手動插入', result['error'], '要告訴教師可以改用什麼')
             ai.assert_not_called()
-        with patch.object(self.app.ai, 'call', return_value={'svg': svg}) as ai:
+        with patch.object(self.app.ai, 'call', return_value=spec) as ai:
             self.request('POST', '/api/questions/ai-figure',
                          {'content': '兩直角邊 3、4，求斜邊。', 'topic': '幾何'},
                          cookie=self.teacher, expect=200)
@@ -1517,8 +1608,10 @@ class APITests(unittest.TestCase):
         # 核對出問題後重畫：問題原文要進到提示，要求這次務必修正。
         self.app.ai.configured = True
         self.app.ai.mode = 'local'
-        svg = "<svg viewBox='0 0 400 300'><line x1='1' y1='1' x2='9' y2='9' stroke='#000'/></svg>"
-        with patch.object(self.app.ai, 'call', return_value={'svg': svg}) as ai:
+        spec = {'points': [{'name': 'A', 'x': 0, 'y': 0}, {'name': 'B', 'x': 4, 'y': 0},
+                           {'name': 'C', 'x': 0, 'y': 3}],
+                'segments': [{'from': 'A', 'to': 'B'}, {'from': 'B', 'to': 'C'}, {'from': 'C', 'to': 'A'}]}
+        with patch.object(self.app.ai, 'call', return_value=spec) as ai:
             self.request('POST', '/api/questions/ai-figure',
                          {'content': '兩直角邊 3、4，求斜邊。', 'topic': '幾何',
                           'issues': ['圖上標成 4、5', '缺少直角標記']},
@@ -1530,13 +1623,13 @@ class APITests(unittest.TestCase):
         self.request('POST', '/api/questions/ai-figure',
                      {'content': 'x', 'topic': '幾何', 'issues': '不是清單'},
                      cookie=self.teacher, expect=400)
-        with patch.object(self.app.ai, 'call', return_value={'svg': svg}) as ai:
+        with patch.object(self.app.ai, 'call', return_value=spec) as ai:
             self.request('POST', '/api/questions/ai-figure',
                          {'content': 'x', 'topic': '幾何', 'issues': []}, cookie=self.teacher, expect=200)
-            self.assertNotIn('上一版的圖形', ai.call_args[0][0])
+            self.assertNotIn('上一版圖形', ai.call_args[0][0])
 
-    def test_ai_figure_check_reports_mismatches(self):
-        # 題圖互相核對：用視覺模型比對題目與圖形，回報不符之處供教師決定是否重畫。
+    def test_ai_figure_check_compares_question_and_figure_readings(self):
+        # 反向謄寫核對：模型分別讀出「題目說的」與「圖上畫的」，差異由程式比對出來。
         self.app.ai.configured = True
         self.app.ai.mode = 'local'
         self.app.ai.vision = ''
@@ -1544,15 +1637,35 @@ class APITests(unittest.TestCase):
                      {'content': '兩直角邊 3、4，求斜邊。', 'image': png_url()},
                      cookie=self.teacher, expect=409)
         self.app.ai.vision = 'vision'
-        bad = {'ok': False, 'issues': ['圖上標成 4、5', '缺少直角標記'], 'advice': '把兩股標成 3 與 4，並補上直角記號。'}
-        with patch.object(self.app.ai, 'call', return_value=bad) as ai:
+        reading = {
+            'question': {'shape': '直角三角形',
+                         'values': [{'key': 'AB', 'value': '4'}, {'key': '∠BAC', 'value': '90°'}],
+                         'marks': ['直角記號']},
+            'figure': {'shape': '等腰三角形', 'values': [{'key': 'AB', 'value': '5'}], 'marks': []}}
+        with patch.object(self.app.ai, 'call', return_value=reading) as ai:
             _, result, _ = self.request('POST', '/api/questions/ai-figure-check',
                                         {'title': '直角三角形', 'content': '兩直角邊 3、4，求斜邊。',
                                          'image': png_url()}, cookie=self.teacher, expect=200)
             self.assertEqual(ai.call_args[1]['model'], 'vision', '核對要走視覺模型')
             self.assertFalse(result['ok'])
-            self.assertEqual(result['issues'], bad['issues'])
-            self.assertIn('直角記號', result['advice'])
+            joined = '；'.join(result['issues'])
+            self.assertIn('AB', joined, '標錯的數值要指出來')
+            self.assertIn('直角', joined, '題目是直角三角形、圖卻不是，要指出來')
+            self.assertIn('∠BAC', joined, '圖上缺了題目給的標示，要指出來')
+            self.assertIn('重畫', result['advice'])
+            self.assertEqual(result['figure']['shape'], '等腰三角形', '要回傳模型實際讀到的內容')
+            instruction = ai.call_args[0][0]
+            self.assertIn('分別', instruction, '要要求模型分開讀，不要互相遷就')
+        # 兩邊讀出來一致時就是通過。
+        same = {'question': reading['question'],
+                'figure': {'shape': '直角三角形',
+                           'values': [{'key': 'AB', 'value': '4'}, {'key': '∠BAC', 'value': '90°'}],
+                           'marks': ['直角記號']}}
+        with patch.object(self.app.ai, 'call', return_value=same):
+            _, result, _ = self.request('POST', '/api/questions/ai-figure-check',
+                                        {'content': 'x', 'image': png_url()}, cookie=self.teacher, expect=200)
+            self.assertTrue(result['ok'])
+            self.assertEqual(result['issues'], [])
         # 只有教師可以核對；參數要檢查。
         self.request('POST', '/api/questions/ai-figure-check',
                      {'content': 'x', 'image': png_url()}, cookie=self.student, expect=403)
@@ -1562,24 +1675,41 @@ class APITests(unittest.TestCase):
         self.request('POST', '/api/questions/ai-figure-check',
                      {'content': 'x', 'image': png_url(), 'consentExternal': 'yes'},
                      cookie=self.teacher, expect=400)
-        # 模型說沒問題卻又列出問題時，以有問題為準，避免教師被誤導。
-        with patch.object(self.app.ai, 'call',
-                          return_value={'ok': True, 'issues': ['邊長標錯'], 'advice': ''}):
-            _, result, _ = self.request('POST', '/api/questions/ai-figure-check',
-                                        {'content': 'x', 'image': png_url()}, cookie=self.teacher, expect=200)
-            self.assertFalse(result['ok'])
         # 回應格式不對時要明確失敗，不能默默當成「沒問題」。
-        for bad_result in ({'issues': []}, {'ok': 'yes'}, {'ok': True, 'issues': 'x'}):
+        for bad_result in ({'figure': {'shape': '三角形', 'values': [], 'marks': []}},
+                           {'question': {'shape': 'x'}}, {'figure': {'shape': '', 'values': [], 'marks': []},
+                                                          'question': {'shape': 'x'}},
+                           {'figure': 'x', 'question': 'x'}, 'x'):
             with patch.object(self.app.ai, 'call', return_value=bad_result):
-                if bad_result == {'ok': True, 'issues': 'x'}:
-                    _, result, _ = self.request('POST', '/api/questions/ai-figure-check',
-                                                {'content': 'x', 'image': png_url()},
-                                                cookie=self.teacher, expect=200)
-                    self.assertTrue(result['ok'], 'issues 型別不對時當作沒有問題')
-                    self.assertEqual(result['issues'], [])
-                else:
-                    self.request('POST', '/api/questions/ai-figure-check',
-                                 {'content': 'x', 'image': png_url()}, cookie=self.teacher, expect=502)
+                self.request('POST', '/api/questions/ai-figure-check',
+                             {'content': 'x', 'image': png_url()}, cookie=self.teacher, expect=502)
+
+    def test_compare_readings_reports_explainable_differences(self):
+        reading = server.figure_read({
+            'question': {'shape': '直角三角形',
+                         'values': [{'key': 'AB', 'value': '4'}, {'key': '∠BAC', 'value': '90°'}],
+                         'marks': ['直角記號']},
+            'figure': {'shape': '等腰三角形', 'values': [{'key': 'AB', 'value': '5'}], 'marks': []}})
+        issues, advice = server.compare_readings(reading)
+        joined = '；'.join(issues)
+        self.assertIn('AB', joined)
+        self.assertIn('直角', joined)
+        self.assertIn('∠BAC', joined)
+        self.assertIn('重畫', advice)
+        # 兩邊一致時沒有問題。
+        same = server.figure_read({
+            'question': {'shape': '直角三角形', 'values': [{'key': 'AB', 'value': '4'}], 'marks': []},
+            'figure': {'shape': '直角三角形', 'values': [{'key': 'AB', 'value': '4'}], 'marks': []}})
+        self.assertEqual(server.compare_readings(same), ([], ''))
+        # 圖上多出來的標示不算問題（多標不會誤導學生）。
+        extra = server.figure_read({
+            'question': {'shape': '', 'values': [], 'marks': []},
+            'figure': {'shape': '圓', 'values': [{'key': 'r', 'value': '3'}], 'marks': []}})
+        self.assertEqual(server.compare_readings(extra), ([], ''))
+        # 讀不出圖形內容時視為核對失敗，不能當成「沒問題」。
+        self.assertIsNone(server.figure_read(
+            {'question': {'shape': 'x'}, 'figure': {'shape': '', 'values': [], 'marks': []}}))
+        self.assertIsNone(server.figure_read('x'))
 
     def test_generate_external_consent_required_before_model_call(self):
         for index, base in enumerate(('https://external.invalid/v1', 'https://192.168.1.2/v1'), 1):

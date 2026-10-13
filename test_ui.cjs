@@ -1552,18 +1552,28 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   assert.match(figuresSent.figures[0].figure,/^data:image\/(webp|png);base64,/,'送出的必須是裁好的圖形');
   console.log('PASS: 全自動匯入後由前端批次補上題目圖形');
 
-  // 題目圖形工作室：AI 只為幾何／向量題材畫圖、題圖互相核對、依核對結果重畫、手動插入圖片
-  let aiFigureSent=null,figureDraws=[],checkSent=null;
+  // 題目圖形工作室：AI 只輸出規格（程式繪圖）→ 自動核對 → 不符就自動重畫
+  let aiFigureSent=null,figureDraws=[],checkSent=null,checkCount=0;
+  const FIGURE_SPEC={kind:'circle',points:[{name:'O',x:0,y:0},{name:'A',x:3,y:0}],
+    segments:[],circles:[{center:'O',through:'A'}],marks:[],labels:[],givens:[]};
   await page.route('**/api/questions/ai-figure',route=>{
     figureDraws.push(route.request().postDataJSON());
-    const n=figureDraws.length;
-    return route.fulfill({json:{svg:`<svg xmlns="http://www.w3.org/2000/svg" viewBox='0 0 400 300' width='400' height='300'>`+
+    return route.fulfill({json:{svg:`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 300" width="400" height="300">`+
       `<line x1='20' y1='280' x2='380' y2='280' stroke='#1f2d24' stroke-width='2'/>`+
-      `<circle cx='200' cy='140' r='${n===1?60:70}' stroke='#1f2d24' stroke-width='2' fill='none'/>`+
-      `<text x='196' y='146' font-size='14'>O</text></svg>`,method:'AI 生成',notice:'草稿'}});});
-  await page.route('**/api/questions/ai-figure-check',route=>{checkSent=route.request().postDataJSON();
-    return route.fulfill({json:{ok:false,issues:['圖上把 3 標成 4','缺少直角標記'],
-      advice:'兩股標成 3 與 4，並補上直角記號。',method:'AI 核對'}});});
+      `<circle cx='200' cy='140' r='${figureDraws.length===1?60:70}' stroke='#1f2d24' stroke-width='2' fill='none'/>`+
+      `<text x='196' y='146' font-size='14'>O</text></svg>`,
+      spec:FIGURE_SPEC,issues:[],rounds:1,method:'AI 生成',notice:'這是草稿'}});});
+  // 第一次核對故意不通過，用來驗證「自動重畫並複驗」的迴圈。
+  await page.route('**/api/questions/ai-figure-check',route=>{
+    checkSent=route.request().postDataJSON();checkCount++;
+    const bad=checkCount===1;
+    return route.fulfill({json:{ok:!bad,
+      issues:bad?['圖上把 3 標成 4','缺少直角標記']:[],
+      advice:bad?'請依下列不符之處重畫：圖上把 3 標成 4。':'',
+      question:{shape:'直角三角形',values:[{key:'AB',value:'3'}],marks:['直角記號']},
+      figure:bad?{shape:'三角形',values:[{key:'AB',value:'4'}],marks:[]}
+                :{shape:'直角三角形',values:[{key:'AB',value:'3'}],marks:['直角記號']},
+      method:'AI 核對'}});});
   await page.route('**/api/questions/figures',route=>{aiFigureSent=route.request().postDataJSON();return route.fulfill({json:{updated:1}});});
   await page.evaluate(()=>navigate('bank'));
   await page.locator('[data-aifig]').first().waitFor({timeout:8000});
@@ -1593,30 +1603,26 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   assert.ok(aiFigureSent,'手動插入的圖形要寫回題目');
   assert.equal(aiFigureSent.figures[0].id,1,'圖形要對應到該題');
   assert.match(aiFigureSent.figures[0].figure,/^data:image\/(webp|png);base64,/);
-  // 幾何題：AI 畫圖 → 核對題目與圖形 → 依核對結果重畫
+  // 幾何題：一次按下就自動「畫圖 → 核對 → 不符就帶著問題重畫 → 再核對」
   await page.locator('[data-aifig="2"]').click();
   await page.locator('#fig-draw').waitFor({timeout:8000});
   assert.equal(await page.locator('#fig-draw').isDisabled(),false,'幾何題要能用 AI 畫圖');
   assert.match(await page.locator('#fig-draw').innerText(),/AI 生成圖形/);
   await page.locator('#fig-draw').click();
-  await page.waitForFunction(()=>{const i=document.querySelector('.fig-preview img');return !!(i&&i.complete&&i.naturalWidth>0);},{timeout:8000});
-  assert.equal(figureDraws.length,1);
+  await page.waitForFunction(()=>!!document.querySelector('.fig-check.ok'),{timeout:20000});
+  assert.equal(figureDraws.length,2,'核對不通過時要自動重畫一次');
   assert.equal(figureDraws[0].content,'解方程 $x^2-5x+6=0$。','要把題目內容送給 AI');
   assert.equal(figureDraws[0].issues.length,0,'第一次生成不帶核對問題');
-  assert.equal(await page.locator('#fig-check').isDisabled(),false,'有圖形後才能核對');
-  await page.locator('#fig-check').click();
-  await page.waitForFunction(()=>!!document.querySelector('.fig-check.bad'),{timeout:8000});
+  assert.deepEqual(figureDraws[1].issues,['圖上把 3 標成 4','缺少直角標記'],'重畫要把核對問題帶上');
   assert.equal(checkSent.content,'解方程 $x^2-5x+6=0$。','核對要送題目內容');
   assert.match(checkSent.image,/^data:image\/(webp|png);base64,/,'核對要送圖形');
-  assert.match(await page.locator('.fig-check.bad').innerText(),/圖上把 3 標成 4/,'要列出不符之處');
-  assert.match(await page.locator('.fig-check.bad').innerText(),/直角記號/,'要顯示修正指示');
+  assert.equal(await page.locator('#fig-fix').count(),0,'沒有疑慮時不顯示重畫按鈕');
+  // 核對結果要能看到「題目說的」與「圖上畫的」兩份讀數，教師才知道系統憑什麼判斷
+  await page.locator('.fig-read summary').first().click();
+  assert.match(await page.locator('.fig-read-grid').innerText(),/題目說的/);
+  assert.match(await page.locator('.fig-read-grid').innerText(),/圖上畫的/);
+  assert.match(await page.locator('#toast').innerText(),/核對通過/,'要告訴教師已經自動核對通過');
   await page.screenshot({path:path.join(__dirname,'..','MathPath-題圖核對.png'),fullPage:true});
-  await page.locator('#fig-fix').click();
-  for(let i=0;i<50&&figureDraws.length<2;i++)await page.waitForTimeout(100);
-  assert.equal(figureDraws.length,2,'依核對結果重畫要再呼叫一次');
-  assert.deepEqual(figureDraws[1].issues,['圖上把 3 標成 4','缺少直角標記'],'重畫要把核對問題帶上');
-  await page.waitForFunction(()=>!document.querySelector('.fig-check'),{timeout:8000});
-  assert.equal(await page.locator('.fig-check').count(),0,'重畫後核對結果要清掉，避免看到過期結論');
   await page.locator('#fig-apply').click();
   for(let i=0;i<50&&aiFigureSent.figures[0].id!==2;i++)await page.waitForTimeout(100);
   assert.equal(aiFigureSent.figures[0].id,2,'幾何題的圖形要寫回該題');
@@ -1637,7 +1643,7 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   }, HANDWRITING.toString('base64'));
   assert.equal(afterClose.open,false,'關閉工作室後貼上圖片不應把視窗叫回來');
   assert.equal(afterClose.prevented,false,'未開工作室時不應攔掉貼上事件');
-  console.log('PASS: 題目圖形工作室（只為幾何／向量題材畫圖、題圖互相核對、依核對結果重畫、手動插入圖片、關閉後不留狀態）');
+  console.log('PASS: 題目圖形工作室（AI 只出規格、程式繪圖、自動核對與重畫、手動插入圖片、關閉後不留狀態）');
 
 
 

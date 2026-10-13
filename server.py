@@ -578,36 +578,56 @@ def figure_needed(topic):
     """這道題需不需要圖形：只針對幾何與向量題材。"""
     return topic in FIGURE_TOPICS
 
-FIGURE_INSTRUCTION = (
-    '你是數學教材插圖設計師。請依題目內容畫出解題需要的圖形，'
-    '只回傳 {"svg": "<svg …>…</svg>"} 一個 JSON 物件，不要任何說明文字。'
-    'SVG 規則：'
-    "根元素用 <svg viewBox='0 0 400 300' width='400' height='300'>（屬性一律用單引號，避免 JSON 跳脫問題）。"
-    '只可以用這些元素：g、line、polyline、polygon、path、rect、circle、ellipse、text、tspan。'
-    '不要用 script、style、defs、use、image、foreignObject、外部連結或任何 on… 事件屬性。'
-    '線條用 stroke="#1f2d24" stroke-width="2" fill="none"；虛線用 stroke-dasharray="5 4"；'
-    '標註文字用 <text>，font-size="14"，深色；座標軸要有箭頭與原點標示 O。'
-    '不要畫底色、外框或標題。'
-    '圖形必須忠實反映題目的數據：邊長、角度、座標、數值、比例都要與題目一致，'
-    '標註要清楚且不可互相重疊。'
-    '只畫圖形本身，不要把整道題目文字畫進圖裡（必要的邊長、角度、座標標註除外）。'
-    '若這道題完全不需要圖形，回 {"svg": ""}。'
+# 第一階段只要求模型輸出「結構化規格」，由程式負責繪圖。
+# 理由：讓模型邊算座標邊寫 SVG 語法是最容易出錯的做法；改成模型只做它擅長的
+# 「讀題、列條件、給數學座標」，座標換算、比例、標註避讓、標記繪製全部由程式做，
+# 這樣 AB=6 就真的是 6 個單位，比例不會走鐘，規格也能用幾何本身檢查。
+FIGURE_SPEC_INSTRUCTION = (
+    '你是數學教材插圖設計師。請先讀懂題目，再用「數學座標」描述這道題需要的圖形。'
+    '只回傳一個 JSON 物件，不要任何說明文字，也不要輸出 SVG。'
+    '座標約定：x 向右、y 向上，直接使用題目給的實際數值當座標'
+    '（例如 AB=6 就把 A 放在 (0,0)、B 放在 (6,0)），不要換算成像素，比例交給程式處理。'
+    'JSON 格式：'
+    '{"needed":true,"kind":"triangle","points":[{"name":"A","x":0,"y":0}],'
+    '"segments":[{"from":"A","to":"B","dashed":false}],'
+    '"rays":[{"from":"O","through":"A"}],"circles":[{"center":"O","through":"A"}],'
+    '"arcs":[{"center":"O","from":"A","to":"B"}],'
+    '"marks":[{"type":"right-angle","at":"B","a":"A","c":"C"}],'
+    '"labels":[{"text":"6","on":["A","B"]}],'
+    '"axes":{"x":true,"y":true,"origin":"O"},'
+    '"givens":[{"key":"AB","value":"6"}]}'
+    '規則：'
+    'kind 只能是 triangle、quadrilateral、polygon、circle、coordinate、vector、solid、line、other。'
+    'points 只列題目真的提到、圖上真的需要的頂點，名稱用單一字母（A、B、C…），'
+    '座標必須與題目的數據一致（邊長、角度、比例都要對得上）。'
+    'segments／rays／circles／arcs 只能引用 points 裡已經有的名稱。'
+    'marks 的 type 只能是 right-angle（直角記號）、angle（角度弧線，可附 text）、'
+    'tick（等長記號，count 1 至 3）、parallel（平行記號，count 1 至 3）；'
+    '標了記號就代表那些邊真的相等或平行，必須與座標相符。'
+    'labels 用來標註題目給的數值：用 "on":["A","B"] 表示標在該線段中間，'
+    '用 "at":"B" 表示標在該點旁邊，或直接給 x、y；文字要短（例如 6、3.5、60°）。'
+    'givens 列出題目給的每一個已知條件，key 用符號（AB、∠ABC、r…），value 用題目寫的數值。'
+    '若題目有座標軸或需要標出原點，就設定 axes。'
+    '只畫題目真的需要的元素，不要加裝飾、不要加標題、不要畫底色、不要把題目文字畫進圖裡。'
+    '若這道題完全不需要圖形，回 {"needed": false}。'
 )
 
 
-FIGURE_CHECK_INSTRUCTION = (
-    '你是數學科審題老師。下面是一道題目與一張為它畫的圖形，請核對「這張圖是否符合題目」。'
-    '逐項檢查：'
-    '① 圖形的類型是否與題目相符（題目說直角三角形，圖就必須是直角三角形）；'
-    '② 圖上標註的數值、邊長、角度、座標是否與題目一致；'
-    '③ 題目提到的元素（點、線、角、標記）是否都畫了；'
-    '④ 有沒有與題目無關的多餘元素；'
-    '⑤ 標註是否重疊、顛倒或難以辨識。'
-    '返回 {ok:bool, issues:[str], advice:str}。'
-    'ok 只有在圖形完全正確時才可以是 true；只要有一處不符就要 false。'
-    'issues 每項一句話，具體指出哪個數值或哪個元素不符（沒有問題就給空陣列）；'
-    'advice 是給繪圖者的修正指示（沒有問題就給空字串）。'
-    '只回報你實際看到的不符之處，不要客套、不要重述題目。'
+# 第二階段核對：不問模型「這張圖對不對」（它會客套地說對），而是要它分別讀出
+# 「圖上畫了什麼」與「題目說了什麼」兩份資料，再由程式逐項比對。強迫模型先觀察、
+# 再讓程式下判斷，比讓模型直接下結論可靠得多，而且差異可解釋。
+FIGURE_READ_INSTRUCTION = (
+    '你是數學科審題老師。下面是一道題目與一張為它畫的圖形。'
+    '請「分別、獨立」讀出兩邊的資料，不要互相遷就，'
+    '也不要用題目的數字去補圖上沒有標示的東西。'
+    '先只看圖形，寫下你實際看到的內容；再看題目文字，寫下題目陳述的內容。'
+    '回傳 {figure:{...}, question:{...}}，兩邊的格式相同：'
+    '{shape:str, values:[{key:str,value:str}], marks:[str]}。'
+    'shape：圖形的類型，例如「直角三角形」「平行四邊形」「圓」「坐標平面」「向量」。'
+    'values：key 用符號（AB、∠ABC、r、A…），value 用你讀到的數值或座標（6、90°、(0,0)）；'
+    '圖上沒有標示的就不要列。'
+    'marks：圖上看到的記號（直角記號、等長記號、平行箭號、虛線、圓心…），沒有就給空陣列。'
+    '只回報你實際讀到的內容：不要下結論、不要說「符合」或「不符合」、不要客套。'
 )
 
 
@@ -677,36 +697,704 @@ def sanitize_svg(raw):
     return text.replace('<svg', f'<svg xmlns="{SVG_NS}"', 1)
 
 
+# ── 圖形規格 → SVG ──
+# 座標換算、比例、標註避讓與各種標記都由程式決定，模型只提供數學座標。
+FIGURE_VIEW_W, FIGURE_VIEW_H = 400, 300
+FIGURE_MARGIN = 38.0
+FIGURE_FONT = 13.0
+FIGURE_INK = '#1f2d24'
+FIGURE_KINDS = ('triangle', 'quadrilateral', 'polygon', 'circle', 'coordinate',
+                'vector', 'solid', 'line', 'other')
+FIGURE_MARK_TYPES = ('right-angle', 'angle', 'tick', 'parallel')
+FIGURE_POINT_RE = re.compile(r'[A-Za-z][A-Za-z0-9]{0,3}')
+FIGURE_MAX_POINTS = 40
+FIGURE_MAX_ITEMS = 60
+FIGURE_MAX_LABELS = 30
+FIGURE_SPEC_ATTEMPTS = 3
+FIGURE_MAX_ISSUES = 6
+FIGURE_MAX_SCALE = 240.0
+
+
+def _finite(value):
+    """寬容轉成有限實數；不是數字就回 None。"""
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        result = float(value)
+    elif isinstance(value, str):
+        try:
+            result = float(value.strip())
+        except ValueError:
+            return None
+    else:
+        return None
+    return result if math.isfinite(result) and abs(result) <= 1e6 else None
+
+
+def _items(value, limit=FIGURE_MAX_ITEMS):
+    return value[:limit] if isinstance(value, list) else []
+
+
+def _xml_escape(value):
+    return (str(value).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+            .replace('"', '&quot;').replace("'", '&#39;'))
+
+
+def figure_spec(result):
+    """把 AI 回傳的圖形規格正規化；無法使用時回 None（呼叫端負責回報錯誤）。
+
+    這裡把所有不合法或畫不出來的內容直接丟掉，寧可少畫一個元素，也不要畫到不該畫的位置。
+    """
+    if not isinstance(result, dict):
+        return None
+    raw_points = result.get('points')
+    if not isinstance(raw_points, list) or not raw_points or len(raw_points) > FIGURE_MAX_POINTS:
+        return None
+    points, used = [], set()
+    for item in raw_points:
+        if not isinstance(item, dict):
+            continue
+        name = item.get('name')
+        x, y = _finite(item.get('x')), _finite(item.get('y'))
+        if not isinstance(name, str) or not FIGURE_POINT_RE.fullmatch(name.strip()):
+            continue
+        if x is None or y is None or name.strip() in used:
+            continue
+        used.add(name.strip())
+        points.append({'name': name.strip(), 'x': x, 'y': y})
+    if not points:
+        return None
+    names = {p['name'] for p in points}
+    segments = []
+    for item in _items(result.get('segments')):
+        if isinstance(item, dict):
+            a, b, dashed = item.get('from'), item.get('to'), item.get('dashed') is True
+        elif isinstance(item, (list, tuple)) and len(item) == 2:
+            a, b, dashed = item[0], item[1], False
+        else:
+            continue
+        if isinstance(a, str) and isinstance(b, str) and a in names and b in names and a != b:
+            segments.append({'from': a, 'to': b, 'dashed': dashed})
+    rays = []
+    for item in _items(result.get('rays'), 20):
+        if not isinstance(item, dict):
+            continue
+        a, b = item.get('from'), item.get('through')
+        if isinstance(a, str) and isinstance(b, str) and a in names and b in names and a != b:
+            rays.append({'from': a, 'through': b})
+    circles = []
+    for item in _items(result.get('circles'), 12):
+        if not isinstance(item, dict):
+            continue
+        center = item.get('center')
+        if not isinstance(center, str) or center not in names:
+            continue
+        through, radius = item.get('through'), _finite(item.get('r'))
+        if isinstance(through, str) and through in names and through != center:
+            circles.append({'center': center, 'through': through})
+        elif radius is not None and radius > 0:
+            circles.append({'center': center, 'r': radius})
+    arcs = []
+    for item in _items(result.get('arcs'), 12):
+        if not isinstance(item, dict):
+            continue
+        center, a, b = item.get('center'), item.get('from'), item.get('to')
+        if (isinstance(center, str) and isinstance(a, str) and isinstance(b, str)
+                and len({center, a, b}) == 3 and {center, a, b} <= names):
+            arcs.append({'center': center, 'from': a, 'to': b, 'dashed': item.get('dashed') is True})
+    marks = []
+    for item in _items(result.get('marks')):
+        if not isinstance(item, dict):
+            continue
+        kind = item.get('type')
+        if kind in ('right-angle', 'angle'):
+            at, a, c = item.get('at'), item.get('a'), item.get('c')
+            if (isinstance(at, str) and isinstance(a, str) and isinstance(c, str)
+                    and len({at, a, c}) == 3 and {at, a, c} <= names):
+                mark = {'type': kind, 'at': at, 'a': a, 'c': c}
+                raw = item.get('text')
+                if isinstance(raw, str) and raw.strip():
+                    mark['text'] = raw.strip()[:20]
+                marks.append(mark)
+        elif kind in ('tick', 'parallel'):
+            a, b = item.get('from'), item.get('to')
+            if isinstance(a, str) and isinstance(b, str) and a in names and b in names and a != b:
+                count = item.get('count')
+                if not (isinstance(count, int) and not isinstance(count, bool) and 1 <= count <= 3):
+                    count = 1
+                marks.append({'type': kind, 'from': a, 'to': b, 'count': count})
+    labels = []
+    for item in _items(result.get('labels'), FIGURE_MAX_LABELS):
+        if not isinstance(item, dict):
+            continue
+        raw = item.get('text')
+        if not isinstance(raw, str) or not raw.strip():
+            continue
+        value = raw.strip()[:24]
+        on, at = item.get('on'), item.get('at')
+        x, y = _finite(item.get('x')), _finite(item.get('y'))
+        if (isinstance(on, (list, tuple)) and len(on) == 2
+                and all(isinstance(v, str) and v in names for v in on)):
+            labels.append({'text': value, 'on': [on[0], on[1]]})
+        elif isinstance(at, str) and at in names:
+            labels.append({'text': value, 'at': at})
+        elif x is not None and y is not None:
+            labels.append({'text': value, 'x': x, 'y': y})
+    givens = []
+    for item in _items(result.get('givens'), 20):
+        if not isinstance(item, dict):
+            continue
+        key, value = item.get('key'), item.get('value')
+        if isinstance(key, str) and key.strip() and value is not None:
+            givens.append({'key': key.strip()[:20], 'value': str(value).strip()[:24]})
+    raw_axes = result.get('axes')
+    axes = None
+    if isinstance(raw_axes, dict) and (raw_axes.get('x') or raw_axes.get('y')):
+        origin = raw_axes.get('origin')
+        axes = {'x': raw_axes.get('x') is True, 'y': raw_axes.get('y') is True,
+                'origin': origin if isinstance(origin, str) and origin in names else None}
+    kind = result.get('kind') if result.get('kind') in FIGURE_KINDS else 'other'
+    if not (segments or rays or circles or arcs or axes):
+        return None
+    return {'kind': kind, 'points': points, 'segments': segments, 'rays': rays,
+            'circles': circles, 'arcs': arcs, 'marks': marks, 'labels': labels,
+            'givens': givens, 'axes': axes}
+
+
+def _fmt(value):
+    out = f'{value:.1f}'
+    return '0.0' if out == '-0.0' else out
+
+
+def _unit(dx, dy):
+    length = math.hypot(dx, dy)
+    if length < 1e-9:
+        return None
+    return dx / length, dy / length
+
+
+def _stroke(a, b, dashed=False, width=2):
+    dash = ' stroke-dasharray="5 4"' if dashed else ''
+    return (f'<line x1="{_fmt(a[0])}" y1="{_fmt(a[1])}" x2="{_fmt(b[0])}" y2="{_fmt(b[1])}" '
+            f'stroke="{FIGURE_INK}" stroke-width="{width}"{dash}/>')
+
+
+def _polyline(points, width=2, dashed=False):
+    body = ' '.join(f'{_fmt(x)},{_fmt(y)}' for x, y in points)
+    dash = ' stroke-dasharray="5 4"' if dashed else ''
+    return (f'<polyline points="{body}" fill="none" stroke="{FIGURE_INK}" '
+            f'stroke-width="{width}"{dash}/>')
+
+
+def _text(x, y, value, size=FIGURE_FONT):
+    return (f'<text x="{_fmt(x)}" y="{_fmt(y)}" font-size="{_fmt(size)}" '
+            f'text-anchor="middle" dominant-baseline="central" fill="{FIGURE_INK}">'
+            f'{_xml_escape(value)}</text>')
+
+
+def _text_width(value, size=FIGURE_FONT):
+    total = 0.0
+    for char in value:
+        total += size if ord(char) > 0x2e7f else size * 0.58
+    return total
+
+
+def _arrow_head(tip, direction, size=9.0):
+    back = (tip[0] - direction[0] * size, tip[1] - direction[1] * size)
+    nx, ny = -direction[1], direction[0]
+    return _polyline([(back[0] + nx * size * 0.45, back[1] + ny * size * 0.45), tip,
+                      (back[0] - nx * size * 0.45, back[1] - ny * size * 0.45)], width=2)
+
+
+def _arc_path(center, start, end, dashed=False):
+    """以 center 為圓心、通過 start 的弧，終點取 end 的方向。"""
+    cx, cy = center
+    radius = math.hypot(start[0] - cx, start[1] - cy)
+    direction = _unit(end[0] - cx, end[1] - cy)
+    if radius < 1 or direction is None:
+        return None
+    tip = (cx + direction[0] * radius, cy + direction[1] * radius)
+    cross = (start[0] - cx) * (tip[1] - cy) - (start[1] - cy) * (tip[0] - cx)
+    sweep = 1 if cross > 0 else 0
+    dash = ' stroke-dasharray="5 4"' if dashed else ''
+    return (f'<path d="M {_fmt(start[0])} {_fmt(start[1])} A {_fmt(radius)} {_fmt(radius)} '
+            f'0 0 {sweep} {_fmt(tip[0])} {_fmt(tip[1])}" fill="none" '
+            f'stroke="{FIGURE_INK}" stroke-width="2"{dash}/>')
+
+
+def _right_angle(vertex, a, c, size=10.0):
+    ua = _unit(a[0] - vertex[0], a[1] - vertex[1])
+    uc = _unit(c[0] - vertex[0], c[1] - vertex[1])
+    if ua is None or uc is None:
+        return ''
+    corner = (vertex[0] + ua[0] * size, vertex[1] + ua[1] * size)
+    far = (corner[0] + uc[0] * size, corner[1] + uc[1] * size)
+    return _polyline([corner, far, (vertex[0] + uc[0] * size, vertex[1] + uc[1] * size)], width=1.5)
+
+
+def _angle_mark(vertex, a, c, label=None, radius=26.0):
+    ua = _unit(a[0] - vertex[0], a[1] - vertex[1])
+    uc = _unit(c[0] - vertex[0], c[1] - vertex[1])
+    if ua is None or uc is None:
+        return None, None
+    start = (vertex[0] + ua[0] * radius, vertex[1] + ua[1] * radius)
+    tip = (vertex[0] + uc[0] * radius, vertex[1] + uc[1] * radius)
+    cross = (start[0] - vertex[0]) * (tip[1] - vertex[1]) - (start[1] - vertex[1]) * (tip[0] - vertex[0])
+    sweep = 1 if cross > 0 else 0
+    path = (f'<path d="M {_fmt(start[0])} {_fmt(start[1])} A {_fmt(radius)} {_fmt(radius)} '
+            f'0 0 {sweep} {_fmt(tip[0])} {_fmt(tip[1])}" fill="none" '
+            f'stroke="{FIGURE_INK}" stroke-width="1.5"/>')
+    if not label:
+        return path, None
+    bisector = _unit(ua[0] + uc[0], ua[1] + uc[1])
+    if bisector is None:
+        bisector = (-ua[1], ua[0])
+    return path, {'text': label, 'x': vertex[0] + bisector[0] * (radius + 16),
+                  'y': vertex[1] + bisector[1] * (radius + 16)}
+
+
+def _ticks(a, b, count, half=6.0, gap=5.0):
+    direction = _unit(b[0] - a[0], b[1] - a[1])
+    if direction is None:
+        return []
+    nx, ny = -direction[1], direction[0]
+    mx, my = (a[0] + b[0]) / 2, (a[1] + b[1]) / 2
+    start = -(count - 1) / 2 * gap
+    out = []
+    for index in range(count):
+        offset = start + index * gap
+        cx, cy = mx + direction[0] * offset, my + direction[1] * offset
+        out.append(_stroke((cx - nx * half, cy - ny * half), (cx + nx * half, cy + ny * half), width=1.5))
+    return out
+
+
+def _parallels(a, b, count, size=7.0, gap=9.0):
+    direction = _unit(b[0] - a[0], b[1] - a[1])
+    if direction is None:
+        return []
+    nx, ny = -direction[1], direction[0]
+    mx, my = (a[0] + b[0]) / 2, (a[1] + b[1]) / 2
+    start = -(count - 1) / 2 * gap
+    out = []
+    for index in range(count):
+        offset = start + index * gap
+        cx, cy = mx + direction[0] * offset, my + direction[1] * offset
+        back = (cx - direction[0] * size, cy - direction[1] * size)
+        out.append(_polyline([(back[0] + nx * size, back[1] + ny * size), (cx, cy),
+                              (back[0] - nx * size, back[1] - ny * size)], width=1.5))
+    return out
+
+
+def _point_segment_distance(px, py, a, b):
+    ax, ay = a
+    dx, dy = b[0] - ax, b[1] - ay
+    length2 = dx * dx + dy * dy
+    if length2 < 1e-9:
+        return math.hypot(px - ax, py - ay)
+    t = max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / length2))
+    return math.hypot(px - (ax + t * dx), py - (ay + t * dy))
+
+
+def _boxes_overlap(one, other):
+    return not (one[2] <= other[0] or other[2] <= one[0] or one[3] <= other[1] or other[3] <= one[1])
+
+
+def _box_hits_segment(box, segment):
+    middle = ((box[0] + box[2]) / 2, (box[1] + box[3]) / 2)
+    probes = ((box[0], box[1]), (box[2], box[1]), (box[0], box[3]), (box[2], box[3]), middle)
+    return any(_point_segment_distance(px, py, segment[0], segment[1]) < 6.0 for px, py in probes)
+
+
+def place_labels(items, segments, width=FIGURE_VIEW_W, height=FIGURE_VIEW_H):
+    """依序放置標註：與既有標註或線段重疊時，改試附近幾個位置，避免標註壓在圖上。"""
+    offsets = ((0, 0), (0, -16), (0, 16), (18, 0), (-18, 0), (13, -13), (-13, -13),
+               (13, 13), (-13, 13), (0, -30), (0, 30), (26, -18), (-26, -18), (26, 18), (-26, 18))
+    boxes, out = [], []
+    for item in items:
+        value = item['text']
+        half_w = _text_width(value) / 2 + 2
+        half_h = FIGURE_FONT * 0.7
+        chosen = None
+        for dx, dy in offsets:
+            x, y = item['x'] + dx, item['y'] + dy
+            box = (x - half_w, y - half_h, x + half_w, y + half_h)
+            if not (4 <= box[0] and box[2] <= width - 4 and 4 <= box[1] and box[3] <= height - 4):
+                continue
+            if any(_boxes_overlap(box, other) for other in boxes):
+                continue
+            if any(_box_hits_segment(box, segment) for segment in segments):
+                continue
+            chosen = (x, y, box)
+            break
+        if chosen is None:
+            # 找不到乾淨位置就照原樣放，至少不讓標註消失（教師仍可手動換圖）。
+            x, y = item['x'], item['y']
+            chosen = (x, y, (x - half_w, y - half_h, x + half_w, y + half_h))
+        boxes.append(chosen[2])
+        out.append(_text(chosen[0], chosen[1], value))
+    return out
+
+
+def render_spec_svg(spec):
+    """把圖形規格畫成 SVG：座標換算、比例、標註避讓與標記都由程式決定。"""
+    width, height = FIGURE_VIEW_W, FIGURE_VIEW_H
+    points = {p['name']: (p['x'], p['y']) for p in spec['points']}
+    circles = []
+    for item in spec['circles']:
+        cx, cy = points[item['center']]
+        if 'through' in item:
+            px, py = points[item['through']]
+            radius = math.hypot(px - cx, py - cy)
+        else:
+            radius = item['r']
+        if radius > 1e-9:
+            circles.append((cx, cy, radius))
+    xs = [x for x, _ in points.values()]
+    ys = [y for _, y in points.values()]
+    for cx, cy, radius in circles:
+        xs += [cx - radius, cx + radius]
+        ys += [cy - radius, cy + radius]
+    minx, maxx, miny, maxy = min(xs), max(xs), min(ys), max(ys)
+    spanx, spany = maxx - minx, maxy - miny
+    limits = []
+    if spanx > 1e-9:
+        limits.append((width - 2 * FIGURE_MARGIN) / spanx)
+    if spany > 1e-9:
+        limits.append((height - 2 * FIGURE_MARGIN) / spany)
+    # x、y 用同一個比例尺，圖形的比例才不會被拉歪。
+    scale = max(1e-6, min(min(limits) if limits else 1.0, FIGURE_MAX_SCALE))
+    ox = width / 2 if spanx <= 1e-9 else (width - spanx * scale) / 2
+    oy = height / 2 if spany <= 1e-9 else (height - spany * scale) / 2
+
+    def to_px(x, y):
+        return ox + (x - minx) * scale, oy + (maxy - y) * scale
+
+    pixel = {name: to_px(x, y) for name, (x, y) in points.items()}
+    centroid = (sum(p[0] for p in pixel.values()) / len(pixel),
+                sum(p[1] for p in pixel.values()) / len(pixel))
+    shapes, marks, pending, segments = [], [], [], []
+    for item in spec['segments']:
+        a, b = pixel[item['from']], pixel[item['to']]
+        shapes.append(_stroke(a, b, item['dashed']))
+        segments.append((a, b))
+    for item in spec['rays']:
+        start, through = pixel[item['from']], pixel[item['through']]
+        direction = _unit(through[0] - start[0], through[1] - start[1])
+        if direction is None:
+            continue
+        end, best = through, None
+        for pos, delta, high in ((start[0], direction[0], float(width)), (start[1], direction[1], float(height))):
+            if abs(delta) < 1e-9:
+                continue
+            for edge in (0.0, high):
+                t = (edge - pos) / delta
+                if t > 1.0 and (best is None or t < best):
+                    best = t
+        if best is not None:
+            end = (start[0] + direction[0] * best, start[1] + direction[1] * best)
+        shapes.append(_stroke(start, end))
+        segments.append((start, end))
+    for cx, cy, radius in circles:
+        px, py = to_px(cx, cy)
+        px_radius = radius * scale
+        shapes.append(f'<circle cx="{_fmt(px)}" cy="{_fmt(py)}" r="{_fmt(px_radius)}" '
+                      f'fill="none" stroke="{FIGURE_INK}" stroke-width="2"/>')
+        # 圓也用弦近似放進避讓清單，標註才不會壓在圓弧上。
+        steps = 24
+        ring = [(px + px_radius * math.cos(2 * math.pi * i / steps),
+                 py + px_radius * math.sin(2 * math.pi * i / steps)) for i in range(steps)]
+        segments += [(ring[i], ring[(i + 1) % steps]) for i in range(steps)]
+    for item in spec['arcs']:
+        path = _arc_path(pixel[item['center']], pixel[item['from']], pixel[item['to']], item['dashed'])
+        if path:
+            shapes.append(path)
+    for item in spec['marks']:
+        if item['type'] == 'right-angle':
+            marks.append(_right_angle(pixel[item['at']], pixel[item['a']], pixel[item['c']]))
+        elif item['type'] == 'angle':
+            path, label = _angle_mark(pixel[item['at']], pixel[item['a']], pixel[item['c']],
+                                      item.get('text'))
+            if path:
+                marks.append(path)
+            if label:
+                pending.append(label)
+        elif item['type'] == 'tick':
+            marks += _ticks(pixel[item['from']], pixel[item['to']], item['count'])
+        elif item['type'] == 'parallel':
+            marks += _parallels(pixel[item['from']], pixel[item['to']], item['count'])
+    for item in spec['labels']:
+        if 'on' in item:
+            a, b = pixel[item['on'][0]], pixel[item['on'][1]]
+            direction = _unit(b[0] - a[0], b[1] - a[1])
+            if direction is None:
+                continue
+            nx, ny = -direction[1], direction[0]
+            mx, my = (a[0] + b[0]) / 2, (a[1] + b[1]) / 2
+            # 標在離圖形中心較遠的一側，才不會壓在圖形裡面。
+            if ((mx + nx * 16 - centroid[0]) ** 2 + (my + ny * 16 - centroid[1]) ** 2
+                    < (mx - nx * 16 - centroid[0]) ** 2 + (my - ny * 16 - centroid[1]) ** 2):
+                nx, ny = -nx, -ny
+            pending.append({'text': item['text'], 'x': mx + nx * 16, 'y': my + ny * 16})
+        elif 'at' in item:
+            px, py = pixel[item['at']]
+            direction = _unit(px - centroid[0], py - centroid[1])
+            if direction is None:
+                direction = (0.6, -0.8)
+            pending.append({'text': item['text'], 'x': px + direction[0] * 17,
+                            'y': py + direction[1] * 17})
+        else:
+            px, py = to_px(item['x'], item['y'])
+            pending.append({'text': item['text'], 'x': px, 'y': py})
+    if spec['axes'] and spec['axes']['origin']:
+        origin = pixel[spec['axes']['origin']]
+        if spec['axes']['x']:
+            left, right = FIGURE_MARGIN * 0.4, width - FIGURE_MARGIN * 0.4
+            shapes.append(_stroke((left, origin[1]), (right, origin[1])))
+            shapes.append(_arrow_head((right, origin[1]), (1.0, 0.0)))
+            segments.append(((left, origin[1]), (right, origin[1])))
+            pending.append({'text': 'x', 'x': right - 7, 'y': origin[1] + 15})
+        if spec['axes']['y']:
+            bottom, top = height - FIGURE_MARGIN * 0.4, FIGURE_MARGIN * 0.4
+            shapes.append(_stroke((origin[0], bottom), (origin[0], top)))
+            shapes.append(_arrow_head((origin[0], top), (0.0, -1.0)))
+            segments.append(((origin[0], bottom), (origin[0], top)))
+            pending.append({'text': 'y', 'x': origin[0] + 15, 'y': top + 7})
+        pending.append({'text': 'O', 'x': origin[0] - 13, 'y': origin[1] + 14})
+    for name in points:
+        px, py = pixel[name]
+        direction = _unit(px - centroid[0], py - centroid[1])
+        if direction is None:
+            direction = (0.6, -0.8)
+        pending.append({'text': name, 'x': px + direction[0] * 16, 'y': py + direction[1] * 16})
+    body = (''.join(shapes) + ''.join(marks)
+            + ''.join(place_labels(pending, segments, width, height)))
+    return (f'<svg xmlns="{SVG_NS}" viewBox="0 0 {width} {height}" '
+            f'width="{width}" height="{height}">{body}</svg>')
+
+
+def _angle_at(points, vertex, a, c):
+    vx, vy = points[vertex]
+    ua = _unit(points[a][0] - vx, points[a][1] - vy)
+    uc = _unit(points[c][0] - vx, points[c][1] - vy)
+    if ua is None or uc is None:
+        return None
+    cos = max(-1.0, min(1.0, ua[0] * uc[0] + ua[1] * uc[1]))
+    return math.degrees(math.acos(cos))
+
+
+def _line_angle(a, b, c, d):
+    u = _unit(b[0] - a[0], b[1] - a[1])
+    v = _unit(d[0] - c[0], d[1] - c[1])
+    if u is None or v is None:
+        return 0.0
+    cos = max(-1.0, min(1.0, abs(u[0] * v[0] + u[1] * v[1])))
+    return math.degrees(math.acos(cos))
+
+
+def _degrees(value):
+    if ':' in str(value) or '/' in str(value):
+        return None
+    match = re.search(r'\d+(?:\.\d+)?', str(value))
+    if not match:
+        return None
+    degrees = float(match.group(0))
+    return degrees if 0 <= degrees <= 180 else None
+
+
+def _length_value(value):
+    if ':' in str(value) or '/' in str(value):
+        return None
+    match = re.search(r'\d+(?:\.\d+)?', str(value))
+    if not match:
+        return None
+    length = float(match.group(0))
+    return length if length > 0 else None
+
+
+def verify_spec(spec):
+    """用幾何本身檢查規格是否自相矛盾。
+
+    只回報「一定是錯」的問題（頂點重合、標了直角卻不是直角、標了等長卻不等長…），
+    避免誤判造成無謂的重畫；這裡不呼叫模型，所以不花錢也不會出錯。
+    """
+    issues = []
+    points = {p['name']: (p['x'], p['y']) for p in spec['points']}
+    for index, one in enumerate(spec['points']):
+        for other in spec['points'][index + 1:]:
+            if abs(one['x'] - other['x']) < 1e-9 and abs(one['y'] - other['y']) < 1e-9:
+                issues.append(f'頂點 {one["name"]} 與 {other["name"]} 畫在同一個位置')
+    for mark in spec['marks']:
+        if mark['type'] == 'right-angle':
+            actual = _angle_at(points, mark['at'], mark['a'], mark['c'])
+            if actual is not None and abs(actual - 90) > 3:
+                issues.append(f'{mark["at"]} 標了直角記號，但兩邊實際夾角是 {actual:.0f} 度')
+        elif mark['type'] == 'angle' and mark.get('text'):
+            # 弧線上寫了度數時，順便核對它跟實際夾角是否相符。
+            claimed = _degrees(mark['text'])
+            actual = _angle_at(points, mark['at'], mark['a'], mark['c'])
+            if claimed is not None and actual is not None and abs(actual - claimed) > 3:
+                issues.append(f'{mark["at"]} 標的角度寫 {mark["text"]}，'
+                              f'但實際夾角是 {actual:.0f} 度')
+    groups = {}
+    for mark in spec['marks']:
+        if mark['type'] in ('tick', 'parallel'):
+            groups.setdefault((mark['type'], mark['count']), []).append(mark)
+    for (kind, _count), items in groups.items():
+        for i in range(len(items)):
+            for j in range(i + 1, len(items)):
+                a, b = items[i]['from'], items[i]['to']
+                c, d = items[j]['from'], items[j]['to']
+                if kind == 'tick':
+                    one, other = math.dist(points[a], points[b]), math.dist(points[c], points[d])
+                    if max(one, other) > 1e-9 and abs(one - other) / max(one, other) > 0.08:
+                        issues.append(f'{a}{b} 與 {c}{d} 都標了等長記號，但長度不同'
+                                      f'（{one:g} 與 {other:g}）')
+                elif min(_line_angle(points[a], points[b], points[c], points[d]),
+                         180 - _line_angle(points[a], points[b], points[c], points[d])) > 4:
+                    issues.append(f'{a}{b} 與 {c}{d} 都標了平行記號，但方向不平行')
+    if len(points) == 3:
+        first, second, third = [points[p['name']] for p in spec['points']]
+        area = abs((second[0] - first[0]) * (third[1] - first[1])
+                   - (third[0] - first[0]) * (second[1] - first[1])) / 2
+        longest = max(math.dist(first, second), math.dist(second, third), math.dist(third, first))
+        if longest > 1e-9 and area / (longest * longest) < 1e-3:
+            issues.append('三個頂點幾乎排成一直線，圖形會退化成線段')
+    for given in spec['givens']:
+        key = re.sub(r'[\s]', '', given['key']).replace('∠', '').replace('角', '').upper()
+        angle_key = re.fullmatch(r'([A-Z])([A-Z])([A-Z])', key)
+        side_key = re.fullmatch(r'([A-Z])([A-Z])', key)
+        if angle_key:
+            vertex, first, third = angle_key.group(2), angle_key.group(1), angle_key.group(3)
+            degrees = _degrees(given['value'])
+            if degrees is None or {vertex, first, third} - set(points):
+                continue
+            actual = _angle_at(points, vertex, first, third)
+            if actual is not None and abs(actual - degrees) > 3:
+                issues.append(f'題目說 ∠{first}{vertex}{third} = {given["value"]}，'
+                              f'但規格畫出來是 {actual:.0f} 度')
+        elif side_key:
+            first, second = side_key.group(1), side_key.group(2)
+            length = _length_value(given['value'])
+            if length is None or first not in points or second not in points:
+                continue
+            actual = math.dist(points[first], points[second])
+            if abs(actual - length) / length > 0.05:
+                issues.append(f'題目說 {key} = {given["value"]}，'
+                              f'但規格裡兩點的距離是 {actual:g}')
+    return issues[:FIGURE_MAX_ISSUES]
+
+
+def _reading(block):
+    if not isinstance(block, dict):
+        return None
+    shape = block.get('shape')
+    shape = shape.strip()[:60] if isinstance(shape, str) else ''
+    values = []
+    for item in _items(block.get('values'), 40):
+        if not isinstance(item, dict):
+            continue
+        key, value = item.get('key'), item.get('value')
+        if isinstance(key, str) and key.strip() and value is not None:
+            values.append({'key': key.strip()[:20], 'value': str(value).strip()[:24]})
+    return {'shape': shape, 'values': values,
+            'marks': _as_str_list(block.get('marks'), 12, 40)}
+
+
+def figure_read(result):
+    """整理反向謄寫的結果；圖形那側完全讀不出東西時回 None（視為核對失敗）。"""
+    if not isinstance(result, dict):
+        return None
+    figure, question = _reading(result.get('figure')), _reading(result.get('question'))
+    if figure is None or question is None:
+        return None
+    if not (figure['shape'] or figure['values'] or figure['marks']):
+        return None
+    return {'figure': figure, 'question': question}
+
+
+FIGURE_SHAPE_WORDS = ('直角', '等腰', '等邊', '正三角形', '正方形', '長方形', '矩形',
+                      '平行四邊形', '菱形', '梯形', '圓', '半圓', '扇形', '坐標', '座標',
+                      '向量', '立體', '正方體', '長方體', '圓柱', '圓錐', '球')
+
+
+def _norm_key(value):
+    return re.sub(r'[\s·.]', '', str(value)).replace('∠', '').replace('角', '').upper()
+
+
+def _norm_value(value):
+    out = str(value).strip().lower().replace(' ', '').replace('°', '').replace('度', '')
+    return out.replace('，', ',').replace('（', '(').replace('）', ')')
+
+
+def _numbers(value):
+    return [float(v) for v in re.findall(r'\d+(?:\.\d+)?', str(value))]
+
+
+def _values_differ(one, other):
+    left, right = _numbers(one), _numbers(other)
+    if left and right:
+        if len(left) != len(right):
+            return True
+        return any(abs(a - b) > max(0.01, 0.01 * max(abs(a), abs(b))) for a, b in zip(left, right))
+    return _norm_value(one) != _norm_value(other)
+
+
+def compare_readings(reading):
+    """比對「題目說的」與「圖上畫的」，差異由程式算出來，教師看得懂也追得到。"""
+    question, figure = reading['question'], reading['figure']
+    issues = []
+    shape = figure['shape']
+    for word in FIGURE_SHAPE_WORDS:
+        if word in question['shape'] and word not in shape:
+            issues.append(f'題目是「{question["shape"]}」，圖上畫成「{shape or "看不出類型"}」')
+            break
+    values = {_norm_key(v['key']): v for v in figure['values']}
+    for item in question['values']:
+        key = _norm_key(item['key'])
+        if not key:
+            continue
+        other = values.get(key)
+        if other is None:
+            if re.fullmatch(r'[A-Z]{2}|[A-Z]{3}', key) and _numbers(item['value']):
+                issues.append(f'題目有 {item["key"]} = {item["value"]}，圖上找不到這個標示')
+            continue
+        if _values_differ(item['value'], other['value']):
+            issues.append(f'{item["key"]}：題目是 {item["value"]}，圖上卻是 {other["value"]}')
+    figure_marks = ' '.join(figure['marks'])
+    for word in ('直角', '等長', '平行', '虛線'):
+        if word in ' '.join(question['marks']) and word not in figure_marks:
+            issues.append(f'題目提到「{word}」，圖上沒有對應的記號')
+    issues = issues[:FIGURE_MAX_ISSUES]
+    advice = ('請依下列不符之處重畫：' + '；'.join(issues) + '。') if issues else ''
+    return issues, advice
+
+
 def ai_figure_check(app, body):
-    """用視覺模型核對「題目 ↔ 圖形」是否相符；回報問題與修正指示，供教師決定是否重畫。"""
+    """核對圖形：請視覺模型分別讀出「圖上畫的」與「題目說的」，再由程式逐項比對。
+
+    不問模型「這張圖對不對」——它會客套地說對；改成要它先觀察、再由程式下判斷。
+    """
     if not app.ai.configured or not app.ai.vision:
         fail(409, '核對圖形需要視覺模型；請先在「設定與隱私」設定視覺模型，或自行核對圖形。')
     content = text(body['content'], '題目內容')
     title = text(body.get('title', ''), '題目標題', 200, empty=True)
-    image, _mime = validate_image(body['image'])
+    validate_image(body['image'])
     app.ai.consent(body.get('consentExternal'))
-    result = app.ai.call(FIGURE_CHECK_INSTRUCTION, {'question': {'title': title, 'content': content}},
+    result = app.ai.call(FIGURE_READ_INSTRUCTION, {'question': {'title': title, 'content': content}},
                          image=body['image'], model=app.ai.vision)
-    try:
-        fields(result, ('ok', 'issues', 'advice'), ('ok',))
-        if type(result['ok']) is not bool:
-            raise ValueError()
-        raw_issues = result.get('issues')
-        issues = ([text(v, '核對問題', 200, empty=False) for v in raw_issues][:6]
-                  if isinstance(raw_issues, list) else [])
-        advice = text(result.get('advice', ''), '修正指示', 600, empty=True)
-    except (APIError, ValueError, KeyError, TypeError):
+    reading = figure_read(result)
+    if reading is None:
         fail(502, 'AI 核對沒有回傳可用的結果，請再試一次。')
-    if result['ok'] and issues:
-        # 模型自己說沒問題卻又列出問題時，以有問題為準，避免教師被誤導。
-        result_ok = False
-    else:
-        result_ok = result['ok']
-    return {'ok': result_ok, 'issues': issues, 'advice': advice, 'method': 'AI 核對'}
+    issues, advice = compare_readings(reading)
+    return {'ok': not issues, 'issues': issues, 'advice': advice,
+            'question': reading['question'], 'figure': reading['figure'], 'method': 'AI 核對'}
 
 
 def ai_figure_draft(app, body):
-    """請 AI 依題目內容畫出圖形；只回傳消毒過的 SVG，由前端轉成圖形後交給教師核驗。"""
+    """請 AI 先輸出圖形規格，再由程式畫成 SVG；畫完用幾何本身檢查，有問題就自動重畫。
+
+    規格比 SVG 小得多，重畫的成本低，所以可以多試幾次，並保留問題最少的那一版。
+    """
     if not app.ai.configured:
         fail(409, '尚未設定 AI 模型；請先設定模型端點，或自行上傳題目圖形。')
     content = text(body['content'], '題目內容')
@@ -720,29 +1408,45 @@ def ai_figure_draft(app, body):
         fail(422, f'「{topic or "未分類"}」不是幾何或向量題材，AI 不會為它畫圖（避免畫出與題目無關的圖）；'
                   '如仍需要附圖，請用「手動插入圖片」。')
     raw_issues = body.get('issues')
-    issues = ([text(v, '核對問題', 200, empty=False) for v in raw_issues][:6]
+    issues = ([text(v, '核對問題', 200, empty=False) for v in raw_issues][:FIGURE_MAX_ISSUES]
               if isinstance(raw_issues, list) else [])
     app.ai.consent(body.get('consentExternal'))
-    instruction = FIGURE_INSTRUCTION
-    if issues:
-        # 上一版被核對出問題：把問題原文交給模型，要求這次務必修正。
-        instruction += ('上一版的圖形經核對後有以下不符之處，這次一定要全部修正，'
-                        '並再次確認所有標註與題目一致：' + '；'.join(issues) + '。')
-    result = app.ai.call(instruction, {'question': {'title': title, 'content': content,
-                                                    'topic': topic, 'subtopic': subtopic, 'qtype': qtype}})
-    try:
-        fields(result, ('svg',), ('svg',))
-    except (APIError, ValueError, KeyError, TypeError):
+    payload = {'question': {'title': title, 'content': content, 'topic': topic,
+                            'subtopic': subtopic, 'qtype': qtype}}
+    best, rounds = None, 0
+    for index in range(FIGURE_SPEC_ATTEMPTS):
+        instruction = FIGURE_SPEC_INSTRUCTION
+        if issues:
+            instruction += ('上一版圖形經檢查後有以下問題，這次一定要全部修正：'
+                            + '；'.join(issues) + '。')
+        result = app.ai.call(instruction, payload, temperature=0.3)
+        rounds = index + 1
+        if isinstance(result, dict) and result.get('needed') is False:
+            if best is None:
+                fail(422, 'AI 判斷這道題不需要圖形；如需附圖，請自行上傳或貼上圖片。')
+            break
+        spec = figure_spec(result)
+        if spec is None:
+            issues = ['上一版沒有回傳可用的圖形規格，請務必只回傳規定格式的 JSON。']
+            continue
+        svg = sanitize_svg(render_spec_svg(spec))
+        if svg is None:
+            issues = ['上一版規格畫不出合法的圖形，請檢查座標與元素是否合法。']
+            continue
+        problems = verify_spec(spec)
+        if best is None or len(problems) < len(best['issues']):
+            best = {'svg': svg, 'spec': spec, 'issues': problems}
+        if not problems:
+            break
+        issues = problems
+    if best is None:
         fail(502, 'AI 沒有產生可用的圖形，請再試一次或自行上傳圖片。')
-    if not isinstance(result['svg'], str):
-        fail(502, 'AI 沒有產生可用的圖形，請再試一次或自行上傳圖片。')
-    if not result['svg'].strip():
-        fail(422, 'AI 判斷這道題不需要圖形；如需附圖，請自行上傳或貼上圖片。')
-    svg = sanitize_svg(result['svg'])
-    if svg is None:
-        fail(502, 'AI 產生的圖形格式不完整（只接受純幾何的 SVG），請再試一次。')
-    return {'svg': svg, 'method': 'AI 生成',
-            'notice': '這是 AI 依題目內容畫的圖形草稿，請核對數據與標註後再決定是否使用。'}
+    notice = '這是 AI 依題目內容畫的圖形草稿，請核對數據與標註後再決定是否使用。'
+    if best['issues']:
+        notice = ('AI 畫好後自動檢查仍有以下疑慮，請務必人工核對：'
+                  + '；'.join(best['issues']) + '。')
+    return {'svg': best['svg'], 'spec': best['spec'], 'issues': best['issues'],
+            'rounds': rounds, 'method': 'AI 生成', 'notice': notice}
 
 
 def ai_answer_draft(app, body):
@@ -3084,7 +3788,7 @@ class Application:
                 fail(400, '外部上傳同意必須是布林值。')
             return ai_answer_draft(self, body), headers
         if method == 'POST' and path == '/api/questions/ai-figure':
-            # 教師：依題目內容請 AI 畫出圖形（回傳已消毒的 SVG，由前端轉成圖片）。
+            # 教師：請 AI 先輸出圖形規格，再由程式畫成 SVG（附規格與自動檢查結果）。
             self.teacher(user)
             fields(body, ('title', 'content', 'topic', 'subtopic', 'qtype', 'issues', 'consentExternal'),
                    ('content',))
@@ -3094,7 +3798,7 @@ class Application:
                 fail(400, 'issues 必須是文字清單。')
             return ai_figure_draft(self, body), headers
         if method == 'POST' and path == '/api/questions/ai-figure-check':
-            # 教師：用視覺模型核對「題目 ↔ 圖形」是否相符（題圖互相核對）。
+            # 教師：反向謄寫核對（模型分別讀題目與圖形，程式再比對差異）。
             self.teacher(user)
             fields(body, ('title', 'content', 'image', 'consentExternal'), ('content', 'image'))
             if 'consentExternal' in body and type(body['consentExternal']) is not bool:
