@@ -1667,9 +1667,8 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   assert.ok(await page.evaluate(()=>{const c=figStudio.sketch.strokes[4];
     return Math.hypot(c.points[1].x-c.points[0].x,c.points[1].y-c.points[0].y)>40;}),'圓要有實際半徑');
   // 點名稱：選了才出現輸入框，放完自動換下一個字母
-  assert.equal(await page.locator('#fig-studio-label-field').isHidden(),true,'沒選點名稱時不顯示輸入框');
+  assert.equal(await page.locator('#fig-studio-label-field').isVisible(),true,'點名稱與字級欄位固定顯示');
   await page.locator('#fig-studio-toolbar [data-tool=label]').click();
-  await page.waitForFunction(()=>!document.querySelector('#fig-studio-label-field').hidden);
   assert.equal(await page.locator('#fig-studio-label-text').inputValue(),'A','預設要放 A');
   const lbox=await sketchBox();
   const l0=at(lbox,0.15,0.20),l1=at(lbox,0.30,0.35);
@@ -1678,9 +1677,56 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   assert.deepEqual(await page.evaluate(()=>figStudio.sketch.strokes.filter(x=>x.type==='label').map(x=>x.text)),
     ['A','B'],'放完 A 要自動換 B');
   assert.equal(await page.locator('#fig-studio-label-text').inputValue(),'C','連續放第三個要換 C');
+  const labelBefore=await page.evaluate(()=>{const l=figStudio.sketch.strokes.filter(x=>x.type==='label')[0];
+    return {x:l.points[0].x,y:l.points[0].y,size:l.size};});
+  assert.equal(labelBefore.size,26,'新放的點名稱要有預設字級');
+  // 選擇工具：點一下選取、拖曳移動整項
+  await page.locator('#fig-studio-toolbar [data-tool=select]').click();
+  assert.equal(await page.locator('#fig-studio-label-field').isVisible(),true,'點名稱與字級欄位要固定顯示，工具列才不會跳動');
+  const mv1=await sketchBox();
+  await page.mouse.click(at(mv1,0.15,0.20)[0],at(mv1,0.15,0.20)[1]);
+  assert.equal(await page.evaluate(()=>figStudio.sketch.selected?figStudio.sketch.selected.type:null),'label','點到點名稱要選取它');
+  assert.equal(await page.locator('#fig-studio-label-text').inputValue(),'A','選到點名稱時欄位要顯示它的名字');
+  assert.equal(await page.locator('#fig-studio-label-size').inputValue(),'26','選到點名稱時字級要顯示它的字級');
+  // 點按鈕或截圖都可能捲動頁面，拖曳前重新量一次畫布位置。
+  const mv1b=await sketchBox();
+  const m0=at(mv1b,0.15,0.20),m1=at(mv1b,0.28,0.20);
+  await page.mouse.move(m0[0],m0[1]);await page.mouse.down();
+  await page.mouse.move(m1[0],m1[1],{steps:6});await page.mouse.up();
+  const labelAfter=await page.evaluate(()=>{const l=figStudio.sketch.strokes.filter(x=>x.type==='label')[0];
+    return {x:l.points[0].x,y:l.points[0].y};});
+  // 畫布會被縮放，所以位移要換算回畫布座標（0.13 × 900）。
+  assert.ok(Math.abs(labelAfter.x-labelBefore.x-0.13*900)<5,'拖曳要水平移動整個點名稱');
+  assert.ok(Math.abs(labelAfter.y-labelBefore.y)<2,'拖曳不應影響另一個軸');
+  // 字級滑桿：選取中的點名稱要跟著變，之後新放的也用新字級
+  await page.locator('#fig-studio-label-size').evaluate(el=>{el.value='40';el.dispatchEvent(new Event('input',{bubbles:true}));});
+  assert.equal(await page.evaluate(()=>figStudio.sketch.selected.size),40,'改字級要套用到選取的點名稱');
+  assert.equal(await page.locator('#fig-studio-label-size-value').innerText(),'40','字級數值要同步顯示');
+  assert.equal(await page.evaluate(()=>figStudio.sketch.labelSize),40,'新放的點名稱也要用新字級');
+  // Delete 刪掉選取中的圖形
+  await page.locator('#fig-studio-canvas').focus();
+  await page.keyboard.press('Delete');
+  assert.equal(await page.evaluate(()=>figStudio.sketch.strokes.filter(x=>x.type==='label').length),1,'Delete 要刪掉選取的點名稱');
+  assert.equal(await page.evaluate(()=>figStudio.sketch.selected),null,'刪除後要取消選取');
+  // 直線也能選取並整條拖曳；點空白處要取消選取
+  const lineBefore=await page.evaluate(()=>{const l=figStudio.sketch.strokes.find(x=>x.type==='line');return {y:l.points[0].y};});
+  const mv2=await sketchBox();
+  await page.mouse.click(at(mv2,0.25,0.78)[0],at(mv2,0.25,0.78)[1]);
+  assert.equal(await page.evaluate(()=>figStudio.sketch.selected?figStudio.sketch.selected.type:null),'line','點到直線要選取它');
+  const mv2b=await sketchBox();
+  const g0=at(mv2b,0.25,0.78),g1=at(mv2b,0.25,0.88);
+  await page.mouse.move(g0[0],g0[1]);await page.mouse.down();
+  await page.mouse.move(g1[0],g1[1],{steps:6});await page.mouse.up();
+  const lineAfter=await page.evaluate(()=>{const l=figStudio.sketch.strokes.find(x=>x.type==='line');return {y:l.points[0].y};});
+  // 畫布是 900×420，垂直位移要用高度換算（0.10 × 420）。
+  assert.ok(Math.abs(lineAfter.y-lineBefore.y-0.10*420)<5,'拖曳要垂直移動整條直線');
+  const mv3=await sketchBox();
+  await page.mouse.click(mv3.x+mv3.width*0.93,mv3.y+mv3.height*0.07);
+  assert.equal(await page.evaluate(()=>figStudio.sketch.selected),null,'點空白處要取消選取');
   await page.screenshot({path:path.join(__dirname,'..','MathPath-教師手繪圖形.png'),fullPage:true});
+  const countBefore=await page.evaluate(()=>figStudio.sketch.strokes.length);
   await page.locator('#fig-studio-undo').click();
-  assert.equal(await page.evaluate(()=>figStudio.sketch.strokes.length),6,'撤銷要拿掉最後一筆（點名稱）');
+  assert.equal(await page.evaluate(()=>figStudio.sketch.strokes.length),countBefore-1,'撤銷要拿掉最後一筆');
   await page.locator('#fig-studio-clear').click();
   assert.equal(await page.evaluate(()=>figStudio.sketch.strokes.length),0,'清除要清空畫布');
   await page.locator('#fig-sketch-apply').click();
