@@ -662,6 +662,8 @@ const preview = [
 let S={user:null,questions:preview,attempts:[],stats:{completed:0,accuracy:0,streak:0,minutes:0},ai:{configured:false,mode:'off'},notice:''};
 let page='bank', topic='全部題目', subtopic='', search='', grade='', level='', qtype='', currentPage=1, viewMode='list', currentQuestion=null, recommendations=null, answerMode='hand', lastResult=null, lastSolution=null;
 let importStage=1, drafts=[], importMethod='', paperFile=null, paperName='', paperText='', figStrokes=[], figTool='pen', figDrawing=null, figImage=null, historyFilter='all';
+// 題目圖形工作室的狀態；關閉視窗時要一起清掉（見 closeModal）。
+let figStudio=null;
 // 自主練習的範圍：先選章節（主分類／子分類）與題型，再開始練習。
 let practiceRange={topic:'',subtopic:'',qtype:''};
 let toastTimer, serverOnline=false, busy=false, answerFile=null, selectedOption=null;
@@ -861,7 +863,7 @@ function modal(html,large=false,dismiss=true){
     else if(!e.shiftKey&&(active===last||!focusable.includes(active))){e.preventDefault();first.focus();}
   };
 }
-function closeModal(){const prev=modalReturnFocus;modalReturnFocus=null;$('#modal-root').innerHTML='';$('#modal-root').onkeydown=null;if(prev?.isConnected)prev.focus();else $('#main').focus();}
+function closeModal(){const prev=modalReturnFocus;modalReturnFocus=null;figStudio=null;$('#modal-root').innerHTML='';$('#modal-root').onkeydown=null;if(prev?.isConnected)prev.focus();else $('#main').focus();}
 function loginModal(after){const lastUser=(()=>{try{return localStorage.getItem('mathpath_last_user')||''}catch(_){return ''}})();modal(`<div class="login-brand"><span class="brand-symbol">m<span>↗</span></span>MathPath</div><h2>登入學習空間</h2><p class="modal-intro">先選擇身分，再輸入密碼。系統會記住你的帳戶，下次開啟不必重新輸入。</p><div class="role-cards"><button type="button" data-role="student" class="role-card active"><span class="role-card-icon">${icon('practice')}</span><strong>學生</strong><small>領取作業、手寫或打字解題、查看自己的分數與建議</small></button><button type="button" data-role="teacher" class="role-card"><span class="role-card-icon">${icon('import')}</span><strong>教師</strong><small>佈置作業與測驗、批閱、查看全班成績</small></button></div><form id="login-form"><div class="form-field"><label class="field-label" for="username">校內帳戶</label><input id="username" name="username" autocomplete="username" value="${esc(lastUser||'student')}" required maxlength="64">${lastUser?`<p class="field-hint login-remembered">已記住上次登入的帳戶：<strong>${esc(lastUser)}</strong></p>`:''}</div><div class="form-field"><label class="field-label" for="password">密碼</label><input id="password" type="password" name="password" autocomplete="current-password" placeholder="輸入帳戶密碼" required maxlength="256"></div><label class="checkbox-line remember-line login-remember"><input type="checkbox" id="remember" checked><span><strong>記住我（30 天）</strong><small>下次開啟不必重新登入；公用電腦請取消勾選。</small></span></label><p class="error-text" id="login-error"></p><button type="submit" class="primary wide login-submit">登入學習空間 ${icon('arrow')}</button></form><div class="demo-accounts">本地演示帳戶<br>學生：student / Math1234!<br>教師：teacher / Teach1234!<br>校內正式使用前，請先更換演示密碼。</div>`);$$('[data-role]').forEach(b=>b.onclick=()=>{$$('[data-role]').forEach(x=>x.classList.toggle('active',x===b));$('#username').value=b.dataset.role;$('#password').value='';$('#password').focus();});$$('[data-role]').forEach(x=>x.classList.toggle('active',x.dataset.role===(lastUser==='teacher'?'teacher':'student')));$('#login-form').onsubmit=async e=>{e.preventDefault();const btn=$('button[type="submit"]',e.target);btn.disabled=true;$('#login-error').textContent='';const uname=$('#username').value;try{await api('/api/login',{username:uname,password:$('#password').value,remember:$('#remember').checked});try{localStorage.setItem('mathpath_last_user',uname);}catch(_){}await refresh();closeModal();toast('已登入，學習紀錄已準備就緒。');if(after)after();else navigate(page);}catch(err){$('#login-error').textContent=err.message;}finally{btn.disabled=false;}};if(serverIssue){const box=$('#login-error');if(box)box.textContent=serverIssue;}}
 function accountModal(){if(!S.user)return loginModal();modal(`<h2>${esc(S.user.name)}</h2><p class="modal-intro">${S.user.role==='teacher'?'教師工作空間':'中三數學學習空間'} · 資料保存在網站伺服器；實際位置由管理員確認</p>${S.notice?`<div class="import-warning">${esc(S.notice)}</div>`:''}<div class="result-actions"><button class="secondary" id="password-link">${icon('lock')}更換密碼</button><button class="secondary" id="logout-btn">${icon('logout')}登出</button></div>`);$('#password-link').onclick=()=>{closeModal();navigate('settings');};$('#logout-btn').onclick=async()=>{beginView();stopQuizClock();pendingQuizSubmission=null;quizDeadlines.clear();try{await api('/api/logout',{});clearUserDrafts(S.user.id);S={user:null,questions:preview,attempts:[],stats:{completed:0,accuracy:0,streak:0,minutes:0},ai:{configured:false,mode:'off'}};strokes=[];answerFile=null;lastResult=null;lastSolution=null;currentQuestion=null;assignmentContext=null;assignmentDetail=null;HW=null;resultData=null;closeModal();loadBookmarks();homeworkPage();toast('已登出。');}catch(e){toast(e.message);}};}
 async function openQuestion(id){if(busy)return toast('正在保存作答，請等待完成。');preserveDraft();if(!S.user){loginModal(()=>openQuestion(id));return;}const q=S.questions.find(q=>q.id===Number(id));if(!q)return toast('找不到題目，請重新整理題庫。');if(currentQuestion&&currentQuestion.id!==q.id&&strokes.length&&!lastResult&&!confirm('目前手寫內容尚未提交，確定切換題目？'))return;assignmentContext=null;mockContext=null;currentQuestion=q;lastResult=null;lastSolution=null;answerMode=(q.options&&q.options.length)?'choice':'hand';answerFile=null;selectedOption=null;window.answerTextDraft='';strokes=[];redoStrokes=[];recommendations=null;stopQuizClock();practice();const target=viewTarget();try{const rec=await api(`/api/questions/${q.id}/recommendations`);if(viewMatches(target)){recommendations=rec;renderRecommendations();}}catch(e){if(viewMatches(target))toast(e.message);}}
@@ -1197,7 +1199,6 @@ async function aiFigureData(payload,btn){
 // 有問題就依核對結果重畫，或隨時手動插入自己的圖片。所有變更都留在這裡，
 // 按「使用這張圖形」才會寫回題目。
 const FIGURE_TOPICS=['幾何','三角形','四邊形與多邊形','圓','立體圖形','三角學','坐標幾何','軌跡與幾何證明','向量'];
-let figStudio=null;
 
 function figureNeeded(topic){return FIGURE_TOPICS.includes(topic);}
 // 外部模型要先取得同意；核對與生成都會把題目內容（及圖形）送出。
@@ -1228,7 +1229,7 @@ function renderFigureStudio(){
     <button class="secondary" id="fig-draw" ${canDraw&&!busy?'':'disabled'} title="${canDraw?'':'只有幾何與向量題材會用 AI 畫圖'}">${icon('spark')}${busy==='draw'?'正在畫圖…':(figure?'重新生成圖形':'AI 生成圖形')}</button>
     <button class="secondary" id="fig-check" ${canCheck&&!busy?'':'disabled'} title="${S.ai.vision?'':'尚未設定視覺模型，無法自動核對'}">${icon('search')}${busy==='check'?'核對中…':'核對題目與圖形'}</button>
     ${needFix?`<button class="secondary" id="fig-fix" ${busy?'disabled':''}>${icon('spark')}依核對結果重畫</button>`:''}
-    <label class="secondary fig-manual-btn">${icon('image')}手動插入圖片<input type="file" id="fig-manual" accept="image/*" hidden></label>
+    <button type="button" class="secondary" id="fig-manual-btn">${icon('image')}手動插入圖片</button><input type="file" id="fig-manual" accept="image/png,image/jpeg,image/webp" hidden>
     ${figure?`<button class="secondary" id="fig-clear">移除圖形</button>`:''}
   </div>
   ${canDraw?'':'<p class="field-hint">這道題的分類「'+esc(ctx.topic||'未分類')+'」不是幾何或向量題材，AI 不會為它畫圖（避免畫出與題目無關的圖）；如仍需要附圖，請用「手動插入圖片」。</p>'}
@@ -1240,9 +1241,18 @@ function renderFigureStudio(){
   const fix=$('#fig-fix');if(fix)fix.onclick=()=>drawFigureInStudio(true);
   const clr=$('#fig-clear');if(clr)clr.onclick=()=>{figStudio.figure='';figStudio.check=null;renderFigureStudio();};
   const manual=$('#fig-manual');
+  $('#fig-manual-btn').onclick=()=>manual&&manual.click();
   if(manual)manual.onchange=async e=>{
     const f=e.target.files[0];
+    // 清掉 value，同一個檔案再選一次才會再觸發 change。
+    e.target.value='';
     if(!f)return;
+    if(!/^image\/(png|jpeg|webp)$/.test(f.type)){
+      return toast('請選擇 PNG、JPG 或 WebP 圖片；iPhone 的 HEIC 相片請先轉成 JPG，或直接截圖後貼上。');
+    }
+    if(f.size>12*1024*1024){
+      return toast('圖片不可超過 12 MB；手機相片可先裁剪，或直接截圖後貼上。');
+    }
     try{figStudio.figure=await fitFigureImage(f);figStudio.check=null;figStudio.manual=true;renderFigureStudio();toast('已插入圖片，可再按「核對題目與圖形」。');}
     catch(err){toast(err.message);}
   };
@@ -1289,7 +1299,9 @@ async function checkFigureInStudio(){
 
 // 工作室開著時，直接貼上截圖即可作為題目圖形。
 document.addEventListener('paste',async e=>{
-  if(!figStudio)return;
+  // 除了狀態，再用 DOM 確認工作室真的開著：視窗被關掉時不可接手貼上，
+  // 否則會把圖形塞進已經關閉的工作室、甚至把視窗叫回來。
+  if(!figStudio||!$('#fig-manual'))return;
   const item=[...(e.clipboardData?.items||[])].find(it=>it.type&&it.type.startsWith('image/'));
   if(!item)return;
   const file=item.getAsFile();

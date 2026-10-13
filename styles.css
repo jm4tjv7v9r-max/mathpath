@@ -314,7 +314,6 @@ button.danger:disabled{opacity:.6}
 .fig-empty{color:#9dae9f;font-size:calc(14px*var(--fs))}
 .fig-actions{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:12px}
 .fig-actions .secondary{font-size:calc(14px*var(--fs));padding:9px 13px}
-.fig-manual-btn{display:inline-flex;align-items:center;gap:7px;cursor:pointer;font-size:calc(14px*var(--fs))}
 .fig-check{display:flex;gap:10px;align-items:flex-start;border-radius:8px;padding:11px 13px;margin-bottom:12px;font-size:calc(14px*var(--fs));line-height:1.75}
 .fig-check strong{display:block;margin-bottom:2px}
 .fig-check small{display:block;margin-top:5px;opacity:.85}
