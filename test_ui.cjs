@@ -44,7 +44,7 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   const mockExam=()=>({id:7,topic:mockStarted&&mockStarted.topic||'幾何',level:null,qtype:'解答題',minutes:mockStarted?mockStarted.minutes:15,questionCount:1,createdAt:stamp,startedAt:stamp,expiresAt:mockDeadline,submittedAt:mockState&&mockState.submitted?stamp:null,expired:false,status:mockState&&mockState.submitted?'submitted':'in_progress',remainingSeconds:mockState&&mockState.submitted?0:(mockStarted?mockStarted.minutes*60:900)});
   const mockReport=()=>({score:5,maxScore:5,percent:100,totalScoredPoints:5,pendingCount:0,confirmedScore:null,confirmedCount:0,aiScore:null,ruleScore:5,topicStats:[{topic:'幾何',scoredCount:1,totalCount:1,score:5,maxScore:5,percent:100}],suggestion:advice,answeredCount:1});
   let quizStarted=false,quizSubmitted=false,quizStartSeen=0,durationSent=null;
-  let reviewSent=null,aiReviewSent=null,bulkSent=null,resetSent=null,vacuumCalled=0;
+  let reviewSent=null,aiReviewSent=null,bulkSent=null,resetSent=null,vacuumCalled=0,backupCalled=0;
   let editSent=null;const restoreSent={};let aiGenerated=null;
   const quizReport=()=>({score:quizSubmitted?6:null,maxScore:6,totalScoredPoints:quizSubmitted?6:0,pendingCount:0,confirmedScore:null,confirmedCount:0,gradedCount:quizSubmitted?1:0,questionCount:1,percent:quizSubmitted?100:null,aiScore:null,ruleScore:quizSubmitted?6:null,topicStats:[],suggestion:advice});
   const quizSub=()=>({status:quizSubmitted?'submitted':'not_started',submittedAt:quizSubmitted?stamp:null,resubmittedAt:null,submitCount:quizSubmitted?1:0,late:false,correction:null,startedAt:quizStarted?stamp:null,expiresAt:quizStarted?quizDeadline:null,remainingSeconds:quizStarted?1800:null,timeUsedSeconds:quizStarted?0:null,expired:false});
@@ -114,7 +114,15 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
     else if(url.pathname==='/api/admin/restore/questions'){restoreSent.questions={replace:url.searchParams.get('replace'),bytes:route.request().postDataBuffer().length};return route.fulfill({json:{inserted:3,skipped:13,mapped:16,total:16,replaced:url.searchParams.get('replace')==='1',notice:'已保留原編號'}});}
     else if(url.pathname==='/api/admin/restore/students'){restoreSent.students={password:url.searchParams.get('password'),bytes:route.request().postDataBuffer().length};return route.fulfill({json:{written:{student:2,class:1,assignment:1,attempt:1},skipped:{},credentials:[{username:'s3a01',name:'s3a01',seat:'1',password:'FjdatfcsXnig',generated:false}],usedSharedPassword:true,unreadableImages:0,questionMapApplied:true,notice:'歸檔不含密碼'}});}
     else if(url.pathname==='/api/admin/restore/db'){restoreSent.db={bytes:route.request().postDataBuffer().length};return route.fulfill({json:{restored:true,keptPreviousAs:'mathpath.replaced-test.sqlite3',counts:{questions:3000,attempts:2500,users:100},notice:'已用備份取代資料庫'}});}
-    else if(url.pathname==='/api/admin/storage')data={database:{bytes:15728640,reclaimableBytes:1048576,walBytes:32768},counts:{questions:3000,attempts:2500,users:100,classes:3,assignments:5,mock_exams:0,calendar_notes:0,sessions:12},images:{handwriting:1500,annotation:300,questionFigure:40,inDatabaseBytes:45088768,inObjectStorage:0,storageMode:'db'},lastStudentReset:null,questionBankKeptAcrossYears:true};
+    else if(url.pathname==='/api/admin/storage')data={database:{bytes:15728640,reclaimableBytes:1048576,walBytes:32768},counts:{questions:3000,attempts:2500,users:100,classes:3,assignments:5,mock_exams:0,calendar_notes:0,sessions:12},images:{handwriting:1500,annotation:300,questionFigure:40,inDatabaseBytes:45088768,inObjectStorage:0,storageMode:'db'},lastStudentReset:null,questionBankKeptAcrossYears:true,backup:{storageMode:'db',configured:false,error:'',keep:14,count:0,lastAt:null,lastBytes:null,lastTrigger:null,lastFiles:[],intervalHours:0,history:[]}};
+    else if(url.pathname==='/api/admin/backup/upload'){backupCalled++;
+      return route.fulfill({json:{entry:{at:stamp,stamp:'20261014-1630-ab12',trigger:'manual',bytes:156281,
+        files:[{kind:'db',name:'mathpath-db-20261014-1630-ab12.sqlite3',bytes:147456,key:'backups/mathpath-db-20261014-1630-ab12.sqlite3'},
+               {kind:'questions',name:'mathpath-questions-20261014-1630-ab12.json',bytes:8825,key:'backups/mathpath-questions-20261014-1630-ab12.json'}]},
+        kept:1,keep:14,pruned:0,
+        status:{storageMode:'r2',configured:true,error:'',keep:14,count:1,lastAt:stamp,lastBytes:156281,lastTrigger:'manual',
+          lastFiles:['mathpath-db-20261014-1630-ab12.sqlite3','mathpath-questions-20261014-1630-ab12.json'],intervalHours:6,
+          history:[{at:stamp,bytes:156281,trigger:'manual',files:['mathpath-db-20261014-1630-ab12.sqlite3','mathpath-questions-20261014-1630-ab12.json']}]}}});}
     else if(url.pathname==='/api/admin/vacuum'){vacuumCalled+=1;return route.fulfill({json:{beforeBytes:15728640,afterBytes:10485760,savedBytes:5242880,at:stamp}});}
     else if(url.pathname==='/api/admin/reset/students'){resetSent=route.request().postDataJSON();return route.fulfill({json:{removed:{students:100,attempts:2500,classes:3,assignments:5,sessions:12},at:stamp,kept:{questions:3000,teachers:1,notice:'題庫、教師帳號、內建演示帳號與日曆提醒都保留。'},vacuum:{beforeBytes:15728640,afterBytes:1048576,savedBytes:14680064,at:stamp}}});}
     else if(url.pathname==='/api/users/bulk'){bulkSent=route.request().postDataJSON();return route.fulfill({json:{count:bulkSent.students.length,users:bulkSent.students.map((st,i)=>({id:5+i,username:st.username,name:st.name||st.username,role:'student',seat:st.seat||null}))}});}
@@ -739,6 +747,26 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   const dangerText=await page.locator('.danger-zone').innerText();
   assert.match(dangerText,/學生帳號、班級、作業、所有作答與手寫圖、模擬測驗、訂正紀錄/);
   assert.match(dangerText,/題庫（3000 題）、教師帳號、內建演示帳號、日曆提醒/,'要明講題庫保留');
+  // 網盤備份：未設定時要講清楚要加哪四個環境變數，不可以假裝已備份
+  const backupZone=await page.locator('#admin-backup-zone').innerText();
+  assert.match(backupZone,/網盤備份/);
+  assert.match(backupZone,/R2_ACCOUNT_ID/,'未設定時要指出要加哪個環境變數');
+  assert.equal(await page.locator('#admin-backup-now').count(),0,'未設定網盤時不該出現備份按鈕');
+  // 換成已設定網盤的狀態：出現按鈕、按下去會上傳並更新狀態
+  await page.route('https://mathpath.test/**',route=>{const url=new URL(route.request().url());
+    if(url.pathname==='/api/admin/storage')return route.fulfill({json:{database:{bytes:15728640,reclaimableBytes:1048576,walBytes:32768},counts:{questions:3000,attempts:2500,users:100,classes:3,assignments:5,mock_exams:0,calendar_notes:0,sessions:12},images:{handwriting:1500,annotation:300,questionFigure:40,inDatabaseBytes:0,inObjectStorage:1840,storageMode:'r2'},lastStudentReset:null,questionBankKeptAcrossYears:true,backup:{storageMode:'r2',configured:true,error:'',keep:14,count:0,lastAt:null,lastBytes:null,lastTrigger:null,lastFiles:[],intervalHours:6,history:[]}}});
+    return route.fallback();});
+  await page.locator('#admin-refresh').click();
+  await page.waitForFunction(()=>document.querySelector('#admin-backup-now'));
+  const readyText=await page.locator('#admin-backup-zone').innerText();
+  assert.match(readyText,/尚未備份/,'還沒備份過要如實顯示');
+  assert.match(readyText,/每 6 小時/,'要顯示自動備份間隔');
+  await page.locator('#admin-backup-now').click();
+  await page.waitForFunction(()=>document.querySelector('#toast').textContent.includes('已備份到網盤'));
+  assert.equal(backupCalled,1,'備份按鈕應呼叫一次上傳端點');
+  const doneText=await page.locator('#admin-backup-zone').innerText();
+  assert.match(doneText,/保留份數/);assert.match(doneText,/1 \/ 14/,'要顯示已保留份數');
+  assert.match(doneText,/最近 1 次備份/,'要能展開看最近幾次備份');
   await page.locator('#admin-vacuum').click();
   await page.waitForFunction(()=>document.querySelector('#toast').textContent.includes('已壓實'));
   assert.equal(vacuumCalled,1,'壓實資料庫應呼叫一次');

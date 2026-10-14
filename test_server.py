@@ -2648,6 +2648,7 @@ class DataAdminTests(unittest.TestCase):
     def test_admin_endpoints_require_teacher(self):
         cases = [('GET', '/api/admin/storage', None),
                  ('POST', '/api/admin/vacuum', {}),
+                 ('POST', '/api/admin/backup/upload', {}),
                  ('POST', '/api/admin/reset/students', {'confirm': 'RESET'}),
                  ('GET', '/api/admin/backup/db', None),
                  ('GET', '/api/admin/archive/questions', None),
@@ -2663,6 +2664,98 @@ class DataAdminTests(unittest.TestCase):
                 self.request(method, path, body, cookie=None, expect=401)
         with self.app.db() as db:
             self.assertEqual(db.execute('SELECT count(*) FROM users').fetchone()[0], 2)
+
+    def fake_netdisk(self):
+        """把物件儲存換成記憶體版本，讓備份測試不必真的連 R2。"""
+        uploaded, deleted = {}, []
+        self.addCleanup(setattr, self.app.storage, 'mode', 'db')
+        self.app.storage.mode = 'r2'
+        self.app.storage.bucket = 'mathpath-test'
+
+        def put(folder, name, data, mime):
+            key = f'{folder}/{name}'
+            uploaded[key] = {'bytes': len(data), 'mime': mime, 'data': data}
+            return key
+
+        self.app.storage.put_object = put
+        self.app.storage.delete = lambda key: (deleted.append(key), True)[1]
+        return uploaded, deleted
+
+    def test_backup_to_netdisk_needs_storage_configured(self):
+        """沒設定網盤時要明確拒絕，不能假裝備份成功。"""
+        _, result, _ = self.request('POST', '/api/admin/backup/upload', {}, cookie=self.teacher, expect=409)
+        self.assertIn('網盤', result['error'])
+        _, stats, _ = self.request('GET', '/api/admin/storage', cookie=self.teacher, expect=200)
+        self.assertFalse(stats['backup']['configured'])
+        self.assertEqual(stats['backup']['count'], 0)
+
+    def test_backup_to_netdisk_uploads_db_and_question_bank(self):
+        """資料庫快照與題庫歸檔都要上網盤；題庫歸檔要能直接餵回題庫匯入。"""
+        self.scenario()                      # 先建立情境（手寫圖先走原本的資料庫後端）
+        uploaded, _ = self.fake_netdisk()
+        _, result, _ = self.request('POST', '/api/admin/backup/upload', {}, cookie=self.teacher, expect=200)
+        files = {f['kind']: f for f in result['entry']['files']}
+        self.assertEqual(set(files), {'db', 'questions'}, '備份要有資料庫快照與題庫歸檔')
+        self.assertTrue(files['db']['name'].endswith('.sqlite3'))
+        self.assertTrue(files['questions']['name'].endswith('.json'))
+        self.assertEqual(uploaded[files['db']['key']]['mime'], 'application/vnd.sqlite3')
+        self.assertEqual(uploaded[files['questions']['key']]['mime'], 'application/json')
+        archive = json.loads(uploaded[files['questions']['key']]['data'])
+        self.assertEqual(archive['format'], 'mathpath-question-archive')
+        self.assertGreaterEqual(archive['count'], 1)
+        self.assertEqual(len(archive['sourceIds']), len(archive['questions']))
+        # 快照要是一份可用的 SQLite 檔（檔頭正確、能開）
+        snapshot = uploaded[files['db']['key']]['data']
+        self.assertTrue(snapshot.startswith(b'SQLite format 3'))
+        # 狀態與紀錄
+        status = result['status']
+        self.assertTrue(status['configured'])
+        self.assertEqual(status['count'], 1)
+        self.assertEqual(status['lastTrigger'], 'manual')
+        self.assertTrue(status['lastAt'])
+        self.assertEqual([f for f in status['lastFiles']], [files['db']['name'], files['questions']['name']])
+
+    def test_backup_keeps_recent_runs_and_never_deletes_live_files(self):
+        """保留策略：超過上限就刪最舊的；檔名不得重用，否則會刪掉最新那份仍在引用的物件。"""
+        uploaded, deleted = self.fake_netdisk()
+        with patch.dict('os.environ', {'MATH_BACKUP_KEEP': '2'}):
+            for _ in range(4):
+                self.request('POST', '/api/admin/backup/upload', {}, cookie=self.teacher, expect=200)
+        with self.app.db() as db:
+            history = self.app.dataadmin.backup_history(db)
+        self.assertEqual(len(history), 2, '只保留最近 2 份')
+        self.assertEqual(len({x['stamp'] for x in history}), 2, '每次備份的檔名不可重複')
+        live = {f['key'] for x in history for f in x['files']}
+        self.assertEqual([k for k in deleted if k in live], [], '不可刪到仍在引用的物件')
+        self.assertEqual(len(deleted), 4, '被擠掉的 2 份 × 每份 2 個檔案')
+        self.assertEqual(len(uploaded), 8)
+
+    def test_backup_scheduler_gate_and_due(self):
+        """自動備份：預設關閉；設定間隔且已接網盤才會啟動，且只在上次備份逾期時才跑。"""
+        self.fake_netdisk()
+        with patch.dict('os.environ', {}, clear=True):
+            self.assertEqual(self.app.backup_interval_hours(), 0.0)
+            self.assertFalse(self.app.backup_due(), '沒設間隔就不該備份')
+            self.assertFalse(self.app.start_backup_scheduler(), '沒設間隔不啟動排程')
+            self.assertIsNone(self.app.backup_thread)
+        with patch.dict('os.environ', {'MATH_BACKUP_HOURS': '6'}):
+            self.assertEqual(self.app.backup_interval_hours(), 6.0)
+            self.assertTrue(self.app.backup_due(), '從來沒備份過就要補一次')
+            self.assertTrue(self.app.start_backup_scheduler())
+            self.assertTrue(self.app.backup_thread.is_alive())
+            self.assertFalse(self.app.start_backup_scheduler(), '不重複啟動')
+            self.app.stop_backup_scheduler()
+            self.assertIsNone(self.app.backup_thread)
+            # 備份過之後不該再備；把時間推回過去就該再備
+            self.app.stopping = False
+            self.request('POST', '/api/admin/backup/upload', {}, cookie=self.teacher, expect=200)
+            self.assertFalse(self.app.backup_due(), '剛備份過不該再備')
+            with self.app.db() as db:
+                history = self.app.dataadmin.backup_history(db)
+                history[0]['at'] = '2020-01-01T00:00:00Z'
+                db.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('backup_history',?)",
+                           (json.dumps(history, ensure_ascii=False),))
+            self.assertTrue(self.app.backup_due(), '逾期就要補備份')
 
     def test_storage_stats_and_vacuum(self):
         self.scenario()

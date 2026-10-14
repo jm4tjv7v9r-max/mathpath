@@ -470,3 +470,15 @@ button.danger:disabled{opacity:.6}
   .guide-art{max-width:200px;margin:0 auto;width:100%}
   .guide-tip-row{grid-template-columns:minmax(0,1fr);padding:0 16px 18px}
 }
+
+/* ══ 網盤備份（在「設定與隱私 → 資料管理」內） ══════════════════════
+   手寫圖與題目圖形在上傳當下就已進網盤；這一塊負責把資料庫快照與題庫歸檔
+   也送上去，並顯示最近幾次備份。 */
+.backup-zone{margin-top:18px;padding-top:16px;border-top:1px solid var(--border)}
+.backup-zone h3{display:flex;align-items:center;gap:8px;margin:0 0 6px;
+  font-size:calc(16px*var(--fs));font-weight:500;color:#2b4034}
+.backup-zone .metric-row{margin:14px 0 0}
+.backup-history{margin-top:14px}
+.backup-history summary{cursor:pointer;font-size:calc(14px*var(--fs));color:#3d5145}
+.backup-history ul{margin:10px 0 0;padding-left:18px;font-size:calc(13px*var(--fs));line-height:1.8;color:#5b6f63}
+.backup-history code{font-size:calc(12px*var(--fs));word-break:break-all}

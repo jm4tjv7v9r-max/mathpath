@@ -17,7 +17,11 @@ import secrets
 import shutil
 import sqlite3
 import tempfile
+import threading
 import time
+
+# 同一個程序內同時只允許一次備份（手動與排程共用），避免兩份快照互相覆蓋紀錄。
+BACKUP_LOCK = threading.Lock()
 
 ARCHIVE_VERSION = 1
 QUESTION_FORMAT = 'mathpath-question-archive'
@@ -121,6 +125,7 @@ class DataAdmin:
                        'storageMode': self.app.storage.mode},
             'lastStudentReset': self.meta_value(db, 'last_student_reset'),
             'questionBankKeptAcrossYears': True,
+            'backup': self.backup_status(db),
         }
 
     def wal_size(self):
@@ -199,6 +204,100 @@ class DataAdmin:
             destination.close()
             source.close()
         return directory, target
+
+    # ---------- 備份到物件儲存（網盤）----------
+    # 學生手寫圖、題目圖形、教師批註在「上傳當下」就已經存進網盤（storage.put）；
+    # 這裡補上另一半：資料庫快照（帳號、班級、作業、作答、分數、學習建議）與
+    # 題庫歸檔（可讀、可重新匯入）。兩者都上網盤後，就算伺服器整台消失，
+    # 也能只靠網盤還原。
+    def backup_history(self, db):
+        """最近幾次備份的紀錄（新到舊）。"""
+        try:
+            data = json.loads(self.meta_value(db, 'backup_history') or '[]')
+        except ValueError:
+            return []
+        return [x for x in data if isinstance(x, dict)][:200]
+
+    @staticmethod
+    def backup_keep():
+        """保留幾份備份；預設 14 份（約兩週每日一次），可用 MATH_BACKUP_KEEP 調整。"""
+        raw = (os.environ.get('MATH_BACKUP_KEEP', '') or '').strip()
+        try:
+            value = int(raw)
+        except ValueError:
+            return 14
+        return value if 1 <= value <= 365 else 14
+
+    def backup_to_storage(self, trigger='manual'):
+        """把資料庫快照與題庫歸檔上傳到網盤，並只保留最近幾份。
+
+        只上傳這兩個檔案就足夠還原全部：手寫圖本來就在網盤上，
+        資料庫快照含所有紀錄，題庫歸檔另外提供一份可讀、可重新匯入的副本。
+        """
+        storage = self.app.storage
+        if storage.mode != 'r2':
+            self.fail(409, '尚未設定網盤（物件儲存）。請先設定 R2_ACCOUNT_ID、R2_ACCESS_KEY_ID、'
+                           'R2_SECRET_ACCESS_KEY、R2_BUCKET 四個環境變數後重新部署。')
+        with BACKUP_LOCK:
+            # 檔名要「永不用重」：一旦舊備份被保留策略刪掉，同樣的檔名可能被下一個
+            # 備份重用；那時上傳會覆蓋同一個 key，接著保留策略就把「最新那份仍在引用」
+            # 的物件刪掉。時間戳（可讀、可排序）＋ 隨機短碼（保證唯一）兩者都要。
+            base = time.strftime('%Y%m%d-%H%M%S')
+            with self.app.db() as db:
+                used = {x.get('stamp') for x in self.backup_history(db)}
+            stamp = f'{base}-{secrets.token_hex(2)}'
+            while stamp in used:
+                stamp = f'{base}-{secrets.token_hex(2)}'
+            files = []
+            # 1) 資料庫快照（SQLite 線上備份 API，狀態一致）
+            directory, path = self.backup_to_temp(stamp)
+            try:
+                with open(path, 'rb') as handle:
+                    data = handle.read()
+            finally:
+                shutil.rmtree(directory, ignore_errors=True)
+            name = f'mathpath-db-{stamp}.sqlite3'
+            files.append({'kind': 'db', 'name': name, 'bytes': len(data),
+                          'key': storage.put_object('backups', name, data, 'application/vnd.sqlite3')})
+            # 2) 題庫歸檔（與題庫匯入相容，可單獨重新匯入）
+            with self.app.db() as db:
+                blob = b''.join(self.question_archive(db, stamp))
+            name = f'mathpath-questions-{stamp}.json'
+            files.append({'kind': 'questions', 'name': name, 'bytes': len(blob),
+                          'key': storage.put_object('backups', name, blob, 'application/json')})
+            entry = {'at': self.utc_now(), 'stamp': stamp, 'trigger': trigger,
+                     'bytes': sum(f['bytes'] for f in files), 'files': files}
+            # 先寫紀錄（短交易），再刪舊檔 —— 刪檔要發網路請求，不該在交易中做。
+            keep = self.backup_keep()
+            with self.app.db() as db:
+                db.execute('BEGIN IMMEDIATE')
+                history = [entry] + [x for x in self.backup_history(db) if x.get('stamp') != stamp]
+                pruned, history = history[keep:], history[:keep]
+                db.execute('INSERT OR REPLACE INTO meta(key,value) VALUES(?,?)',
+                           ('backup_history', json.dumps(history, ensure_ascii=False)))
+            for old in pruned:
+                for item in old.get('files', []):
+                    if isinstance(item, dict) and item.get('key'):
+                        storage.delete(item['key'])       # 刪不掉不影響流程，殘留由生命週期規則清理
+            return {'entry': entry, 'kept': len(history), 'keep': keep, 'pruned': len(pruned)}
+
+    def backup_status(self, db):
+        """給介面用的備份狀態：最近一次、保留份數、是否已設定網盤。"""
+        history = self.backup_history(db)
+        last = history[0] if history else None
+        return {'storageMode': self.app.storage.mode,
+                'configured': self.app.storage.mode == 'r2',
+                'error': self.app.storage.last_error,
+                'keep': self.backup_keep(),
+                'count': len(history),
+                'lastAt': last['at'] if last else None,
+                'lastBytes': last['bytes'] if last else None,
+                'lastTrigger': last.get('trigger') if last else None,
+                'lastFiles': [f.get('name') for f in (last.get('files') or [])] if last else [],
+                'intervalHours': self.app.backup_interval_hours(),
+                'history': [{'at': x.get('at'), 'bytes': x.get('bytes'), 'trigger': x.get('trigger'),
+                             'files': [f.get('name') for f in (x.get('files') or [])]}
+                            for x in history[:8]]}
 
     # ---------- VACUUM ----------
     def vacuum(self):

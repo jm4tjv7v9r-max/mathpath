@@ -25,6 +25,9 @@ from urllib.parse import urlsplit
 from urllib.request import HTTPHandler, HTTPSHandler, ProxyHandler, Request, build_opener
 
 MAX_OBJECT = 12 * 1024 * 1024
+# 備份檔（資料庫快照／題庫歸檔）不是圖片，走另一條路徑與上限。
+MAX_BACKUP_OBJECT = 512 * 1024 * 1024
+BACKUP_TIMEOUT = 300
 ALLOWED_MIME = ('image/png', 'image/jpeg', 'image/webp')
 EXTENSIONS = {'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp'}
 
@@ -125,6 +128,27 @@ class Storage:
             self.fail(503, f'物件儲存暫時無法使用，未保存檔案：{exc}')
         return key
 
+    def key_for(self, folder, name):
+        """組出物件 key（套用 R2_PREFIX）。備份檔名由呼叫端決定，方便日後辨識。"""
+        path = f'{folder}/{name}'
+        return f'{self.prefix}/{path}' if self.prefix else path
+
+    def put_object(self, folder, name, data, mime):
+        """上傳非圖片物件（例如備份檔）。
+
+        圖片有嚴格的白名單與 12MB 上限；備份走這條路徑，只檢查大小。
+        檔名由呼叫端決定並帶時間戳，這樣即使資料庫整份遺失，
+        也能只憑網盤上的檔名判斷哪一份最新。
+        """
+        if len(data) > MAX_BACKUP_OBJECT:
+            self.fail(400, f'備份檔過大（超過 {MAX_BACKUP_OBJECT // 1024 // 1024} MB），未上傳。')
+        key = self.key_for(folder, name)
+        try:
+            self._request('PUT', key, data, mime, timeout=BACKUP_TIMEOUT)
+        except StorageError as exc:
+            self.fail(503, f'物件儲存暫時無法使用，備份未上傳：{exc}')
+        return key
+
     def get(self, key):
         try:
             return self._request('GET', key)
@@ -155,7 +179,7 @@ class Storage:
         return (f'AWS4-HMAC-SHA256 Credential={self.access_key}/{scope}, '
                 f'SignedHeaders={signed_headers}, Signature={signature}')
 
-    def _request(self, method, key, data=None, mime=None):
+    def _request(self, method, key, data=None, mime=None, timeout=30):
         now = datetime.now(timezone.utc)
         amz_date = now.strftime('%Y%m%dT%H%M%SZ')
         date_stamp = now.strftime('%Y%m%d')
@@ -168,7 +192,7 @@ class Storage:
             headers['Content-Type'] = mime
         request = Request(url, data=payload if method in ('PUT', 'POST') else None, headers=headers, method=method)
         try:
-            with self.opener.open(request, timeout=30) as response:
+            with self.opener.open(request, timeout=timeout) as response:
                 body = response.read()
                 return (body, response.headers.get('Content-Type') or self.mime_from_key(key)) if method == 'GET' else True
         except HTTPError as exc:

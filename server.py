@@ -60,6 +60,8 @@ RESTORE_UPLOADS = ('/api/admin/restore/db', '/api/admin/restore/questions',
                    '/api/admin/restore/students')
 # 教師「一鍵 AI 全部批閱」單次最多處理的作答數，避免一次請求過久；剩下的再按一次即可。
 AI_REVIEW_LIMIT = 40
+# 自動備份：每幾秒檢查一次「是否該備份了」（免費方案會被休眠，所以是檢查逾期而非固定時刻）。
+BACKUP_CHECK_SECONDS = 300
 # ── AI 生成變式題：同一道參考題每次都要產生不同的題目 ──
 # 生成時不沿用批改用的 temperature=0（那會讓相同提示得到完全相同的題目）。
 DRAFT_TEMPERATURE = 0.8
@@ -3206,6 +3208,8 @@ class Application:
         self.initialized = False
         self.init_lock = threading.Lock()
         self.init_error = None
+        self.stopping = False
+        self.backup_thread = None
 
     @contextmanager
     def db(self):
@@ -3300,6 +3304,67 @@ class Application:
         os.chmod(self.db_path, 0o600)
         self.reload_ai()
         self.initialized = True
+        self.start_backup_scheduler()
+
+    def backup_interval_hours(self):
+        """自動備份間隔（小時）；0 表示關閉。用 MATH_BACKUP_HOURS 設定。"""
+        raw = (os.environ.get('MATH_BACKUP_HOURS', '') or '').strip()
+        try:
+            value = float(raw)
+        except ValueError:
+            return 0.0
+        return value if 0 < value <= 24 * 30 else 0.0
+
+    def backup_due(self):
+        """是否該備份：已設定網盤、間隔大於 0，且距離上次備份已超過間隔。"""
+        if self.backup_interval_hours() <= 0 or self.storage.mode != 'r2':
+            return False
+        with self.db() as db:
+            history = self.dataadmin.backup_history(db)
+        if not history:
+            return True
+        try:
+            when = datetime.fromisoformat(str(history[0]['at']).replace('Z', '+00:00'))
+        except (KeyError, TypeError, ValueError):
+            return True
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - when).total_seconds() >= self.backup_interval_hours() * 3600
+
+    def start_backup_scheduler(self):
+        """選用的自動備份：MATH_BACKUP_HOURS > 0 且已設定網盤時，背景定期備份。
+
+        免費方案會被休眠，所以不是「固定時刻執行」而是「醒著的時候檢查有沒有逾期」，
+        啟動時也會先補一次 —— 否則休眠期間等於完全沒有備份。
+        任何失敗都只寫日誌，不影響網站運作。
+        """
+        if self.backup_thread or self.backup_interval_hours() <= 0 or self.storage.mode != 'r2':
+            return False
+
+        def loop():
+            while not self.stopping:
+                try:
+                    if self.backup_due():
+                        result = self.dataadmin.backup_to_storage(trigger='scheduled')
+                        print(f"[backup] 已備份 {result['entry']['stamp']}"
+                              f"（{result['entry']['bytes']} bytes，保留 {result['kept']} 份）", flush=True)
+                except Exception as exc:                      # 備份失敗不可影響網站
+                    ai_log(f'自動備份失敗：{exc}')
+                for _ in range(BACKUP_CHECK_SECONDS):
+                    if self.stopping:
+                        return
+                    time.sleep(1)
+
+        self.backup_thread = threading.Thread(target=loop, name='mathpath-backup', daemon=True)
+        self.backup_thread.start()
+        return True
+
+    def stop_backup_scheduler(self):
+        """停止自動備份執行緒（測試與正常關閉用）。"""
+        self.stopping = True
+        thread, self.backup_thread = self.backup_thread, None
+        if thread and thread.is_alive():
+            thread.join(timeout=2)
 
     def safe_initialize(self):
         """背景執行緒用的初始化：失敗不致命，讓 server 仍在 listening，admin 可查 /api/health。
@@ -3708,8 +3773,11 @@ class Application:
             return payload, headers
         with self.db() as db:
             questions = db.execute('SELECT COUNT(*) FROM questions').fetchone()[0]
+            # 登入頁會依這個旗標決定要不要把演示帳密顯示出來：
+            # 已經換過密碼就不該再公開舊的演示密碼（會誤導學生、也是安全問題）。
+            demo_left = db.execute('SELECT count(*) FROM users WHERE demo=1').fetchone()[0]
         return {'status': 'ok', 'storage': self.storage.public(), 'ai': self.ai.public(),
-                'questions': questions}, headers
+                'questions': questions, 'demoAccounts': bool(demo_left)}, headers
 
     def dispatch(self, method, path, body, user, token_hash, ip, query=''):
         headers = {}
@@ -3862,6 +3930,14 @@ class Application:
             self.teacher(user)
             with self.db() as db:
                 return self.dataadmin.stats(db), headers
+        if path == '/api/admin/backup/upload' and method == 'POST':
+            # 手動把「資料庫快照＋題庫歸檔」上傳到網盤（排程備份用同一個方法）。
+            self.teacher(user)
+            fields(body, (), ())
+            result = self.dataadmin.backup_to_storage('manual')
+            with self.db() as db:
+                result['status'] = self.dataadmin.backup_status(db)
+            return result, headers
         if path == '/api/admin/vacuum' and method == 'POST':
             self.teacher(user)
             fields(body, (), ())

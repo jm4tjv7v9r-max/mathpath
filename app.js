@@ -676,6 +676,9 @@ let practiceRange={topic:'',subtopic:'',qtype:''};
 let toastTimer, serverOnline=false, busy=false, answerFile=null, selectedOption=null;
 // 伺服器未就緒（初始化中／初始化失敗）時的原因；成功呼叫任何 API 後就清掉。
 let serverIssue='';
+// 演示帳號是否仍用內建密碼（由 /api/health 回報）：null＝尚未確認。
+// 已換過密碼就不再顯示舊的演示帳密——那會誤導學生，也是安全問題。
+let serverDemo=null;
 let strokes=[], redoStrokes=[], activeStroke=null, penColor='#274b3b', eraser=false;
 let bookmarks=new Set();
 let assignmentContext=null, mockContext=null;
@@ -950,7 +953,18 @@ function modal(html,large=false,dismiss=true){
   };
 }
 function closeModal(){const prev=modalReturnFocus;modalReturnFocus=null;figStudio=null;$('#modal-root').innerHTML='';$('#modal-root').onkeydown=null;if(prev?.isConnected)prev.focus();else $('#main').focus();}
-function loginModal(after){const lastUser=(()=>{try{return localStorage.getItem('mathpath_last_user')||''}catch(_){return ''}})();modal(`<div class="login-brand"><span class="brand-symbol">m<span>↗</span></span>MathPath</div><h2>登入學習空間</h2><p class="modal-intro">先選擇身分，再輸入密碼。系統會記住你的帳戶，下次開啟不必重新輸入。</p><div class="role-cards"><button type="button" data-role="student" class="role-card active"><span class="role-card-icon">${icon('practice')}</span><strong>學生</strong><small>領取作業、手寫或打字解題、查看自己的分數與建議</small></button><button type="button" data-role="teacher" class="role-card"><span class="role-card-icon">${icon('import')}</span><strong>教師</strong><small>佈置作業與測驗、批閱、查看全班成績</small></button></div><form id="login-form"><div class="form-field"><label class="field-label" for="username">校內帳戶</label><input id="username" name="username" autocomplete="username" value="${esc(lastUser||'student')}" required maxlength="64">${lastUser?`<p class="field-hint login-remembered">已記住上次登入的帳戶：<strong>${esc(lastUser)}</strong></p>`:''}</div><div class="form-field"><label class="field-label" for="password">密碼</label><input id="password" type="password" name="password" autocomplete="current-password" placeholder="輸入帳戶密碼" required maxlength="256"></div><label class="checkbox-line remember-line login-remember"><input type="checkbox" id="remember" checked><span><strong>記住我（30 天）</strong><small>下次開啟不必重新登入；公用電腦請取消勾選。</small></span></label><p class="error-text" id="login-error"></p><button type="submit" class="primary wide login-submit">登入學習空間 ${icon('arrow')}</button></form><div class="demo-accounts">本地演示帳戶<br>學生：student / Math1234!<br>教師：teacher / Teach1234!<br>校內正式使用前，請先更換演示密碼。</div>`);$$('[data-role]').forEach(b=>b.onclick=()=>{$$('[data-role]').forEach(x=>x.classList.toggle('active',x===b));$('#username').value=b.dataset.role;$('#password').value='';$('#password').focus();});$$('[data-role]').forEach(x=>x.classList.toggle('active',x.dataset.role===(lastUser==='teacher'?'teacher':'student')));$('#login-form').onsubmit=async e=>{e.preventDefault();const btn=$('button[type="submit"]',e.target);btn.disabled=true;$('#login-error').textContent='';const uname=$('#username').value;try{await api('/api/login',{username:uname,password:$('#password').value,remember:$('#remember').checked});try{localStorage.setItem('mathpath_last_user',uname);}catch(_){}await refresh();closeModal();toast('已登入，學習紀錄已準備就緒。');if(after)after();else navigate(page);}catch(err){$('#login-error').textContent=err.message;}finally{btn.disabled=false;}};if(serverIssue){const box=$('#login-error');if(box)box.textContent=serverIssue;}}
+function demoAccountsHtml(){
+  if(serverDemo===true)return `<div class="demo-accounts" id="login-demo-note">本地演示帳戶<br>學生：student / Math1234!<br>教師：teacher / Teach1234!<br>校內正式使用前，請先更換演示密碼。</div>`;
+  if(serverDemo===false)return `<div class="demo-accounts" id="login-demo-note">此站已更換演示密碼。<br>帳戶與密碼由學校提供，忘記密碼請聯絡老師。</div>`;
+  return `<div class="demo-accounts" id="login-demo-note">正在確認帳戶狀態…</div>`;
+}
+async function loadServerDemo(){
+  try{const info=await api('/api/health');
+    if(info&&info.status==='ok'){serverDemo=info.demoAccounts===true;
+      const box=$('#login-demo-note');if(box)box.outerHTML=demoAccountsHtml();}
+  }catch(_){}                      // 讀不到就維持「尚未確認」，不顯示任何帳密
+}
+function loginModal(after){const lastUser=(()=>{try{return localStorage.getItem('mathpath_last_user')||''}catch(_){return ''}})();modal(`<div class="login-brand"><span class="brand-symbol">m<span>↗</span></span>MathPath</div><h2>登入學習空間</h2><p class="modal-intro">先選擇身分，再輸入密碼。系統會記住你的帳戶，下次開啟不必重新輸入。</p><div class="role-cards"><button type="button" data-role="student" class="role-card active"><span class="role-card-icon">${icon('practice')}</span><strong>學生</strong><small>領取作業、手寫或打字解題、查看自己的分數與建議</small></button><button type="button" data-role="teacher" class="role-card"><span class="role-card-icon">${icon('import')}</span><strong>教師</strong><small>佈置作業與測驗、批閱、查看全班成績</small></button></div><form id="login-form"><div class="form-field"><label class="field-label" for="username">校內帳戶</label><input id="username" name="username" autocomplete="username" value="${esc(lastUser||'student')}" required maxlength="64">${lastUser?`<p class="field-hint login-remembered">已記住上次登入的帳戶：<strong>${esc(lastUser)}</strong></p>`:''}</div><div class="form-field"><label class="field-label" for="password">密碼</label><input id="password" type="password" name="password" autocomplete="current-password" placeholder="輸入帳戶密碼" required maxlength="256"></div><label class="checkbox-line remember-line login-remember"><input type="checkbox" id="remember" checked><span><strong>記住我（30 天）</strong><small>下次開啟不必重新登入；公用電腦請取消勾選。</small></span></label><p class="error-text" id="login-error"></p><button type="submit" class="primary wide login-submit">登入學習空間 ${icon('arrow')}</button></form>${demoAccountsHtml()}`);if(serverDemo===null)loadServerDemo();$$('[data-role]').forEach(b=>b.onclick=()=>{$$('[data-role]').forEach(x=>x.classList.toggle('active',x===b));$('#username').value=b.dataset.role;$('#password').value='';$('#password').focus();});$$('[data-role]').forEach(x=>x.classList.toggle('active',x.dataset.role===(lastUser==='teacher'?'teacher':'student')));$('#login-form').onsubmit=async e=>{e.preventDefault();const btn=$('button[type="submit"]',e.target);btn.disabled=true;$('#login-error').textContent='';const uname=$('#username').value;try{await api('/api/login',{username:uname,password:$('#password').value,remember:$('#remember').checked});try{localStorage.setItem('mathpath_last_user',uname);}catch(_){}await refresh();closeModal();toast('已登入，學習紀錄已準備就緒。');if(after)after();else navigate(page);}catch(err){$('#login-error').textContent=err.message;}finally{btn.disabled=false;}};if(serverIssue){const box=$('#login-error');if(box)box.textContent=serverIssue;}}
 function accountModal(){if(!S.user)return loginModal();modal(`<h2>${esc(S.user.name)}</h2><p class="modal-intro">${S.user.role==='teacher'?'教師工作空間':'中三數學學習空間'} · 資料保存在網站伺服器；實際位置由管理員確認</p>${S.notice?`<div class="import-warning">${esc(S.notice)}</div>`:''}<div class="result-actions"><button class="secondary" id="password-link">${icon('lock')}更換密碼</button><button class="secondary" id="logout-btn">${icon('logout')}登出</button></div>`);$('#password-link').onclick=()=>{closeModal();navigate('settings');};$('#logout-btn').onclick=async()=>{beginView();stopQuizClock();pendingQuizSubmission=null;quizDeadlines.clear();try{await api('/api/logout',{});clearUserDrafts(S.user.id);S={user:null,questions:preview,attempts:[],stats:{completed:0,accuracy:0,streak:0,minutes:0},ai:{configured:false,mode:'off'}};strokes=[];answerFile=null;lastResult=null;lastSolution=null;currentQuestion=null;assignmentContext=null;assignmentDetail=null;HW=null;resultData=null;closeModal();loadBookmarks();homeworkPage();toast('已登出。');}catch(e){toast(e.message);}};}
 async function openQuestion(id){if(busy)return toast('正在保存作答，請等待完成。');preserveDraft();if(!S.user){loginModal(()=>openQuestion(id));return;}const q=S.questions.find(q=>q.id===Number(id));if(!q)return toast('找不到題目，請重新整理題庫。');if(currentQuestion&&currentQuestion.id!==q.id&&strokes.length&&!lastResult&&!confirm('目前手寫內容尚未提交，確定切換題目？'))return;assignmentContext=null;mockContext=null;currentQuestion=q;lastResult=null;lastSolution=null;answerMode=(q.options&&q.options.length)?'choice':'hand';answerFile=null;selectedOption=null;window.answerTextDraft='';strokes=[];redoStrokes=[];recommendations=null;stopQuizClock();practice();const target=viewTarget();try{const rec=await api(`/api/questions/${q.id}/recommendations`);if(viewMatches(target)){recommendations=rec;renderRecommendations();}}catch(e){if(viewMatches(target))toast(e.message);}}
 // ── 自主練習：先選章節與題型 ──
@@ -2661,6 +2675,30 @@ function adminStatsCards(stats){
     ['最近學年重置',stats.lastStudentReset?dateText(stats.lastStudentReset):'尚未執行','重置只清學生資料，題庫保留']];
   return cards.map(([label,value,foot])=>`<div class="metric"><div class="metric-label">${esc(label)}</div><div class="metric-value">${esc(String(value))}</div><div class="metric-foot">${esc(foot)}</div></div>`).join('');
 }
+// 網盤備份：手寫圖／題目圖形／批註在上傳當下就已進網盤；這裡再把資料庫快照與題庫歸檔送上去。
+function backupZoneHtml(b){
+  if(!b)return `<h3>${icon('upload')}網盤備份</h3><p class="field-hint">正在讀取備份狀態…</p>`;
+  const rows=[[ '最近備份', b.lastAt?dateText(b.lastAt):'尚未備份',
+                b.lastTrigger==='scheduled'?'由排程自動執行':b.lastTrigger==='manual'?'手動執行':'—'],
+              [ '保留份數', `${b.count} / ${b.keep}`, '超過就自動刪掉最舊的一份'],
+              [ '自動備份', b.intervalHours?`每 ${b.intervalHours} 小時`:'未啟用',
+                b.intervalHours?'由 MATH_BACKUP_HOURS 設定':'在部署平台設定 MATH_BACKUP_HOURS 即會開啟']];
+  return `<h3>${icon('upload')}網盤備份</h3>
+  <p class="field-hint">學生手寫圖、題目圖形與教師批註在<strong>上傳當下</strong>就已經存進網盤；這裡再把<strong>資料庫快照</strong>（帳號、班級、作業、作答、分數）與<strong>題庫歸檔</strong>一起送上去。兩者都在網盤上，就算伺服器整台消失也能還原。</p>
+  ${b.configured?`<div class="metric-row">${rows.map(([l,v,f])=>`<div class="metric"><div class="metric-label">${esc(l)}</div><div class="metric-value" style="font-size:calc(17px*var(--fs))">${esc(String(v))}</div><div class="metric-foot">${esc(f)}</div></div>`).join('')}</div>
+  <div class="admin-actions"><button class="secondary" id="admin-backup-now">${icon('upload')}立即備份到網盤</button></div>`
+  :`<div class="import-warning">尚未設定網盤。在部署平台加入 <code>R2_ACCOUNT_ID</code>、<code>R2_ACCESS_KEY_ID</code>、<code>R2_SECRET_ACCESS_KEY</code>、<code>R2_BUCKET</code> 四個環境變數後重新部署，手寫圖與備份就會自動存到網盤。${b.error?`<br>目前狀態：${esc(b.error)}`:''}</div>`}
+  ${(b.history||[]).length?`<details class="backup-history"><summary>最近 ${b.history.length} 次備份</summary><ul>${b.history.map(h=>`<li><strong>${dateText(h.at)}</strong> · ${h.trigger==='scheduled'?'排程':'手動'} · ${formatBytes(h.bytes)}<br><code>${esc((h.files||[]).join(' , '))}</code></li>`).join('')}</ul></details>`:''}`;
+}
+function bindBackupZone(){
+  const b=$('#admin-backup-now');
+  if(!b)return;
+  b.onclick=async()=>{const original=b.innerHTML;b.disabled=true;b.innerHTML=icon('clock')+'正在備份…';
+    try{const r=await api('/api/admin/backup/upload',{});ADMIN_STATS=ADMIN_STATS||{};ADMIN_STATS.backup=r.status;
+      $('#admin-backup-zone').innerHTML=backupZoneHtml(r.status);bindBackupZone();
+      toast(`已備份到網盤（${formatBytes(r.entry.bytes)}，保留 ${r.kept} 份）。`);}
+    catch(e){toast(e.message);b.disabled=false;b.innerHTML=original;}};
+}
 // 還原是「新增」資料：不刪現有內容、不覆蓋同名帳號。歸檔不含密碼，還原後要重新發密碼。
 function restoreHtml(){
   return `<div class="restore-zone">
@@ -2710,6 +2748,7 @@ function dataAdminHtml(){
     <button class="secondary" id="admin-vacuum">${icon('check')}壓實資料庫</button>
   </div>
   <p class="field-hint">「壓實資料庫」把刪除後留下的空間還給系統；資料量大時可能需要數十秒，期間請勿關閉頁面。</p>
+  <div class="backup-zone" id="admin-backup-zone">${backupZoneHtml(ADMIN_STATS&&ADMIN_STATS.backup)}</div>
   ${restoreHtml()}
   <div class="danger-zone">
     <h3>${icon('trash')}學年重置（新學年開始前使用）</h3>
@@ -2726,10 +2765,12 @@ async function loadAdminStats(notify){
   try{ADMIN_STATS=await api('/api/admin/storage');
     const box=$('#admin-stats');if(box)box.innerHTML=adminStatsCards(ADMIN_STATS);
     const count=$('#admin-question-count');if(count)count.textContent=ADMIN_STATS.counts.questions;
+    const zone=$('#admin-backup-zone');if(zone){zone.innerHTML=backupZoneHtml(ADMIN_STATS.backup);bindBackupZone();}
     if(notify)toast('已更新用量。');}
   catch(e){if(notify)toast(e.message);}
 }
 function bindDataAdmin(){
+  bindBackupZone();
   $$('[data-admin-download]').forEach(b=>b.onclick=()=>{const a=document.createElement('a');a.href=b.dataset.adminDownload;a.rel='noopener';document.body.appendChild(a);a.click();a.remove();toast('已開始下載，請查看瀏覽器的下載項目。');});
   if($('#admin-refresh'))$('#admin-refresh').onclick=()=>loadAdminStats(true);
   if($('#admin-vacuum'))$('#admin-vacuum').onclick=async()=>{const b=$('#admin-vacuum'),original=b.innerHTML;b.disabled=true;b.innerHTML=icon('clock')+'壓實中…';try{const r=await api('/api/admin/vacuum',{});toast(`已壓實：${formatBytes(r.beforeBytes)} → ${formatBytes(r.afterBytes)}，回收 ${formatBytes(r.savedBytes)}。`);await loadAdminStats();}catch(e){toast(e.message);}finally{b.disabled=false;b.innerHTML=original;}};
