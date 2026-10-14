@@ -220,15 +220,39 @@ https://mathpath-xxxx.onrender.com/                → 應看到登入畫面
 2. 到「設定與隱私」→ **更換密碼**（兩組示範帳號都要換）
 3. 若要使用 R2：在 Render 的 Environment 加入 `R2_ACCOUNT_ID`、`R2_ACCESS_KEY_ID`、`R2_SECRET_ACCESS_KEY`、`R2_BUCKET`，重新部署後 `/api/health` 的 `storage.mode` 會變成 `r2`
 
-### 第 5 步：以後要更新程式
+### 第 5 步：以後要更新程式（GitHub Desktop）
 
-```bash
-git add .
-git commit -m "更新"
-git push
-```
+改完程式碼之後，只要把改動「提交」再「推送」到 GitHub，Render 就會自動重新部署，
+網站通常在 1～3 分鐘內換成新版本。**不需要**手動去 Render 按任何按鈕。
 
-Render 會自動重新部署。
+**GitHub Desktop 操作（每次都是這四步）**
+
+1. 開啟 GitHub Desktop → 左上角 **Current Repository** 確認是 `mathpath`。
+   若不是，用 **File → Add local repository…** 指向專案資料夾
+   （`outputs/mathpath`，也就是有 `index.html`、`server.py` 的那一層）。
+2. 左欄點 **Changes**。這裡會列出所有改動的檔案，點任一檔案可以看逐行差異（紅＝刪掉、綠＝新增）。
+   - 只想提交部分檔案時，把不要的**取消勾選**再提交。
+   - **不要**提交 `data/` 裡的東西（那是學生資料），它已經在 `.gitignore` 裡，正常不會出現。
+3. 左下角 **Summary** 填一句說明（例如「修正日曆重複列出作業」），按 **Commit to main**。
+4. 上方會出現 **Push origin**（數字＝還沒推上去的提交數），按下去就上傳了。
+
+推送完成後到 https://dashboard.render.com 的 **mathpath → Logs** 看部署訊息；
+看到服務重新啟動、且 `https://你的網址/api/health` 回 `{"status":"ok"}` 就是更新成功。
+
+**幾個常遇到的狀況**
+
+| 狀況 | 處理 |
+|---|---|
+| 上方沒有 **Push origin**，而是 **Fetch origin** | 代表已經推完了；按 Fetch 只是檢查有沒有新東西。 |
+| 顯示 **Pull origin**（別人的改動在 GitHub 上） | 先按 Pull origin 把遠端改動拉下來，再 Push。 |
+| 出現衝突（conflict） | 先不要硬推；在 GitHub Desktop 裡開檔案解決衝突後再提交。 |
+| 不確定遠端最新狀態 | 按 **Fetch origin** → 看 **History** 分頁最上面一筆是不是你剛提交的。 |
+| 想確認改了哪些檔案 | **History** 分頁點某一筆提交，右側就是那次的所有差異。 |
+
+> 習慣用終端機的話，同樣效果是：
+> ```bash
+> git add -A && git commit -m "更新" && git push
+> ```
 
 ---
 
