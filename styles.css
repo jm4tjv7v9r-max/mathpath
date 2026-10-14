@@ -548,3 +548,25 @@ button.danger:disabled{opacity:.6}
 .ann-edit-row input[type=range]{width:132px}
 .ann-edit-row .ann-size-value{min-width:34px;font-variant-numeric:tabular-nums}
 .ann-edit-row button{padding:8px 13px;font-size:calc(13px*var(--fs))}
+
+/* ══ 按鈕文字要清楚：主要動作 600、篩選籤 500 ══════════════════════
+   原本 secondary 只有 500、篩選籤完全沒設字重，看起來偏輕、不夠明確。 */
+button.secondary{font-weight:600}
+button.danger{font-weight:600}
+.record-actions button{font-size:calc(14px*var(--fs));font-weight:600}
+.history-filters button,.practice-tabs button,.guide-tabs button,.topic-tab,.subtopic-tab{font-weight:500}
+.topic-tab.active,.subtopic-tab.active{font-weight:600}
+.calc-key{font-weight:500}
+.calc-key.equals{font-weight:600}
+.assignment-submit button,.submit-row button{font-weight:600}
+
+/* 學生的自主練習不屬教師批閱範圍：在教師的作答批閱清單要一眼看得出來。 */
+.badge.self-practice{background:#f3f6f8;color:#66757f;border:1px solid #e2e8ec}
+/* 教師的清單很長：學習建議收合成一行，要看再展開（學生的錯題本仍直接展開）。 */
+.record-advice{margin-top:8px}
+.record-advice>summary{cursor:pointer;font-size:calc(13px*var(--fs));color:#5b7365;
+  padding:6px 0;list-style:none;display:flex;align-items:center;gap:6px;font-weight:500}
+.record-advice>summary::-webkit-details-marker{display:none}
+.record-advice>summary:before{content:"▸";color:#8fa89a}
+.record-advice[open]>summary:before{content:"▾"}
+.record-advice .learning-advice{margin-top:8px}
