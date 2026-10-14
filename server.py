@@ -284,6 +284,26 @@ OPTION_LETTERS = 'ABCDEFGHIJ'
 # AI 評分時會依這些百分比分配各項配分，再逐項評估學生達成率。
 RUBRIC_MAX = 12
 RUBRIC_LABEL_LIMIT = 200
+
+# ── AI 批改（精度相關）──
+# 交叉驗證門檻：AI 建議分與可重現的規則核對差距多大時，標記「建議覆核」讓教師優先看。
+# 規則核對只比對最終答案（嚴格等價），因此只當「訊號」用，不直接改分數。
+CROSS_CHECK_LOW = 0.6      # 規則說對，但 AI 給低於滿分 60% → 可能漏給過程分
+CROSS_CHECK_HIGH = 0.9     # 規則說不對，但 AI 給到滿分 90% 以上 → 可能誤判
+# 步驟分項的配分歸一化容差：模型自報的 max／earned 加總誤差在此之內視為精確。
+STEP_TOLERANCE = 0.01
+# 批改共用的評分政策。兩條路徑（有評分標準／無評分標準）都用同一份，
+# 避免同一道題因為走不同分支而出現不同標準。
+GRADE_POLICY = (
+    '你是數學科批改老師。只依題目、參考答案與評分標準判斷，不推測看不到的內容。'
+    '評分政策：'
+    '① 逐步給分；解法與參考答案不同但推理成立，一樣給分，不因「寫法不同」扣分。'
+    '② 最終答案以數學等價判斷：x=2 與 2、1/2 與 0.5、先後順序不同的解集、單位有無，都算等價。'
+    '③ 看不清、無法辨認的部分不要推測，也不要因此扣分；改在評語說明需教師確認。'
+    '④ 選擇題以選項字母判對；填空題只比對數值或代數式是否等價。'
+    '⑤ 過程簡略不扣分，除非題目或評分標準明確要求寫出步驟。'
+    '⑥ 不得因為學生用了與參考答案不同的方法就給較低分；先判斷推理是否成立。'
+)
 COOKIE = 'mathpath_session'
 DEMO_NOTICE = '演示帳戶：student / Math1234!、teacher / Teach1234!。上線前必須更換密碼。'
 
@@ -2814,6 +2834,116 @@ def final_correct(student, reference):
     return a == b
 
 
+def rule_verdict(q, answer, image):
+    """可重現的規則核對：只比對最終答案是否與參考答案嚴格等價。
+
+    回傳 True／False／None（None 表示無法判定：手寫圖片、沒有參考答案、
+    沒有作答文字，或答案不是可規範化的短式子）。
+    這個結果只用來當「訊號」——餵給模型當提示，以及和 AI 建議分交叉比對；
+    它不直接決定分數（過程分只有人能判斷）。
+    """
+    reference = (q.get('answer') or '').strip()
+    if image is not None or not reference or not (answer or '').strip():
+        return None
+    try:
+        return final_correct(answer, reference)
+    except Exception:                      # 規則核對絕不可讓整筆批改失敗
+        return None
+
+
+def grade_cross_check(q, answer, score, maximum, rule):
+    """AI 建議分與規則核對交叉比對，回傳需要教師多看一題的旗標。
+
+    只回報衝突，不改分數：AI 的價值在過程分，規則只能看最終答案，
+    兩者不一致時由教師定案，避免任一方悄悄蓋掉另一方。
+    """
+    if rule is None or not maximum or score is None:
+        return []
+    ratio = score / maximum
+    if rule and ratio < CROSS_CHECK_LOW:
+        return [{'code': 'rule-higher',
+                 'message': f'最終答案與參考答案等價，但 AI 只給 {score:g}/{maximum:g} 分，'
+                            '建議確認是否漏給過程分。'}]
+    if not rule and ratio >= CROSS_CHECK_HIGH:
+        return [{'code': 'rule-lower',
+                 'message': f'AI 給 {score:g}/{maximum:g} 分，但最終答案未通過嚴格等價檢查，'
+                            '建議確認是否誤判（也可能是答案寫法不同）。'}]
+    return []
+
+
+def normalize_ai_steps(raw_steps, points, score):
+    """整理模型回報的步驟分項，讓它與模型自報的總分一致。
+
+    模型偶爾算術不穩（max 加總不等於 points、earned 加總不等於 score、earned 超過 max），
+    這裡一律由伺服器換算：max 按比例縮放到題目總分，earned 依「模型自報總分」等比縮放
+    並夾在該步配分內。總分以模型自報的 score 為準（那是它對整題的判斷），
+    步驟分項只是解釋；這樣模型的小算術誤差不會讓整筆評分作廢，也不會出現對不上的分數。
+    回傳 (steps, adjusted)；沒有可用的步驟時回 ([], False)，由呼叫端決定怎麼補。
+    """
+    if not isinstance(raw_steps, list):
+        return [], False
+    cleaned = []
+    for step in raw_steps[:40]:
+        if not isinstance(step, dict):
+            continue
+        label = step.get('label', step.get('name', step.get('title')))
+        if not isinstance(label, str) or not label.strip():
+            continue
+        try:
+            maximum = float(step.get('max', step.get('points', 0)))
+            earned = float(step.get('earned', step.get('score', 0)))
+        except (TypeError, ValueError):
+            continue
+        if not (math.isfinite(maximum) and math.isfinite(earned)) or maximum <= 0:
+            continue
+        comment = step.get('comment', step.get('feedback', ''))
+        cleaned.append({'label': re.sub(r'\s+', ' ', label).strip()[:200], 'earned': earned,
+                        'max': maximum, 'comment': comment if isinstance(comment, str) else ''})
+    if not cleaned:
+        return [], False
+    adjusted = False
+    # 1) 配分歸一化到題目總分；最後一項補足四捨五入誤差，總和恰等於 points。
+    total_max = sum(step['max'] for step in cleaned)
+    if not math.isclose(total_max, points, abs_tol=STEP_TOLERANCE):
+        adjusted = True
+        scaled, running = [], 0.0
+        for i, step in enumerate(cleaned):
+            maximum = (round(points - running, 2) if i == len(cleaned) - 1
+                       else round(points * step['max'] / total_max, 2))
+            running = round(running + maximum, 2)
+            scaled.append({**step, 'max': maximum})
+        cleaned = scaled
+    # 2) 得分依模型自報總分等比縮放，再夾在該步配分內。
+    total_earned = sum(step['earned'] for step in cleaned)
+    if total_earned > 0 and not math.isclose(total_earned, score, abs_tol=STEP_TOLERANCE):
+        adjusted = True
+        factor = score / total_earned
+        for step in cleaned:
+            step['earned'] = round(min(step['max'], max(0.0, step['earned'] * factor)), 2)
+    for step in cleaned:
+        clamped = min(step['max'], max(0.0, step['earned']))
+        if not math.isclose(clamped, step['earned'], abs_tol=STEP_TOLERANCE):
+            adjusted = True
+        step['earned'] = round(clamped, 2)
+        step['max'] = round(step['max'], 2)
+        step['comment'] = text(step['comment'], '步驟評語', 2000, empty=True)
+    return cleaned, adjusted
+
+
+def rule_hint(rule):
+    """把規則核對結果轉成給模型參考的提示。
+
+    明確標示這只是字串比對，避免模型把它當成標準答案而放棄自己的數學判斷。
+    """
+    if rule is None:
+        return '系統無法用字串比對判定最終答案（沒有可比對的文字答案），請自行判斷。'
+    if rule:
+        return ('系統的嚴格字串比對認為「最終答案與參考答案等價」。'
+                '這只是字串比對，仍請自行確認推理是否成立。')
+    return ('系統的嚴格字串比對認為「最終答案與參考答案不等價」。'
+            '這只是字串比對，等價的寫法也可能被判為不等價，請自行判斷。')
+
+
 def attempt_verdict(score, max_score, status):
     """手寫作答的整體判定：全對／全錯／部分正確（未評分回 None）。
 
@@ -3100,7 +3230,8 @@ class Application:
                     status TEXT NOT NULL CHECK(status IN ('graded','pending')), feedback TEXT NOT NULL,
                     submitted_at TEXT NOT NULL, method TEXT NOT NULL, ai_steps TEXT NOT NULL DEFAULT '[]',
                     teacher_reviewed INTEGER NOT NULL DEFAULT 0, reviewed_by INTEGER REFERENCES users(id),
-                    reviewed_at TEXT, skipped INTEGER NOT NULL DEFAULT 0);
+                    reviewed_at TEXT, skipped INTEGER NOT NULL DEFAULT 0,
+                    review_flags TEXT NOT NULL DEFAULT '[]');
                 CREATE INDEX IF NOT EXISTS attempts_user ON attempts(user_id, submitted_at);
                 CREATE INDEX IF NOT EXISTS sessions_expiry ON sessions(expires);
             ''')
@@ -3115,6 +3246,9 @@ class Application:
             attempt_columns = {r['name'] for r in db.execute('PRAGMA table_info(attempts)')}
             if 'skipped' not in attempt_columns:
                 db.execute('ALTER TABLE attempts ADD COLUMN skipped INTEGER NOT NULL DEFAULT 0')
+            # 「建議覆核」旗標：AI 建議分與規則核對衝突時記下原因，教師覆核後清除。
+            if 'review_flags' not in attempt_columns:
+                db.execute("ALTER TABLE attempts ADD COLUMN review_flags TEXT NOT NULL DEFAULT '[]'")
             # 學生帳號的班內號：增量加欄，舊帳戶為 NULL。沒有班內號時一切照舊運作。
             user_columns = {r['name'] for r in db.execute('PRAGMA table_info(users)')}
             if 'seat' not in user_columns:
@@ -3254,7 +3388,7 @@ class Application:
             fail(403, '更換模型端點需要管理員權杖（MATH_ADMIN_TOKEN），或在本機操作。'
                       if expected else '未設定 MATH_ADMIN_TOKEN 時，只可在伺服器本機更換模型端點。')
 
-    def ai_rubric_grade(self, q, rubric, answer, image, practice=False):
+    def ai_rubric_grade(self, q, rubric, answer, image, practice=False, rule=None):
         """依題目的評分標準（百分比）請 AI 逐項評估學生達成率。
 
         配分由伺服器按百分比換算（不信任模型自報分值），AI 只需回報每項達成百分比與評語，
@@ -3265,12 +3399,13 @@ class Application:
         tail = ('這是學生自主練習的即時評分，請直接給出評語與下一步改進方向，不需教師批閱。'
                 if practice else '提醒僅供教師復核。')
         result = self.ai.call(
-            '你是數學批改助手。請依題目、參考答案與評分標準逐項評估學生作答；無法讀清的步驟不可推測。'
+            GRADE_POLICY +
+            '請依題目、參考答案與評分標準逐項評估學生作答。'
             '返回 {feedback:str,items:[{percent:number,comment:str}]}。'
             'items 必須與輸入的 rubric 陣列一一對應（順序與數量完全相同，不可增加或減少）。'
             'percent 是該評分標準學生達成的百分比（0 至 100 的數字）；comment 是該項一至兩句評語。'
             'feedback 用二至四句說明整體表現與下一步改進方向。' + tail,
-            {'question': q, 'rubric': planned, 'answerText': answer},
+            {'question': q, 'rubric': planned, 'answerText': answer, 'ruleCheck': rule_hint(rule)},
             image=image, model=(self.ai.vision or self.ai.model) if image else None)
         try:
             if not isinstance(result, dict):
@@ -3310,43 +3445,59 @@ class Application:
         return score, note + feedback, steps
 
     def grade_with_ai(self, q, answer, image, practice):
-        """請 AI 批改一次作答，回傳 (score, feedback, steps)。
+        """請 AI 批改一次作答，回傳 (score, feedback, steps, flags)。
 
         practice=True：學生自主練習／自助模擬測驗，即時評分並記錄分數，不需教師批閱。
         practice=False：教師佈置的作業／測驗，AI 只作建議，供教師覆核。
+        flags：需要教師多看一題的訊號（規則核對與 AI 建議分衝突、配分被歸一化等）。
+        旗標只作提示，不會改動分數——過程分只有人能判斷，AI 的價值在那裡。
         """
+        # 先做可重現的規則核對（只比對最終答案），同時當模型提示與事後交叉驗證。
+        rule = rule_verdict(q, answer, image)
         rubric = q.get('rubric') or []
         if rubric:
-            return self.ai_rubric_grade(q, rubric, answer, image, practice)
+            score, feedback, steps = self.ai_rubric_grade(q, rubric, answer, image, practice, rule)
+            adjusted = False
+        else:
+            score, feedback, steps, adjusted = self.ai_holistic_grade(q, answer, image, practice, rule)
+        flags = grade_cross_check(q, answer, score, q['points'], rule)
+        if adjusted:
+            # 配分換算是系統動作、不是評分可疑，寫進評語就好，不列入「建議覆核」旗標。
+            feedback += '\n（AI 自報的步驟配分或分數加總不一致，已由系統按題目總分換算，總分不變。）'
+        return score, feedback, steps, flags
+
+    def ai_holistic_grade(self, q, answer, image, practice, rule=None):
+        """沒有評分標準時的整體批改；步驟配分一律由伺服器歸一化。回傳 (score, feedback, steps, adjusted)。
+
+        模型只需要判斷「每一步對不對、給幾成」，配分與總分由伺服器按題目總分換算，
+        因此模型的算術小錯不會讓整筆評分作廢，也不會出現 max 加總不等於題目總分的分數。
+        """
         tail = ('這是學生自主練習的即時評分，請直接給出評語與下一步改進方向，不需教師批閱。'
                 if practice else '提醒僅供教師復核。')
         result = self.ai.call(
-            '你是數學批改助手。依據題目及參考答案評估實際作答；無法讀清的步驟不可推測。'
+            GRADE_POLICY +
+            '請依題目與參考答案評估實際作答。'
             '返回 {score:number,feedback:str,steps:[{label:str,earned:number,max:number,comment:str}]}。'
-            'score介乎0至points；各步max總和等於points，各步earned總和等於score。' + tail,
-            {'question': q, 'answerText': answer}, image=image,
+            'score 介乎 0 至 points；steps 是解題步驟，各步 max 加總等於 points、earned 加總等於 score。'
+            '輸出前請再檢查一次這兩項加總。' + tail,
+            {'question': q, 'answerText': answer, 'ruleCheck': rule_hint(rule)}, image=image,
             model=(self.ai.vision or self.ai.model) if image else None)
-        score, ai_steps = 0, []
         try:
-            fields(result, ('score', 'feedback', 'steps'), ('score', 'feedback', 'steps'))
+            if not isinstance(result, dict):
+                raise ValueError()
             score = number(result['score'], 'AI分數', 0, q['points'])
             feedback = text(result['feedback'], 'AI評語', 12000)
-            if not isinstance(result['steps'], list) or not 1 <= len(result['steps']) <= 40:
-                raise ValueError()
-            for step in result['steps']:
-                fields(step, ('label', 'earned', 'max', 'comment'), ('label', 'earned', 'max', 'comment'))
-                maximum = number(step['max'], '步驟分值', 0, q['points'])
-                ai_steps.append({'label': text(step['label'], '步驟標籤', 200),
-                                 'earned': number(step['earned'], '步驟得分', 0, maximum), 'max': maximum,
-                                 'comment': text(step['comment'], '步驟評語', 2000, empty=True)})
-            if not math.isclose(sum(s['max'] for s in ai_steps), q['points'], abs_tol=0.001) or \
-                    not math.isclose(sum(s['earned'] for s in ai_steps), score, abs_tol=0.001):
-                raise ValueError()
         except (APIError, ValueError, KeyError, TypeError):
-            fail(502, 'AI 評分格式或分值無效；未保存成績，請改用教師批閱。')
+            fail(502, 'AI 評分格式無效；未保存成績，請改用教師批閱。')
+        # 總分以模型自報的 score 為準（那是它對整題的判斷），步驟分項由伺服器換算成一致。
+        steps, adjusted = normalize_ai_steps(result.get('steps'), q['points'], score)
+        if not steps:
+            # 模型沒給可用的步驟分項：合併成單一步驟，保住分數與評語，不整筆作廢。
+            adjusted = True
+            steps = [{'label': '整體表現', 'earned': score, 'max': float(q['points']), 'comment': ''}]
         note = ('AI 即時評分（自主練習；分數只作個人練習紀錄，不需教師批閱）。\n'
                 if practice else 'AI 建議評分，僅供教師復核，不可直接用於正式考試。\n')
-        return score, note + feedback, ai_steps
+        return score, note + feedback, steps, adjusted
 
     def attempt_image_url(self, row):
         """取回手寫作答圖片的 data URL；沒有圖片時回 None。"""
@@ -3373,7 +3524,8 @@ class Application:
             'score': score, 'max_score': row['max_score'], 'status': 'graded',
             'feedback': note, 'method': method})
         updates = ['score=?', 'status=?', 'feedback=?', 'method=?', 'teacher_reviewed=1',
-                   'reviewed_by=?', 'reviewed_at=?', 'teacher_confirmed_score=?', 'suggestion=?']
+                   'reviewed_by=?', 'reviewed_at=?', 'teacher_confirmed_score=?', 'suggestion=?',
+                   "review_flags='[]'"]
         values = [score, 'graded', note, method, user['id'], utc_now(), score,
                   json.dumps(suggestion, ensure_ascii=False)]
         if ai_score is not None:
@@ -3479,6 +3631,10 @@ class Application:
                   'ruleScore': row['rule_score'], 'confirmedScore': row['teacher_confirmed_score'],
                   'skipped': bool(row['skipped']) if 'skipped' in row.keys() else False,
                   'suggestion': json.loads(row['suggestion'])}
+        if viewer is not None and viewer['role'] == 'teacher':
+            # 「建議覆核」是請教師優先確認的訊號，只給教師看，不是學生的成績資訊。
+            raw_flags = row['review_flags'] if 'review_flags' in row.keys() else None
+            result['reviewFlags'] = json.loads(raw_flags) if raw_flags else []
         keys = row.keys()
         if row['image'] is not None or ('image_key' in keys and row['image_key'] is not None):
             result['image'] = f'/api/attempts/{row["id"]}/image'
@@ -4153,11 +4309,13 @@ class Application:
                         '此題尚無參考答案，等待教師批閱。')
             fallback_note = ''
             ai_failed = False
+            # 「建議覆核」只屬於教師佈置的作業／測驗；自主練習即時給分，不需要旗標。
+            review_flags = []
             if self.ai.configured and ai_grading and not skipped:
                 # 外部模型的資料傳送同意屬隱私要求，不因批改失敗而降級。
                 self.ai.consent(body.get('consentExternal'))
                 try:
-                    score, feedback, ai_steps = self.grade_with_ai(q, answer, ai_image, practice_mode)
+                    score, feedback, ai_steps, review_flags = self.grade_with_ai(q, answer, ai_image, practice_mode)
                     status = 'graded'
                     method = 'ai-practice' if practice_mode else 'ai-advisory'
                 except APIError as exc:
@@ -4198,11 +4356,13 @@ class Application:
                             'score': score, 'max_score': q['points'], 'status': status,
                             'feedback': feedback, 'method': method})
                         db.execute('UPDATE attempts SET score=?,status=?,feedback=?,method=?,ai_steps=?,ai_score=?,'
-                                   'rule_score=?,suggestion=? WHERE id=? AND teacher_reviewed=0',
+                                   'rule_score=?,suggestion=?,review_flags=? WHERE id=? AND teacher_reviewed=0',
                                    (score, status, feedback, method, json.dumps(ai_steps, ensure_ascii=False),
                                     score if method in ('ai-advisory', 'ai-practice') else None,
                                     score if method == 'rule-final' else None,
-                                    json.dumps(suggestion, ensure_ascii=False), accepted_id))
+                                    json.dumps(suggestion, ensure_ascii=False),
+                                    json.dumps(review_flags if method == 'ai-advisory' else [], ensure_ascii=False),
+                                    accepted_id))
                 row = db.execute('SELECT * FROM attempts WHERE id=?', (accepted_id,)).fetchone()
             if late:
                 # 撤回這筆遲到的作答：要用獨立交易，否則 fail() 會連同刪除一起回滾。
@@ -4345,7 +4505,7 @@ class Application:
                         ai_score = None
                     else:
                         image_url = self.attempt_image_url(row)
-                        score, feedback, steps = self.grade_with_ai(q, row['answer_text'], image_url, False)
+                        score, feedback, steps, _flags = self.grade_with_ai(q, row['answer_text'], image_url, False)
                         feedback = feedback.split('\n', 1)[-1]
                         ai_score = score
                     with self.db() as db:

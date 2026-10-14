@@ -1315,12 +1315,11 @@ class APITests(unittest.TestCase):
             self.assertIn('僅供教師復核', stored['feedback'])
             self.assertFalse(stored['teacherReviewed'])
             self.assertEqual(stored['steps'][0]['earned'], 4)
+        # 真的無法使用的輸出（分數超範圍／不是數字、評語不是文字）才不偽造分數，
+        # 學生的作答一律保住，改為等待教師批閱。
         invalid_results = [dict(result, score=1000), dict(result, score=-1), dict(result, score=True),
-                           dict(result, score=float('nan')), dict(result, score=5), dict(result, steps=[]),
-                           dict(result, feedback=[]),
-                           dict(result, steps=[{'label': 'x', 'earned': 7, 'max': 6, 'comment': 'x'}])]
+                           dict(result, score=float('nan')), dict(result, feedback=[])]
         for invalid in invalid_results:
-            # AI 回傳格式無效時不偽造分數，但學生的作答一定要保住：改為等待教師批閱。
             with patch.object(self.app.ai, 'call', return_value=invalid):
                 _, fallback, _ = self.request('POST', '/api/attempts', dict(body, consentExternal=True),
                                               cookie=self.student, expect=200)
@@ -1328,8 +1327,27 @@ class APITests(unittest.TestCase):
             self.assertEqual(stored['gradingMethod'], 'pending-teacher')
             self.assertIsNone(stored['score'])
             self.assertIn('AI 建議評分暫時無法使用', stored['feedback'])
+        # 只是「算術不穩」的輸出不再整筆作廢：配分與步驟得分由伺服器歸一化，
+        # 總分以模型自報的 score 為準，步驟分項換算成與總分一致。
+        recoverable = [
+            (dict(result, score=5), 5),                     # score 與步驟得分加總不一致
+            (dict(result, steps=[]), 4),                    # 沒有步驟分項 → 合成單一步驟
+            (dict(result, steps=[{'label': 'x', 'earned': 7, 'max': 6, 'comment': 'x'}]), 4),  # earned 超過 max
+        ]
+        for payload, want_score in recoverable:
+            with patch.object(self.app.ai, 'call', return_value=payload):
+                _, fixed, _ = self.request('POST', '/api/attempts', dict(body, consentExternal=True),
+                                           cookie=self.student, expect=200)
+            stored = self.teacher_attempt(aid, fixed['attempt']['id'])
+            self.assertEqual(stored['gradingMethod'], 'ai-advisory')
+            self.assertEqual(stored['score'], want_score)
+            self.assertEqual(sum(s['max'] for s in stored['steps']), 6, '步驟配分總和要等於題目總分')
+            self.assertEqual(sum(s['earned'] for s in stored['steps']), want_score, '步驟得分總和要等於總分')
+            self.assertTrue(all(s['earned'] <= s['max'] for s in stored['steps']), '步驟得分不可超過配分')
+            self.assertIn('已由系統按題目總分換算', stored['feedback'])
         with self.app.db() as db:
-            self.assertEqual(db.execute('SELECT count(*) FROM attempts').fetchone()[0], 1 + len(invalid_results))
+            self.assertEqual(db.execute('SELECT count(*) FROM attempts').fetchone()[0],
+                             1 + len(invalid_results) + len(recoverable))
         with patch.object(self.app.ai, 'call') as ai:
             _, parsed, _ = self.request('POST', '/api/papers/parse', {'name': '文本', 'text': '1. 解 x²−5x+6=0。'}, cookie=self.teacher, expect=200)
             self.assertEqual(parsed['method'], '規則拆題')

@@ -1306,10 +1306,11 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   // 有 AI 建議分時可以一鍵採用。
   const queueQuestions=[1,2,3].map(n=>({...assignmentQuestion,id:n,title:`第${n}題：因式分解`}));
   const queueAttempts=[1,2,3].map(n=>({...handwritten,id:100+n,questionId:n,questionTitle:`第${n}題：因式分解`,
-    aiScore:5,maxScore:6,score:null,status:'pending',teacherReviewed:false}));
+    aiScore:5,maxScore:6,score:null,status:'pending',teacherReviewed:false,
+    ...(n===1?{reviewFlags:[{code:'rule-higher',message:'最終答案與參考答案等價，但 AI 只給 2/6 分，建議確認是否漏給過程分。'}]}:{})}));
   const queueResults={json:{assignment:{...assignment,aiGrading:true,questionCount:3,totalPoints:18},
-    students:[{...student,status:'submitted',submittedAt:stamp,answeredCount:3,pendingCount:3,score:null,scoredPoints:0,confirmedScore:null,confirmedCount:0}],
-    summary:{studentCount:1,submittedCount:1,correctionCount:0,fullyGradedCount:0,pendingReviewCount:3,averageScore:null,confirmedAverage:null},
+    students:[{...student,status:'submitted',submittedAt:stamp,answeredCount:3,pendingCount:3,score:null,scoredPoints:0,confirmedScore:null,confirmedCount:0,reviewFlagCount:1}],
+    summary:{studentCount:1,submittedCount:1,correctionCount:0,fullyGradedCount:0,pendingReviewCount:3,reviewFlagCount:1,averageScore:null,confirmedAverage:null},
     topicStats:[]}};
   await page.route('**/api/assignments/1', route => route.fulfill({json:{
     assignment:{...assignment,aiGrading:true,questionCount:3,totalPoints:18}, questions:queueQuestions,
@@ -1333,8 +1334,12 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   assert.match(await page.locator('.modal').innerText(),/待批閱佇列：第 1 \/ 3 題/,'要顯示佇列進度');
   assert.match(await page.locator('#review-form button[type=submit]').innerText(),/保存並看下一題/,'還有下一題時要能一路批下去');
   assert.equal(await page.locator('#adopt-ai').count(),1,'有 AI 建議分時要能一鍵採用');
+  // 「建議覆核」：AI 建議分與規則核對衝突時，批閱彈窗要說明原因（不自動改分）
+  assert.equal(await page.locator('.review-flag-box').count(),1,'有旗標時要顯示建議覆核提示');
+  assert.match(await page.locator('.review-flag-box').innerText(),/等價/,'要說明衝突原因');
   await page.locator('#adopt-ai').click();
   await page.waitForFunction(()=>{const m=document.querySelector('#modal-root .modal');return m&&/第 2 \/ 3 題/.test(m.textContent);},{timeout:8000});
+  assert.equal(await page.locator('.review-flag-box').count(),0,'沒有旗標的題目不該顯示提示');
   assert.equal(queueBodies.length,1,'採用 AI 建議也是存檔一次');
   assert.equal(queueBodies[0].score,5,'採用的是 AI 建議分');
   await page.locator('#review-score').fill('6');
@@ -1346,7 +1351,12 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   await page.waitForFunction(()=>!document.querySelector('#modal-root .modal'),{timeout:8000});
   assert.equal(queueBodies.length,3,'三題都要存檔');
   assert.deepEqual(queueBodies.map(b=>b.score),[5,6,4],'每題存的分數各自正確');
-  console.log('PASS: 教師批閱佇列（存檔即換下一題、最後一題收尾、可採用 AI 建議）');
+  // 成績頁要看得到「建議覆核題目」，教師才知道哪幾題要優先看
+  await page.locator('.metric').first().waitFor({timeout:8000});
+  assert.match(await page.locator('#main').innerText(),/建議覆核題目/,'成績頁要有建議覆核指標');
+  assert.match(await page.locator('#main').innerText(),/建議覆核 1 題/,'學生列要標出建議覆核題數');
+  assert.equal(await page.locator('#results-filter option[value=flagged]').count(),1,'要能只看有建議覆核的學生');
+  console.log('PASS: 教師批閱佇列（存檔即換下一題、最後一題收尾、可採用 AI 建議、顯示建議覆核）');
 
   // 未啟用 AI 評分的作業不應出現一鍵批閱
   await page.route('**/api/assignments/1/results', resultsFixture(false));

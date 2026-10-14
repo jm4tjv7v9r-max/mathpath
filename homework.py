@@ -378,9 +378,13 @@ class Homework:
                 complete.append(sums['score'])
                 if sums['confirmedCount'] == len(questions):
                     confirmed.append(sums['confirmedScore'])
+            # 「建議覆核」：AI 建議分與規則核對衝突，或配分被歸一化過；
+            # 教師覆核後旗標會被清掉，所以這個數字就是「還需要教師多看一題」的題數。
+            flags = sum(1 for r in own if not r['teacher_reviewed'] and r['review_flags'] not in (None, '', '[]'))
             students.append({'id': recipient['id'], 'name': recipient['name'], 'username': recipient['username'],
                              'seat': recipient['seat'],
                              **submission, 'answeredCount': len(own), 'pendingCount': sums['pendingCount'],
+                             'reviewFlagCount': flags,
                              'score': sums['score'], 'totalPoints': sum(q['points'] for q in questions),
                              'scoredPoints': sums['totalScoredPoints'], 'confirmedScore': sums['confirmedScore'],
                              'confirmedCount': sums['confirmedCount'], 'aiScore': sums['aiScore'],
@@ -391,6 +395,8 @@ class Homework:
                    'fullyGradedCount': len(complete),
                    'pendingReviewCount': sum(r['status'] == 'pending' or
                                              (r['ai_score'] is not None and not r['teacher_reviewed']) for r in rows),
+                   'reviewFlagCount': sum(1 for r in rows if not r['teacher_reviewed']
+                                          and r['review_flags'] not in (None, '', '[]')),
                    'averageScore': sum(complete) / len(complete) if complete else None,
                    'confirmedAverage': sum(confirmed) / len(confirmed) if confirmed else None}
         return {'students': students, 'summary': summary,

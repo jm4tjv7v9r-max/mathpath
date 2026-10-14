@@ -560,6 +560,83 @@ class HomeworkTests(unittest.TestCase):
         self.assertIsNone(rows[3]['score'], '空白題不能被模型給分')
         self.assertFalse(rows[3]['teacherReviewed'])
 
+    def test_ai_grading_normalization_and_cross_check(self):
+        """AI 批改的精度：配分歸一化、規則交叉驗證旗標、教師覆核後清除。
+
+        模型算術不穩不該讓整筆評分作廢；但 AI 建議分與可重現的規則核對衝突時，
+        要留下「建議覆核」訊號讓教師優先看那一題，而且旗標只給教師看。
+        """
+        self.configure_ai()
+        aid = self.ai_assignment((1,))
+
+        # 1) 模型 max 加總 8 ≠ 題目 6、earned 也超過配分：由伺服器換算，不整筆作廢。
+        messy = {'score': 5, 'feedback': '大致正確',
+                 'steps': [{'label': '因式分解', 'earned': 4, 'max': 4, 'comment': ''},
+                           {'label': '得根', 'earned': 4, 'max': 4, 'comment': ''}]}
+        with patch.object(self.app.ai, 'call', return_value=messy):
+            stored = self.teacher_attempt(aid, self.attempt(aid, 1)['id'])
+        self.assertEqual(stored['gradingMethod'], 'ai-advisory')
+        self.assertEqual(stored['score'], 5, '總分以模型自報的 score 為準')
+        self.assertEqual(sum(s['max'] for s in stored['steps']), 6, '步驟配分總和要等於題目總分')
+        self.assertEqual(sum(s['earned'] for s in stored['steps']), 5)
+        self.assertTrue(all(s['earned'] <= s['max'] for s in stored['steps']))
+        self.assertIn('已由系統按題目總分換算', stored['feedback'])
+        self.assertEqual(stored['reviewFlags'], [], '只是換算不該被標成建議覆核')
+
+        # 2) 沒有步驟分項時合成單一步驟，保住分數與評語。
+        with patch.object(self.app.ai, 'call', return_value={'score': 4, 'feedback': '部分正確'}):
+            plain = self.teacher_attempt(aid, self.attempt(aid, 1)['id'])
+        self.assertEqual(plain['score'], 4)
+        self.assertEqual(plain['steps'], [{'label': '整體表現', 'earned': 4, 'max': 6.0, 'comment': ''}])
+
+        # 3) 最終答案與參考答案等價，但 AI 只給 2/6 → 標記建議覆核（不自動改分）。
+        low = {'score': 2, 'feedback': '過程簡略', 'steps': [{'label': '整體', 'earned': 2, 'max': 6, 'comment': ''}]}
+        with patch.object(self.app.ai, 'call', return_value=low):
+            flagged = self.teacher_attempt(aid, self.attempt(aid, 1)['id'])
+        self.assertEqual(flagged['score'], 2, '旗標只作提示，不改分數')
+        self.assertEqual([f['code'] for f in flagged['reviewFlags']], ['rule-higher'])
+        self.assertIn('等價', flagged['reviewFlags'][0]['message'])
+        # 旗標是教師的覆核提示，不是學生的成績資訊。
+        self.assertNotIn('reviewFlags', self.student_attempt(aid, flagged['id']))
+        results = self.results(aid)
+        by_id = {s['id']: s for s in results['students']}
+        self.assertEqual(results['summary']['reviewFlagCount'], 1)
+        self.assertEqual(by_id[1]['reviewFlagCount'], 1)
+        self.assertEqual(by_id[3]['reviewFlagCount'], 0, '其他學生不受影響')
+        # 教師覆核後旗標清除：已定案就不需要再提示。
+        self.review(flagged, score=6)
+        self.assertEqual(self.teacher_attempt(aid, flagged['id'])['reviewFlags'], [])
+        self.assertEqual(self.results(aid)['summary']['reviewFlagCount'], 0)
+
+        # 4) 反方向：答案不對但 AI 給接近滿分 → 另一個旗標。
+        full = {'score': 6, 'feedback': '很好', 'steps': [{'label': '整體', 'earned': 6, 'max': 6, 'comment': ''}]}
+        with patch.object(self.app.ai, 'call', return_value=full):
+            lower = self.teacher_attempt(aid, self.attempt(aid, 1, answer='x=1或6')['id'])
+        self.assertEqual([f['code'] for f in lower['reviewFlags']], ['rule-lower'])
+
+        # 5) 學生自主練習即時評分：沒有教師覆核這一步，不需要旗標。
+        with patch.object(self.app.ai, 'call', return_value=low):
+            practice = self.attempt(None, 1, answer='x=2或3')
+        self.assertEqual(practice['gradingMethod'], 'ai-practice')
+        with self.app.db() as db:
+            raw = db.execute('SELECT review_flags FROM attempts WHERE id=?', (practice['id'],)).fetchone()[0]
+        self.assertEqual(raw, '[]', '自主練習不產生建議覆核旗標')
+
+    def test_ai_grading_prompt_states_policy_and_rule_hint(self):
+        """批改提示要寫明評分政策，並把可重現的規則核對結果當提示（不是當答案）。"""
+        self.configure_ai()
+        aid = self.ai_assignment((1,))
+        payload = {'score': 6, 'feedback': '全對', 'steps': [{'label': '整體', 'earned': 6, 'max': 6, 'comment': ''}]}
+        with patch.object(self.app.ai, 'call', return_value=payload) as ai:
+            self.attempt(aid, 1, answer='x=2或3')
+        instruction, sent = ai.call_args_list[0][0][0], ai.call_args_list[0][0][1]
+        for line in ('評分政策', '數學等價', '不要推測', '選擇題以選項字母判對', '輸出前請再檢查'):
+            self.assertIn(line, instruction)
+        self.assertIn('ruleCheck', sent, '要把規則核對結果餵給模型當提示')
+        self.assertIn('只是字串比對', sent['ruleCheck'], '要明說那只是字串比對，不是標準答案')
+        # 批改不指定 temperature（預設 0，可重現），與生成變式題的高溫不同。
+        self.assertIn(ai.call_args_list[0][1].get('temperature'), (None, 0))
+
     def test_concurrent_finalize_only_one_state(self):
         aid = self.assignment((1,))
         self.attempt(aid)

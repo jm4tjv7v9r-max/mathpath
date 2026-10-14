@@ -420,3 +420,13 @@ button.danger:disabled{opacity:.6}
   .record{padding-left:12px}
   .assignment-question-row .q-actions{align-items:flex-start;margin-left:35px;width:calc(100% - 35px)}
 }
+
+/* ══ 「建議覆核」：AI 建議分與規則核對不一致時的提示 ══════════════════
+   這是請教師優先看一題的訊號，不是自動改分。用暖色讓它一眼可見，
+   但不搶過分數與作答內容的注意力；教師覆核後旗標會清除。 */
+.badge.review-flag{background:#fdf1dc;color:#a3762b;border:1px solid #f0dcb6;font-weight:500}
+.review-flag-box{display:flex;gap:9px;align-items:flex-start;background:#fdf8ec;border-color:#efe2c8;color:#8a6f3a}
+.review-flag-box strong{display:block;margin-bottom:2px}
+.review-flag-list{margin:0;padding-left:18px;font-size:calc(14px*var(--fs));line-height:1.75}
+.review-flag-box small{display:block;margin-top:5px;color:#a2957a;font-size:calc(12.5px*var(--fs))}
+.review-flag-note{display:block;color:#a3762b}
