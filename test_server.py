@@ -901,6 +901,32 @@ class APITests(unittest.TestCase):
         broken = png_url().replace('data:image/png;', 'data:image/jpeg;')
         self.request('POST', '/api/attempts', {'questionId': 1, 'answerText': '', 'image': broken}, cookie=self.student, expect=400)
 
+    def test_teacher_moves_and_rewrites_ai_annotation(self):
+        """教師可以搬動印章／批語並改寫 AI 的說明；位置以 0 至 1 的相對座標保存，壞座標不寫入。"""
+        attempt = self.submit('', image=png_url())
+        aid = attempt['id']
+        marks = {'issues': [{'x': 0.3, 'y': 0.4, 'label': '符號錯誤', 'comment': '這裡應為負號'}],
+                 'summary': '主要在符號處理',
+                 'placements': {'issue:0': {'x': 0.62, 'y': 0.18}, 'summary': {'x': 0.5, 'y': 0.9}}}
+        _, result, _ = self.request('POST', f'/api/attempts/{aid}/ai-annotation', {'marks': marks},
+                                    cookie=self.teacher, expect=200)
+        ann = result['attempt']['aiAnnotation']
+        self.assertTrue(ann['adjusted'])
+        self.assertEqual(ann['placements']['issue:0'], {'x': 0.62, 'y': 0.18})
+        self.assertEqual(ann['issues'][0]['comment'], '這裡應為負號')
+        self.assertEqual(ann['summary'], '主要在符號處理')
+        # 教師改寫說明：文字直接沿用同一條路徑保存。
+        rewritten = {**marks, 'issues': [{**marks['issues'][0], 'comment': '這裡應為負號，而且在移項之後。'}]}
+        _, again, _ = self.request('POST', f'/api/attempts/{aid}/ai-annotation', {'marks': rewritten},
+                                   cookie=self.teacher, expect=200)
+        self.assertEqual(again['attempt']['aiAnnotation']['issues'][0]['comment'], '這裡應為負號，而且在移項之後。')
+        # 壞座標要擋下來，不能把壞資料寫進資料庫。
+        for bad in ({'issue:0': {'x': 1.4, 'y': 0.2}}, {'issue:99': {'x': 0.2, 'y': 0.2}}, {'note': {'x': 0.2, 'y': 0.2}}):
+            self.request('POST', f'/api/attempts/{aid}/ai-annotation', {'marks': {**marks, 'placements': bad}},
+                         cookie=self.teacher, expect=400)
+        # 學生不能調整教師的批註。
+        self.request('POST', f'/api/attempts/{aid}/ai-annotation', {'marks': marks}, cookie=self.student, expect=403)
+
     def test_no_ai_handwritten_and_missing_answer_pending(self):
         # 自主練習（不屬於任何作業）不會使用 AI 批改。
         self.assertEqual(self.submit('x=2或3', image=png_url())['status'], 'pending')
@@ -2557,6 +2583,30 @@ class PureTests(unittest.TestCase):
         # 題目圖形也接受 WebP。
         data, mime = server.decode_figure(data_url(extended))
         self.assertEqual((len(data), mime), (len(extended), 'image/webp'))
+
+    def test_ai_annotation_placements_only_from_teacher_adjustments(self):
+        """AI 回應不接受 placements（免得模型亂塞欄位）；教師儲存調整時才接受，座標一律 0 至 1。"""
+        marks = {'issues': [{'x': 0.2, 'y': 0.3, 'label': '符號錯誤', 'comment': '這裡應為負號'}],
+                 'summary': '主要在符號處理'}
+        with self.assertRaises(server.APIError):
+            server.ai_annotation_valid({**marks, 'placements': {'issue:0': {'x': 0.5, 'y': 0.5}}})
+        result = server.ai_annotation_valid(
+            {**marks, 'placements': {'stamp': {'x': 0.9, 'y': 0.1}, 'summary': {'x': 0.5, 'y': 0.9},
+                                     'issue:0': {'x': 0.42, 'y': 0.31}}},
+            allow_placements=True)
+        self.assertEqual(result['placements']['issue:0'], {'x': 0.42, 'y': 0.31})
+        self.assertEqual(result['placements']['stamp'], {'x': 0.9, 'y': 0.1})
+        # 只改文字、沒有搬動任何東西時，不必帶 placements。
+        self.assertNotIn('placements', server.ai_annotation_valid(marks, allow_placements=True))
+        # 位置鍵與座標都要嚴格檢查，壞資料一律拒絕寫入。
+        for bad in ({'note': {'x': 0.5, 'y': 0.5}}, {'issue:99': {'x': 0.5, 'y': 0.5}},
+                    {'issue:x': {'x': 0.5, 'y': 0.5}}, {'issue:-1': {'x': 0.5, 'y': 0.5}},
+                    {'issue:0': {'x': 1.2, 'y': 0.5}}, {'issue:0': {'x': 0.5}},
+                    {'issue:0': {'x': 0.5, 'y': 0.5, 'z': 1}}, {'issue:0': {'x': True, 'y': 0.5}},
+                    {'issue:0': 'x'}, 'x'):
+            with self.subTest(bad=bad):
+                with self.assertRaises(server.APIError):
+                    server.ai_annotation_valid({**marks, 'placements': bad}, allow_placements=True)
 
     def test_ai_configuration_requires_https_external(self):
         for base in ('http://192.168.1.2/v1', 'http://external.invalid/v1', 'https://user:pass@external.invalid/v1',

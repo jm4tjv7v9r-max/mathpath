@@ -236,8 +236,9 @@ class DataAdmin:
         """
         storage = self.app.storage
         if storage.mode != 'r2':
-            self.fail(409, '尚未設定網盤（物件儲存）。請先設定 R2_ACCOUNT_ID、R2_ACCESS_KEY_ID、'
-                           'R2_SECRET_ACCESS_KEY、R2_BUCKET 四個環境變數後重新部署。')
+            self.fail(409, '尚未設定網盤（物件儲存）。請先設定 R2_ACCESS_KEY_ID、R2_SECRET_ACCESS_KEY、'
+                           'R2_BUCKET，以及 R2_ACCOUNT_ID（或用 R2_ENDPOINT 指定其他 S3 相容服務）'
+                           '後重新部署。')
         with BACKUP_LOCK:
             # 檔名要「永不用重」：一旦舊備份被保留策略刪掉，同樣的檔名可能被下一個
             # 備份重用；那時上傳會覆蓋同一個 key，接著保留策略就把「最新那份仍在引用」
@@ -285,9 +286,13 @@ class DataAdmin:
         """給介面用的備份狀態：最近一次、保留份數、是否已設定網盤。"""
         history = self.backup_history(db)
         last = history[0] if history else None
+        storage = self.app.storage.public()
         return {'storageMode': self.app.storage.mode,
-                'configured': self.app.storage.mode == 'r2',
+                'configured': storage['configured'],
                 'error': self.app.storage.last_error,
+                'bucket': storage['bucket'],
+                'region': storage['region'],
+                'endpoint': storage['endpoint'],
                 'keep': self.backup_keep(),
                 'count': len(history),
                 'lastAt': last['at'] if last else None,

@@ -120,6 +120,47 @@ class StorageTests(unittest.TestCase):
         self.assertEqual(app.storage.mode, 'db')
         self.assertIn('HTTPS', app.storage.public()['error'])
 
+    def test_region_defaults_to_auto_and_is_used_in_signature(self):
+        """Cloudflare R2 的簽名 region 固定是 auto。"""
+        app = self.make_app(self.r2_env())
+        self.assertEqual(app.storage.public()['region'], 'auto')
+        student, _ = self.users(app)
+        self.call(app, 'POST', '/api/attempts',
+                  {'questionId': 1, 'answerText': '', 'image': PNG}, student)
+        self.assertIn('/auto/s3/aws4_request', FakeS3.requests[-1][2]['authorization'])
+
+    def test_custom_endpoint_accepts_other_providers_region(self):
+        """改用 AWS S3／Backblaze B2／Wasabi 等：自訂端點時可省略 R2_ACCOUNT_ID，region 由 R2_REGION 決定。
+
+        這些服務會檢查 Credential scope 裡的 region 是否與 bucket 相符，
+        填錯會回 AuthorizationHeaderMalformed，所以一定要能設定。
+        """
+        env = self.r2_env(R2_REGION='ap-southeast-1')
+        env.pop('R2_ACCOUNT_ID')
+        app = self.make_app(env)
+        self.assertEqual(app.storage.mode, 'r2')
+        self.assertEqual(app.storage.public()['region'], 'ap-southeast-1')
+        student, _ = self.users(app)
+        attempt = self.call(app, 'POST', '/api/attempts',
+                            {'questionId': 1, 'answerText': '', 'image': PNG}, student)['attempt']
+        self.assertIn('/ap-southeast-1/s3/aws4_request', FakeS3.requests[-1][2]['authorization'])
+        with app.db() as db:
+            row = db.execute('SELECT image_key FROM attempts WHERE id=?', (attempt['id'],)).fetchone()
+        self.assertTrue(row['image_key'].startswith('attempts/'))
+
+    def test_default_endpoint_still_needs_account_id(self):
+        env = self.r2_env()
+        env.pop('R2_ENDPOINT')
+        env.pop('R2_ACCOUNT_ID')
+        app = self.make_app(env)
+        self.assertEqual(app.storage.mode, 'db')
+        self.assertIn('不完整', app.storage.public()['error'])
+
+    def test_invalid_region_is_rejected(self):
+        app = self.make_app(self.r2_env(R2_REGION='ap southeast 1'))
+        self.assertEqual(app.storage.mode, 'db')
+        self.assertIn('R2_REGION', app.storage.public()['error'])
+
     # ---------- R2 後端 ----------
     def test_r2_upload_keeps_only_key_and_streams_back(self):
         app = self.make_app(self.r2_env())

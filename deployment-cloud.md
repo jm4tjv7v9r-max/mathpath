@@ -56,11 +56,15 @@ R2_SECRET_ACCESS_KEY=你的SecretAccessKey
 R2_BUCKET=mathpath
 # 可選：物件 key 前綴，例如不同學校分開
 # R2_PREFIX=school-a
-# 可選：自訂 S3 相容端點（本機測試／自架 MinIO；http 只允許 localhost）
+# 可選：自訂 S3 相容端點（AWS S3／Backblaze B2／Wasabi／自架 MinIO；http 只允許 localhost）
 # R2_ENDPOINT=
+# 可選：簽名用 region，預設 auto（R2 固定用 auto；非 R2 的服務一定要填）
+# R2_REGION=
 ```
 
-四個必填變數**只要少一個，就自動退回資料庫後端**（不會上傳到一半才失敗），
+必填的是 `R2_ACCESS_KEY_ID`、`R2_SECRET_ACCESS_KEY`、`R2_BUCKET`，再加上
+`R2_ACCOUNT_ID`（用 Cloudflare R2 預設端點）或 `R2_ENDPOINT`（用其他 S3 相容服務）其中一項。
+**只要設了一部分但不完整，就自動退回資料庫後端**（不會上傳到一半才失敗），
 並在 `/api/health` 的 `storage.error` 說明原因。
 
 ### 3. 確認是否生效
@@ -254,11 +258,17 @@ Render 會自動重新部署。
 
 | 環境變數 | 說明 |
 |---|---|
-| `R2_ACCOUNT_ID`、`R2_ACCESS_KEY_ID`、`R2_SECRET_ACCESS_KEY`、`R2_BUCKET` | 四個都填齊才會啟用；少一個就維持資料庫後端並在 `/api/health` 說明原因 |
+| `R2_ACCESS_KEY_ID`、`R2_SECRET_ACCESS_KEY`、`R2_BUCKET` | 三個必填 |
+| `R2_ACCOUNT_ID` | 用 Cloudflare R2 預設端點時必填（`https://<帳號ID>.r2.cloudflarestorage.com`） |
+| `R2_ENDPOINT` | 選用；改用其他 S3 相容服務（AWS S3／Backblaze B2／Wasabi／自架 MinIO）時填這裡，並可省略 `R2_ACCOUNT_ID`。非本機必須 HTTPS |
+| `R2_REGION` | 選用；簽名用 region，預設 `auto`（R2 固定用 `auto`）。**改用非 R2 的服務一定要填該 bucket 的 region**，否則會回 `AuthorizationHeaderMalformed` |
 | `R2_PREFIX` | 選用，物件 key 前綴（多校共用一個 bucket 時用） |
-| `R2_ENDPOINT` | 選用，自架 S3 相容服務（非本機必須 HTTPS） |
 | `MATH_BACKUP_HOURS` | 自動備份間隔（小時）；**不設＝關閉**。建議 `24` |
 | `MATH_BACKUP_KEEP` | 保留最近幾份；預設 `14`，超過自動刪最舊的一份 |
+
+> 設定只要「設了一部分但不完整」，網站不會猜測，會維持資料庫後端並在 `/api/health` 與
+> 「資料管理」頁說明原因。完整教學（含 R2 逐步操作與各家對照）見
+> `outputs/MathPath-網盤設定教學.md`。
 
 **備份內容與位置**
 

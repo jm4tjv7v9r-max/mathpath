@@ -8,12 +8,14 @@
 - 只用 Python 標準庫實作 S3 相容簽名（SigV4），不新增依賴。
 
 環境變數（設定齊全才會啟用 R2；否則維持資料庫後端）：
-    R2_ACCOUNT_ID         Cloudflare 帳號 ID
     R2_ACCESS_KEY_ID      R2 API Token 的 Access Key ID
     R2_SECRET_ACCESS_KEY  R2 API Token 的 Secret Access Key
     R2_BUCKET             bucket 名稱
-    R2_PREFIX             可選，物件 key 的前綴（預設空）
+    R2_ACCOUNT_ID         Cloudflare 帳號 ID（用預設端點時必填；改自訂端點時可省略）
+    R2_REGION             可選，簽名用的 region（預設 auto，Cloudflare R2 固定用 auto；
+                         改用 AWS S3／Backblaze B2／Wasabi 等服務時要填該 bucket 的 region）
     R2_ENDPOINT           可選，自訂 S3 相容端點（本機測試或自架 MinIO 用；http 只允許 localhost）
+    R2_PREFIX             可選，物件 key 的前綴（預設空）
 """
 import hashlib
 import hmac
@@ -52,6 +54,7 @@ class Storage:
         self.mode = 'db'
         self.bucket = ''
         self.endpoint = ''
+        self.host = ''
         self.region = 'auto'
         self.prefix = ''
         self.access_key = ''
@@ -68,20 +71,26 @@ class Storage:
         self.secret_key = os.environ.get('R2_SECRET_ACCESS_KEY', '').strip()
         self.bucket = os.environ.get('R2_BUCKET', '').strip()
         self.prefix = os.environ.get('R2_PREFIX', '').strip().strip('/')
-        values = (account, self.access_key, self.secret_key, self.bucket)
-        if not any(values):
+        self.region = os.environ.get('R2_REGION', '').strip() or 'auto'
+        custom = os.environ.get('R2_ENDPOINT', '').strip().rstrip('/')
+        required = (self.access_key, self.secret_key, self.bucket)
+        if not any((account, custom) + required):
             self.mode = 'db'
             return
-        if not all(values):
-            # 只設定一部分：不猜測，維持資料庫後端並記錄原因，避免上傳到一半才失敗。
-            self.last_error = 'R2 設定不完整（需要 R2_ACCOUNT_ID、R2_ACCESS_KEY_ID、R2_SECRET_ACCESS_KEY、R2_BUCKET）。'
+        # 端點有兩種來源：Cloudflare 帳號 ID 組出預設端點，或直接給一個 S3 相容端點。
+        if not all(required) or not (account or custom):
+            self.last_error = ('R2 設定不完整（需要 R2_ACCESS_KEY_ID、R2_SECRET_ACCESS_KEY、R2_BUCKET，'
+                               '以及 R2_ACCOUNT_ID 或 R2_ENDPOINT 其中一項）。')
             self.mode = 'db'
             return
-        if not all(c.isalnum() or c in '-_' for c in account):
+        if account and not all(c.isalnum() or c in '-_' for c in account):
             self.last_error = 'R2_ACCOUNT_ID 格式不正確。'
             self.mode = 'db'
             return
-        custom = os.environ.get('R2_ENDPOINT', '').strip().rstrip('/')
+        if not all(c.isalnum() or c in '-_' for c in self.region):
+            self.last_error = 'R2_REGION 格式不正確。'
+            self.mode = 'db'
+            return
         if custom:
             parsed = urlsplit(custom)
             local = parsed.hostname in ('127.0.0.1', 'localhost')
@@ -98,6 +107,8 @@ class Storage:
 
     def public(self):
         return {'mode': self.mode, 'bucket': self.bucket if self.mode == 'r2' else '',
+                'region': self.region if self.mode == 'r2' else '',
+                'endpoint': self.host if self.mode == 'r2' else '',
                 'configured': self.mode == 'r2', 'error': self.last_error}
 
     # ---------- key ----------

@@ -237,6 +237,9 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   await page.locator('.ai-annotation').waitFor();
   const aiText=await page.locator('.ai-annotation').innerText();
   assert.match(aiText,/AI 建議批註/);assert.match(aiText,/未經教師確認/);assert.match(aiText,/符號錯誤/);assert.match(aiText,/這裡應為負號/);
+  assert.equal(await page.locator('#calc-root .calc-fab').count(),0,'計算機只給學生作答時用，教師不應看到');
+  assert.equal(await page.locator('.ai-callout').count(),2,'AI 批語與總結都要畫在手稿上');
+  assert.ok(await page.locator('.ai-callout.movable').count()>=1,'教師端的 AI 批語要能拖動');
   assert.equal(await page.locator('.ai-mark').count(),1,'AI 應在圖上標出1處');
   assert.equal(await page.locator('.ai-mark').innerText(),'1');
   await page.locator('.ai-annotation').scrollIntoViewIfNeeded();
@@ -261,6 +264,34 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   await page.screenshot({path:path.join(__dirname,'..','MathPath-AI批注调整位置.png'),fullPage:true});
   await page.locator('#ai-adjust-status').scrollIntoViewIfNeeded();
   await page.screenshot({path:path.join(__dirname,'..','MathPath-AI批注调整位置.png'),fullPage:true});
+
+  // 教師也可以直接拖動 AI 批語框（不只是圓標），並改寫 AI 寫錯的說明文字。
+  const callout=page.locator('.ai-callout.issue').first();
+  await callout.scrollIntoViewIfNeeded();
+  const calloutBefore=await callout.boundingBox();
+  await page.mouse.move(calloutBefore.x+calloutBefore.width/2,calloutBefore.y+calloutBefore.height/2);
+  await page.mouse.down();
+  await page.mouse.move(calloutBefore.x+calloutBefore.width/2-45,calloutBefore.y+calloutBefore.height/2+30,{steps:8});
+  await page.mouse.up();
+  assert.match(await page.locator('#ai-adjust-status').innerText(),/改動/,'拖動批語框後應提示尚未儲存');
+  const calloutAfter=await callout.boundingBox();
+  assert.ok(Math.abs(calloutAfter.x-calloutBefore.x)>10,'批語框要真的跟著移動');
+  await page.waitForTimeout(450);   // 拖曳剛結束的 click 會被忽略，等它過去再點
+  await page.evaluate(()=>{window.prompt=(msg,def)=>'符號錯誤 | 這裡應為負號，而且在移項之後。';});
+  await callout.click();
+  await page.waitForFunction(()=>document.getElementById('ai-adjust-status')?.textContent.includes('批註文字已修改'));
+  assert.match(await callout.innerText(),/移項之後/,'圖上的批語要換成教師改寫的文字');
+  await page.evaluate(()=>{delete window.prompt;});
+  await page.locator('#ai-adjust-save').click();
+  for(let i=0;i<40&&!(aiAdjusted.placements&&aiAdjusted.placements['issue:0']);i++)await page.waitForTimeout(50);
+  assert.equal(aiAdjusted.issues[0].comment,'這裡應為負號，而且在移項之後。','教師改寫的說明要一起送出');
+  assert.equal(aiAdjusted.issues[0].label,'符號錯誤','只改說明時標籤要保持不變');
+  assert.ok(aiAdjusted.placements&&aiAdjusted.placements['issue:0'],'批語框的位置要一起保存');
+  assert.ok(Math.abs(aiAdjusted.placements['issue:0'].x-AI_ISSUE.x)>0.005||Math.abs(aiAdjusted.placements['issue:0'].y-AI_ISSUE.y)>0.005,'保存的是拖動後的位置');
+  await page.locator('.ai-annotation').waitFor();
+  assert.match(await page.locator('.ai-annotation').innerText(),/教師已調整/,'調整後要標明教師已調整，不能還寫「未經教師確認」');
+  await page.screenshot({path:path.join(__dirname,'..','MathPath-AI批注修改文字.png'),fullPage:true});
+
   await page.locator('#ann-canvas').scrollIntoViewIfNeeded();
   const box=await page.locator('#ann-canvas').boundingBox();
   await page.locator('[data-ann-tool=pen]').click();
@@ -286,8 +317,9 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   assert.match(await page.locator('.annotated-view').innerText(),/教師批註/);
   assert.match(await page.locator('.annotated-view img').getAttribute('src'),/\/api\/attempts\/9\/annotation$/);
   assert.match(await page.locator('.annotated-view').innerText(),/紅圈與箭頭指出需要修改的地方/);
-  // 學生同時看得到 AI 建議批註，並清楚標示未經教師確認。
-  assert.match(await page.locator('.ai-annotation').innerText(),/未經教師確認/);
+  // 學生同時看得到 AI 建議批註；教師調整過就要如實標示，不能還寫「未經教師確認」。
+  assert.match(await page.locator('.ai-annotation').innerText(),/教師已調整位置／文字/);
+  assert.doesNotMatch(await page.locator('.ai-annotation').innerText(),/未經教師確認/);
   assert.equal(await page.locator('.ai-mark').count(),1);
   await page.locator('[data-action=close-modal]').click();
 
@@ -1114,6 +1146,59 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   assert.match(await page.locator('#final-answer').inputValue(), /\\mathbb\{R\}/, '應插入實數符號');
   await page.screenshot({path:path.join(__dirname,'..','MathPath-數學鍵盤.png'),fullPage:true});
 
+  // ── 學生可以自己調整手寫書寫區大小（題目長、步驟多就換大一點），筆跡要保留 ──
+  await page.locator('[data-answer-mode=hand]').click();
+  await page.locator('#hand-canvas').waitFor();
+  assert.equal(await page.locator('#hand-canvas').getAttribute('height'),'700','預設書寫區是 1200 × 700');
+  const handBox0=await page.locator('#hand-canvas').boundingBox();
+  await page.mouse.move(handBox0.x+60,handBox0.y+60);await page.mouse.down();await page.mouse.move(handBox0.x+170,handBox0.y+130,{steps:6});await page.mouse.up();
+  assert.equal(await page.evaluate(()=>strokes.length),1,'應記下一筆手寫');
+  await page.locator('#hand-size').selectOption('tall');
+  await page.waitForFunction(()=>document.getElementById('hand-canvas').height===1000);
+  assert.equal(await page.evaluate(()=>strokes.length),1,'換尺寸不應清掉筆跡');
+  const handBox1=await page.locator('#hand-canvas').boundingBox();
+  assert.ok(Math.abs(handBox1.height/handBox1.width-1000/1200)<0.03,'畫布要依內建比例顯示，不能被壓扁');
+  assert.ok(handBox1.height>handBox0.height,'加高後畫面也要真的變高');
+  await page.locator('#hand-size').selectOption('normal');   // 縮小要確認，對話框會自動接受
+  await page.waitForFunction(()=>document.getElementById('hand-canvas').height===700);
+  assert.equal(await page.evaluate(()=>strokes.length),1,'縮小後筆跡仍保留在畫布內');
+  await page.screenshot({path:path.join(__dirname,'..','MathPath-書寫區大小.png'),fullPage:true});
+  await page.evaluate(()=>{strokes=[];redoStrokes=[];drawCanvas();});
+
+  // ── 簡易計算機：學生作答時在右下角，可縮小；算式自己算（不用 eval），除以零要說清楚 ──
+  await page.locator('#calc-open').click();
+  await page.locator('.calc-panel').waitFor();
+  await page.locator('[data-calc="7"]').click();
+  await page.locator('[data-calc="×"]').click();
+  await page.locator('[data-calc="8"]').click();
+  assert.equal(await page.locator('#calc-screen').innerText(),'7×8');
+  assert.equal(await page.locator('#calc-live').innerText(),'= 56','要先顯示即時結果');
+  await page.locator('[data-calc="equals"]').click();
+  assert.equal(await page.locator('#calc-screen').innerText(),'56','按等號後以結果取代算式，方便接著算');
+  await page.locator('[data-calc="clear"]').click();
+  await page.locator('[data-calc="sqrt"]').click();
+  await page.locator('[data-calc="9"]').click();
+  await page.locator('[data-calc=")"]').click();
+  assert.equal(await page.locator('#calc-live').innerText(),'= 3','√ 要能算');
+  await page.locator('[data-calc="clear"]').click();
+  await page.locator('[data-calc="5"]').click();
+  await page.locator('[data-calc="÷"]').click();
+  await page.locator('[data-calc="0"]').click();
+  assert.match(await page.locator('#calc-live').innerText(),/除數不可為 0/,'除以零要說明原因，不能顯示 Infinity');
+  await page.locator('[data-calc="back"]').click();
+  await page.locator('[data-calc="2"]').click();
+  assert.equal(await page.locator('#calc-live').innerText(),'= 2.5');
+  await page.locator('#calc-close').click();
+  assert.equal(await page.locator('.calc-panel').count(),0,'縮小後應收起面板');
+  assert.equal(await page.locator('#calc-open').count(),1,'縮小後留下一個小按鈕');
+  await page.screenshot({path:path.join(__dirname,'..','MathPath-計算機.png'),fullPage:true});
+  await page.locator('#calc-open').click();
+  await page.locator('.calc-panel').waitFor();
+  assert.equal(await page.locator('#calc-screen').innerText(),'5÷2','縮小再打開要保留剛才的算式');
+  await page.evaluate(()=>{calcExpr='';});
+  await page.locator('#calc-close').click();
+  await page.locator('[data-answer-mode=text]').click();
+
   // ── 是否由 AI 批改：由教師在佈置作業時決定，學生不能自行選擇 ──
   const studentState = extra => route => route.fulfill({json:{
     user:{id:1,name:'介面測試學生',role:'student'},
@@ -1635,6 +1720,19 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   await page.waitForFunction(()=>!!answerFile&&!uploadReading);await page.evaluate(()=>saveDraft());
   await page.evaluate(()=>{answerFile=null;restoreDraft();});assert.equal(await page.locator('#answer-area img').count(),1,'上传草稿仍能恢复');
   await page.locator('#answer-remove').focus();await page.keyboard.press('Enter');assert.equal(await page.evaluate(()=>answerFile),null);
+
+  // 學生相片作答要在瀏覽器先縮圖轉 WebP：原檔 MB 級、送出 KB 級（直接影響網盤空間與上傳時間）。
+  const photoDataUrl=await page.evaluate(()=>{const c=document.createElement('canvas');c.width=2400;c.height=3200;const x=c.getContext('2d');const g=x.createLinearGradient(0,0,2400,3200);g.addColorStop(0,'#f7f3ea');g.addColorStop(1,'#d8d2c4');x.fillStyle=g;x.fillRect(0,0,2400,3200);x.strokeStyle='#333';x.lineWidth=6;for(let i=0;i<160;i++){x.beginPath();x.moveTo(150,150+i*18);x.lineTo(2250,140+i*19);x.stroke();}return c.toDataURL('image/jpeg',0.95);});
+  const photoBuffer=Buffer.from(photoDataUrl.split(',')[1],'base64');
+  assert.ok(photoBuffer.length>800000,`測試相片要有 MB 級（實際 ${photoBuffer.length}）`);
+  await page.locator('#answer-upload').setInputFiles({name:'homework.jpg',mimeType:'image/jpeg',buffer:photoBuffer});
+  await page.waitForFunction(()=>!!answerFile&&!uploadReading);
+  const compressed=await page.evaluate(()=>({url:answerFile,bytes:dataUrlBytes(answerFile)}));
+  assert.match(compressed.url,/^data:image\/webp;base64,/,'相片要先轉成 WebP 再送出');
+  assert.ok(compressed.bytes<400000,`壓縮後要在 400 KB 以內（實際 ${compressed.bytes}）`);
+  assert.ok(compressed.bytes*5<photoBuffer.length,`至少要縮到原檔的五分之一（原檔 ${photoBuffer.length}、送出 ${compressed.bytes}）`);
+  assert.match(await page.locator('#answer-read-status').innerText(),/已壓縮至約/,'要告訴學生相片已壓縮、送出更快');
+  await page.evaluate(()=>{answerFile=null;renderAnswerArea();});
 
   // deadline 使用服务器时间；相同 target 切题／返回不得延长；到零不访问 null。
   await page.evaluate(()=>{navigate('bank');startQuizClock({kind:'assignment',id:92},60,new Date(Date.now()+5000).toISOString());window.deadlineBefore=quizClock.deadline;startQuizClock({kind:'assignment',id:92},999);});

@@ -1096,8 +1096,22 @@ class HomeworkTests(unittest.TestCase):
         self.error(403, 'POST', path, {'marks': moved}, self.student)
         # 調整後的座標仍須通過同一套驗證，不可放寬。
         self.error(400, 'POST', path, {'marks': 'nope'}, self.teacher)
-        self.error(502, 'POST', path, {'marks': {'issues': [{'x': 1.4, 'y': 0.5, 'label': 'a', 'comment': 'b'}]}}, self.teacher)
+        # 教師送來的壞座標是「用戶端資料錯誤」＝400，不再是上游模型失敗的 502。
+        self.error(400, 'POST', path, {'marks': {'issues': [{'x': 1.4, 'y': 0.5, 'label': 'a', 'comment': 'b'}]}}, self.teacher)
         self.error(400, 'POST', path, {'marks': moved, 'unknown': 1}, self.teacher)
+        # 教師也可以把批語框／印章搬到別的位置，並改寫 AI 的說明文字。
+        placed = {**moved,
+                  'issues': [dict(moved['issues'][0], comment='這裡應為負號，而且在移項之後。'), moved['issues'][1]],
+                  'placements': {'issue:0': {'x': 0.62, 'y': 0.18}, 'stamp': {'x': 0.9, 'y': 0.1},
+                                 'summary': {'x': 0.5, 'y': 0.9}}}
+        saved = self.call('POST', path, {'marks': placed}, self.teacher)['attempt']
+        self.assertEqual(saved['aiAnnotation']['placements']['issue:0'], {'x': 0.62, 'y': 0.18})
+        self.assertEqual(saved['aiAnnotation']['placements']['stamp'], {'x': 0.9, 'y': 0.1})
+        self.assertEqual(saved['aiAnnotation']['issues'][0]['comment'], '這裡應為負號，而且在移項之後。')
+        self.assertEqual(saved['aiAnnotation']['issues'][0]['label'], '符號錯誤', '只改說明時標籤不變')
+        # 位置鍵與座標一樣要嚴格檢查。
+        self.error(400, 'POST', path, {'marks': {**moved, 'placements': {'note': {'x': 0.1, 'y': 0.1}}}}, self.teacher)
+        self.error(400, 'POST', path, {'marks': {**moved, 'placements': {'issue:0': {'x': 1.4, 'y': 0.1}}}}, self.teacher)
         # 未經 AI 產生批註前，教師仍可保存自己修訂的位置（不呼叫模型）。
         other = self.attempt(aid, answer='', image=test_server.png_url())
         with patch.object(self.app.ai, 'call', return_value=marks) as ai:

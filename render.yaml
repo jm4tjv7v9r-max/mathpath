@@ -55,3 +55,17 @@ services:
         sync: false
       - key: R2_BUCKET
         sync: false
+      # 改用非 Cloudflare R2 的 S3 相容服務（AWS S3／Backblaze B2／Wasabi／自架 MinIO）時才填：
+      # R2_ENDPOINT 指向該服務的端點（此時 R2_ACCOUNT_ID 可留空），
+      # R2_REGION 填該 bucket 的 region（R2 留空＝auto，其他服務一定要填，否則回 AuthorizationHeaderMalformed）。
+      # 留空即可，程式會沿用預設值。詳見 outputs/MathPath-網盤設定教學.md。
+      - key: R2_ENDPOINT
+        sync: false
+      - key: R2_REGION
+        sync: false
+      # 自動備份：間隔（小時，留空＝不啟用，建議 24）與保留份數（留空＝14）。
+      # 未設定網盤時這兩項不會有任何作用。
+      - key: MATH_BACKUP_HOURS
+        sync: false
+      - key: MATH_BACKUP_KEEP
+        sync: false

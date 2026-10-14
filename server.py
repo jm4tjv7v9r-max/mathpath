@@ -2971,10 +2971,48 @@ def attempt_verdict(score, max_score, status):
     return 'partial'
 
 
-def ai_annotation_valid(result):
-    """AI 批註只接受 0..1 的相對座標；座標或欄位不可靠時一律拒絕保存，不做像素換算或猜測。"""
+# 教師可調整的擺放位置：印章、AI 總結，以及每一則批註（issue:<序號>）。
+PLACEMENT_KEYS = ('stamp', 'summary')
+
+
+def placement_key_valid(key):
+    if key in PLACEMENT_KEYS:
+        return True
+    if not isinstance(key, str) or not key.startswith('issue:'):
+        return False
+    tail = key[6:]
+    return tail.isdigit() and 0 <= int(tail) < 20
+
+
+def placements_valid(value):
+    """教師調整後的擺放位置：key 只能是 stamp／summary／issue:<序號>，座標一律 0 到 1。"""
+    if not isinstance(value, dict) or len(value) > 24:
+        raise ValueError('位置')
+    cleaned = {}
+    for key, spot in value.items():
+        if not placement_key_valid(key):
+            raise ValueError('位置鍵')
+        if not isinstance(spot, dict) or set(spot) != {'x', 'y'}:
+            raise ValueError('位置欄位')
+        x, y = spot['x'], spot['y']
+        if (isinstance(x, bool) or isinstance(y, bool)
+                or not isinstance(x, (int, float)) or not isinstance(y, (int, float))):
+            raise ValueError('位置型別')
+        if not (math.isfinite(x) and math.isfinite(y) and 0 <= x <= 1 and 0 <= y <= 1):
+            raise ValueError('位置範圍')
+        cleaned[key] = {'x': float(x), 'y': float(y)}
+    return cleaned
+
+
+def ai_annotation_valid(result, allow_placements=False):
+    """AI 批註只接受 0..1 的相對座標；座標或欄位不可靠時一律拒絕保存，不做像素換算或猜測。
+
+    allow_placements 只在教師端儲存調整時開啟：那時允許多帶 placements
+    （教師把印章與批語拖到哪裡）與教師改寫過的批註文字。模型回應一律不接受這些欄位。
+    """
+    allowed = {'issues', 'summary'} | ({'placements'} if allow_placements else set())
     try:
-        if not isinstance(result, dict) or set(result) - {'issues', 'summary'} or 'issues' not in result:
+        if not isinstance(result, dict) or set(result) - allowed or 'issues' not in result:
             raise ValueError('格式')
         issues = result['issues']
         if not isinstance(issues, list) or len(issues) > 20:
@@ -2995,8 +3033,13 @@ def ai_annotation_valid(result):
         summary = result.get('summary', '')
         if not isinstance(summary, str):
             raise ValueError('總結')
-        return {'issues': cleaned, 'summary': text(summary, 'AI 批註總結', 2000, empty=True)}
+        cleaned_result = {'issues': cleaned, 'summary': text(summary, 'AI 批註總結', 2000, empty=True)}
+        if allow_placements and 'placements' in result:
+            cleaned_result['placements'] = placements_valid(result['placements'])
+        return cleaned_result
     except (APIError, ValueError, TypeError, KeyError):
+        if allow_placements:
+            fail(400, '調整後的批註內容無效，未保存。位置必須是 0 至 1 的相對座標。')
         fail(502, 'AI 批註的位置或欄位無效，未保存。請確認模型能回傳 0 至 1 的相對座標。')
 
 
@@ -4493,8 +4536,9 @@ class Application:
                     attempt = self.attempt_public(db, db.execute('SELECT * FROM attempts WHERE id=?', (row['id'],)).fetchone(), user)
                 return {'attempt': attempt}, headers
             if 'marks' in body:
-                # 教師移動 AI 標記後保存調整位置；沿用同一套座標驗證，不因教師操作而放寬。
-                marks = ai_annotation_valid(body['marks'])
+                # 教師移動印章／批語，或改寫批註文字後保存；沿用同一套座標驗證，
+                # 不因教師操作而放寬（位置仍必須是 0 至 1 的相對座標）。
+                marks = ai_annotation_valid(body['marks'], allow_placements=True)
                 marks['adjusted'] = True
                 marks['adjustedBy'] = user['id']
                 with self.db() as db:

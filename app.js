@@ -186,7 +186,8 @@ const paths = {
  file:'<path d="M14 2H5v20h14V7ZM14 2v5h5M8 12h8M8 16h6"/>',
  ai:'<path d="M9 3v6M15 3v6M6 9h12v3a6 6 0 0 1-12 0Z"/><path d="M12 18v3"/>',
  mock:'<path d="M12 3v3M12 18v3M3 12h3M18 12h3M6 6l2 2M16 16l2 2M18 6l-2 2M8 16l-2 2"/><circle cx="12" cy="12" r="4"/>',
- text:'<path d="M4 20 10 4h4l6 16M7 14h10"/>'
+ text:'<path d="M4 20 10 4h4l6 16M7 14h10"/>',
+ calculator:'<rect x="5" y="3" width="14" height="18" rx="2"/><path d="M8.5 7h7M8.5 11h1M12 11h1M15.5 11h1M8.5 15h1M12 15h1M15.5 15h1"/>'
 };
 const icon = name => `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true">${paths[name] || paths.bank}</svg>`;
 const topicTree = {
@@ -775,7 +776,7 @@ function guidePage(role){
   $$('[data-guide-role]').forEach(b=>b.onclick=()=>guidePage(b.dataset.guideRole));
 }
 
-function shell(){let nav=[['guide','新手上路'],['homework',S.user?.role==='teacher'?'作業與成績':'我的作業'],['calendar','日曆'],['mock','模擬測驗'],['bank','數學題庫'],['practice','自主練習'],['import','試卷拆題'],['mistakes',S.user?.role==='teacher'?'作答批閱':'我的錯題本'],['growth','學習足跡']];if(S.user?.role!=='student')nav=nav.filter(([id])=>id!=='mock');if(S.user?.role==='teacher'){nav=nav.filter(([id])=>id!=='practice');const at=nav.findIndex(([id])=>id==='mistakes');nav.splice(at<0?nav.length:at,0,['newq','新增題目']);nav.push(['ai','模型端點']);}$('#nav').innerHTML=nav.map(([id,label])=>`<button class="nav-item ${page===id?'active':''}" data-page="${id}">${icon(id)}<span>${label}</span>${id==='bank'?`<span class="count">${S.user?S.questions.length:'示例'}</span>`:id==='import'?'<span class="new">教師</span>':''}</button>`).join('');$('#settings-nav').innerHTML=icon('settings')+'<span>設定與隱私</span>';$('#settings-nav').classList.toggle('active',page==='settings');$('#font-scale').innerHTML=fontScaleControl();$('#account').innerHTML=`<span class="avatar">${S.user?(S.user.role==='teacher'?'師':'學'):'M'}</span><span class="account-info">${S.user?esc(S.user.name):'訪客預覽'}<small>${S.user?(S.user.role==='teacher'?'教師工作空間':'中三數學學習者'):'登入後開始學習'}</small></span>${icon(S.user?'chevron':'logout')}`;$('#avatar').textContent=S.user?(S.user.role==='teacher'?'師':'學'):'M';const labels={guide:'新手上路',homework:S.user?.role==='teacher'?'作業與成績':'我的作業',calendar:'日曆',mock:'模擬測驗',ai:'模型端點',bank:'數學題庫',practice:'自主練習',import:'試卷拆題',mistakes:S.user?.role==='teacher'?'作答批閱':'我的錯題本',growth:'學習足跡',newq:'新增題目',settings:'設定與隱私'};$('#crumb').textContent=labels[page] || '數學題庫';}
+function shell(){let nav=[['guide','新手上路'],['homework',S.user?.role==='teacher'?'作業與成績':'我的作業'],['calendar','日曆'],['mock','模擬測驗'],['bank','數學題庫'],['practice','自主練習'],['import','試卷拆題'],['mistakes',S.user?.role==='teacher'?'作答批閱':'我的錯題本'],['growth','學習足跡']];if(S.user?.role!=='student')nav=nav.filter(([id])=>id!=='mock');if(S.user?.role==='teacher'){nav=nav.filter(([id])=>id!=='practice');const at=nav.findIndex(([id])=>id==='mistakes');nav.splice(at<0?nav.length:at,0,['newq','新增題目']);nav.push(['ai','模型端點']);}$('#nav').innerHTML=nav.map(([id,label])=>`<button class="nav-item ${page===id?'active':''}" data-page="${id}">${icon(id)}<span>${label}</span>${id==='bank'?`<span class="count">${S.user?S.questions.length:'示例'}</span>`:id==='import'?'<span class="new">教師</span>':''}</button>`).join('');$('#settings-nav').innerHTML=icon('settings')+'<span>設定與隱私</span>';$('#settings-nav').classList.toggle('active',page==='settings');$('#font-scale').innerHTML=fontScaleControl();$('#account').innerHTML=`<span class="avatar">${S.user?(S.user.role==='teacher'?'師':'學'):'M'}</span><span class="account-info">${S.user?esc(S.user.name):'訪客預覽'}<small>${S.user?(S.user.role==='teacher'?'教師工作空間':'中三數學學習者'):'登入後開始學習'}</small></span>${icon(S.user?'chevron':'logout')}`;$('#avatar').textContent=S.user?(S.user.role==='teacher'?'師':'學'):'M';const labels={guide:'新手上路',homework:S.user?.role==='teacher'?'作業與成績':'我的作業',calendar:'日曆',mock:'模擬測驗',ai:'模型端點',bank:'數學題庫',practice:'自主練習',import:'試卷拆題',mistakes:S.user?.role==='teacher'?'作答批閱':'我的錯題本',growth:'學習足跡',newq:'新增題目',settings:'設定與隱私'};$('#crumb').textContent=labels[page] || '數學題庫';renderCalculator();}
 
 let calCursor=null,calSelected=null;
 const calPad=n=>String(n).padStart(2,'0');
@@ -1197,11 +1198,11 @@ function bindMathKeyboard(){
   syncMathKeyboard();
 }
 function renderAnswerArea(){ensureAnswerMode();renderAnswerAreaInner();syncMathKeyboard();}
-function renderAnswerAreaInner(){const area=$('#answer-area');if(!area)return;if(answerMode==='choice'){const opts=(currentQuestion&&currentQuestion.options)||[];area.innerHTML=`<label class="field-label">點選你的答案</label><div class="choice-picker" id="choice-picker">${opts.map((o,j)=>{const L=OPTION_LETTERS[j];return `<button type="button" class="choice-option ${selectedOption===L?'selected':''}" data-choice="${L}" aria-pressed="${selectedOption===L}"><span class="option-letter">${L}</span><span class="option-text">${mathText(o)}</span></button>`;}).join('')}</div><p class="field-hint">點選一項即完成作答；自主練習提交後可即時核對，作業結果須教師覆核。</p>`;$$('[data-choice]').forEach(b=>b.addEventListener('click',()=>{selectedOption=b.dataset.choice;$('#final-answer').value=selectedOption;lastResult=null;renderAnswerArea();scheduleDraft();}));return;}if(answerMode==='hand'){area.innerHTML=`<div class="writing-toolbar"><div class="tool-group"><button class="icon-btn active" id="pen-btn" aria-label="畫筆">${icon('practice')}</button><button class="icon-btn" id="eraser-btn" aria-label="橡皮擦">${icon('eraser')}</button><span style="height:20px;border-right:1px solid var(--border);margin:0 4px"></span>${['#274b3b','#456bab','#b96c5d'].map(c=>`<button class="pen-color ${c===penColor?'selected':''}" style="background:${c}" data-color="${c}" aria-label="${c==='#274b3b'?'深綠':c==='#456bab'?'藍':'紅'}色畫筆"></button>`).join('')}<button class="icon-btn" id="undo-btn" aria-label="撤銷一筆">${icon('undo')}</button><button class="icon-btn" id="clear-btn" aria-label="清空畫布">${icon('trash')}</button></div><span class="small-text">觸控筆 / 滑鼠皆可</span></div><div class="canvas-wrap"><canvas id="hand-canvas" width="1200" height="700" aria-label="手寫解題畫布"></canvas><div class="canvas-placeholder" id="canvas-placeholder">在這裡寫下你的思考…</div></div><p class="field-hint">提示：先寫出算式，再補上推導。切換文字模式不會清除手寫內容。</p>`;initCanvas();$('#pen-btn').onclick=()=>setEraser(false);$('#eraser-btn').onclick=()=>setEraser(true);$('#undo-btn').onclick=()=>{if(strokes.length)redoStrokes.push(strokes.pop());drawCanvas();lastResult=null;scheduleDraft();};$('#clear-btn').onclick=()=>{if(!strokes.length)return;if(confirm('清空尚未提交的手寫內容？此動作無法復原。')){strokes=[];redoStrokes=[];drawCanvas();lastResult=null;scheduleDraft();}};$$('[data-color]').forEach(b=>b.onclick=()=>{penColor=b.dataset.color;setEraser(false);$$('[data-color]').forEach(x=>x.classList.toggle('selected',x===b));});}else if(answerMode==='text'){area.innerHTML=`<p class="field-hint">${icon('practice')}用下方數學鍵盤輸入數學式（例如分數、根號、次方），也可直接打字；輸入框下方會即時顯示排版結果。純文字作答（如 5 cm）同樣可以。</p>`;}else{const isPdf=!!answerFile&&answerFile.indexOf('data:application/pdf')===0;area.innerHTML=`<label class="upload-answer" id="answer-drop">${isPdf?`<span class="upload-file">${icon('file')}<strong>已選擇 PDF 作答</strong><small>提交時會先讀取 PDF 的文字；掃描檔會取用內嵌的圖片</small></span>`:answerFile?`<img src="${answerFile}" alt="待提交的手寫解題">`:`${icon('image')}<strong>上傳紙上的解題過程</strong><small>相片 PNG / JPG 最多 10 MB、PDF 最多 20 MB；請保持完整、清晰</small>`}<input id="answer-upload" type="file" accept="image/*,application/pdf" hidden></label><div class="upload-actions"><button type="button" class="secondary" id="answer-select">選擇檔案</button><button type="button" class="secondary" id="answer-camera">${icon('image')}用手機拍照</button><button type="button" class="secondary" id="answer-remove" ${answerFile||uploadReading?'':'disabled'}>移除檔案</button><span class="small-text" id="answer-read-status" role="status">${uploadReading?'正在讀取檔案，請稍候…':'可選擇檔案或用手機相機拍照。'}</span><input id="answer-capture" type="file" accept="image/*" capture="environment" hidden></div>`;
+function renderAnswerAreaInner(){const area=$('#answer-area');if(!area)return;if(answerMode==='choice'){const opts=(currentQuestion&&currentQuestion.options)||[];area.innerHTML=`<label class="field-label">點選你的答案</label><div class="choice-picker" id="choice-picker">${opts.map((o,j)=>{const L=OPTION_LETTERS[j];return `<button type="button" class="choice-option ${selectedOption===L?'selected':''}" data-choice="${L}" aria-pressed="${selectedOption===L}"><span class="option-letter">${L}</span><span class="option-text">${mathText(o)}</span></button>`;}).join('')}</div><p class="field-hint">點選一項即完成作答；自主練習提交後可即時核對，作業結果須教師覆核。</p>`;$$('[data-choice]').forEach(b=>b.addEventListener('click',()=>{selectedOption=b.dataset.choice;$('#final-answer').value=selectedOption;lastResult=null;renderAnswerArea();scheduleDraft();}));return;}if(answerMode==='hand'){area.innerHTML=`<div class="writing-toolbar"><div class="tool-group"><button class="icon-btn active" id="pen-btn" aria-label="畫筆">${icon('practice')}</button><button class="icon-btn" id="eraser-btn" aria-label="橡皮擦">${icon('eraser')}</button><span style="height:20px;border-right:1px solid var(--border);margin:0 4px"></span>${['#274b3b','#456bab','#b96c5d'].map(c=>`<button class="pen-color ${c===penColor?'selected':''}" style="background:${c}" data-color="${c}" aria-label="${c==='#274b3b'?'深綠':c==='#456bab'?'藍':'紅'}色畫筆"></button>`).join('')}<button class="icon-btn" id="undo-btn" aria-label="撤銷一筆">${icon('undo')}</button><button class="icon-btn" id="clear-btn" aria-label="清空畫布">${icon('trash')}</button></div><span class="small-text">觸控筆 / 滑鼠皆可</span></div><div class="canvas-wrap hand-canvas-wrap"><canvas id="hand-canvas" width="${handSize()[2]}" height="${handSize()[3]}" aria-label="手寫解題畫布"></canvas><div class="canvas-placeholder" id="canvas-placeholder">在這裡寫下你的思考…</div></div><div class="hand-size-row">${handSizeControl()}<span class="small-text">步驟多就換大一點；已寫的內容會保留。</span></div><p class="field-hint">提示：先寫出算式，再補上推導。切換文字模式不會清除手寫內容。</p>`;initCanvas();const sizeSel=$('#hand-size');if(sizeSel)sizeSel.onchange=()=>{const next=HAND_SIZES.find(([id])=>id===sizeSel.value);if(!next)return;const current=handSize();if(strokes.length&&next[3]<current[3]&&!confirm(`縮小後，超出範圍的筆跡不會出現在送出的圖片上（畫布內仍保留，可再放大回來）。仍要換成「${next[1]}」？`)){renderAnswerArea();return;}try{localStorage.setItem('mathpath_hand_size',next[0]);}catch{}renderAnswerArea();toast(`書寫區已換成「${next[1]}」。`);};$('#pen-btn').onclick=()=>setEraser(false);$('#eraser-btn').onclick=()=>setEraser(true);$('#undo-btn').onclick=()=>{if(strokes.length)redoStrokes.push(strokes.pop());drawCanvas();lastResult=null;scheduleDraft();};$('#clear-btn').onclick=()=>{if(!strokes.length)return;if(confirm('清空尚未提交的手寫內容？此動作無法復原。')){strokes=[];redoStrokes=[];drawCanvas();lastResult=null;scheduleDraft();}};$$('[data-color]').forEach(b=>b.onclick=()=>{penColor=b.dataset.color;setEraser(false);$$('[data-color]').forEach(x=>x.classList.toggle('selected',x===b));});}else if(answerMode==='text'){area.innerHTML=`<p class="field-hint">${icon('practice')}用下方數學鍵盤輸入數學式（例如分數、根號、次方），也可直接打字；輸入框下方會即時顯示排版結果。純文字作答（如 5 cm）同樣可以。</p>`;}else{const isPdf=!!answerFile&&answerFile.indexOf('data:application/pdf')===0;area.innerHTML=`<label class="upload-answer" id="answer-drop">${isPdf?`<span class="upload-file">${icon('file')}<strong>已選擇 PDF 作答</strong><small>提交時會先讀取 PDF 的文字；掃描檔會取用內嵌的圖片</small></span>`:answerFile?`<img src="${answerFile}" alt="待提交的手寫解題">`:`${icon('image')}<strong>上傳紙上的解題過程</strong><small>相片 JPG / PNG 最多 25 MB（上傳前會自動壓縮）、PDF 最多 20 MB；請保持完整、清晰</small>`}<input id="answer-upload" type="file" accept="image/*,application/pdf" hidden></label><div class="upload-actions"><button type="button" class="secondary" id="answer-select">選擇檔案</button><button type="button" class="secondary" id="answer-camera">${icon('image')}用手機拍照</button><button type="button" class="secondary" id="answer-remove" ${answerFile||uploadReading?'':'disabled'}>移除檔案</button><span class="small-text" id="answer-read-status" role="status">${uploadReading?'正在讀取並壓縮相片，請稍候…':answerFile?(isPdf?'已選擇 PDF 作答，提交時會先讀取 PDF 文字':'相片已壓縮至約 '+fmtBytes(dataUrlBytes(answerFile))+'，送出更快'):'可選擇檔案或用手機相機拍照。'}</span><input id="answer-capture" type="file" accept="image/*" capture="environment" hidden></div>`;
 const pickAnswer=async file=>{
   if(!file||busy)return;
   const target=viewTarget(),seq=++uploadSeq;uploadReading=true;renderAnswerArea();if($('#submit-answer'))$('#submit-answer').disabled=true;
-  try{const data=await fileData(file,['image/png','image/jpeg','image/webp','application/pdf']);if(seq!==uploadSeq||!viewMatches(target))return;answerFile=data;lastResult=null;scheduleDraft();}
+  try{const data=file.type==='application/pdf'?await fileData(file,['application/pdf']):await answerImageData(file);if(seq!==uploadSeq||!viewMatches(target))return;answerFile=data;lastResult=null;scheduleDraft();}
   catch(err){if(seq===uploadSeq&&viewMatches(target))toast(err.message);}
   finally{if(seq===uploadSeq&&viewMatches(target)){uploadReading=false;renderAnswerArea();if($('#submit-answer'))$('#submit-answer').disabled=busy||quizTargetExpired();}}
 };
@@ -1216,11 +1217,17 @@ let webpSupported=null;
 function supportsWebp(){if(webpSupported===null){try{const probe=document.createElement('canvas');probe.width=probe.height=1;webpSupported=probe.toDataURL('image/webp').startsWith('data:image/webp');}catch{webpSupported=false;}}return webpSupported;}
 function imageDataUrl(canvas){return supportsWebp()?canvas.toDataURL('image/webp',0.8):canvas.toDataURL('image/png');}
 function canvasImage(){const c=$('#hand-canvas'),out=document.createElement('canvas');out.width=c.width;out.height=c.height;const ctx=out.getContext('2d');ctx.fillStyle='#fff';ctx.fillRect(0,0,out.width,out.height);ctx.drawImage(c,0,0);return imageDataUrl(out);}
+// 書寫區大小：題目長、步驟多就需要更高的畫布。學生自己選，選擇會記在瀏覽器裡。
+// 改變大小只換畫布尺寸，筆跡用原本的座標保留（縮小只是暫時看不到，放大就回來）。
+const HAND_SIZES=[['normal','標準',1200,700],['tall','加高',1200,1000],['tallest','特大',1200,1400],['wide','寬版',1600,900]];
+function handSizeId(){try{const v=localStorage.getItem('mathpath_hand_size');return HAND_SIZES.some(([id])=>id===v)?v:'normal';}catch{return 'normal';}}
+function handSize(){return HAND_SIZES.find(([id])=>id===handSizeId())||HAND_SIZES[0];}
+function handSizeControl(){return `<label class="small-text" for="hand-size">書寫區大小</label><select id="hand-size" aria-label="選擇手寫書寫區大小">${HAND_SIZES.map(([id,label,w,h])=>`<option value="${id}" ${id===handSizeId()?'selected':''}>${label}（${w} × ${h}）</option>`).join('')}</select>`;}
 // ── 拆題時的題目圖形 ──
 // AI 只回報圖形在試卷圖片中的範圍；裁切在瀏覽器做（這裡才有原圖尺寸），
 // 圖形本身不經伺服器，與手寫圖／批註一樣用 WebP 保存。
-function loadImageDataUrl(src){
-  return new Promise((resolve,reject)=>{const img=new Image();img.onload=()=>resolve(img);img.onerror=()=>reject(new Error('試卷圖片載入失敗'));img.src=src;});
+function loadImageDataUrl(src,message){
+  return new Promise((resolve,reject)=>{const img=new Image();img.onload=()=>resolve(img);img.onerror=()=>reject(new Error(message||'試卷圖片載入失敗'));img.src=src;});
 }
 // 範圍優先用 0–1 比例；數值明顯大於 1.5 就當成像素座標，按原圖尺寸換算。
 // 稍微留白以免切掉圖形的標註；框太小（<4%）幾乎一定是模型亂框，寧可留空讓教師自己補圖。
@@ -1733,6 +1740,36 @@ async function fileData(file,allowed,maxMB){if(!file)throw new Error('請先選�
 // 題目圖形：優先用教師上傳／貼上的圖片（課本截圖、GeoGebra 匯出等），
 // 沒有圖片才用方格畫布的手繪圖。
 function figureDataUrl(){if(figImage)return figImage;const c=$('#figure-canvas');return c?imageDataUrl(c):'';}
+// ── 學生相片作答：上傳前先在瀏覽器縮圖並轉 WebP ──
+// 手機原檔動輒 3～4 MB，直接送上網盤會讓學生在弱網上等很久，也讓空間需求暴增約 20 倍；
+// 縮到長邊 1600px 後通常只剩 100～200 KB，批改看得清楚、上傳快、備份也小。
+// 原檔上限放寬到 25 MB（壓縮後才送出）；PDF 不壓縮，維持 20 MB 由伺服器讀文字層。
+const ANSWER_MAX_SIDE = 1600;
+const ANSWER_MAX_MB = 25;
+const ANSWER_UPLOAD_LIMIT = 10 * 1024 * 1024;
+function dataUrlBytes(value){const i=String(value||'').indexOf(',');return i<0?0:Math.round((value.length-i-1)*3/4);}
+function fmtBytes(bytes){return bytes>=1024*1024?`${(bytes/1024/1024).toFixed(1)} MB`:`${Math.max(1,Math.round(bytes/1024))} KB`;}
+async function compressImageDataUrl(raw,message){
+  const img=await loadImageDataUrl(raw,message);
+  const scale=Math.min(1,ANSWER_MAX_SIDE/Math.max(img.naturalWidth,img.naturalHeight));
+  const out=document.createElement('canvas');
+  out.width=Math.max(1,Math.round(img.naturalWidth*scale));
+  out.height=Math.max(1,Math.round(img.naturalHeight*scale));
+  const ctx=out.getContext('2d');
+  ctx.fillStyle='#fff';ctx.fillRect(0,0,out.width,out.height);
+  ctx.drawImage(img,0,0,out.width,out.height);
+  return imageDataUrl(out);
+}
+async function answerImageData(file){
+  const raw=await fileData(file,['image/png','image/jpeg','image/webp'],ANSWER_MAX_MB);
+  let small=null;
+  try{small=await compressImageDataUrl(raw,'這張相片無法辨識，請改用 JPG／PNG 或重新拍照。');}catch{small=null;}
+  // 壓縮後反而更大（例如小張線稿 PNG）就保留原檔；原檔超過伺服器 10 MB 上限時仍用壓縮版。
+  if(small&&small.length<raw.length)return small;
+  if(dataUrlBytes(raw)<=ANSWER_UPLOAD_LIMIT)return raw;
+  if(small)return small;
+  throw new Error('這張相片無法壓縮，請改用 JPG／PNG 或重新拍照。');
+}
 // 把選到的圖片縮到合理尺寸再存成 WebP，避免佔用過多題庫空間。
 function fitFigureImage(file){
   return new Promise((resolve,reject)=>{
@@ -2469,12 +2506,13 @@ const AI_INK_DATA=new Map();
 const verdictPaths=v=>(VERDICT_PATHS[v]||[]).map(p=>`<path d="${p.d}"${p.w?` style="stroke-width:${p.w}"`:''}/>`).join('');
 function verdictGlyph(v){return VERDICT_PATHS[v]?`<svg class="verdict-glyph" viewBox="0 0 64 64" aria-hidden="true">${verdictPaths(v)}</svg>`:'';}
 function verdictBadge(v){return VERDICT_TEXT[v]?`<span class="badge verdict ${v}">${VERDICT_TEXT[v]} ${verdictGlyph(v)}</span>`:'';}
-function aiInkLayer(a){
+function aiInkLayer(a,editable){
   if(!a.image)return '';
   const issues=a.aiAnnotation?.issues||[], summary=a.aiAnnotation?.summary||'';
   if(!issues.length&&!a.verdict&&!summary)return '';
-  AI_INK_DATA.set(a.id,{image:a.image,verdict:a.verdict||'',summary,issues});
-  return `<div class="ai-ink-layer" data-ink="${a.id}"></div>`;
+  AI_INK_DATA.set(a.id,{image:a.image,verdict:a.verdict||'',summary,issues,
+                        placements:{...(a.aiAnnotation?.placements||{})}});
+  return `<div class="ai-ink-layer${editable?' editable':''}" data-ink="${a.id}"></div>`;
 }
 // 縮圖後逐格統計深色像素，做出「這裡有筆跡」的粗略地圖。
 function inkGrid(img){
@@ -2499,10 +2537,13 @@ function inkGrid(img){
   return {cols:INK_COLS,rows:INK_ROWS,grid:Array.from(count,n=>n>=min?1:0)};
 }
 // 找一塊完全沒有筆跡的矩形（比例座標，回傳中心點），取最接近 anchor 的一塊；找不到回 null。
-function inkFreeSpot(ink,w,h,anchor){
+// pad 用來避開 anchor 本身：批語框若正好壓在自己的圓標上，教師會拖不到框（點到的是圓標），
+// 也點不到框改文字。所以要求框的中心與 anchor 至少隔開半個框再加 pad。
+function inkFreeSpot(ink,w,h,anchor,pad=0){
   if(!ink)return null;
   const cw=Math.min(ink.cols,Math.max(1,Math.round(w*ink.cols)));
   const ch=Math.min(ink.rows,Math.max(1,Math.round(h*ink.rows)));
+  const halfW=w/2+pad, halfH=h/2+pad;
   let best=null;
   for(let cy=0;cy<=ink.rows-ch;cy++){
     for(let cx=0;cx<=ink.cols-cw;cx++){
@@ -2510,6 +2551,7 @@ function inkFreeSpot(ink,w,h,anchor){
       for(let y=cy;y<cy+ch&&!hit;y++)for(let x=cx;x<cx+cw;x++)if(ink.grid[y*ink.cols+x]){hit=true;break;}
       if(hit)continue;
       const px=(cx+cw/2)/ink.cols,py=(cy+ch/2)/ink.rows;
+      if(pad>0&&Math.abs(px-anchor.x)<halfW&&Math.abs(py-anchor.y)<halfH)continue;
       const d=Math.hypot(px-anchor.x,py-anchor.y);
       if(!best||d<best.d)best={d,x:px,y:py};
     }
@@ -2531,20 +2573,31 @@ function aiCalloutBox(text){
   return {w:0.30,h:0.055+0.036*lines};
 }
 // 把手寫稿上的空白處填上印章與批語；沒有空白處的項目就不畫（下方清單仍完整）。
+// 教師拖過的位置（data.placements）優先：之後重畫都停在他放的地方，不再自動跳位。
 async function paintAiInk(layer,data){
+  const editable=layer.classList.contains('editable');
   const img=new Image();
   img.src=data.image;
   if(!img.complete)await new Promise(r=>{img.onload=r;img.onerror=r;});
   if(!img.naturalWidth)return;
   const ink=inkGrid(img);
   if(!ink)return;
+  const kept=data.placements||{};
   const boxes=[],leaders=[];
-  const place=(text,anchor,w,h,cls)=>{
-    const spot=inkFreeSpot(ink,w,h,anchor);
+  const hint=editable?' title="拖曳可移動；點一下可修改文字"':'';
+  const spotFor=(key,w,h,anchor,pad=0)=>{
+    const saved=kept[key];
+    if(saved&&Number.isFinite(saved.x)&&Number.isFinite(saved.y))return {x:saved.x,y:saved.y,kept:true};
+    let spot=inkFreeSpot(ink,w,h,anchor,pad);
+    if(!spot&&pad>0)spot=inkFreeSpot(ink,w,h,anchor);   // 找不到就退回不避讓，寧可畫出來
+    if(spot)inkReserve(ink,spot,w,h);   // 自動放的位置要佔住，免得下一個疊上來
+    return spot?{x:spot.x,y:spot.y,kept:false}:null;
+  };
+  const place=(key,text,anchor,w,h,cls,pad=0)=>{
+    const spot=spotFor(key,w,h,anchor,pad);
     if(!spot)return false;
-    inkReserve(ink,spot,w,h);
-    boxes.push(`<span class="ai-callout ${cls}" style="left:${(spot.x*100).toFixed(2)}%;top:${(spot.y*100).toFixed(2)}%;width:${(w*100).toFixed(2)}%">${text}</span>`);
-    if(Math.hypot(spot.x-anchor.x,spot.y-anchor.y)>0.08)
+    boxes.push(`<span class="ai-callout ${cls}${editable?' movable':''}" data-place="${key}" style="left:${(spot.x*100).toFixed(2)}%;top:${(spot.y*100).toFixed(2)}%;width:${(w*100).toFixed(2)}%"${hint}>${text}</span>`);
+    if(Math.hypot(spot.x-anchor.x,spot.y-anchor.y)>0.06)
       leaders.push(`<line x1="${(spot.x*100).toFixed(2)}" y1="${(spot.y*100).toFixed(2)}" x2="${(anchor.x*100).toFixed(2)}" y2="${(anchor.y*100).toFixed(2)}"/>`);
     return true;
   };
@@ -2552,21 +2605,20 @@ async function paintAiInk(layer,data){
   // 印章：寬 16%（下方還有一行文字，估算高度時要一起算進去）。
   if(data.verdict){
     const w=0.16, h=Math.min(0.50,Math.max(0.12,w*ratio+0.07));
-    const spot=inkFreeSpot(ink,w,h,{x:0.88,y:0.12});
-    if(spot){
-      inkReserve(ink,spot,w,h);
-      boxes.push(`<div class="verdict-stamp ${data.verdict}" style="left:${(spot.x*100).toFixed(2)}%;top:${(spot.y*100).toFixed(2)}%;width:${(w*100).toFixed(2)}%"><svg viewBox="0 0 64 64" aria-hidden="true">${verdictPaths(data.verdict)}</svg><span>${VERDICT_TEXT[data.verdict]}</span></div>`);
-    }
+    const spot=spotFor('stamp',w,h,{x:0.88,y:0.12});
+    if(spot)
+      boxes.push(`<div class="verdict-stamp ${data.verdict}${editable?' movable':''}" data-place="stamp" style="left:${(spot.x*100).toFixed(2)}%;top:${(spot.y*100).toFixed(2)}%;width:${(w*100).toFixed(2)}%"${editable?' title="拖曳可移動印章"':''}><svg viewBox="0 0 64 64" aria-hidden="true">${verdictPaths(data.verdict)}</svg><span>${VERDICT_TEXT[data.verdict]}</span></div>`);
   }
   data.issues.forEach((it,i)=>{
     const text=`<b>${i+1}</b><span><strong>${esc(it.label)}</strong>${esc(String(it.comment||'').slice(0,60))}${String(it.comment||'').length>60?'…':''}</span>`;
     const box=aiCalloutBox(`${it.label}${it.comment||''}`);
-    place(text,{x:it.x,y:it.y},box.w,box.h,'issue');
+    // pad 0.03：框不要壓在自己的圓標上，教師才拖得到框、也點得到框改文字。
+    place(`issue:${i}`,text,{x:it.x,y:it.y},box.w,box.h,'issue',0.03);
   });
   if(data.summary){
     const text=`<span><strong>AI 總結</strong>${esc(data.summary.slice(0,80))}${data.summary.length>80?'…':''}</span>`;
     const box=aiCalloutBox(data.summary);
-    place(text,{x:0.5,y:0.88},box.w,box.h,'summary');
+    place('summary',text,{x:0.5,y:0.88},box.w,box.h,'summary');
   }
   layer.innerHTML=`${leaders.length?`<svg class="ai-leaders" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">${leaders.join('')}</svg>`:''}${boxes.join('')}`;
 }
@@ -2576,15 +2628,24 @@ function paintAllAiInk(){
     if(data)paintAiInk(layer,data).catch(()=>{});
   });
 }
+// 記下畫面上目前的位置：教師動過（拖曳或改字）之後就固定住，之後重畫不會再自動跳位。
+function captureAiPlacements(layer,data){
+  layer.querySelectorAll('[data-place]').forEach(el=>{
+    const x=parseFloat(el.style.left), y=parseFloat(el.style.top);
+    if(!Number.isFinite(x)||!Number.isFinite(y))return;
+    data.placements=data.placements||{};
+    data.placements[el.dataset.place]={x:Math.min(Math.max(x/100,0),1),y:Math.min(Math.max(y/100,0),1)};
+  });
+}
 function aiMarkLayer(a,drag){const ann=a.aiAnnotation;if(!ann||!ann.issues?.length)return '';return `<div class="ai-mark-layer${drag?' draggable':''}">${ann.issues.map((it,i)=>`<span class="ai-mark" data-ai-index="${i}" data-label="${esc(it.label)}" data-comment="${esc(it.comment)}" style="left:${(it.x*100).toFixed(2)}%;top:${(it.y*100).toFixed(2)}%" title="${esc(it.label)}：${esc(it.comment)}"><i>${i+1}</i></span>`).join('')}</div>`;}
-function aiMarksBlock(a){const ann=a.aiAnnotation;if(!ann||!ann.issues?.length)return '';return `<div class="ai-annotation"><div class="advice-heading">${icon('spark')}AI 建議批註 <span class="badge">${ann.issues.length} 處 · 未經教師確認</span></div><p class="field-hint">AI 只標示它能從照片確認的位置；標記座標可能偏移，數學判斷也可能出錯，必須由教師覆核後才可作準。數字對應圖上的圓形標記。</p>${ann.summary?`<p class="ai-summary">${esc(ann.summary)}</p>`:''}<ol class="ai-issue-list">${ann.issues.map(it=>`<li><strong>${esc(it.label)}</strong><span>${esc(it.comment)}</span></li>`).join('')}</ol>${ann.at?`<small class="field-hint">AI 於 ${dateText(ann.at)} 產生</small>`:''}</div>`;}
+function aiMarksBlock(a){const ann=a.aiAnnotation;if(!ann||!ann.issues?.length)return '';return `<div class="ai-annotation"><div class="advice-heading">${icon('spark')}AI 建議批註 <span class="badge">${ann.issues.length} 處 · ${ann.adjusted?'教師已調整位置／文字':'未經教師確認'}</span></div><p class="field-hint">AI 只標示它能從照片確認的位置；標記座標可能偏移，數學判斷也可能出錯，必須由教師覆核後才可作準。數字對應圖上的圓形標記。</p>${ann.summary?`<p class="ai-summary">${esc(ann.summary)}</p>`:''}<ol class="ai-issue-list">${ann.issues.map(it=>`<li><strong>${esc(it.label)}</strong><span>${esc(it.comment)}</span></li>`).join('')}</ol>${ann.at?`<small class="field-hint">AI 於 ${dateText(ann.at)} 產生${ann.adjusted?'，教師已調整位置或文字':''}</small>`:''}</div>`;}
 function annotationBlock(a,editable){
   if(!a.image)return '';
   const hasMarks=!!(a.aiAnnotation?.issues||[]).length;
   if(!editable){
     return `<div class="annotated-view">${a.annotation?`<span class="badge">教師批註</span>`:`<span class="badge outline">手寫原稿</span>`}${verdictBadge(a.verdict)}<div class="mark-wrap"><img class="review-image" src="${a.annotation||a.image}" alt="學生手寫解題${a.annotation?'（含教師批註）':''}">${aiInkLayer(a)}${aiMarkLayer(a)}</div>${a.verdict?`<small class="field-hint">AI 判定：<strong>${VERDICT_TEXT[a.verdict]}</strong>（${scoreText(a.score)} / ${a.maxScore} 分）${a.teacherReviewed?'，已由教師確認':''}。紅色剔＝全對、紅色叉＝全錯、紅色剔加一撇＝部分正確；AI 批語只寫在手稿的空白處，不會蓋住你的字。</small>`:''}${a.annotation&&a.annotationAt?`<small class="field-hint">教師批註於 ${dateText(a.annotationAt)}。紅圈與箭頭指出需要修改的地方。</small>`:`<small class="field-hint">教師尚未加上批註。</small>`}</div>${aiMarksBlock(a)}`;
   }
-  return `<div class="annotation-tool"><div class="writing-toolbar"><div class="tool-group"><button class="icon-btn active" data-ann-tool="pen" title="紅筆" aria-label="紅筆">${icon('practice')}</button><button class="icon-btn" data-ann-tool="ellipse" title="圈出錯處" aria-label="圈出錯處">◯</button><button class="icon-btn" data-ann-tool="arrow" title="箭頭指出錯處" aria-label="箭頭">↗</button><button class="icon-btn" data-ann-tool="highlight" title="螢光標示" aria-label="螢光標示">▬</button><button class="icon-btn" data-ann-tool="text" title="文字批註" aria-label="文字批註">A</button><button class="icon-btn" data-ann-tool="eraser" title="擦除批註" aria-label="擦除批註">${icon('eraser')}</button><span style="height:20px;border-right:1px solid var(--border);margin:0 4px"></span><button class="icon-btn" id="ann-undo" title="撤銷" aria-label="撤銷">${icon('undo')}</button><button class="icon-btn" id="ann-clear" title="清除全部批註" aria-label="清除全部批註">${icon('trash')}</button></div><span class="small-text">直接在學生手稿上標示</span></div><div class="canvas-wrap ann-canvas-wrap"><canvas id="ann-canvas" width="1200" height="800" aria-label="批註畫布"></canvas></div><div class="submit-row"><span class="small-text" id="ann-status">批註在按下「儲存批註」前不會保存</span><button class="secondary" id="ann-save">${icon('check')}儲存批註</button></div><div class="ai-tool-row">${S.ai.configured?`<button class="secondary" id="ai-annotate">${icon('spark')}${hasMarks?'重新產生 AI 批註':'請 AI 建議批註位置'}</button>`:`<span class="small-text">AI 未接入，未能產生建議批註。</span>`}${hasMarks?`<button class="text-button" id="ai-clear" style="font-size:calc(14px*var(--fs))">清除 AI 批註</button>`:''}</div>${(hasMarks||a.verdict)?`<div class="mark-wrap${hasMarks?' ai-preview':''}"${hasMarks?` data-attempt="${a.id}" data-summary="${esc(a.aiAnnotation.summary||'')}"`:''}><img class="review-image" src="${a.annotation||a.image}" alt="${hasMarks?'AI 建議批註位置':'手寫稿與 AI 判定'}">${aiInkLayer(a)}${hasMarks?aiMarkLayer(a,true):''}</div>`:''}${hasMarks?`<div class="submit-row"><span class="small-text" id="ai-adjust-status">${a.aiAnnotation.adjusted?'教師已調整標記位置':'可直接拖動圓形標記，修正 AI 標錯的位置'}</span><button class="secondary" id="ai-adjust-save">${icon('check')}儲存調整後位置</button></div>`:''}${aiMarksBlock(a)}</div>`;
+  return `<div class="annotation-tool"><div class="writing-toolbar"><div class="tool-group"><button class="icon-btn active" data-ann-tool="pen" title="紅筆" aria-label="紅筆">${icon('practice')}</button><button class="icon-btn" data-ann-tool="ellipse" title="圈出錯處" aria-label="圈出錯處">◯</button><button class="icon-btn" data-ann-tool="arrow" title="箭頭指出錯處" aria-label="箭頭">↗</button><button class="icon-btn" data-ann-tool="highlight" title="螢光標示" aria-label="螢光標示">▬</button><button class="icon-btn" data-ann-tool="text" title="文字批註" aria-label="文字批註">A</button><button class="icon-btn" data-ann-tool="eraser" title="擦除批註" aria-label="擦除批註">${icon('eraser')}</button><span style="height:20px;border-right:1px solid var(--border);margin:0 4px"></span><button class="icon-btn" id="ann-undo" title="撤銷" aria-label="撤銷">${icon('undo')}</button><button class="icon-btn" id="ann-clear" title="清除全部批註" aria-label="清除全部批註">${icon('trash')}</button></div><span class="small-text">直接在學生手稿上標示</span></div><div class="canvas-wrap ann-canvas-wrap"><canvas id="ann-canvas" width="1200" height="800" aria-label="批註畫布"></canvas></div><div class="submit-row"><span class="small-text" id="ann-status">批註在按下「儲存批註」前不會保存</span><button class="secondary" id="ann-save">${icon('check')}儲存批註</button></div><div class="ai-tool-row">${S.ai.configured?`<button class="secondary" id="ai-annotate">${icon('spark')}${hasMarks?'重新產生 AI 批註':'請 AI 建議批註位置'}</button>`:`<span class="small-text">AI 未接入，未能產生建議批註。</span>`}${hasMarks?`<button class="text-button" id="ai-clear" style="font-size:calc(14px*var(--fs))">清除 AI 批註</button>`:''}</div>${(hasMarks||a.verdict)?`<div class="mark-wrap${hasMarks?' ai-preview':''}"${hasMarks?` data-attempt="${a.id}" data-summary="${esc(a.aiAnnotation.summary||'')}"`:''}><img class="review-image" src="${a.annotation||a.image}" alt="${hasMarks?'AI 建議批註位置':'手寫稿與 AI 判定'}">${aiInkLayer(a,true)}${hasMarks?aiMarkLayer(a,true):''}</div>`:''}${hasMarks?`<div class="submit-row"><span class="small-text" id="ai-adjust-status">${a.aiAnnotation.adjusted?'教師已調整標記位置與批語':'可拖動圓標、批語框與印章；點一下批語可修改文字'}</span><button class="secondary" id="ai-adjust-save">${icon('check')}儲存調整</button></div>`:''}${aiMarksBlock(a)}</div>`;
 }
 
 let ann={base:null,shapes:[],tool:'pen',drawing:null},annotationDone=null;
@@ -2604,11 +2665,43 @@ const aiBtn=$('#ai-annotate');
 if(aiBtn)aiBtn.onclick=async()=>{if(S.ai.mode==='external'&&!confirm('AI 批註會將這位學生的手寫照片及本題內容，傳送至學校配置的外部 AI 服務，是否繼續？'))return;const original=aiBtn.innerHTML;aiBtn.disabled=true;aiBtn.innerHTML=icon('clock')+'AI 正在看手稿…';try{const {attempt}=await api(`/api/attempts/${a.id}/ai-annotation`,{consentExternal:S.ai.mode==='external'});const i=S.attempts.findIndex(x=>x.id===attempt.id);if(i<0)S.attempts.push(attempt);else S.attempts[i]=attempt;const n=attempt.aiAnnotation?.issues?.length||0;toast(n?`AI 建議 ${n} 處，須由教師覆核。`:'AI 未標示任何錯處；這不代表作答正確，請教師自行檢視。');annotationRefresh(attempt);}catch(e){toast(e.message);aiBtn.disabled=false;aiBtn.innerHTML=original;}};
 const aiClear=$('#ai-clear');
 if(aiClear)aiClear.onclick=async()=>{if(!confirm('清除 AI 建議批註？教師自己的批註不受影響。'))return;try{const {attempt}=await api(`/api/attempts/${a.id}/ai-annotation`,{clear:true});const i=S.attempts.findIndex(x=>x.id===attempt.id);if(i<0)S.attempts.push(attempt);else S.attempts[i]=attempt;toast('已清除 AI 批註。');annotationRefresh(attempt);}catch(e){toast(e.message);}};}
-let aiDrag=null;
-document.addEventListener('pointerdown',e=>{const m=e.target&&e.target.closest?e.target.closest('.ai-mark-layer.draggable .ai-mark'):null;if(!m)return;const wrap=m.closest('.mark-wrap');if(!wrap)return;const r=wrap.getBoundingClientRect(),b=m.getBoundingClientRect();aiDrag={m,r,dx:e.clientX-(b.left+b.width/2),dy:e.clientY-(b.top+b.height/2)};try{m.setPointerCapture(e.pointerId);}catch(_){}e.preventDefault();});
-document.addEventListener('pointermove',e=>{if(!aiDrag)return;const {m,r}=aiDrag;let x=e.clientX-aiDrag.dx-r.left,y=e.clientY-aiDrag.dy-r.top;x=Math.min(Math.max(x,0),r.width);y=Math.min(Math.max(y,0),r.height);m.style.left=(x/r.width*100)+'%';m.style.top=(y/r.height*100)+'%';const st=document.getElementById('ai-adjust-status');if(st)st.textContent='標記位置已改動，記得按「儲存調整後位置」。';});
-['pointerup','pointercancel'].forEach(t=>document.addEventListener(t,()=>{aiDrag=null;}));
-document.addEventListener('click',async e=>{const btn=e.target&&e.target.closest?e.target.closest('#ai-adjust-save'):null;if(!btn)return;const wrap=btn.closest('#modal-root')?.querySelector('.mark-wrap.ai-preview');if(!wrap)return;const aid=wrap.dataset.attempt,layer=wrap.querySelector('.ai-mark-layer.draggable');if(!aid||!layer)return;const r=wrap.getBoundingClientRect();const issues=[...layer.querySelectorAll('.ai-mark')].map(m=>{const b=m.getBoundingClientRect();return {x:Math.min(Math.max((b.left+b.width/2-r.left)/r.width,0),1),y:Math.min(Math.max((b.top+b.height/2-r.top)/r.height,0),1),label:m.dataset.label||'',comment:m.dataset.comment||''};});btn.disabled=true;const st=document.getElementById('ai-adjust-status');if(st)st.textContent='正在儲存調整後的位置…';try{const {attempt}=await api(`/api/attempts/${aid}/ai-annotation`,{marks:{issues,summary:wrap.dataset.summary||''}});const i=S.attempts.findIndex(x=>x.id===attempt.id);if(i<0)S.attempts.push(attempt);else S.attempts[i]=attempt;toast('已儲存調整後的標記位置。');annotationRefresh(attempt);}catch(err){if(st)st.textContent=err.message;btn.disabled=false;}});
+let aiDrag=null,aiJustDragged=false;
+// 教師可以直接拖動：圓形標記、AI 批語框、印章。三種都寫回同一組相對座標。
+const aiMovableTarget=e=>e.target&&e.target.closest?e.target.closest('.ai-mark-layer.draggable .ai-mark, .ai-ink-layer.editable .movable'):null;
+document.addEventListener('pointerdown',e=>{const m=aiMovableTarget(e);if(!m)return;const wrap=m.closest('.mark-wrap');if(!wrap)return;const r=wrap.getBoundingClientRect(),b=m.getBoundingClientRect();aiDrag={m,r,dx:e.clientX-(b.left+b.width/2),dy:e.clientY-(b.top+b.height/2),x0:e.clientX,y0:e.clientY,moved:false};try{m.setPointerCapture(e.pointerId);}catch(_){}e.preventDefault();});
+document.addEventListener('pointermove',e=>{if(!aiDrag)return;const {m,r}=aiDrag;if(Math.abs(e.clientX-aiDrag.x0)+Math.abs(e.clientY-aiDrag.y0)>4)aiDrag.moved=true;let x=e.clientX-aiDrag.dx-r.left,y=e.clientY-aiDrag.dy-r.top;x=Math.min(Math.max(x,0),r.width);y=Math.min(Math.max(y,0),r.height);m.style.left=(x/r.width*100)+'%';m.style.top=(y/r.height*100)+'%';const st=document.getElementById('ai-adjust-status');if(st)st.textContent='位置已改動，記得按「儲存調整」。';});
+// 拖曳結束後緊接著的 click 要忽略，否則一放手就跳出修改文字。
+['pointerup','pointercancel'].forEach(t=>document.addEventListener(t,()=>{if(aiDrag&&aiDrag.moved){aiJustDragged=true;setTimeout(()=>{aiJustDragged=false;},400);}aiDrag=null;}));
+// 點一下（沒有拖動）批語就改文字：教師可以直接改寫 AI 的說法，不必整組重來。
+document.addEventListener('click',e=>{
+  const el=e.target&&e.target.closest?e.target.closest('.ai-ink-layer.editable .ai-callout'):null;
+  if(!el||aiJustDragged)return;
+  const layer=el.closest('.ai-ink-layer'),data=layer&&AI_INK_DATA.get(Number(layer.dataset.ink));
+  if(!data)return;
+  const key=el.dataset.place||'';
+  if(key==='summary'){
+    const next=prompt('修改 AI 總結（會直接寫在學生的手稿上）',data.summary);
+    if(next===null)return;
+    const t=next.trim();
+    if(!t)return toast('總結不可留空；如要移除整組批註，請按「清除 AI 批註」。');
+    data.summary=t.slice(0,80);
+  }else if(key.startsWith('issue:')){
+    const it=data.issues[Number(key.slice(6))];
+    if(!it)return;
+    const next=prompt('修改這則批註（格式：標籤 | 說明）',`${it.label} | ${it.comment}`);
+    if(next===null)return;
+    const parts=next.split('|');
+    const label=(parts.length>1?parts[0]:it.label).trim();
+    const comment=(parts.length>1?parts.slice(1).join('|'):next).trim();
+    if(!label||!comment)return toast('標籤與說明都要填寫。');
+    it.label=label.slice(0,100);it.comment=comment.slice(0,500);
+  }else return;
+  captureAiPlacements(layer,data);      // 改字後留在原位，不要跳到別的空白處
+  paintAiInk(layer,data).catch(()=>{});
+  const st=document.getElementById('ai-adjust-status');
+  if(st)st.textContent='批註文字已修改，記得按「儲存調整」。';
+});
+document.addEventListener('click',async e=>{const btn=e.target&&e.target.closest?e.target.closest('#ai-adjust-save'):null;if(!btn)return;const wrap=btn.closest('#modal-root')?.querySelector('.mark-wrap.ai-preview');if(!wrap)return;const aid=wrap.dataset.attempt,marksLayer=wrap.querySelector('.ai-mark-layer.draggable'),inkLayer=wrap.querySelector('.ai-ink-layer.editable');const data=inkLayer?AI_INK_DATA.get(Number(inkLayer.dataset.ink)):null;if(!aid||!marksLayer||!data)return;const r=wrap.getBoundingClientRect(),clamp01=v=>Math.min(Math.max(v,0),1);const issues=[...marksLayer.querySelectorAll('.ai-mark')].map(m=>{const b=m.getBoundingClientRect(),src=data.issues[Number(m.dataset.aiIndex)]||{};return {x:clamp01((b.left+b.width/2-r.left)/r.width),y:clamp01((b.top+b.height/2-r.top)/r.height),label:src.label||m.dataset.label||'',comment:src.comment||m.dataset.comment||''};});captureAiPlacements(inkLayer,data);const payload={issues,summary:data.summary||''};if(Object.keys(data.placements||{}).length)payload.placements=data.placements;btn.disabled=true;const st=document.getElementById('ai-adjust-status');if(st)st.textContent='正在儲存調整後的批註…';try{const {attempt}=await api(`/api/attempts/${aid}/ai-annotation`,{marks:payload});const i=S.attempts.findIndex(x=>x.id===attempt.id);if(i<0)S.attempts.push(attempt);else S.attempts[i]=attempt;toast('已儲存調整後的標記位置與批語。');annotationRefresh(attempt);}catch(err){if(st)st.textContent=err.message;btn.disabled=false;}});
 function reviewModal(id,onDone=null,snapshot=null,queue=null){
   const a=S.attempts.find(a=>a.id===Number(id));if(!a)return;
   // 待批佇列：存檔後直接換下一題，不關窗、不整頁重抓；跑完佇列才回上一層。
@@ -2678,7 +2771,8 @@ function adminStatsCards(stats){
 // 網盤備份：手寫圖／題目圖形／批註在上傳當下就已進網盤；這裡再把資料庫快照與題庫歸檔送上去。
 function backupZoneHtml(b){
   if(!b)return `<h3>${icon('upload')}網盤備份</h3><p class="field-hint">正在讀取備份狀態…</p>`;
-  const rows=[[ '最近備份', b.lastAt?dateText(b.lastAt):'尚未備份',
+  const rows=[[ '網盤', b.bucket||'已設定', b.endpoint?`${b.endpoint}${b.region?` · region ${b.region}`:''}`:'S3 相容端點'],
+              [ '最近備份', b.lastAt?dateText(b.lastAt):'尚未備份',
                 b.lastTrigger==='scheduled'?'由排程自動執行':b.lastTrigger==='manual'?'手動執行':'—'],
               [ '保留份數', `${b.count} / ${b.keep}`, '超過就自動刪掉最舊的一份'],
               [ '自動備份', b.intervalHours?`每 ${b.intervalHours} 小時`:'未啟用',
@@ -2687,7 +2781,7 @@ function backupZoneHtml(b){
   <p class="field-hint">學生手寫圖、題目圖形與教師批註在<strong>上傳當下</strong>就已經存進網盤；這裡再把<strong>資料庫快照</strong>（帳號、班級、作業、作答、分數）與<strong>題庫歸檔</strong>一起送上去。兩者都在網盤上，就算伺服器整台消失也能還原。</p>
   ${b.configured?`<div class="metric-row">${rows.map(([l,v,f])=>`<div class="metric"><div class="metric-label">${esc(l)}</div><div class="metric-value" style="font-size:calc(17px*var(--fs))">${esc(String(v))}</div><div class="metric-foot">${esc(f)}</div></div>`).join('')}</div>
   <div class="admin-actions"><button class="secondary" id="admin-backup-now">${icon('upload')}立即備份到網盤</button></div>`
-  :`<div class="import-warning">尚未設定網盤。在部署平台加入 <code>R2_ACCOUNT_ID</code>、<code>R2_ACCESS_KEY_ID</code>、<code>R2_SECRET_ACCESS_KEY</code>、<code>R2_BUCKET</code> 四個環境變數後重新部署，手寫圖與備份就會自動存到網盤。${b.error?`<br>目前狀態：${esc(b.error)}`:''}</div>`}
+  :`<div class="import-warning">尚未設定網盤。在部署平台加入 <code>R2_ACCOUNT_ID</code>、<code>R2_ACCESS_KEY_ID</code>、<code>R2_SECRET_ACCESS_KEY</code>、<code>R2_BUCKET</code> 四個環境變數後重新部署，手寫圖與備份就會自動存到網盤。改用 AWS S3、Backblaze B2、Wasabi 或自架 MinIO 時，改填 <code>R2_ENDPOINT</code>（＋<code>R2_REGION</code>），並可省略 <code>R2_ACCOUNT_ID</code>。${b.error?`<br>目前狀態：${esc(b.error)}`:''}</div>`}
   ${(b.history||[]).length?`<details class="backup-history"><summary>最近 ${b.history.length} 次備份</summary><ul>${b.history.map(h=>`<li><strong>${dateText(h.at)}</strong> · ${h.trigger==='scheduled'?'排程':'手動'} · ${formatBytes(h.bytes)}<br><code>${esc((h.files||[]).join(' , '))}</code></li>`).join('')}</ul></details>`:''}`;
 }
 function bindBackupZone(){
@@ -3088,5 +3182,91 @@ function correctionModal(st){const latest=new Map();assignmentDetail.attempts.fi
 modal(`<p class="eyebrow">RETURN FOR CORRECTION</p><h2>退回訂正 · ${esc(st.name)}</h2><p class="modal-intro">學生會看到你的說明與批註，並可重新作答指定題目。原作答與分數仍保留在紀錄中，可作對照。</p><form id="correction-form"><div class="form-field"><label class="field-label" for="correction-note">訂正說明（學生會看到）</label><textarea class="answer-field" id="correction-note" style="min-height:110px" maxlength="2000" required placeholder="例如：第1題漏了第二個根。請寫出因式分解的完整過程，並代回檢查兩個解。"></textarea></div><div class="section-head" style="margin:18px 0 10px"><h2 style="font-size:calc(16px*var(--fs))">需要訂正的題目</h2><span class="small-text" id="correction-count">已選 ${preselect.size} 題</span></div><div class="assignment-question-picks">${assignmentDetail.questions.map((q,i)=>{const at=latest.get(q.id);return `<label class="pick-row"><input type="checkbox" name="correction-questions" value="${q.id}" ${preselect.has(q.id)?'checked':''}><span><strong>第 ${i+1} 題 · ${mathText(q.title)}</strong><small>${at?(at.status==='pending'?'目前待批閱':`目前 ${scoreText(at.score)} / ${at.maxScore} 分`):'尚未作答'}</small></span><span class="badge">${q.points} 分</span></label>`;}).join('')}</div><div class="import-warning">退回後學生可重新作答這些題目並再次提交。教師要求的訂正不受截止時間限制；學生重新提交前，這份作業不計入班級平均。</div><p class="error-text" id="correction-error"></p><button class="primary wide" type="submit">退回訂正 ${icon('arrow')}</button></form>`,true);
 $$('[name=correction-questions]').forEach(x=>x.onchange=()=>{$('#correction-count').textContent=`已選 ${$$('[name=correction-questions]:checked').length} 題`;});
 $('#correction-form').onsubmit=async e=>{e.preventDefault();const ids=$$('[name=correction-questions]:checked').map(x=>Number(x.value));if(!ids.length)return toast('請至少選擇一題。');const b=$('[type=submit]',e.target);b.disabled=true;try{await api(`/api/assignments/${resultData.assignment.id}/return`,{studentId:st.id,note:$('#correction-note').value,questionIds:ids});closeModal();toast('已退回訂正，學生會看到你的說明。');resultsPage(resultData.assignment.id);}catch(err){$('#correction-error').textContent=err.message;b.disabled=false;}};}
+// ── 簡易計算機（學生作答時在畫面右下角，可縮成小按鈕）──
+// 只做四則、括號、開方、次方與 π：幫忙算數，不解方程也不化簡代數，避免變成代做工具。
+// 算式用自己寫的遞迴下降解析器計算，不用 eval，貼上的任何字串都不會被當成程式碼執行。
+const CALC_KEYS=[['C','clear'],['⌫','back'],['(','('],[')',')'],['÷','÷'],
+  ['7','7'],['8','8'],['9','9'],['√','sqrt'],['×','×'],
+  ['4','4'],['5','5'],['6','6'],['^','^'],['−','-'],
+  ['1','1'],['2','2'],['3','3'],['π','pi'],['+','+'],
+  ['0','0'],['.','.'],['x²','square'],['=','equals',2]];
+let calcExpr='',calcOpen=false;
+try{calcOpen=localStorage.getItem('mathpath_calc_open')==='1';}catch{}
+function calcEval(input){
+  const s=String(input).replace(/[×✕]/g,'*').replace(/÷/g,'/').replace(/[−–]/g,'-').replace(/\s+/g,'');
+  let i=0;
+  const peek=()=>s[i];
+  const expr=()=>{let v=term();for(;;){if(peek()==='+'){i++;v+=term();}else if(peek()==='-'){i++;v-=term();}else return v;}};
+  const term=()=>{let v=power();for(;;){if(peek()==='*'){i++;v*=power();}else if(peek()==='/'){i++;const d=power();if(d===0)throw new Error('除數不可為 0');v/=d;}else return v;}};
+  const power=()=>{const base=atom();return peek()==='^'?(i++,Math.pow(base,power())):base;};
+  const atom=()=>{
+    const c=peek();
+    if(c==='-'){i++;return -atom();}
+    if(c==='+'){i++;return atom();}
+    if(c==='√'){i++;return Math.sqrt(atom());}
+    if(c==='π'){i++;return Math.PI;}
+    if(c==='('){i++;const v=expr();if(peek()!==')')throw new Error('括號沒有配對');i++;return v;}
+    const start=i;
+    while(i<s.length&&/[0-9.]/.test(s[i]))i++;
+    if(i===start)throw new Error('算式不完整');
+    const n=Number(s.slice(start,i));
+    if(!Number.isFinite(n))throw new Error('數字格式有誤');
+    return n;
+  };
+  const out=expr();
+  if(i<s.length)throw new Error('算式無法辨識');
+  if(!Number.isFinite(out))throw new Error('結果超出範圍');
+  return Math.round(out*1e10)/1e10;
+}
+// 回傳 {value,error}：算式還沒寫完或除以零時，要讓學生看到原因，不能只顯示空白或 Infinity。
+function calcEvaluate(){
+  if(!String(calcExpr).trim())return {value:'',error:''};
+  try{return {value:String(calcEval(calcExpr)),error:''};}
+  catch(err){return {value:'',error:err.message||'算式無法辨識'};}
+}
+function calcWanted(){return S.user?.role==='student'&&page==='practice';}
+function calcScreen(expr){
+  const screen=$('#calc-screen');if(screen)screen.textContent=expr||'0';
+  const line=$('#calc-live'),{value,error}=calcEvaluate();
+  if(!line)return;
+  line.textContent=value?'= '+value:(error||'');
+  line.classList.toggle('bad',!value&&!!error);
+}
+function calcPress(key){
+  if(key==='clear')calcExpr='';
+  else if(key==='back')calcExpr=calcExpr.slice(0,-1);
+  else if(key==='sqrt')calcExpr+='√(';
+  else if(key==='pi')calcExpr+='π';
+  else if(key==='square')calcExpr+='^2';
+  else if(key==='equals'){
+    const {value,error}=calcEvaluate();
+    if(!value)return toast(error?`無法計算：${error}`:'算式還沒完成，先補齊再按等號。');
+    calcExpr=value;
+    calcScreen(calcExpr);
+    return;
+  }else calcExpr+=key;
+  calcScreen(calcExpr);
+}
+function renderCalculator(){
+  const root=$('#calc-root');
+  if(!root)return;
+  if(!calcWanted()){root.innerHTML='';return;}
+  const remember=v=>{calcOpen=v;try{localStorage.setItem('mathpath_calc_open',v?'1':'0');}catch{}};
+  if(!calcOpen){
+    root.innerHTML=`<button type="button" class="calc-fab" id="calc-open" aria-label="打開計算機">${icon('calculator')}<span>計算機</span></button>`;
+    $('#calc-open').onclick=()=>{remember(true);renderCalculator();};
+    return;
+  }
+  root.innerHTML=`<section class="calc-panel" aria-label="簡易計算機">
+<header class="calc-head"><strong>計算機</strong><button type="button" class="icon-btn" id="calc-close" aria-label="縮小計算機">−</button></header>
+<output class="calc-screen" id="calc-screen">${esc(calcExpr||'0')}</output>
+<p class="calc-live" id="calc-live"></p>
+<div class="calc-keys">${CALC_KEYS.map(([label,key,span])=>`<button type="button" class="calc-key${key==='equals'?' equals':''}" data-calc="${key}"${span?` style="grid-column:span ${span}"`:''}>${label}</button>`).join('')}</div>
+<small class="calc-note">四則、括號、√、^、π；只幫你算數，不會替你解題。</small>
+</section>`;
+  $('#calc-close').onclick=()=>{remember(false);renderCalculator();};
+  $$('#calc-root [data-calc]').forEach(b=>b.onclick=()=>calcPress(b.dataset.calc));
+  calcScreen(calcExpr);
+}
 async function init(){loadBookmarks();homeworkPage();try{const session=await api('/api/session');serverOnline=true;serverIssue='';if(session.user){await refresh();homeworkPage();}}catch(e){serverIssue=e.message;toast(/初始化/.test(e.message)?e.message:'無法連接網站服務；目前為訪客界面預覽。請確認網站服務狀態。');}}
 init();
