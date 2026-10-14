@@ -132,6 +132,29 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   await page.goto('https://mathpath.test');await page.locator('#homework-login').waitFor();
   await page.screenshot({path:path.join(__dirname,'..','MathPath-作业版预览.png'),fullPage:true});
 
+  // 新手上路：訪客就看得到，圖文步驟 ＋ 角色切換 ＋ 說明彈窗入口
+  await page.locator('.nav-item[data-page=guide]').click();
+  await page.locator('.guide-step').first().waitFor({timeout:8000});
+  assert.equal(await page.locator('.guide-step').count(),6,'新手上路應有 6 個步驟');
+  assert.equal(await page.locator('.guide-svg').count(),6,'每一步都要有一張插圖');
+  assert.equal(await page.locator('.guide-tip').count(),3,'要有「三個要知道的事」');
+  assert.match(await page.locator('#crumb').innerText(),/新手上路/,'麵包屑要跟著換');
+  assert.match(await page.locator('#main').innerText(),/訪客預覽/,'訪客要看到登入提示');
+  assert.match(await page.locator('.guide-text h3').first().innerText(),/教師/,'訪客預設看第一版（老師）');
+  await page.locator('[data-guide-role=student]').click();
+  await page.locator('.guide-text h3').first().waitFor();
+  assert.match(await page.locator('.guide-text h3').first().innerText(),/學生/,'可切到學生版');
+  assert.match(await page.locator('#main').innerText(),/正式提交/,'學生版要提到提交');
+  // 插圖用色系變數上色；變數沒生效時會退成黑色，這裡擋住那種情況
+  const guideFills=await page.evaluate(()=>[...document.querySelectorAll('.guide-svg path,.guide-svg rect,.guide-svg circle')].map(e=>getComputedStyle(e).fill));
+  assert.ok(!guideFills.includes('rgb(0, 0, 0)'),'插圖不應有未上色的黑色填色');
+  // 說明彈窗也能進到指引頁
+  await page.locator('#help-btn').click();
+  await page.locator('#help-guide').click();
+  await page.locator('.guide-step').first().waitFor({timeout:8000});
+  assert.equal(await page.locator('.guide-step').count(),6,'從說明彈窗進入仍要有完整步驟');
+  console.log('PASS: 新手上路（訪客可見、角色切換、每步一張插圖、說明彈窗可進入）');
+
   // 字級切換：不需登入即可使用，並記住選擇
   assert.equal(await page.evaluate(()=>document.documentElement.dataset.fs),undefined,'訪客預設應為標準字級');
   const h1Size=()=>page.evaluate(()=>parseFloat(getComputedStyle(document.querySelector('h1')).fontSize));

@@ -430,3 +430,43 @@ button.danger:disabled{opacity:.6}
 .review-flag-list{margin:0;padding-left:18px;font-size:calc(14px*var(--fs));line-height:1.75}
 .review-flag-box small{display:block;margin-top:5px;color:#a2957a;font-size:calc(12.5px*var(--fs))}
 .review-flag-note{display:block;color:#a3762b}
+
+/* ══ 新手上路：圖文並茂的快速指引 ══════════════════════════════════
+   每一步一張行內 SVG 插圖 ＋ 兩三句說明。插圖跟著該步驟的色系走
+   （四色循環），底色與色條沿用題與題區分那一套變數，整體才一致。 */
+.guide-tabs{display:flex;gap:8px;margin-bottom:18px;flex-wrap:wrap}
+.guide-tabs button{border:1px solid var(--border);background:#fff;color:#5d7365;border-radius:999px;
+  padding:9px 20px;font-size:calc(14px*var(--fs));cursor:pointer}
+.guide-tabs button:hover{border-color:#c3d6c8;color:#3d5145}
+.guide-tabs button.active{background:#237c5c;border-color:#237c5c;color:#fff}
+
+.guide-steps{display:flex;flex-direction:column;gap:14px;padding:22px}
+.guide-step{display:grid;grid-template-columns:170px minmax(0,1fr);gap:20px;align-items:center;
+  border:1px solid var(--border);border-left:4px solid var(--q-accent,#2f6d55);
+  background:var(--q-tint,#fff);border-radius:9px;padding:16px 20px}
+.guide-art{background:#fff;border:1px solid var(--border);border-radius:8px;padding:8px}
+.guide-svg{width:100%;height:auto;display:block}
+.guide-text{min-width:0}
+.guide-num{display:inline-grid;place-items:center;width:calc(26px*var(--fs));height:calc(26px*var(--fs));
+  border-radius:7px;background:var(--q-soft,#e8f2ec);color:var(--q-accent,#2f6d55);
+  font-family:Georgia,serif;font-size:calc(13px*var(--fs));margin-bottom:7px}
+.guide-text h3{margin:0 0 4px;font-size:calc(17px*var(--fs));color:#2b4034;font-weight:500}
+.guide-text p{margin:0;font-size:calc(14.5px*var(--fs));line-height:1.7;color:#5b6f63}
+
+.guide-tip-row{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;padding:0 22px 22px}
+.guide-tip{border:1px solid var(--border);border-radius:9px;padding:14px 16px;background:#fbfdfc}
+.guide-tip .icon{color:#237c5c}
+.guide-tip strong{display:block;font-size:calc(15px*var(--fs));color:#2b4034;font-weight:500;margin:6px 0 4px}
+.guide-tip p{margin:0;font-size:calc(13.5px*var(--fs));line-height:1.7;color:#5b6f63}
+
+.guide-steps>article.guide-step:nth-of-type(4n+1){--q-accent:#2f6d55;--q-soft:#e8f2ec;--q-tint:#f8fbf9}
+.guide-steps>article.guide-step:nth-of-type(4n+2){--q-accent:#2c6a8e;--q-soft:#e7f0f7;--q-tint:#f7fafd}
+.guide-steps>article.guide-step:nth-of-type(4n+3){--q-accent:#9a6a1f;--q-soft:#f7efe1;--q-tint:#fdfbf6}
+.guide-steps>article.guide-step:nth-of-type(4n){--q-accent:#7a4f8f;--q-soft:#f1ecf6;--q-tint:#fbf9fd}
+
+@media (max-width:740px){
+  .guide-steps{padding:16px}
+  .guide-step{grid-template-columns:minmax(0,1fr);gap:12px;padding:14px}
+  .guide-art{max-width:200px;margin:0 auto;width:100%}
+  .guide-tip-row{grid-template-columns:minmax(0,1fr);padding:0 16px 18px}
+}
