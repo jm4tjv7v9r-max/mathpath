@@ -2820,13 +2820,18 @@ def canonical_answer(value):
     return None
 
 
-def final_correct(student, reference):
-    lines = [line.strip() for line in student.splitlines() if line.strip()]
+def final_answer_line(value):
+    """取「最終答案」那一行；學生常用這個寫法把答案從推導中獨立出來。"""
+    lines = [line.strip() for line in value.splitlines() if line.strip()]
     if lines:
         final = re.fullmatch(r'(?:最終答案[:：]|最终答案[:：]|Final answer:)[ \t]*(.+)', lines[-1])
         if final:
-            student = final[1]
-    a, b = canonical_answer(student), canonical_answer(reference)
+            return final[1]
+    return value
+
+
+def final_correct(student, reference):
+    a, b = canonical_answer(final_answer_line(student)), canonical_answer(reference)
     if not a or not b or a[0] != b[0]:
         return False
     if a[0] == 'numeric':
@@ -2846,6 +2851,10 @@ def rule_verdict(q, answer, image):
     if image is not None or not reference or not (answer or '').strip():
         return None
     try:
+        # 只要有一邊不是「可規範化的短式子」（例如學生用整句文字作答、參考答案是長敘述），
+        # 就是「無法判定」而不是「答錯」——硬判會讓 AI 給對分時被誤標成建議覆核。
+        if canonical_answer(final_answer_line(answer)) is None or canonical_answer(reference) is None:
+            return None
         return final_correct(answer, reference)
     except Exception:                      # 規則核對絕不可讓整筆批改失敗
         return None
@@ -4332,6 +4341,9 @@ class Application:
                     if has_image:
                         feedback = 'AI 暫時無法辨識手寫內容，作答已保存；此題需教師批閱。'
             if method == 'pending-teacher' and not ai_failed and not has_image and not skipped and q['answer'].strip():
+                # 這裡刻意沿用既有的評分約定：只認「最終答案：」那一行，沒標明就用整份作答比對。
+                # 比對不上記 0 分並在評語說明「可請教師覆核」，讓學生學會把最終答案寫清楚。
+                # （旗標與提示用的 rule_verdict 才是三態；這一條是評分，不變。）
                 correct = final_correct(answer, q['answer'])
                 score = q['points'] if correct else 0
                 status, method = 'graded', 'rule-final'

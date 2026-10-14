@@ -1,0 +1,33 @@
+{
+  "_說明": "規則核對（rule_verdict／final_correct）的標記案例。這一層是確定性的、不需要 AI，所以準確度可以離線量測。expect：correct（應判定等價）／wrong（應判定不等價）／unknown（應明確表示無法判定，不可猜）。",
+  "cases": [
+    { "id": "r01", "group": "等價寫法", "answer": "$x=2$ 或 $x=3$", "answerText": "x=2或x=3", "expect": "correct", "note": "最基本的兩根" },
+    { "id": "r02", "group": "等價寫法", "answer": "$x=2$ 或 $x=3$", "answerText": "x=3或x=2", "expect": "correct", "note": "根的順序不同" },
+    { "id": "r03", "group": "等價寫法", "answer": "$x=2$ 或 $x=3$", "answerText": "x=2, x=3", "expect": "correct", "note": "用逗號分隔" },
+    { "id": "r04", "group": "等價寫法", "answer": "2", "answerText": "2", "expect": "correct", "note": "純數值" },
+    { "id": "r05", "group": "等價寫法", "answer": "$\\dfrac{1}{2}$", "answerText": "0.5", "expect": "correct", "note": "分數與小數等值" },
+    { "id": "r06", "group": "等價寫法", "answer": "0.5", "answerText": "$\\dfrac{1}{2}$", "expect": "correct", "note": "反向：學生寫分數" },
+    { "id": "r07", "group": "等價寫法", "answer": "$\\dfrac{3}{10}$", "answerText": "3/10", "expect": "correct", "note": "斜線分數" },
+    { "id": "r08", "group": "等價寫法", "answer": "-3", "answerText": "$-3$", "expect": "correct", "note": "負數" },
+    { "id": "r09", "group": "單位", "answer": "$5\\text{ cm}$", "answerText": "5 cm", "expect": "correct", "note": "長度單位一致" },
+    { "id": "r10", "group": "單位", "answer": "$36\\text{ cm}^2$", "answerText": "36cm^2", "expect": "correct", "note": "面積單位寫法不同" },
+    { "id": "r11", "group": "單位", "answer": "$70^\\circ$", "answerText": "70°", "expect": "correct", "note": "角度符號" },
+    { "id": "r12", "group": "選擇題", "answer": "B", "answerText": "B", "expect": "correct", "note": "選擇題字母" },
+    { "id": "r13", "group": "選擇題", "answer": "B", "answerText": "b", "expect": "correct", "note": "小寫字母" },
+    { "id": "r14", "group": "作答格式", "answer": "$x=2$ 或 $x=3$", "answerText": "最終答案：x=2或x=3", "expect": "correct", "note": "最後一行標明最終答案" },
+    { "id": "r15", "group": "作答格式", "answer": "$x=2$ 或 $x=3$", "answerText": "先因式分解\n得 (x-2)(x-3)=0\n最終答案：x=2或x=3", "expect": "correct", "note": "多行作答，只取最終答案那一行" },
+
+    { "id": "r16", "group": "缺漏根", "answer": "$x=2$ 或 $x=3$", "answerText": "x=2", "expect": "wrong", "note": "只寫一個根" },
+    { "id": "r17", "group": "缺漏根", "answer": "$x=2$ 或 $x=3$", "answerText": "x=2或x=4", "expect": "wrong", "note": "其中一個根錯" },
+    { "id": "r18", "group": "符號錯誤", "answer": "$x=3$", "answerText": "x=-3", "expect": "wrong", "note": "正負號相反" },
+    { "id": "r19", "group": "數值錯誤", "answer": "6", "answerText": "7", "expect": "wrong", "note": "算錯" },
+    { "id": "r20", "group": "數值錯誤", "answer": "$\\dfrac{1}{3}$", "answerText": "0.3", "expect": "wrong", "note": "近似值不等於真值（0.3 ≠ 1/3）" },
+    { "id": "r21", "group": "選擇題", "answer": "B", "answerText": "A", "expect": "wrong", "note": "選錯選項" },
+    { "id": "r22", "group": "單位", "answer": "$2\\text{ cm}^2$", "answerText": "2 cm", "expect": "wrong", "note": "面積與長度單位不可互換" },
+
+    { "id": "r23", "group": "無法判定", "answer": "", "answerText": "x=2或x=3", "expect": "unknown", "note": "題目沒有參考答案時不可猜" },
+    { "id": "r24", "group": "無法判定", "answer": "$x=2$ 或 $x=3$", "answerText": "", "expect": "unknown", "note": "學生沒有作答文字（只有手寫圖）" },
+    { "id": "r25", "group": "無法判定", "answer": "$x=2$ 或 $x=3$", "answerText": "x=2或x=3", "expect": "unknown", "image": true, "note": "手寫圖片不走字串比對" },
+    { "id": "r26", "group": "無法判定", "answer": "$x=2$ 或 $x=3$", "answerText": "先因式分解，得 (x-2)(x-3)=0，所以 x=2 或 x=3", "expect": "unknown", "note": "整句文字不是可規範化的短式子，應交給 AI／教師，不可硬判" }
+  ]
+}

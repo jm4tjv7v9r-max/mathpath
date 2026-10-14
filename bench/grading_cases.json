@@ -1,0 +1,136 @@
+{
+  "_說明": "AI 批改的標記案例。expect 是「教師認定分數」，用來量 AI 建議分與教師判斷的一致度。要量自己學校的準確度，請把 expect 換成你們真實批過的卷。tolerance 預設為題目總分的 10%。",
+  "cases": [
+    {
+      "id": "g01", "group": "答案對・過程完整", "expect": 6,
+      "note": "標準解法，應滿分",
+      "question": { "title": "因式分解解二次方程", "content": "解方程 $x^2-5x+6=0$。",
+        "topic": "一元二次方程", "subtopic": "因式分解法", "grade": "中三", "level": 1, "points": 6,
+        "qtype": "解答題", "source": "基準測試", "tags": [], "answer": "$x=2$ 或 $x=3$",
+        "steps": ["因式分解得 $(x-2)(x-3)=0$", "所以 $x=2$ 或 $x=3$"], "hint": "", "analysis": "", "rubric": [] },
+      "answerText": "x^2-5x+6=0\n(x-2)(x-3)=0\nx=2 或 x=3"
+    },
+    {
+      "id": "g02", "group": "過程簡略", "expect": 6,
+      "note": "政策：過程簡略不扣分，只要答案對",
+      "question": { "title": "因式分解解二次方程（只寫答案）", "content": "解方程 $x^2-5x+6=0$。",
+        "topic": "一元二次方程", "subtopic": "因式分解法", "grade": "中三", "level": 1, "points": 6,
+        "qtype": "解答題", "source": "基準測試", "tags": [], "answer": "$x=2$ 或 $x=3$",
+        "steps": ["因式分解得 $(x-2)(x-3)=0$", "所以 $x=2$ 或 $x=3$"], "hint": "", "analysis": "", "rubric": [] },
+      "answerText": "x=2 或 x=3"
+    },
+    {
+      "id": "g03", "group": "不同解法", "expect": 6,
+      "note": "配方法與參考解法不同但正確，不應扣分",
+      "question": { "title": "因式分解解二次方程（可用其他方法）", "content": "解方程 $x^2-5x+6=0$。",
+        "topic": "一元二次方程", "subtopic": "因式分解法", "grade": "中三", "level": 1, "points": 6,
+        "qtype": "解答題", "source": "基準測試", "tags": [], "answer": "$x=2$ 或 $x=3$",
+        "steps": ["因式分解得 $(x-2)(x-3)=0$", "所以 $x=2$ 或 $x=3$"], "hint": "", "analysis": "", "rubric": [] },
+      "answerText": "配方：x^2-5x+6 = (x-2.5)^2 - 0.25 = 0\n(x-2.5)^2 = 0.25\nx-2.5 = ±0.5\nx = 3 或 x = 2"
+    },
+    {
+      "id": "g04", "group": "過程對・結果錯", "expect": 4, "tolerance": 1,
+      "note": "因式分解正確但其中一個根算錯，應給部分分（約 2/3）",
+      "question": { "title": "因式分解解二次方程（部分正確）", "content": "解方程 $x^2-5x+6=0$。",
+        "topic": "一元二次方程", "subtopic": "因式分解法", "grade": "中三", "level": 1, "points": 6,
+        "qtype": "解答題", "source": "基準測試", "tags": [], "answer": "$x=2$ 或 $x=3$",
+        "steps": ["因式分解得 $(x-2)(x-3)=0$", "所以 $x=2$ 或 $x=3$"], "hint": "", "analysis": "", "rubric": [] },
+      "answerText": "(x-2)(x-3)=0\nx=2 或 x=4"
+    },
+    {
+      "id": "g05", "group": "只對一步", "expect": 2, "tolerance": 1,
+      "note": "只有因式分解正確，未寫出根，應給約 1/3",
+      "question": { "title": "因式分解解二次方程（只完成一步）", "content": "解方程 $x^2-5x+6=0$。",
+        "topic": "一元二次方程", "subtopic": "因式分解法", "grade": "中三", "level": 1, "points": 6,
+        "qtype": "解答題", "source": "基準測試", "tags": [], "answer": "$x=2$ 或 $x=3$",
+        "steps": ["因式分解得 $(x-2)(x-3)=0$", "所以 $x=2$ 或 $x=3$"], "hint": "", "analysis": "", "rubric": [] },
+      "answerText": "(x-2)(x-3)=0"
+    },
+    {
+      "id": "g06", "group": "全錯", "expect": 0, "tolerance": 0.5,
+      "note": "與題目無關的內容，應 0 分",
+      "question": { "title": "因式分解解二次方程（無關作答）", "content": "解方程 $x^2-5x+6=0$。",
+        "topic": "一元二次方程", "subtopic": "因式分解法", "grade": "中三", "level": 1, "points": 6,
+        "qtype": "解答題", "source": "基準測試", "tags": [], "answer": "$x=2$ 或 $x=3$",
+        "steps": ["因式分解得 $(x-2)(x-3)=0$", "所以 $x=2$ 或 $x=3$"], "hint": "", "analysis": "", "rubric": [] },
+      "answerText": "不知道，我不會做這一題。"
+    },
+    {
+      "id": "g07", "group": "選擇題答對", "expect": 4, "tolerance": 0.5,
+      "note": "選擇題答對，應滿分",
+      "question": { "title": "擲骰子的概率（選擇題）", "content": "擲一枚均勻骰子一次，點數為偶數的概率是多少？",
+        "topic": "統計", "subtopic": "數據的收集（全面調查）", "grade": "中三", "level": 1, "points": 4,
+        "qtype": "選擇題", "source": "基準測試", "tags": [], "answer": "B",
+        "options": ["$\\dfrac{1}{6}$", "$\\dfrac{1}{2}$", "$\\dfrac{1}{3}$", "$\\dfrac{2}{3}$"],
+        "steps": ["偶數有 2、4、6 三個", "概率為 $3/6=1/2$"], "hint": "", "analysis": "", "rubric": [] },
+      "answerText": "B"
+    },
+    {
+      "id": "g08", "group": "選擇題答錯", "expect": 0, "tolerance": 0.5,
+      "note": "選擇題答錯，應 0 分",
+      "question": { "title": "擲骰子的概率（選擇題・答錯）", "content": "擲一枚均勻骰子一次，點數為偶數的概率是多少？",
+        "topic": "統計", "subtopic": "數據的收集（全面調查）", "grade": "中三", "level": 1, "points": 4,
+        "qtype": "選擇題", "source": "基準測試", "tags": [], "answer": "B",
+        "options": ["$\\dfrac{1}{6}$", "$\\dfrac{1}{2}$", "$\\dfrac{1}{3}$", "$\\dfrac{2}{3}$"],
+        "steps": ["偶數有 2、4、6 三個", "概率為 $3/6=1/2$"], "hint": "", "analysis": "", "rubric": [] },
+      "answerText": "C"
+    },
+    {
+      "id": "g09", "group": "填空題・單位寫法", "expect": 5, "tolerance": 0.5,
+      "note": "單位寫法不同（cm2／cm²）不應扣分",
+      "question": { "title": "正方形面積（填空題）", "content": "一個正方形的邊長是 6 cm，求它的面積。",
+        "topic": "三角形", "subtopic": "三角形的邊", "grade": "中三", "level": 1, "points": 5,
+        "qtype": "填空題", "source": "基準測試", "tags": [], "answer": "$36\\text{ cm}^2$",
+        "steps": ["面積 $=6\\times6=36$", "單位是 cm$^2$"], "hint": "", "analysis": "", "rubric": [] },
+      "answerText": "36cm2"
+    },
+    {
+      "id": "g10", "group": "填空題答錯", "expect": 0, "tolerance": 0.5,
+      "note": "單位錯成 cm，面積概念錯誤，應 0 分",
+      "question": { "title": "正方形面積（填空題・單位錯）", "content": "一個正方形的邊長是 6 cm，求它的面積。",
+        "topic": "三角形", "subtopic": "三角形的邊", "grade": "中三", "level": 1, "points": 5,
+        "qtype": "填空題", "source": "基準測試", "tags": [], "answer": "$36\\text{ cm}^2$",
+        "steps": ["面積 $=6\\times6=36$", "單位是 cm$^2$"], "hint": "", "analysis": "", "rubric": [] },
+      "answerText": "36 cm"
+    },
+    {
+      "id": "g11", "group": "評分標準・部分達成", "expect": 3.6, "tolerance": 1.2,
+      "note": "評分標準三項：設未知數 20%、列式 40%、求解作答 40%；只做到前兩項 → 3.6/6",
+      "question": { "title": "三角形內角和（依評分標準）", "content": "三角形的兩個內角分別是 $55^\\circ$ 和 $65^\\circ$，求第三個內角。",
+        "topic": "三角形", "subtopic": "三角形內角和定理", "grade": "中三", "level": 1, "points": 6,
+        "qtype": "解答題", "source": "基準測試", "tags": [], "answer": "$60^\\circ$",
+        "steps": ["三角形內角和為 $180^\\circ$", "$180-55-65=60$", "第三個內角是 $60^\\circ$"],
+        "hint": "", "analysis": "",
+        "rubric": [ { "label": "正確引用三角形內角和為 180°", "percent": 20 },
+                    { "label": "列出 180−55−65 的算式", "percent": 40 },
+                    { "label": "求出 60° 並寫出單位", "percent": 40 } ] },
+      "answerText": "三角形內角和是 180 度。\n180 - 55 - 65 ="
+    },
+    {
+      "id": "g12", "group": "進階題・過程簡略", "expect": 8,
+      "note": "進階題答案正確，過程簡略不扣分",
+      "question": { "title": "含參數的重根", "content": "若方程 $x^2-4x+k=0$ 有重根，求 $k$ 的值。",
+        "topic": "一元二次方程", "subtopic": "根的判別式", "grade": "中三", "level": 2, "points": 8,
+        "qtype": "解答題", "source": "基準測試", "tags": [], "answer": "$k=4$",
+        "steps": ["重根即判別式 $=0$", "$(-4)^2-4k=0$", "$k=4$"], "hint": "", "analysis": "", "rubric": [] },
+      "answerText": "判別式 = 0：16-4k=0\nk=4"
+    },
+    {
+      "id": "g13", "group": "證明題・不同寫法", "expect": 6,
+      "note": "推理成立、寫法與參考不同，應滿分",
+      "question": { "title": "證明三角形內角和為 180°", "content": "證明任意三角形的內角和是 $180^\\circ$。",
+        "topic": "三角形", "subtopic": "三角形內角和定理", "grade": "中三", "level": 2, "points": 6,
+        "qtype": "證明題", "source": "基準測試", "tags": [], "answer": "過一個頂點作對邊的平行線，利用內錯角相等，把三個內角拼成一個平角，故和為 180°。",
+        "steps": ["作平行線", "內錯角相等", "三內角拼成平角 = 180°"], "hint": "", "analysis": "", "rubric": [] },
+      "answerText": "延長 BC 至 D，過 C 作 CE 平行 AB。\n因為 AB∥CE，所以 ∠BAC = ∠ACE（內錯角），∠ABC = ∠ECD（同位角）。\n三個角 ∠ACE + ∠ACB + ∠ECD 剛好是直線上的平角，等於 180°。\n所以三角形內角和是 180°。"
+    }
+  ],
+  "system_cases": [
+    { "id": "s01", "group": "系統層", "note": "標示「不會」的空白作答不可以丟給模型評分，分數留空、轉待教師批閱",
+      "question": { "title": "因式分解解二次方程（標示不會）", "content": "解方程 $x^2-5x+6=0$。",
+        "topic": "一元二次方程", "subtopic": "因式分解法", "grade": "中三", "level": 1, "points": 6,
+        "qtype": "解答題", "source": "基準測試", "tags": [], "answer": "$x=2$ 或 $x=3$",
+        "steps": [], "hint": "", "analysis": "", "rubric": [] },
+      "skipped": true, "expectMethod": "pending-teacher", "expectScore": null }
+  ]
+}

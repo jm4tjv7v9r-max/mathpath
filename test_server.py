@@ -2323,6 +2323,23 @@ class PureTests(unittest.TestCase):
                 self.assertEqual(result.stdout.splitlines(), [str(executable), str(directory / 'server.py'), '--port', '9876'])
                 executable.unlink()
 
+    def test_rule_verdict_says_unknown_instead_of_wrong(self):
+        """無法判定時要說「不知道」，不可以硬判成「答錯」。
+
+        硬判會連帶讓 AI 給對分時被誤標成「建議覆核」（規則說不等價但 AI 給滿分），
+        變成教師收到一堆假警報。這是基準測試量出來的問題，見 grade_bench.py。
+        """
+        ref = {'answer': '$x=2$ 或 $x=3$'}
+        self.assertIs(server.rule_verdict(ref, 'x=2或x=3', None), True)
+        self.assertIs(server.rule_verdict(ref, 'x=2', None), False)
+        # 無法判定：整句文字作答、參考答案是長敘述、沒有參考答案、沒有作答、手寫圖片。
+        self.assertIsNone(server.rule_verdict(ref, '先因式分解，得 (x-2)(x-3)=0，所以 x=2 或 x=3', None))
+        self.assertIsNone(server.rule_verdict(
+            {'answer': '過一個頂點作對邊的平行線，利用內錯角相等，把三個內角拼成平角。'}, 'x=2或x=3', None))
+        self.assertIsNone(server.rule_verdict({'answer': ''}, 'x=2或x=3', None))
+        self.assertIsNone(server.rule_verdict(ref, '', None))
+        self.assertIsNone(server.rule_verdict(ref, 'x=2或x=3', 'data:image/webp;base64,x'))
+
     def test_latex_answers_grade_against_plain_text(self):
         # 參考答案可用 LaTeX 撰寫，規則評分仍要能與學生輸入的純文字對應。
         cases = [
