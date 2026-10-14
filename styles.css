@@ -341,6 +341,11 @@ button.danger:disabled{opacity:.6}
 .label-name-field input{width:64px;padding:5px 8px;border:1px solid var(--border);border-radius:6px;background:#fff;color:#1d3b32;font-size:calc(13px*var(--fs));font-family:inherit}
 .label-name-field input[type=range]{width:96px;padding:0;border:0;background:none;accent-color:#237c5c}
 .label-size-value{min-width:24px;text-align:center;font-variant-numeric:tabular-nums;color:#3d5145;font-weight:500}
+/* 縮放／旋轉欄位：跟「點名稱／字級」同一種外觀；沒選取圖形時停用（欄位仍在，
+   工具列高度不變，畫布才不會跟著跳位）。 */
+.item-transform-field{display:inline-flex;align-items:center;gap:6px;font-size:calc(12.5px*var(--fs));color:#5d7365;white-space:nowrap}
+.item-transform-field input[type=range]{width:96px;padding:0;border:0;background:none;accent-color:#237c5c}
+.item-transform-field input[type=range]:disabled{opacity:.4;cursor:not-allowed}
 .figure-canvas-wrap canvas:focus-visible,.canvas-wrap canvas:focus-visible{outline:2px solid #237c5c;outline-offset:2px}
 @media (max-width:640px){.fig-read-grid{grid-template-columns:minmax(0,1fr)}}
 

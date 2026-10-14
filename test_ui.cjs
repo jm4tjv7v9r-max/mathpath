@@ -1832,6 +1832,36 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   const lineAfter=await page.evaluate(()=>{const l=figStudio.sketch.strokes.find(x=>x.type==='line');return {y:l.points[0].y};});
   // 畫布是 900×420，垂直位移要用高度換算（0.10 × 420）。
   assert.ok(Math.abs(lineAfter.y-lineBefore.y-0.10*420)<5,'拖曳要垂直移動整條直線');
+
+  // 縮放與旋轉：選取圖形後才能用，欄位值跟著選取項同步；命中判定也要跟著變換。
+  assert.equal(await page.locator('#fig-studio-item-scale').isDisabled(),false,'選取圖形後縮放可用');
+  assert.equal(await page.locator('#fig-studio-item-rotate').isDisabled(),false,'選取圖形後旋轉可用');
+  await page.locator('#fig-studio-item-scale').evaluate(el=>{el.value='160';el.dispatchEvent(new Event('input',{bubbles:true}));});
+  assert.equal(await page.evaluate(()=>figStudio.sketch.selected.scale),1.6,'縮放要套用到選取項');
+  assert.equal(await page.locator('#fig-studio-item-scale-value').innerText(),'160%','縮放數值要同步顯示');
+  await page.locator('#fig-studio-item-rotate').evaluate(el=>{el.value='90';el.dispatchEvent(new Event('input',{bubbles:true}));});
+  assert.equal(await page.evaluate(()=>figStudio.sketch.selected.rotate),90,'旋轉要套用到選取項');
+  assert.equal(await page.locator('#fig-studio-item-rotate-value').innerText(),'90°','旋轉數值要同步顯示');
+  const hitByTransform=await page.evaluate(()=>{
+    const it=figStudio.sketch.strokes.find(x=>x.type==='line');
+    const c=figureItemCenter(it);
+    return {onAxis:!!topmostFigureItem([it],{x:c.x,y:c.y-200}),offAxis:!!topmostFigureItem([it],{x:c.x+400,y:c.y})};
+  });
+  assert.equal(hitByTransform.onAxis,true,'旋轉 90° 後，沿著旋轉後的方向要選得到');
+  assert.equal(hitByTransform.offAxis,false,'旋轉後不該再沿著原本方向選到（命中範圍要跟著轉）');
+  await page.evaluate(()=>{const it=figStudio.sketch.strokes.find(x=>x.type==='line');it.rotate=0;});
+  const hitBeforeRotate=await page.evaluate(()=>{
+    const it=figStudio.sketch.strokes.find(x=>x.type==='line');
+    const c=figureItemCenter(it);
+    return {offAxis:!!topmostFigureItem([it],{x:c.x,y:c.y-200})};
+  });
+  assert.equal(hitBeforeRotate.offAxis,false,'未旋轉時，垂直方向不該選到水平線');
+  // 可以調回原狀
+  await page.locator('#fig-studio-item-scale').evaluate(el=>{el.value='100';el.dispatchEvent(new Event('input',{bubbles:true}));});
+  await page.locator('#fig-studio-item-rotate').evaluate(el=>{el.value='0';el.dispatchEvent(new Event('input',{bubbles:true}));});
+  assert.equal(await page.evaluate(()=>figStudio.sketch.selected.scale),1,'可以調回 100%');
+  assert.equal(await page.evaluate(()=>figStudio.sketch.selected.rotate),0,'可以調回 0°');
+  console.log('PASS: 手繪可縮放與旋轉所選圖形（命中判定跟著變換）');
   const mv3=await sketchBox();
   await page.mouse.click(mv3.x+mv3.width*0.93,mv3.y+mv3.height*0.07);
   assert.equal(await page.evaluate(()=>figStudio.sketch.selected),null,'點空白處要取消選取');
@@ -1859,11 +1889,15 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   for(let i=0;i<50&&aiFigureSent.figures[0].id!==2;i++)await page.waitForTimeout(100);
   assert.equal(aiFigureSent.figures[0].id,2,'幾何題的圖形要寫回該題');
   // 自動重畫也救不回來時（圖仍與題目差很遠）：還是可以存，但必須先把疑慮講清楚、要求確認
+  const drawsBeforeLimit=figureDraws.length,checksBeforeLimit=checkCount;
   await page.locator('[data-aifig="2"]').click();
   await page.locator('#fig-draw').waitFor({timeout:8000});
   await page.locator('#fig-draw').click();
   await page.waitForFunction(()=>!!document.querySelector('.fig-check.bad'),{timeout:20000});
   assert.match(await page.locator('.fig-check.bad').innerText(),/圖上把 3 標成 4/,'要列出還剩下的疑慮');
+  // 生成後最多檢驗兩次圖文是否相符：一直不合格也只畫兩輪、核對兩次。
+  assert.equal(figureDraws.length-drawsBeforeLimit,2,'生成後最多畫兩輪');
+  assert.equal(checkCount-checksBeforeLimit,2,'圖文相符最多核對兩次');
   assert.match(await page.locator('#toast').innerText(),/請人工核對/,'要提醒教師還有疑慮');
   const dialogsBefore=dialogs.length,savesBefore=figureSaves;
   await page.locator('#fig-apply').click();

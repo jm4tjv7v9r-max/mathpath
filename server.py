@@ -729,7 +729,9 @@ FIGURE_POINT_RE = re.compile(r'[A-Za-z][A-Za-z0-9]{0,3}')
 FIGURE_MAX_POINTS = 40
 FIGURE_MAX_ITEMS = 60
 FIGURE_MAX_LABELS = 30
-FIGURE_SPEC_ATTEMPTS = 3
+# 生成後最多檢驗兩次圖文是否相符：第 1 輪畫圖＋驗證，不符就帶問題重畫第 2 輪，
+# 之後保留問題最少的一版交教師核對（教師仍可按「依核對結果重畫」再跑一輪）。
+FIGURE_SPEC_ATTEMPTS = 2
 FIGURE_MAX_ISSUES = 6
 FIGURE_MAX_SCALE = 240.0
 

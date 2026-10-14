@@ -1219,7 +1219,9 @@ async function aiFigureData(payload,btn,label){
 // 有問題就依核對結果重畫，或隨時手動插入自己的圖片。所有變更都留在這裡，
 // 按「使用這張圖形」才會寫回題目。
 const FIGURE_TOPICS=['幾何','三角形','四邊形與多邊形','圓','立體圖形','三角學','坐標幾何','軌跡與幾何證明','向量'];
-const FIGURE_ROUNDS=3;
+// 生成後最多檢驗兩次「圖文是否相符」：第 1 輪畫圖＋核對，有疑慮就帶問題重畫第 2 輪，
+// 之後保留問題最少的一版（教師可再按「依核對結果重畫」）。
+const FIGURE_ROUNDS=2;
 const FIGURE_ISSUE_LIMIT=6;
 
 function figureNeeded(topic){return FIGURE_TOPICS.includes(topic);}
@@ -1281,7 +1283,7 @@ function renderFigureStudio(){
   <div class="fig-question">${mathText(ctx.content||'')}</div>
   <div class="fig-preview">${figure?`<img src="${figure}" alt="題目圖形">`:`<span class="fig-empty">尚未有圖形</span>`}</div>
   <div class="fig-draw-panel"${figStudio.drawing?'':' hidden'}>
-    ${figureToolbarHtml('fig-studio','AI 畫得不對時，可以直接在方格上自己畫：拖曳畫直線／虛線／圓，選「點名稱」再點畫布放置，選「選擇」可拖曳移動圖形')}
+    ${figureToolbarHtml('fig-studio','AI 畫得不對時，可以直接在方格上自己畫：拖曳畫直線／虛線／圓，選「點名稱」再點畫布放置，選「選擇」可拖曳移動、並用「縮放／旋轉」調整大小與角度')}
     <div class="canvas-wrap figure-canvas-wrap"><canvas id="fig-studio-canvas" width="900" height="420" tabindex="0" aria-label="手繪題目圖形畫布"></canvas></div>
     <div class="submit-row"><span class="small-text">按「套用手繪圖形」才會取代目前的圖</span><div class="row-actions"><button class="primary" id="fig-sketch-apply">${icon('check')}套用手繪圖形</button></div></div>
   </div>
@@ -1759,8 +1761,64 @@ function figureItemHit(item,pts){
 }
 // 選取時取最上面（最後畫）的那一項，跟視覺上的前後關係一致。
 function topmostFigureItem(strokes,pt){
-  for(let i=strokes.length-1;i>=0;i--){if(figureItemHit(strokes[i],[pt]))return strokes[i];}
+  // 縮放／旋轉過的項目：先把指標反算回該項的原始座標再比對，
+  // 命中範圍才會跟著圖形一起放大／旋轉。
+  for(let i=strokes.length-1;i>=0;i--){
+    if(figureItemHit(strokes[i],[figureItemLocal(strokes[i],pt)]))return strokes[i];
+  }
   return null;
+}
+
+// ── 圖形的縮放與旋轉 ────────────────────────────────────────────────
+// 每一項圖形可以有自己的 scale（倍率）與 rotate（度），都以「該項自己的中心」為基準。
+// 繪製時把畫布變換套上去；命中判定則是把指標位置**反算回該項的原始座標**再比對，
+// 所以移動、橡皮、選取都不必為每一種圖形各寫一套。
+function figureItemScale(item){const s=Number(item&&item.scale);return Number.isFinite(s)&&s>0?s:1;}
+function figureItemRotate(item){const r=Number(item&&item.rotate);return Number.isFinite(r)?r:0;}
+function figureItemCenter(item){
+  const pts=(item&&item.points)||[];
+  if(!pts.length)return null;
+  if(item.type==='circle'||item.type==='label')return {x:pts[0].x,y:pts[0].y};
+  let x0=Infinity,y0=Infinity,x1=-Infinity,y1=-Infinity;
+  for(const p of pts){x0=Math.min(x0,p.x);y0=Math.min(y0,p.y);x1=Math.max(x1,p.x);y1=Math.max(y1,p.y);}
+  return {x:(x0+x1)/2,y:(y0+y1)/2};
+}
+// 原始座標 → 畫面座標（縮放＋旋轉，繞該項中心）
+function figureItemToWorld(item,pt){
+  const s=figureItemScale(item),deg=figureItemRotate(item),c=figureItemCenter(item);
+  if(!c||(s===1&&!deg))return {x:pt.x,y:pt.y};
+  const a=deg*Math.PI/180,dx=(pt.x-c.x)*s,dy=(pt.y-c.y)*s;
+  return {x:c.x+dx*Math.cos(a)-dy*Math.sin(a),y:c.y+dx*Math.sin(a)+dy*Math.cos(a)};
+}
+// 畫面座標 → 原始座標（上面的反運算），命中判定與拖曳起點都用它
+function figureItemLocal(item,pt){
+  const s=figureItemScale(item),deg=figureItemRotate(item),c=figureItemCenter(item);
+  if(!c||(s===1&&!deg))return {x:pt.x,y:pt.y};
+  const a=-deg*Math.PI/180,dx=pt.x-c.x,dy=pt.y-c.y;
+  const rx=dx*Math.cos(a)-dy*Math.sin(a),ry=dx*Math.sin(a)+dy*Math.cos(a);
+  return {x:c.x+rx/s,y:c.y+ry/s};
+}
+function withItemTransform(ctx,item,draw){
+  const s=figureItemScale(item),deg=figureItemRotate(item),c=figureItemCenter(item);
+  if(!c||(s===1&&!deg)){draw();return;}
+  ctx.save();
+  ctx.translate(c.x,c.y);
+  if(deg)ctx.rotate(deg*Math.PI/180);
+  if(s!==1)ctx.scale(s,s);
+  ctx.translate(-c.x,-c.y);
+  draw();
+  ctx.restore();
+}
+// 選取框：把原始外框的四個角換算到畫面座標，畫成（可能已旋轉的）四邊形。
+function figureSelectionPath(ctx,item){
+  const box=figureItemBounds(item);
+  if(!box)return false;
+  const corners=[[box.x0,box.y0],[box.x1,box.y0],[box.x1,box.y1],[box.x0,box.y1]]
+    .map(([x,y])=>figureItemToWorld(item,{x,y}));
+  ctx.beginPath();ctx.moveTo(corners[0].x,corners[0].y);
+  for(const p of corners.slice(1))ctx.lineTo(p.x,p.y);
+  ctx.closePath();
+  return true;
 }
 
 function paintFigureCanvas(canvas,strokes,selected){
@@ -1774,44 +1832,46 @@ function paintFigureCanvas(canvas,strokes,selected){
   ctx.lineCap='round';ctx.lineJoin='round';ctx.strokeStyle=FIGURE_INK;
   for(const item of strokes){
     const pts=(item&&item.points)||[];
-    if(item.type==='label'){
-      const p=pts[0];if(!p)continue;
-      const text=String(item.text||'');
-      const size=item.size||FIGURE_LABEL_SIZE;
-      ctx.font=figureLabelFont(size);ctx.textAlign='center';ctx.textBaseline='middle';
-      const w=ctx.measureText(text).width+10;
-      ctx.fillStyle='rgba(255,255,255,.92)';
-      ctx.fillRect(p.x-w/2,p.y-size*0.68,w,size*1.36);
-      ctx.fillStyle=FIGURE_INK;
-      ctx.fillText(text,p.x,p.y);
-      continue;
-    }
-    ctx.lineWidth=item.type==='pen'?4:3;
-    ctx.setLineDash(item.dashed?[12,9]:[]);
-    if(item.type==='circle'){
-      const c=pts[0],e=pts[1];if(!c||!e)continue;
-      const r=Math.hypot(e.x-c.x,e.y-c.y);
-      if(r<1)continue;
-      ctx.beginPath();ctx.arc(c.x,c.y,r,0,Math.PI*2);ctx.stroke();
-    }else if(item.type==='line'){
-      const a=pts[0],b=pts[1];if(!a||!b)continue;
-      ctx.beginPath();ctx.moveTo(a.x,a.y);ctx.lineTo(b.x,b.y);ctx.stroke();
-    }else{
-      if(pts.length<2)continue;
-      ctx.beginPath();ctx.moveTo(pts[0].x,pts[0].y);
-      for(const pt of pts.slice(1))ctx.lineTo(pt.x,pt.y);
-      ctx.stroke();
-    }
+    // 每一項各自的縮放／旋轉（繞該項中心）；沒有調整過的項目完全不變。
+    withItemTransform(ctx,item,()=>{
+      if(item.type==='label'){
+        const p=pts[0];if(!p)return;
+        const text=String(item.text||'');
+        const size=item.size||FIGURE_LABEL_SIZE;
+        ctx.font=figureLabelFont(size);ctx.textAlign='center';ctx.textBaseline='middle';
+        const w=ctx.measureText(text).width+10;
+        ctx.fillStyle='rgba(255,255,255,.92)';
+        ctx.fillRect(p.x-w/2,p.y-size*0.68,w,size*1.36);
+        ctx.fillStyle=FIGURE_INK;
+        ctx.fillText(text,p.x,p.y);
+        return;
+      }
+      ctx.lineWidth=item.type==='pen'?4:3;
+      ctx.setLineDash(item.dashed?[12,9]:[]);
+      if(item.type==='circle'){
+        const c=pts[0],e=pts[1];if(!c||!e)return;
+        const r=Math.hypot(e.x-c.x,e.y-c.y);
+        if(r<1)return;
+        ctx.beginPath();ctx.arc(c.x,c.y,r,0,Math.PI*2);ctx.stroke();
+      }else if(item.type==='line'){
+        const a=pts[0],b=pts[1];if(!a||!b)return;
+        ctx.beginPath();ctx.moveTo(a.x,a.y);ctx.lineTo(b.x,b.y);ctx.stroke();
+      }else{
+        if(pts.length<2)return;
+        ctx.beginPath();ctx.moveTo(pts[0].x,pts[0].y);
+        for(const pt of pts.slice(1))ctx.lineTo(pt.x,pt.y);
+        ctx.stroke();
+      }
+    });
   }
   ctx.setLineDash([]);
-  // 選取中的圖形畫一個虛線框，讓教師知道拖曳會移動哪一項。
+  // 選取中的圖形畫一個虛線框，讓教師知道拖曳會移動哪一項；
+  // 縮放或旋轉過的外框也跟著傾斜／放大，才看得出目前的實際範圍。
   if(selected&&strokes.indexOf(selected)>=0){
-    const box=figureItemBounds(selected);
-    if(box){
+    if(figureSelectionPath(ctx,selected)){
       ctx.setLineDash([6,5]);ctx.lineWidth=2;ctx.strokeStyle=FIGURE_PICK;
       ctx.fillStyle='rgba(35,124,92,.08)';
-      ctx.fillRect(box.x0,box.y0,box.x1-box.x0,box.y1-box.y0);
-      ctx.strokeRect(box.x0,box.y0,box.x1-box.x0,box.y1-box.y0);
+      ctx.fill();ctx.stroke();
       ctx.setLineDash([]);ctx.strokeStyle=FIGURE_INK;
     }
   }
@@ -1868,8 +1928,14 @@ function wireFigureCanvas(canvas,state,onChange){
   canvas.onpointermove=e=>{
     const pt=pos(e);
     if(state.drag&&state.selected){
-      const dx=pt.x-state.drag.last.x,dy=pt.y-state.drag.last.y;
-      state.selected.points.forEach(p=>{p.x+=dx;p.y+=dy;});
+      const item=state.selected;
+      // 縮放／旋轉過的項目：先把螢幕位移換算回該項的原始座標系（反旋轉、再除以倍率），
+      // 拖曳方向才會與眼睛看到的一致。
+      const s=figureItemScale(item),deg=figureItemRotate(item);
+      let dx=pt.x-state.drag.last.x,dy=pt.y-state.drag.last.y;
+      if(deg){const a=-deg*Math.PI/180,rx=dx*Math.cos(a)-dy*Math.sin(a),ry=dx*Math.sin(a)+dy*Math.cos(a);dx=rx;dy=ry;}
+      if(s!==1){dx/=s;dy/=s;}
+      item.points.forEach(p=>{p.x+=dx;p.y+=dy;});
       state.drag.last=pt;
       paint();return;
     }
@@ -1929,7 +1995,8 @@ function figureToolbarHtml(scope,hint){
     <button type="button" class="icon-btn" id="${scope}-undo" aria-label="撤銷">${icon('undo')}</button>
     <button type="button" class="icon-btn" id="${scope}-clear" aria-label="清除">${icon('trash')}</button>
     <span class="label-name-field" id="${scope}-label-field">點名稱<input id="${scope}-label-text" maxlength="4" value="A" aria-label="點名稱">字級<input id="${scope}-label-size" type="range" min="16" max="48" step="2" value="26" aria-label="字母大小"><span class="label-size-value" id="${scope}-label-size-value">26</span></span>
-  </div><span class="small-text">${esc(hint||'拖曳畫直線／虛線／圓；選「點名稱」再點畫布放置；選「選擇」可拖曳移動，按 Delete 刪除')}</span></div>`;
+    <span class="item-transform-field" id="${scope}-transform-field" title="先用「選擇」點一下圖形，再拖這裡調整">縮放<input id="${scope}-item-scale" type="range" min="40" max="250" step="5" value="100" aria-label="所選圖形縮放" disabled><span class="label-size-value" id="${scope}-item-scale-value">—</span>旋轉<input id="${scope}-item-rotate" type="range" min="-180" max="180" step="5" value="0" aria-label="所選圖形旋轉" disabled><span class="label-size-value" id="${scope}-item-rotate-value">—</span></span>
+  </div><span class="small-text">${esc(hint||'拖曳畫直線／虛線／圓；選「點名稱」再點畫布放置；選「選擇」可拖曳移動、用「縮放／旋轉」調整大小與角度，按 Delete 刪除')}</span></div>`;
 }
 
 // 接上工具列：切換工具、點名稱與字級、撤銷與清除。
@@ -1940,6 +2007,10 @@ function wireFigureTools(scope,canvas,state,onChange){
   const labelInput=$('#'+scope+'-label-text');
   const sizeInput=$('#'+scope+'-label-size');
   const sizeValue=$('#'+scope+'-label-size-value');
+  const scaleInput=$('#'+scope+'-item-scale');
+  const scaleValue=$('#'+scope+'-item-scale-value');
+  const rotateInput=$('#'+scope+'-item-rotate');
+  const rotateValue=$('#'+scope+'-item-rotate-value');
   const tools2=wireFigureCanvas(canvas,state,onChange);
   const repaint=()=>{if(tools2)tools2.repaint();};
   const selectedLabel=()=>state.selected&&state.selected.type==='label'?state.selected:null;
@@ -1953,6 +2024,19 @@ function wireFigureTools(scope,canvas,state,onChange){
       const size=chosen?(chosen.size||state.labelSize):state.labelSize;
       sizeInput.value=String(size);
       if(sizeValue)sizeValue.textContent=String(size);
+    }
+    // 縮放／旋轉欄位同樣固定顯示：沒選取時停用並顯示「—」，
+    // 選取了圖形就代表那一項的目前倍率與角度。
+    const sel=state.selected;
+    if(scaleInput){
+      scaleInput.disabled=!sel;
+      scaleInput.value=String(Math.round(figureItemScale(sel)*100));
+      if(scaleValue)scaleValue.textContent=sel?`${Math.round(figureItemScale(sel)*100)}%`:'—';
+    }
+    if(rotateInput){
+      rotateInput.disabled=!sel;
+      rotateInput.value=String(Math.round(figureItemRotate(sel)));
+      if(rotateValue)rotateValue.textContent=sel?`${Math.round(figureItemRotate(sel))}°`:'—';
     }
   };
   state.labelText=()=>(labelInput&&labelInput.value.trim())||'A';
@@ -1972,6 +2056,18 @@ function wireFigureTools(scope,canvas,state,onChange){
     if(sizeValue)sizeValue.textContent=String(size);
     const chosen=selectedLabel();
     if(chosen){chosen.size=size;repaint();}
+  };
+  if(scaleInput)scaleInput.oninput=()=>{
+    const sel=state.selected;if(!sel)return;
+    sel.scale=Math.max(0.4,Math.min(2.5,Number(scaleInput.value)/100));
+    if(scaleValue)scaleValue.textContent=`${Math.round(sel.scale*100)}%`;
+    repaint();
+  };
+  if(rotateInput)rotateInput.oninput=()=>{
+    const sel=state.selected;if(!sel)return;
+    sel.rotate=Math.max(-180,Math.min(180,Number(rotateInput.value)));
+    if(rotateValue)rotateValue.textContent=`${Math.round(sel.rotate)}°`;
+    repaint();
   };
   state.onSelect=sync;
   sync();
@@ -2178,7 +2274,7 @@ function wireQuestionForm(prefix, state, opts){
 
 const manualState={options:[],rubric:[]};
 function renderImportContent(){const r=$('#import-content');if(importStage===1){
-  const manualFigureHtml=`<div class="form-field"><label class="field-label">題目圖形（可選）</label><div class="fig-source-row"><label class="secondary fig-upload" for="fig-upload">${icon('image')}上傳圖形圖片<input id="fig-upload" type="file" accept="image/png,image/jpeg,image/webp" hidden></label><span class="small-text">可直接貼上截圖（Ctrl/⌘+V）；上傳後會取代手繪圖，最多 4 MB。</span></div><div id="fig-image-preview" class="fig-image-preview"></div>${figureToolbarHtml('fig','在方格上畫出三角形、坐標軸等圖形：拖曳畫直線／虛線／圓，選「點名稱」再點畫布放置，選「選擇」可拖曳移動圖形')}<div class="canvas-wrap figure-canvas-wrap"><canvas id="figure-canvas" width="900" height="420" tabindex="0" aria-label="題目圖形畫布"></canvas></div><p class="field-hint" id="fig-status">圖形會與題目一併儲存；不畫圖也可直接加入題目。</p></div>`;
+  const manualFigureHtml=`<div class="form-field"><label class="field-label">題目圖形（可選）</label><div class="fig-source-row"><label class="secondary fig-upload" for="fig-upload">${icon('image')}上傳圖形圖片<input id="fig-upload" type="file" accept="image/png,image/jpeg,image/webp" hidden></label><span class="small-text">可直接貼上截圖（Ctrl/⌘+V）；上傳後會取代手繪圖，最多 4 MB。</span></div><div id="fig-image-preview" class="fig-image-preview"></div>${figureToolbarHtml('fig','在方格上畫出三角形、坐標軸等圖形：拖曳畫直線／虛線／圓，選「點名稱」再點畫布放置，選「選擇」可拖曳移動、並用「縮放／旋轉」調整大小與角度')}<div class="canvas-wrap figure-canvas-wrap"><canvas id="figure-canvas" width="900" height="420" tabindex="0" aria-label="題目圖形畫布"></canvas></div><p class="field-hint" id="fig-status">圖形會與題目一併儲存；不畫圖也可直接加入題目。</p></div>`;
   const manualForm=questionFormHtml('manual',{submitLabel:'加入這道題目',figureHtml:manualFigureHtml});r.innerHTML=`<div class="form-field"><label class="field-label" for="paper-name">試卷名稱</label><input id="paper-name" value="${esc(paperName)}" placeholder="例如：中三數學 · 第一學期測驗" maxlength="200"></div><label class="dropzone" id="paper-drop">${icon('upload')}<strong id="paper-filename">${paperFile?esc(paperFile.name):'點擊或拖入試卷檔案'}</strong><small>文字型 PDF / PNG / JPG · 最多 10 MB · 圖片會自動框出題目圖形並裁到題目右邊</small><input type="file" id="paper-upload" accept="application/pdf,image/png,image/jpeg" hidden></label><div class="divider-text"><span>或直接貼上題目文字</span></div><label class="field-label" for="paper-text">試卷內容<span class="small-text" style="font-weight:400">　數學式可用 LaTeX：$x^2-5x+6=0$、$\\frac{1}{2}$、$\\sqrt{3}$</span></label><textarea class="answer-field import-text" id="paper-text" placeholder="1. 解方程 $x^2-5x+6=0$。\n\n2. 直角三角形兩邊長為 $3\\text{cm}$ 及 $4\\text{cm}$，求斜邊長。\n\n3. 擲一枚公平骰子，求點數大於 4 的概率。" maxlength="79000">${esc(paperText)}</textarea><button class="text-button" id="sample-paper" style="font-size:calc(14px*var(--fs));margin-top:12px">填入示例試卷 ${icon('arrow')}</button>${S.ai.mode==='external'?`<label class="checkbox-line"><input type="checkbox" id="paper-consent">允許將試卷傳送到學校配置的外部 AI（未同意時，文字只用本地規則處理）</label>`:''}<div id="parse-error"></div><div class="submit-row"><span class="small-text">${S.ai.configured?'可用 AI 識別，仍需核驗':'本地規則拆題 · 分類結果需核驗'}</span><div class="row-actions"><button class="secondary" id="parse-paper">先拆分預覽 ${icon('spark')}</button><button class="primary" id="auto-import-paper">全自動拆分並匯入 ${icon('check')}</button></div></div><div class="divider-text"><span>或手動輸入題目並繪製圖形</span></div><div class="manual-entry">${manualForm}</div>`;$('#paper-name').oninput=e=>paperName=e.target.value;$('#paper-text').oninput=e=>{paperText=e.target.value;if(paperText.trim()){paperFile=null;$('#paper-filename').textContent='已使用貼上文字（不會同時提交檔案）';}};$('#sample-paper').onclick=()=>{paperName='中三數學 · 示例練習卷';paperText='1. 解方程 $x^2-5x+6=0$。\n\n2. 直角三角形兩條直角邊長為 $3\\text{ cm}$ 和 $4\\text{ cm}$，求斜邊長。\n\n3. 擲一枚公平骰子，求點數大於 4 的概率。\n\n4. 已知 $f(x)=2x+1$，求 $f(3)$。';paperFile=null;renderImportContent();};const select=async f=>{try{const dataUrl=await fileData(f,['application/pdf','image/png','image/jpeg']);paperFile={name:f.name,mime:f.type,dataUrl};paperText='';if(!paperName)paperName=f.name.replace(/\.[^.]+$/,'');renderImportContent();}catch(e){toast(e.message);}};$('#paper-upload').onchange=e=>select(e.target.files[0]);const d=$('#paper-drop');d.ondragover=e=>{e.preventDefault();d.classList.add('dragover');};d.ondragleave=()=>d.classList.remove('dragover');d.ondrop=e=>{e.preventDefault();select(e.dataTransfer.files[0]);};$('#parse-paper').onclick=parsePaper;$('#auto-import-paper').onclick=autoImportPaper;
 initFigureCanvas();
 renderFigImage();
