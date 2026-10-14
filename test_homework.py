@@ -53,6 +53,14 @@ class HomeworkTests(unittest.TestCase):
             body['assignmentId'] = aid
         return self.call('POST', '/api/attempts', body, user)['attempt']
 
+    def latest_by_question(self, aid):
+        """教師視角的「每題最新一筆」作答（attempts 是 id 由新到舊）。"""
+        latest = {}
+        for a in self.detail(aid, self.teacher)['attempts']:
+            if a['questionId'] not in latest or latest[a['questionId']]['id'] < a['id']:
+                latest[a['questionId']] = a
+        return latest
+
     def detail(self, aid, user=None):
         return self.call('GET', f'/api/assignments/{aid}', user=user)
 
@@ -491,6 +499,66 @@ class HomeworkTests(unittest.TestCase):
         with self.app.db() as db:
             self.assertEqual(db.execute('SELECT count(*) FROM assignment_recipients WHERE assignment_id=? AND submitted_at IS NOT NULL', (aid,)).fetchone()[0], 1)
             self.assertEqual(db.execute('SELECT count(*) FROM attempts').fetchone()[0], 2)
+
+    def test_skip_question_records_pending_and_allows_submit(self):
+        """「本題不會」：留空作答但明確記錄，不自動記零分，也不必逼學生亂填。"""
+        aid = self.assignment((1, 2))
+        self.attempt(aid, qid=1, answer='x=2')
+        # 只答一題還不能提交；錯誤訊息要指出是哪一題、並提示可以標示「不會」。
+        with self.assertRaises(server.APIError) as ctx:
+            self.finalize(aid)
+        self.assertIn('第 2 題', ctx.exception.message)
+        self.assertIn('本題不會', ctx.exception.message)
+        skipped = self.call('POST', '/api/attempts',
+                            {'questionId': 2, 'skipped': True, 'assignmentId': aid})['attempt']
+        self.assertTrue(skipped['skipped'])
+        self.assertEqual(skipped['status'], 'pending')
+        self.assertIsNone(skipped['score'])
+        teacher_rows = self.latest_by_question(aid)
+        self.assertTrue(teacher_rows[2]['skipped'])
+        self.assertIsNone(teacher_rows[2]['score'], '標示「不會」不可以自動記零分')
+        self.assertIn('未自動記零分', teacher_rows[2]['feedback'])
+        # 標示「不會」時不接受附帶作答內容，型別也要檢查。
+        self.error(400, 'POST', '/api/attempts',
+                   {'questionId': 1, 'skipped': True, 'answerText': 'x', 'assignmentId': aid})
+        self.error(400, 'POST', '/api/attempts', {'questionId': 1, 'skipped': 'yes', 'assignmentId': aid})
+        # 想通了要改成真的作答也可以（最新一筆為準，覆蓋「不會」）。
+        again = self.attempt(aid, 2, 'x=3或4')
+        self.assertFalse(again['skipped'])
+        self.finalize(aid)
+        teacher_rows = self.latest_by_question(aid)
+        self.assertFalse(teacher_rows[2]['skipped'], '最新一筆是真的作答')
+        self.assertIsNone(self.detail(aid)['report']['score'], '教師批閱前學生看不到分數')
+
+    def test_skip_requires_open_assignment(self):
+        """已正式提交的作業不能再補標示「不會」（否則等於偷偷改答案）。"""
+        aid = self.assignment((1,))
+        self.attempt(aid)
+        self.finalize(aid)
+        self.error(403, 'POST', '/api/attempts', {'questionId': 1, 'skipped': True, 'assignmentId': aid})
+
+    def test_ai_review_can_target_one_student_and_skips_blank(self):
+        """一鍵 AI 批閱可以只針對一位學生；標示「不會」的空白題不丟給模型。"""
+        self.configure_ai()
+        aid = self.ai_assignment((1,))
+        with patch.object(self.app.ai, 'call', return_value=self.ai_result()):
+            self.attempt(aid)                                  # 學生 1：正常作答，有 AI 建議分
+        self.call('POST', '/api/attempts', {'questionId': 1, 'skipped': True, 'assignmentId': aid},
+                  self.other)                                      # 學生 3：標示「不會」
+        with patch.object(self.app.ai, 'call', return_value=self.ai_result()) as model:
+            one = self.call('POST', f'/api/assignments/{aid}/ai-review', {'studentId': 1}, self.teacher)
+        self.assertEqual(one['reviewed'], 1, '只覆核指定的那位學生')
+        self.assertEqual(model.call_count, 0, '已有 AI 原分的作答不重呼模型')
+        rows = {a['student']['id']: a for a in self.detail(aid, self.teacher)['attempts']}
+        self.assertTrue(rows[1]['teacherReviewed'])
+        self.assertFalse(rows[3]['teacherReviewed'], '其他學生不受影響')
+        with patch.object(self.app.ai, 'call', return_value=self.ai_result()):
+            rest = self.call('POST', f'/api/assignments/{aid}/ai-review', {}, self.teacher)
+        self.assertEqual(rest['reviewed'], 0, '沒有其他可評分的作答')
+        self.assertEqual(rest['skipped'], 1, '標示「不會」的空白題留給教師自己處理')
+        rows = {a['student']['id']: a for a in self.detail(aid, self.teacher)['attempts']}
+        self.assertIsNone(rows[3]['score'], '空白題不能被模型給分')
+        self.assertFalse(rows[3]['teacherReviewed'])
 
     def test_concurrent_finalize_only_one_state(self):
         aid = self.assignment((1,))

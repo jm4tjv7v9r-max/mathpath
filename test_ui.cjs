@@ -1152,6 +1152,57 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   assert.equal(await page.locator('#result-root .solution-box').count(), 0, '批閱前不應顯示參考答案與詳解');
   assert.equal(await page.locator('#result-root .result-step').count(), 0, '批閱前不應顯示逐項評分');
 
+  // 情境四之三：學生不會某題 → 標示「本題不會」即可交代，不必亂填也能提交
+  const skipBodies=[],skipAttempts=[];let finalizeCalls=0;
+  await page.route('**/api/attempts', route => {
+    if(route.request().method()!=='POST')return route.fallback();
+    const body=route.request().postDataJSON();skipBodies.push(body);
+    const attempt=body.skipped
+      ? {...awaitingAttempt,id:500+skipBodies.length,questionId:body.questionId,skipped:true,status:'pending',score:null,
+         feedback:'學生標示本題不會，等待教師處理；未自動記零分。'}
+      : {...awaitingAttempt,id:500+skipBodies.length,questionId:body.questionId};
+    skipAttempts.push(attempt);
+    return route.fulfill({json:{attempt,solution:null}});
+  });
+  await page.route('**/api/assignments/1/submit', route => {
+    finalizeCalls++;
+    return route.fulfill({json:{report:{...awaitingReport,pendingCount:2},
+      mySubmission:{status:'submitted',submittedAt:stamp,resubmittedAt:null,submitCount:1,late:false,correction:null}}});
+  });
+  const twoQuestions=[{...assignmentQuestion,id:1,title:'第1題：因式分解解方程'},
+                      {...assignmentQuestion,id:2,title:'第2題：配方法解方程'}];
+  await page.route('**/api/assignments/1', route => route.fulfill({json:{
+    assignment:{...assignment,aiGrading:false,questionCount:2,totalPoints:12}, questions:twoQuestions,
+    attempts:skipAttempts,
+    mySubmission:{status:'not_started',submittedAt:null,resubmittedAt:null,submitCount:0,late:false,correction:null},
+    report:{...awaitingReport,pendingCount:0,awaitingReview:false,questionCount:2}}}));
+  await page.reload({waitUntil:'networkidle'});
+  await page.locator('[data-assignment]').first().click();
+  await page.locator('.assignment-question-row').first().waitFor({timeout:8000});
+  assert.equal(await page.locator('[data-skip-q]').count(),2,'未作答的題目都要有「本題不會」');
+  assert.match(await page.locator('#skip-rest-submit').innerText(),/其餘 2 題/,'未答完時要能一次標示其餘題目');
+  assert.equal(await page.locator('#finalize-assignment').isDisabled(),true,'未交代完不能正式提交');
+  // 作答頁也有「本題不會」：標示後直接前往下一題還沒交代的
+  await page.locator('[data-assignment-q]').first().click();
+  await page.locator('#answer-area').waitFor({timeout:8000});
+  assert.equal(await page.locator('#skip-answer').count(),1,'作業作答頁要有「本題不會」');
+  await page.locator('#skip-answer').click();
+  await page.waitForFunction(()=>document.querySelector('#answer-area')&&/第2題/.test(document.querySelector('#main').textContent),{timeout:8000});
+  assert.equal(skipBodies[0].skipped,true,'要送出 skipped');
+  assert.equal(skipBodies[0].questionId,1,'標示的是第 1 題');
+  assert.equal(skipBodies[0].answerText,undefined,'標示不會時不帶作答內容');
+  // 剩下第 2 題用「其餘題目標示不會並提交」一次處理
+  await page.evaluate(()=>assignmentPage(1));
+  await page.locator('.assignment-question-row').first().waitFor({timeout:8000});
+  assert.match(await page.locator('.assignment-question-row').first().innerText(),/已標示「本題不會」/,'題目列要顯示已標示');
+  assert.equal(await page.locator('[data-skip-q]').count(),1,'已標示的題目不用再顯示按鈕');
+  await page.locator('#skip-rest-submit').click();
+  await page.waitForFunction(()=>/已標示「不會」並正式提交/.test(document.querySelector('#toast').textContent),{timeout:8000});
+  assert.equal(skipBodies.length,2,'第二題也標示了不會');
+  assert.equal(skipBodies[1].questionId,2);
+  assert.equal(finalizeCalls,1,'標示完就直接提交');
+  console.log('PASS: 「本題不會」留空作答（題目列／作答頁／其餘題目一次標示並提交、不記零分）');
+
   // 情境五：作業有多題時，提交一題後可直接按「下一題」，不必先回到本份作業
   const threeQuestions=[
     {...assignmentQuestion,id:1,title:'第1題：因式分解解方程'},
@@ -1250,6 +1301,53 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   await page.waitForFunction(()=>!document.querySelector('#modal-root .modal'));
   assert.equal(reviewSent.score,5);
   assert.equal(reviewSent.feedback,'','未填評語時應送出空字串');
+
+  // 批閱佇列：存檔後直接換下一題（不關窗、不整頁重抓），最後一題才收尾；
+  // 有 AI 建議分時可以一鍵採用。
+  const queueQuestions=[1,2,3].map(n=>({...assignmentQuestion,id:n,title:`第${n}題：因式分解`}));
+  const queueAttempts=[1,2,3].map(n=>({...handwritten,id:100+n,questionId:n,questionTitle:`第${n}題：因式分解`,
+    aiScore:5,maxScore:6,score:null,status:'pending',teacherReviewed:false}));
+  const queueResults={json:{assignment:{...assignment,aiGrading:true,questionCount:3,totalPoints:18},
+    students:[{...student,status:'submitted',submittedAt:stamp,answeredCount:3,pendingCount:3,score:null,scoredPoints:0,confirmedScore:null,confirmedCount:0}],
+    summary:{studentCount:1,submittedCount:1,correctionCount:0,fullyGradedCount:0,pendingReviewCount:3,averageScore:null,confirmedAverage:null},
+    topicStats:[]}};
+  await page.route('**/api/assignments/1', route => route.fulfill({json:{
+    assignment:{...assignment,aiGrading:true,questionCount:3,totalPoints:18}, questions:queueQuestions,
+    attempts:queueAttempts,
+    mySubmission:{status:'submitted',submittedAt:stamp,resubmittedAt:null,submitCount:1,late:false,correction:null},
+    report:{score:null,maxScore:18,totalScoredPoints:0,pendingCount:3,confirmedScore:null,confirmedCount:0,topicStats:[],suggestion:advice}}}));
+  await page.route('**/api/assignments/1/results', route => route.fulfill(queueResults));
+  const queueBodies=[];
+  await page.route('**/api/attempts/*/review', route => {
+    const body=route.request().postDataJSON();queueBodies.push(body);
+    const id=Number(new URL(route.request().url()).pathname.split('/')[3]);
+    const at=queueAttempts.find(x=>x.id===id)||queueAttempts[0];
+    return route.fulfill({json:{attempt:{...at,score:body.score,teacherReviewed:true,confirmedScore:body.score,
+      feedback:'教師已覆核（未填寫評語）。',gradingMethod:'teacher-reviewed'}}});
+  });
+  await page.locator('[data-page=homework]').first().click();
+  await page.locator('[data-results]').first().click();
+  await page.locator('[data-student-result]').first().click();
+  await page.locator('[data-hw-review]').first().click();
+  await page.locator('#review-score').waitFor({timeout:8000});
+  assert.match(await page.locator('.modal').innerText(),/待批閱佇列：第 1 \/ 3 題/,'要顯示佇列進度');
+  assert.match(await page.locator('#review-form button[type=submit]').innerText(),/保存並看下一題/,'還有下一題時要能一路批下去');
+  assert.equal(await page.locator('#adopt-ai').count(),1,'有 AI 建議分時要能一鍵採用');
+  await page.locator('#adopt-ai').click();
+  await page.waitForFunction(()=>{const m=document.querySelector('#modal-root .modal');return m&&/第 2 \/ 3 題/.test(m.textContent);},{timeout:8000});
+  assert.equal(queueBodies.length,1,'採用 AI 建議也是存檔一次');
+  assert.equal(queueBodies[0].score,5,'採用的是 AI 建議分');
+  await page.locator('#review-score').fill('6');
+  await page.locator('#review-form button[type=submit]').click();
+  await page.waitForFunction(()=>{const m=document.querySelector('#modal-root .modal');return m&&/第 3 \/ 3 題/.test(m.textContent);},{timeout:8000});
+  assert.match(await page.locator('#review-form button[type=submit]').innerText(),/保存教師批閱/,'最後一題要能收尾');
+  await page.locator('#review-score').fill('4');
+  await page.locator('#review-form button[type=submit]').click();
+  await page.waitForFunction(()=>!document.querySelector('#modal-root .modal'),{timeout:8000});
+  assert.equal(queueBodies.length,3,'三題都要存檔');
+  assert.deepEqual(queueBodies.map(b=>b.score),[5,6,4],'每題存的分數各自正確');
+  console.log('PASS: 教師批閱佇列（存檔即換下一題、最後一題收尾、可採用 AI 建議）');
+
   // 未啟用 AI 評分的作業不應出現一鍵批閱
   await page.route('**/api/assignments/1/results', resultsFixture(false));
   await page.locator('[data-page=homework]').first().click();
@@ -2018,7 +2116,7 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   assert.equal(rowStyles[1].accent,'#2c6a8e','第二題要用第二個色系');
   assert.equal(new Set(rowStyles.map(r=>r.tint)).size,4,'底色也要交替，題目的界線才看得出來');
   rowStyles.forEach((r,i)=>{
-    assert.equal(r.width,'3px',`第 ${i+1} 題要有左側色條`);
+    assert.equal(r.width,'4px',`第 ${i+1} 題要有左側色條`);
     assert.equal(r.border,hexToRgb(r.accent),`第 ${i+1} 題的色條要跟色系一致`);
     assert.equal(r.badge,hexToRgb(r.accent),`第 ${i+1} 題的編號顏色要跟色系一致`);
   });

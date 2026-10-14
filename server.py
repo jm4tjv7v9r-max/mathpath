@@ -3098,7 +3098,7 @@ class Application:
                     status TEXT NOT NULL CHECK(status IN ('graded','pending')), feedback TEXT NOT NULL,
                     submitted_at TEXT NOT NULL, method TEXT NOT NULL, ai_steps TEXT NOT NULL DEFAULT '[]',
                     teacher_reviewed INTEGER NOT NULL DEFAULT 0, reviewed_by INTEGER REFERENCES users(id),
-                    reviewed_at TEXT);
+                    reviewed_at TEXT, skipped INTEGER NOT NULL DEFAULT 0);
                 CREATE INDEX IF NOT EXISTS attempts_user ON attempts(user_id, submitted_at);
                 CREATE INDEX IF NOT EXISTS sessions_expiry ON sessions(expires);
             ''')
@@ -3109,6 +3109,10 @@ class Application:
                               ('figure_key', 'ALTER TABLE questions ADD COLUMN figure_key TEXT')):
                 if name not in question_columns:
                     db.execute(sql)
+            # 作答「學生標示不會」：增量加欄，舊資料一律視為 0（照舊運作）。
+            attempt_columns = {r['name'] for r in db.execute('PRAGMA table_info(attempts)')}
+            if 'skipped' not in attempt_columns:
+                db.execute('ALTER TABLE attempts ADD COLUMN skipped INTEGER NOT NULL DEFAULT 0')
             # 學生帳號的班內號：增量加欄，舊帳戶為 NULL。沒有班內號時一切照舊運作。
             user_columns = {r['name'] for r in db.execute('PRAGMA table_info(users)')}
             if 'seat' not in user_columns:
@@ -3471,6 +3475,7 @@ class Application:
                   'teacherReviewed': bool(row['teacher_reviewed']),
                   'assignmentId': row['assignment_id'], 'mockId': row['mock_id'] if 'mock_id' in row.keys() else None, 'aiScore': row['ai_score'],
                   'ruleScore': row['rule_score'], 'confirmedScore': row['teacher_confirmed_score'],
+                  'skipped': bool(row['skipped']) if 'skipped' in row.keys() else False,
                   'suggestion': json.loads(row['suggestion'])}
         keys = row.keys()
         if row['image'] is not None or ('image_key' in keys and row['image_key'] is not None):
@@ -4056,14 +4061,21 @@ class Application:
             return {'count': len(prepared),
                     'questions': [self.question_public(q, user) for q in saved]}, headers
         if method == 'POST' and path == '/api/attempts':
-            fields(body, ('questionId', 'answerText', 'image', 'consentExternal', 'assignmentId', 'mockId'),
-                   ('questionId', 'answerText'))
+            fields(body, ('questionId', 'answerText', 'image', 'consentExternal', 'assignmentId', 'mockId', 'skipped'),
+                   ('questionId',))
+            # 學生可以標示「本題不會」：留空作答並明確記錄，教師端看得到、不自動記零分，
+            # 也不需要逼學生隨便打一個字才交得出去。
+            skipped = body.get('skipped', False)
+            if type(skipped) is not bool:
+                fail(400, 'skipped 必須是布林值。')
+            if skipped and ('answerText' in body and body['answerText'] or 'image' in body):
+                fail(400, '標示「不會」時不要再附作答內容。')
             assignment_id = (number(body['assignmentId'], '作业编号', 1, 2**63 - 1, True)
                              if 'assignmentId' in body else None)
             qid = number(body['questionId'], '題目編號', 1, 2**63 - 1, True)
             mock_id = (number(body['mockId'], '模擬測驗編號', 1, 2**63 - 1, True)
                        if 'mockId' in body else None)
-            answer = text(body['answerText'], '作答文字', MAX_TEXT, empty=True)
+            answer = text(body.get('answerText', ''), '作答文字', MAX_TEXT, empty=True)
             if 'consentExternal' in body and type(body['consentExternal']) is not bool:
                 fail(400, 'consentExternal 必須是布林值。')
             image, mime, ai_image = (None, None, None)
@@ -4086,8 +4098,8 @@ class Application:
                 else:
                     image, mime = validate_image(body['image'])
                     ai_image = body['image']
-            if not answer and image is None:
-                fail(400, '請填寫答案或提交手寫圖片。')
+            if not skipped and not answer and image is None:
+                fail(400, '請填寫答案或提交手寫圖片；如果這題不會，請按「本題不會」。')
             if assignment_id is not None and mock_id is not None:
                 fail(400, '不能同時屬於作業與模擬測驗。')
             assignment_row = None
@@ -4125,17 +4137,21 @@ class Application:
                 if mock_id is not None:
                     self.mock.assert_open(db, mock_id, user, qid)
                 cur = db.execute('INSERT INTO attempts(user_id,question_id,answer_text,image,image_mime,image_key,'
-                                 'score,max_score,status,feedback,submitted_at,method,assignment_id,mock_id,suggestion) '
-                                 'VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                                 'score,max_score,status,feedback,submitted_at,method,assignment_id,mock_id,suggestion,'
+                                 'skipped) '
+                                 'VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
                                  (user['id'], qid, answer, image, mime, image_key, None, q['points'], 'pending',
-                                  '作答已接收，等待評分。', utc_now(), 'pending-teacher', assignment_id, mock_id, '{}'))
+                                  '作答已接收，等待評分。', utc_now(), 'pending-teacher', assignment_id, mock_id, '{}',
+                                  1 if skipped else 0))
                 accepted_id = cur.lastrowid
             score, status, ai_steps = None, 'pending', []
             method = 'pending-teacher'
-            feedback = '手寫圖片尚未批閱，等待教師評分；沒有產生 AI 成績。' if has_image else '此題尚無參考答案，等待教師批閱。'
+            feedback = ('學生標示本題不會，等待教師處理；未自動記零分。' if skipped else
+                        '手寫圖片尚未批閱，等待教師評分；沒有產生 AI 成績。' if has_image else
+                        '此題尚無參考答案，等待教師批閱。')
             fallback_note = ''
             ai_failed = False
-            if self.ai.configured and ai_grading:
+            if self.ai.configured and ai_grading and not skipped:
                 # 外部模型的資料傳送同意屬隱私要求，不因批改失敗而降級。
                 self.ai.consent(body.get('consentExternal'))
                 try:
@@ -4155,7 +4171,7 @@ class Application:
                         feedback = f'AI 建議評分暫時無法使用（{exc.message}）作答已保存，改由教師批閱。'
                     if has_image:
                         feedback = 'AI 暫時無法辨識手寫內容，作答已保存；此題需教師批閱。'
-            if method == 'pending-teacher' and not ai_failed and not has_image and q['answer'].strip():
+            if method == 'pending-teacher' and not ai_failed and not has_image and not skipped and q['answer'].strip():
                 correct = final_correct(answer, q['answer'])
                 score = q['points'] if correct else 0
                 status, method = 'graded', 'rule-final'
@@ -4289,9 +4305,12 @@ class Application:
             # 教師一鍵 AI 全部批閱：對這份作業所有「尚未教師批閱」的最新作答逐題批閱並確認分數。
             # 已經有 AI 原分的作答直接採用，不重複呼叫模型（省錢、也避免同一題兩次評分不一致）。
             self.teacher(user)
-            fields(body, ('consentExternal',))
+            fields(body, ('consentExternal', 'studentId'))
             if 'consentExternal' in body and type(body['consentExternal']) is not bool:
                 fail(400, 'consentExternal 必須是布林值。')
+            # 可只針對一位學生（成績頁「確認這位學生的全部 AI 建議」）。
+            only_student = (number(body['studentId'], '學生編號', 1, 2**63 - 1, True)
+                            if 'studentId' in body else None)
             aid = int(match[1])
             with self.db() as db:
                 assignment = self.homework.get_assignment(db, aid, user)
@@ -4301,7 +4320,8 @@ class Application:
                 rows = db.execute(
                     'SELECT a.* FROM attempts a JOIN (SELECT question_id,user_id,MAX(id) AS mid FROM attempts '
                     'WHERE assignment_id=? GROUP BY question_id,user_id) latest ON a.id=latest.mid '
-                    'WHERE a.teacher_reviewed=0 ORDER BY a.id', (aid,)).fetchall()
+                    'WHERE a.teacher_reviewed=0' + (' AND a.user_id=?' if only_student else '') +
+                    ' ORDER BY a.id', ((aid, only_student) if only_student else (aid,))).fetchall()
             if not self.ai.configured:
                 fail(409, '尚未設定 AI 模型；請設定伺服器環境變數後再試。')
             self.ai.consent(body.get('consentExternal'))
@@ -4310,6 +4330,10 @@ class Application:
             for row in pending:
                 q = questions.get(row['question_id'])
                 if q is None:
+                    continue
+                # 「學生標示不會」的空白作答不能丟給模型評分，留給教師自己決定（給分或要求訂正）。
+                if row['skipped']:
+                    skipped.append(row['id'])
                     continue
                 try:
                     if row['ai_score'] is not None:

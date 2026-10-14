@@ -733,8 +733,16 @@ class Homework:
                             self.fail(400, f'訂正範圍內還有 {len(missing)} 題尚未重新作答。')
                         db.execute('UPDATE corrections SET resolved_at=? WHERE id=?',
                                    (self.utc_now(), correction['id']))
-                    elif len(self.latest(db, aid, user['id'])) != len(self.questions(db, aid)):
-                        self.fail(400, '每道作业题至少需要提交一次作答。')
+                    else:
+                        # 每題都要有交代：作答，或明確標示「不會」。不逼學生亂填，也不讓空白題悄悄消失。
+                        ordered = self.questions(db, aid)
+                        answered = {r['question_id'] for r in self.latest(db, aid, user['id'])}
+                        missing = [i + 1 for i, q in enumerate(ordered) if q['id'] not in answered]
+                        if missing:
+                            shown = '、'.join(f'第 {n} 題' for n in missing[:8])
+                            more = f'（另有 {len(missing) - 8} 題）' if len(missing) > 8 else ''
+                            self.fail(400, f'還有 {len(missing)} 題沒有作答，也沒有標示「不會」：{shown}{more}。'
+                                           '每題請選擇作答，或按「本題不會」讓老師知道。')
                     now = self.utc_now()
                     if current['submittedAt']:
                         db.execute('UPDATE assignment_recipients SET resubmitted_at=?,submit_count=submit_count+1 '
