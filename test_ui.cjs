@@ -204,7 +204,17 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   await login('student');
   assert.equal(rememberSent,true,'登入應預設勾選記住我');
   assert.equal(await page.evaluate(()=>localStorage.getItem('mathpath_last_user')),'student','應記住上次登入帳號');
-  await page.locator('[data-assignment]').first().click();await page.locator('[data-assignment-q]').click();
+  await page.locator('[data-assignment]').first().click();
+  // 「開始解題」是每張題目卡片唯一的動作，要大到一眼看到（主色、白字、明顯比其他按鈕大）。
+  const startBtn=page.locator('.assignment-question-row .practice-btn').first();
+  await startBtn.waitFor({timeout:8000});
+  const startStyle=await startBtn.evaluate(el=>{const s=getComputedStyle(el);return {bg:s.backgroundColor,color:s.color,size:parseFloat(s.fontSize),pad:parseFloat(s.paddingTop)};});
+  assert.equal(startStyle.bg,'rgb(25, 124, 104)','「開始解題」要用主色');
+  assert.equal(startStyle.color,'rgb(255, 255, 255)','主色按鈕要白字');
+  assert.ok(startStyle.size>=15,`「開始解題」字級要加大（實際 ${startStyle.size}px）`);
+  assert.ok(startStyle.pad>=10,`「開始解題」要加大內距（實際 ${startStyle.pad}px）`);
+  await page.screenshot({path:path.join(__dirname,'..','MathPath-開始解題按鈕.png'),fullPage:true});
+  await page.locator('[data-assignment-q]').click();
   assert.equal(await page.locator('#hand-canvas').count(),1,'手寫解題應顯示書寫區');assert.equal(await page.locator('#math-keyboard').isVisible(),false,'手寫解題不應顯示數學鍵盤');await page.locator('[data-answer-mode=text]').click();assert.equal(await page.locator('#answer-process').count(),0,'文字作答不應再出現解題步驟輸入框');await page.locator('#final-answer').fill('x=2或3');
   await page.waitForFunction(()=>sessionStorage.getItem('mathpath_draft_1_1_1')?.includes('x=2或3'));
   await page.reload();await page.locator('[data-assignment]').first().click();await page.locator('[data-assignment-q]').click();assert.equal(await page.locator('#final-answer').inputValue(),'x=2或3');assert.equal(await page.locator('#answer-process').count(),0,'文字作答不應有解題步驟輸入框');assert.match(await page.locator('#draft-status').innerText(),/已恢復本分頁草稿/);
@@ -303,6 +313,52 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   await page.locator('[data-ann-tool=pen]').click();
   await page.mouse.move(box.x+30,box.y+30);await page.mouse.down();await page.mouse.move(box.x+140,box.y+100,{steps:8});await page.mouse.up();
   assert.match(await page.locator('#ann-status').innerText(),/尚未儲存/);
+
+  // ── 教師批註可以「選取單一項」來移動／改文字／刪除，不必整份重來 ──
+  assert.equal(await page.locator('#ann-item-size').count(),1,'粗細欄位要常駐顯示，不能選取時才出現（會讓畫布跳動）');
+  assert.deepEqual(await page.evaluate(()=>ann.shapes.map(s=>s.type)),['pen','ellipse','highlight','pen'],
+    '先畫一筆紅筆、一個圈、一條螢光、再一筆紅筆');
+  // 螢光標示要存成 highlight，否則 drawAnnShape 會當成紅筆畫成紅線（曾經的 bug）。
+  assert.equal(await page.evaluate(()=>annShapeSize(ann.shapes[2])),26,'螢光標示的預設寬度要是 26');
+  await page.locator('[data-ann-tool=select]').click();
+  assert.match(await page.locator('#ann-select-status').innerText(),/用「選取」工具/);
+  assert.equal(await page.locator('#ann-delete').isDisabled(),true,'還沒選取時刪除鈕要停用');
+  await page.mouse.click(box.x+80,box.y+60);
+  assert.equal(await page.evaluate(()=>ann.selected),3,'點到最上面那一筆批註');
+  assert.equal(await page.locator('#ann-delete').isDisabled(),false,'選取後刪除鈕要可用');
+  // 拖曳＝平移整筆，形狀不變
+  const beforePts=await page.evaluate(()=>ann.shapes[3].points.map(p=>({x:p.x,y:p.y})));
+  await page.mouse.move(box.x+80,box.y+60);await page.mouse.down();
+  await page.mouse.move(box.x+150,box.y+140,{steps:8});await page.mouse.up();
+  const afterPts=await page.evaluate(()=>ann.shapes[3].points.map(p=>({x:p.x,y:p.y})));
+  assert.ok(afterPts[0].x-beforePts[0].x>20&&afterPts[0].y-beforePts[0].y>20,
+    `拖曳要平移整筆批註（dx=${Math.round(afterPts[0].x-beforePts[0].x)} dy=${Math.round(afterPts[0].y-beforePts[0].y)}）`);
+  assert.ok(Math.abs((afterPts[afterPts.length-1].x-afterPts[0].x)-(beforePts[beforePts.length-1].x-beforePts[0].x))<2,
+    '平移不應改變筆畫本身的形狀');
+  // 粗細／字級可調
+  await page.locator('#ann-item-size').evaluate(el=>{el.value='14';el.dispatchEvent(new Event('input',{bubbles:true}));});
+  assert.equal(await page.evaluate(()=>ann.shapes[3].size),14,'調整粗細要寫進這一筆批註');
+  // 文字批註：加入後可以改文字，不必刪掉重打
+  await page.locator('[data-ann-tool=text]').click();
+  await page.evaluate(()=>{window.prompt=()=>'你寫什麼';});
+  await page.mouse.click(box.x+260,box.y+250);
+  await page.evaluate(()=>{delete window.prompt;});
+  assert.deepEqual(await page.evaluate(()=>ann.shapes.map(s=>s.type)),['pen','ellipse','highlight','pen','text']);
+  await page.locator('[data-ann-tool=select]').click();
+  await page.mouse.click(box.x+280,box.y+245);
+  assert.equal(await page.evaluate(()=>ann.selected),4,'點到文字批註');
+  assert.equal(await page.locator('#ann-edit-text').isDisabled(),false,'文字批註才可以改文字');
+  await page.evaluate(()=>{window.prompt=()=>'這裡漏了負號';});
+  await page.locator('#ann-edit-text').click();
+  await page.evaluate(()=>{delete window.prompt;});
+  assert.equal(await page.evaluate(()=>ann.shapes[4].text),'這裡漏了負號','要改成教師新寫的文字');
+  await page.screenshot({path:path.join(__dirname,'..','MathPath-批註選取移動.png'),fullPage:true});
+  // 選取後按 Delete 直接刪除
+  await page.keyboard.press('Delete');
+  assert.deepEqual(await page.evaluate(()=>ann.shapes.map(s=>s.type)),['pen','ellipse','highlight','pen'],'Delete 要刪掉選取的那一筆');
+  assert.equal(await page.evaluate(()=>ann.selected),null);
+  assert.equal(await page.locator('#ann-delete').isDisabled(),true,'刪除後要回到未選取狀態');
+
   await page.screenshot({path:path.join(__dirname,'..','MathPath-教师批注.png'),fullPage:true});
   await page.locator('#ann-save').click();
   await page.waitForFunction(()=>!document.querySelector('#modal-root .modal'));
@@ -322,6 +378,21 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   assert.doesNotMatch(await page.locator('.ai-annotation').innerText(),/未經教師確認/);
   assert.equal(await page.locator('.ai-mark').count(),1);
   await page.locator('[data-action=close-modal]').click();
+
+  // ── AI 暫時無法辨識手寫時，評語要紅色粗體加大，不能混在一般說明文字裡 ──
+  assert.equal(await page.evaluate(()=>feedbackClass('AI 暫時無法辨識手寫內容，作答已保存；此題需教師批閱。')),' ai-unavailable');
+  assert.equal(await page.evaluate(()=>feedbackClass('規則評分：最終答案與參考答案嚴格等價。')),'','一般評語不套用警示樣式');
+  const originalFeedback=await page.evaluate(()=>S.attempts.find(x=>x.id===9)?.feedback);
+  await page.evaluate(()=>{const a=S.attempts.find(x=>x.id===9);if(a)a.feedback='AI 暫時無法辨識手寫內容，作答已保存；此題需教師批閱。';});
+  await page.locator('[data-review]').first().click();
+  const noteStyle=await page.locator('#modal-root .info-note.ai-unavailable').evaluate(el=>{const s=getComputedStyle(el);return {color:s.color,weight:Number(s.fontWeight),size:parseFloat(s.fontSize)};});
+  assert.equal(noteStyle.color,'rgb(184, 69, 59)','AI 失效訊息要紅色');
+  assert.ok(noteStyle.weight>=700,`要粗體（實際 ${noteStyle.weight}）`);
+  assert.ok(noteStyle.size>=17,`要加大（實際 ${noteStyle.size}px）`);
+  assert.match(await page.locator('#modal-root .info-note.ai-unavailable').innerText(),/AI 暫時無法辨識手寫內容/);
+  await page.screenshot({path:path.join(__dirname,'..','MathPath-AI暫時無法批改.png'),fullPage:true});
+  await page.locator('[data-action=close-modal]').click();
+  await page.evaluate(f=>{const a=S.attempts.find(x=>x.id===9);if(a)a.feedback=f;},originalFeedback);
 
   // ── 手寫判定印章與 AI 批語：貼在手稿上，但只落在空白處，不遮住學生的字 ──
   // 測試圖片上方 60% 是筆跡、下方 40% 是空白紙，所以印章與批語必須全部落在 60% 以下。
@@ -1322,6 +1393,14 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   await page.locator('[data-assignment-q]').first().click();
   await page.locator('#answer-area').waitFor({timeout:8000});
   assert.equal(await page.locator('#skip-answer').count(),1,'作業作答頁要有「本題不會」');
+  // 「本題不會」要移到右邊、緊貼「提交」，不要孤零零掛在最左邊。
+  const submitRow=await page.locator('.answer-submit').boundingBox();
+  const skipBox=await page.locator('#skip-answer').boundingBox();
+  const submitBox=await page.locator('#submit-answer').boundingBox();
+  assert.ok(skipBox.x>submitRow.x+submitRow.width*0.5,
+    `「本題不會」要在右半邊（按鈕 x=${Math.round(skipBox.x)}，列起點 ${Math.round(submitRow.x)}，寬 ${Math.round(submitRow.width)}）`);
+  assert.ok(submitBox.x-(skipBox.x+skipBox.width)<44,'「本題不會」要緊貼「提交」');
+  await page.screenshot({path:path.join(__dirname,'..','MathPath-本題不會右移.png'),fullPage:true});
   await page.locator('#skip-answer').click();
   await page.waitForFunction(()=>document.querySelector('#answer-area')&&/第2題/.test(document.querySelector('#main').textContent),{timeout:8000});
   assert.equal(skipBodies[0].skipped,true,'要送出 skipped');
@@ -2237,6 +2316,12 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   assert.ok((await page.locator('.record').count())>=2,'教師要看到學生的作答紀錄');
   assert.equal(await page.locator('.record-actions [data-qid]').count(),0,'教師的作答批閱不應出現「再練一次」');
   assert.match(await page.locator('.record-actions').first().innerText(),/查看與批閱/,'教師要有「查看與批閱」');
+  // 「查看與批閱」是教師批閱清單裡的主要動作，要用主色並放大（學生的「查看作答」維持次要樣式）。
+  const reviewBtnStyle=await page.locator('.record-actions .primary').first().evaluate(el=>{const s=getComputedStyle(el);return {bg:s.backgroundColor,size:parseFloat(s.fontSize),pad:parseFloat(s.paddingTop)};});
+  assert.equal(reviewBtnStyle.bg,'rgb(25, 124, 104)','「查看與批閱」要用主色');
+  assert.ok(reviewBtnStyle.size>=15,`「查看與批閱」要放大字級（實際 ${reviewBtnStyle.size}px）`);
+  assert.ok(reviewBtnStyle.pad>=11,`「查看與批閱」要加大內距（實際 ${reviewBtnStyle.pad}px）`);
+  await page.screenshot({path:path.join(__dirname,'..','MathPath-查看與批閱按鈕.png'),fullPage:true});
   // 對照：學生的錯題本仍保留「再練一次」
   await page.route('**/api/session',route=>route.fulfill({json:{user:{id:1,name:'介面測試學生',role:'student'}}}));
   await page.route('**/api/state', route => route.fulfill({json:{user:{id:1,name:'介面測試學生',role:'student'},
@@ -2334,5 +2419,5 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   await page.screenshot({path:path.join(__dirname,'..','MathPath-初始化失敗提示.png'),fullPage:true});
 
   assert.deepEqual(errors,[]);await browser.close();
-  console.log('PASS: answer modes (choice = click-only with single option list, fill-in = handwriting/text with math keyboard + always-visible rendered preview, upload = photo/PDF with a rear-camera button), AI grading policy (self-practice = AI instant score recorded without teacher review, no student use-ai toggle; teacher checkbox on assign, student read-only hint, external consent; homework/quiz scores, AI results, solution and advice hidden until the teacher reviews), the figure studio (AI drawing only for geometry/vector topics, question-vs-figure checking by the vision model, redraw from the check issues, keyboard-reachable manual image insert with a clear message for unsupported formats, no leftover state after closing so pasting an image elsewhere is never hijacked), paper splitting with an image (the figure box reported by the vision model is cropped in the browser, placed to the right of the stem, figureBox stripped before import), question figures (a question that has a figure renders it to the right of the stem, same row, sized sanely, one figure per question, same on the practice page, click to open a zoom overlay dismissed by Esc), AI similar-question drafting (teacher-only entry on bank card and practice panel, similar = same level and same question type vs advanced = one level up, distinct kind sent and labelled in the dialog, reference question expandable for comparison, draft preview with answer/steps/rubric, rubric shown with typeset math while the editor keeps raw LaTeX, nothing imported until the teacher confirms, no navigation after adding, repeated generation sends the previous summaries so the next draft differs), self-practice range picker (chapter + sub-chapter + question type, linked options, auto-widening, change-range keeps filters), teacher review with optional feedback, one-click AI review of a whole assignment (only for AI-enabled assignments), teacher sidebar without self-practice, calendar lower panel (centred divider label, panel content never flush to the card border, no horizontal overflow at 4 widths x 3 font scales), font scale switch (guest, persisted, 3 levels, no mobile overflow), login page (role cards, remember checked, remembered account), calendar (marks + entry from homework), question type (card badge, filter, draft qtype, rule analysis), full-auto split+import, homework (per-question navigation: next/previous question after submitting, progress count, submit prompt when all questions are done; assignment question picker filtered by chapter, sub-chapter and keyword with selection kept across filters), draft save/reload/restore, logout cleanup, weak-topic drill-down, results filters, CSV export, teacher annotation (pen/ellipse/arrow/highlight/undo/clear/save), AI suggested annotation with student read-back and teacher drag-to-adjust saved positions, handwritten verdict stamp (red tick = all correct, red cross = all wrong, red tick with a stroke = partly correct) and AI comments placed on the sheet only where the paper is blank (never over the handwriting; dense pages fall back to the badge and the list below), correction loop (teacher return with note, student banner, pending guard, resubmit), self-serve mock exam (setup, countdown, per-question answer with mockId, submit + instant score + advice), AI endpoint page (test/save, key never read back), bulk student import (column-order auto-detect + header row, student id only with seat number and no name, generated passwords, per-line errors, class creation), data management (usage cards, four download entries, vacuum, school-year reset gated by a typed confirmation and hidden from students), student editing (only changed fields submitted, password reset warns about logout), archive restore (question merge vs replace, student archive with shared password and credential table), no dead space before the footer on short pages, mobile layout, no JS errors. Fixture API only; no server started.');
+  console.log('PASS: answer modes (choice = click-only with single option list, fill-in = handwriting/text with math keyboard + always-visible rendered preview, upload = photo/PDF with a rear-camera button), AI grading policy (self-practice = AI instant score recorded without teacher review, no student use-ai toggle; teacher checkbox on assign, student read-only hint, external consent; homework/quiz scores, AI results, solution and advice hidden until the teacher reviews), the figure studio (AI drawing only for geometry/vector topics, question-vs-figure checking by the vision model, redraw from the check issues, keyboard-reachable manual image insert with a clear message for unsupported formats, no leftover state after closing so pasting an image elsewhere is never hijacked), paper splitting with an image (the figure box reported by the vision model is cropped in the browser, placed to the right of the stem, figureBox stripped before import), question figures (a question that has a figure renders it to the right of the stem, same row, sized sanely, one figure per question, same on the practice page, click to open a zoom overlay dismissed by Esc), AI similar-question drafting (teacher-only entry on bank card and practice panel, similar = same level and same question type vs advanced = one level up, distinct kind sent and labelled in the dialog, reference question expandable for comparison, draft preview with answer/steps/rubric, rubric shown with typeset math while the editor keeps raw LaTeX, nothing imported until the teacher confirms, no navigation after adding, repeated generation sends the previous summaries so the next draft differs), self-practice range picker (chapter + sub-chapter + question type, linked options, auto-widening, change-range keeps filters), teacher review with optional feedback, one-click AI review of a whole assignment (only for AI-enabled assignments), teacher sidebar without self-practice, calendar lower panel (centred divider label, panel content never flush to the card border, no horizontal overflow at 4 widths x 3 font scales), font scale switch (guest, persisted, 3 levels, no mobile overflow), login page (role cards, remember checked, remembered account), calendar (marks + entry from homework), question type (card badge, filter, draft qtype, rule analysis), full-auto split+import, homework (per-question navigation: next/previous question after submitting, progress count, submit prompt when all questions are done; assignment question picker filtered by chapter, sub-chapter and keyword with selection kept across filters), draft save/reload/restore, logout cleanup, weak-topic drill-down, results filters, CSV export, teacher annotation (pen/ellipse/arrow/highlight/undo/clear/save, plus a select tool that moves a shape, changes its thickness or font size, rewrites a text note, and deletes it with the button or the Delete key; highlights stay yellow instead of turning into red pen lines), prominent per-row action buttons (the question row start button uses the primary colour and a larger size, the assignment answer page keeps the cannot-answer button next to Submit on the right, the teacher review list uses a primary View and mark button), and the AI-unavailable notice rendered in bold red at a larger size, AI suggested annotation with student read-back and teacher drag-to-adjust saved positions, handwritten verdict stamp (red tick = all correct, red cross = all wrong, red tick with a stroke = partly correct) and AI comments placed on the sheet only where the paper is blank (never over the handwriting; dense pages fall back to the badge and the list below), correction loop (teacher return with note, student banner, pending guard, resubmit), self-serve mock exam (setup, countdown, per-question answer with mockId, submit + instant score + advice), AI endpoint page (test/save, key never read back), bulk student import (column-order auto-detect + header row, student id only with seat number and no name, generated passwords, per-line errors, class creation), data management (usage cards, four download entries, vacuum, school-year reset gated by a typed confirmation and hidden from students), student editing (only changed fields submitted, password reset warns about logout), archive restore (question merge vs replace, student archive with shared password and credential table), no dead space before the footer on short pages, mobile layout, no JS errors. Fixture API only; no server started.');
 })().catch(e=>{console.error(e);process.exit(1)});

@@ -524,3 +524,27 @@ button.danger:disabled{opacity:.6}
   .calc-fab{right:12px;bottom:12px}
 }
 .calc-live.bad{color:#b8453b}
+
+/* ══ 依實際試用回饋調整：主要動作要顯眼、AI 失效要看得見 ══════════
+   ① 題目列的「開始解題／修改作答」是每張卡片唯一的動作，要大到一眼看到。
+   ② 作答頁的「本題不會」靠右，緊貼「提交」，不再孤零零掛在最左邊。
+   ③ 教師批閱清單的「查看與批閱」是主要動作，用主色（學生仍維持次要樣式）。
+   ④ AI 暫時無法批改時，評語要紅色粗體加大，不能混在一般說明文字裡。 */
+.assignment-question-row .practice-btn{font-size:calc(15px*var(--fs));padding:11px 18px;border-radius:8px;
+  background:var(--green);border-color:var(--green);color:#fff;font-weight:600;box-shadow:0 3px 7px #1d7c6814}
+.assignment-question-row .practice-btn:hover{background:var(--green-dark);color:#fff}
+.assignment-question-row .practice-btn .icon{width:calc(15px*var(--fs));height:calc(15px*var(--fs))}
+.assignment-question-row .practice-btn:disabled{background:#e9efeb;border-color:#e9efeb;color:#93a597;box-shadow:none}
+.submit-row.answer-submit{justify-content:flex-end}
+.submit-row.answer-submit #draft-status{margin-right:auto}
+.submit-row.answer-submit #skip-answer{padding:10px 16px;font-size:calc(14px*var(--fs))}
+.record-actions .primary{font-size:calc(15px*var(--fs));padding:12px 20px}
+.ai-unavailable,.info-note.ai-unavailable,.result p.ai-unavailable{color:#b8453b;font-weight:700;
+  font-size:calc(17px*var(--fs));line-height:1.75}
+
+/* 批註編輯列（選取後的移動／粗細字級／改文字／刪除）：放在畫布下方，
+   這樣增減內容都不會推動畫布、影響拖曳座標。 */
+.ann-edit-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:12px}
+.ann-edit-row input[type=range]{width:132px}
+.ann-edit-row .ann-size-value{min-width:34px;font-variant-numeric:tabular-nums}
+.ann-edit-row button{padding:8px 13px;font-size:calc(13px*var(--fs))}
