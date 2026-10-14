@@ -1458,7 +1458,15 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   if(errors.length)throw new Error('PAGE ERRORS: '+errors.join(' || '));
   // 延迟 FileReader：读取时阻止提交，切题丢弃结果，键盘可选／移除并保留恢复逻辑。
   await page.evaluate(()=>{assignmentContext=null;mockContext=null;currentQuestion=window.regressionQs[0];practice();answerMode='upload';renderAnswerArea();window.realFileData=fileData;fileData=()=>new Promise(resolve=>{window.releaseFileRead=resolve;});});
-  await page.locator('#answer-select').focus();const chooser=page.waitForEvent('filechooser');await page.keyboard.press('Enter');const fileChooser=await chooser;
+  // practice() 是非同步的，可能在 focus 之後重繪作答區把焦點搶掉；
+  // 這裡重試幾次，免得競態變成隨機失敗（鍵盤可用性本身仍要驗）。
+  let fileChooser=null;
+  for(let attempt=0;attempt<4&&!fileChooser;attempt++){
+    await page.locator('#answer-select').focus();
+    fileChooser=await Promise.all([page.waitForEvent('filechooser',{timeout:3000}),page.keyboard.press('Enter')])
+      .then(([c])=>c).catch(()=>null);
+  }
+  assert.ok(fileChooser,'「選擇檔案」用鍵盤 Enter 也要能開檔案選擇器');
   await fileChooser.setFiles({name:'slow.png',mimeType:'image/png',buffer:HANDWRITING});
   assert.match(await page.locator('#answer-read-status').innerText(),/正在讀取/);assert.equal(await page.locator('#submit-answer').isDisabled(),true);
   await page.evaluate(()=>{currentQuestion=window.regressionQs[1];answerFile=null;practice();window.releaseFileRead('data:image/png;base64,c3RhbGU=');});
@@ -1986,6 +1994,43 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   assert.match(await page.locator('.cal-event').first().innerText(),/截止/,'截止日的詳細資訊要標明截止');
   assert.match(await page.locator('.cal-event').first().innerText(),/課後練習一/,'詳細資訊仍要列出作業名稱');
   console.log('PASS: 日曆把發布與截止分開標示，作業數不再把同一份作業算兩次');
+
+  // 題與題之間的區分：同一個清單裡連續多題時，每一題有自己的色系（四色循環），
+  // 連續好幾題才看得出「一題到哪裡結束、下一題從哪裡開始」。
+  const hexToRgb=h=>`rgb(${parseInt(h.slice(1,3),16)}, ${parseInt(h.slice(3,5),16)}, ${parseInt(h.slice(5,7),16)})`;
+  const fourQuestions=[1,2,3,4].map(n=>({...assignmentQuestion,id:n,title:`第${n}題：因式分解`,figure:undefined}));
+  await page.route('**/api/assignments/1', route => route.fulfill({json:{
+    assignment:{...assignment,questionCount:4,totalPoints:24}, questions:fourQuestions, attempts:[],
+    mySubmission:{status:'not_started',submittedAt:null,resubmittedAt:null,submitCount:0,late:false,correction:null},
+    report:{score:null,maxScore:24,totalScoredPoints:0,pendingCount:0,confirmedScore:null,confirmedCount:0,
+            gradedCount:0,questionCount:4,percent:null,aiScore:null,ruleScore:null,topicStats:[],suggestion:advice}}}));
+  await page.evaluate(()=>assignmentPage(1));
+  await page.locator('.assignment-question-row').first().waitFor({timeout:8000});
+  const rowStyles=await page.$$eval('.assignment-question-list > article.assignment-question-row',rows=>rows.map(r=>{
+    const cs=getComputedStyle(r),badge=r.querySelector('.question-number,.q-index');
+    return {accent:cs.getPropertyValue('--q-accent').trim(),tint:cs.backgroundColor,
+            border:cs.borderLeftColor,width:cs.borderLeftWidth,
+            badge:badge?getComputedStyle(badge).color:''};
+  }));
+  assert.equal(rowStyles.length,4,'四題都要列出來');
+  assert.equal(new Set(rowStyles.map(r=>r.accent)).size,4,'連續的題目要用不同色系區分');
+  assert.equal(rowStyles[0].accent,'#2f6d55','第一題要是第一個色系（不能被清單標題佔位而從第二色開始）');
+  assert.equal(rowStyles[1].accent,'#2c6a8e','第二題要用第二個色系');
+  assert.equal(new Set(rowStyles.map(r=>r.tint)).size,4,'底色也要交替，題目的界線才看得出來');
+  rowStyles.forEach((r,i)=>{
+    assert.equal(r.width,'3px',`第 ${i+1} 題要有左側色條`);
+    assert.equal(r.border,hexToRgb(r.accent),`第 ${i+1} 題的色條要跟色系一致`);
+    assert.equal(r.badge,hexToRgb(r.accent),`第 ${i+1} 題的編號顏色要跟色系一致`);
+  });
+  // 題庫卡片同樣要一題一色
+  await page.evaluate(()=>navigate('bank'));
+  await page.locator('.question-card').first().waitFor({timeout:8000});
+  const cardAccents=await page.$$eval('.question-list > article.question-card',
+    cards=>cards.map(c=>getComputedStyle(c).getPropertyValue('--q-accent').trim()));
+  assert.ok(cardAccents.length>=2,'題庫要有題目卡片');
+  assert.equal(new Set(cardAccents).size,cardAccents.length,'題庫相鄰卡片也要用不同色系');
+  assert.equal(cardAccents[0],'#2f6d55','題庫第一張卡片要是第一個色系');
+  console.log('PASS: 題與題之間用四色循環區分（色條＋編號＋底色交替）');
 
   // 伺服器初始化失敗時，登入視窗要直接顯示原因，不能只說「正在初始化」
   await page.route('**/api/session', route => route.fulfill({status:503,json:{error:'伺服器初始化失敗：MATH_STUDENT_PASSWORD 必須是 10 至 256 個字元、且不可只有空白的密碼。'}}));

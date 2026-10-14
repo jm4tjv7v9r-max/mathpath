@@ -343,3 +343,63 @@ button.danger:disabled{opacity:.6}
 .label-size-value{min-width:24px;text-align:center;font-variant-numeric:tabular-nums;color:#3d5145;font-weight:500}
 .figure-canvas-wrap canvas:focus-visible,.canvas-wrap canvas:focus-visible{outline:2px solid #237c5c;outline-offset:2px}
 @media (max-width:640px){.fig-read-grid{grid-template-columns:minmax(0,1fr)}}
+
+/* ══ 題與題之間的區分 ══════════════════════════════════════════════════
+   同一個清單裡連續好幾題時，每一題有自己的色系：左側色條 ＋ 編號底色，
+   再加上極淡的底色交替，讓「一題在哪裡結束、下一題從哪裡開始」一眼看得出來。
+   四色循環（深綠／藍／赭／紫，飽和度都壓低，跟整體綠色系一致）。
+   ⚠️ 用 :nth-of-type(article) 而不是 :nth-child：清單容器裡還有 .panel-heading
+   與 .assignment-submit 之類的兄弟節點，用 nth-child 會讓第一題從第二色開始。 */
+.question-list>article.question-card:nth-of-type(4n+1),
+.assignment-questions>article.assignment-question-row:nth-of-type(4n+1),
+.assignment-question-list>article.assignment-question-row:nth-of-type(4n+1),
+.pick-row:nth-of-type(4n+1),
+.records-panel>article.record:nth-of-type(4n+1),
+#draft-list>article.draft-card:nth-of-type(4n+1){--q-accent:#2f6d55;--q-soft:#e8f2ec;--q-tint:#f8fbf9}
+.question-list>article.question-card:nth-of-type(4n+2),
+.assignment-questions>article.assignment-question-row:nth-of-type(4n+2),
+.assignment-question-list>article.assignment-question-row:nth-of-type(4n+2),
+.pick-row:nth-of-type(4n+2),
+.records-panel>article.record:nth-of-type(4n+2),
+#draft-list>article.draft-card:nth-of-type(4n+2){--q-accent:#2c6a8e;--q-soft:#e7f0f7;--q-tint:#f7fafd}
+.question-list>article.question-card:nth-of-type(4n+3),
+.assignment-questions>article.assignment-question-row:nth-of-type(4n+3),
+.assignment-question-list>article.assignment-question-row:nth-of-type(4n+3),
+.pick-row:nth-of-type(4n+3),
+.records-panel>article.record:nth-of-type(4n+3),
+#draft-list>article.draft-card:nth-of-type(4n+3){--q-accent:#9a6a1f;--q-soft:#f7efe1;--q-tint:#fdfbf6}
+.question-list>article.question-card:nth-of-type(4n),
+.assignment-questions>article.assignment-question-row:nth-of-type(4n),
+.assignment-question-list>article.assignment-question-row:nth-of-type(4n),
+.pick-row:nth-of-type(4n),
+.records-panel>article.record:nth-of-type(4n),
+#draft-list>article.draft-card:nth-of-type(4n){--q-accent:#7a4f8f;--q-soft:#f1ecf6;--q-tint:#fbf9fd}
+
+/* 編號徽章：底色與文字都跟著該題的色系（題庫的 .question-number 與
+   作業／模擬測驗列的 .q-index 一起處理，兩個清單看起來才一致） */
+.question-number,.q-index{background:var(--q-soft,#f1f6f1);border-color:var(--q-accent,#e7eee5);color:var(--q-accent,#82967b)}
+
+/* 題庫卡片：左側色條（絕對定位，不佔版面） */
+.question-card::before{content:"";position:absolute;left:0;top:18px;bottom:18px;width:3px;border-radius:3px;
+  background:var(--q-accent,#2f6d55);opacity:.5}
+.question-list:not(.grid)>article.question-card{padding-left:14px}
+.question-list.grid>article.question-card::before{top:14px;bottom:14px}
+
+/* 作業／模擬測驗題目列：左側色條 ＋ 淡底，一題自成一段 */
+.assignment-question-row{border-left:3px solid var(--q-accent,#2f6d55);background:var(--q-tint,#fff)}
+
+/* 挑題清單：色條 ＋ 淡底（滑過仍會加深，勾選狀態不受影響） */
+.pick-row{border-left:3px solid var(--q-accent,#2f6d55);background:var(--q-tint,#fff)}
+
+/* 錯題本／作答紀錄：色條 ＋ 圖示跟著色系 */
+.record{border-left:3px solid var(--q-accent,#2f6d55);padding-left:16px}
+.record .record-icon{background:var(--q-soft,#eff5e9);color:var(--q-accent,#97af83)}
+
+/* 拆題草稿卡：頂端色條，連續多張草稿不會糊在一起 */
+#draft-list>article.draft-card{border-top:3px solid var(--q-accent,#2f6d55)}
+
+@media (max-width:740px){
+  .question-list:not(.grid)>article.question-card{padding-left:11px}
+  .question-card::before{top:14px;bottom:14px}
+  .record{padding-left:12px}
+}
