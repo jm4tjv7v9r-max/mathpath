@@ -570,3 +570,11 @@ button.danger{font-weight:600}
 .record-advice>summary:before{content:"▸";color:#8fa89a}
 .record-advice[open]>summary:before{content:"▾"}
 .record-advice .learning-advice{margin-top:8px}
+
+/* 拆題步驟改成按鈕：已完成與目前的步驟可以點（回到上一步），未到的不能跳。 */
+button.step{border:0;background:none;padding:0;cursor:pointer;font-family:inherit}
+button.step:disabled{opacity:1;cursor:default}
+button.step.done{color:#5b7365}
+button.step.done span{background:#e7f0ea;color:#3d5145}
+button.step.done:hover{color:var(--green)}
+button.step.done:hover span{background:var(--mint);color:var(--green)}

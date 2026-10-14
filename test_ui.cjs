@@ -239,6 +239,11 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   const csv=fs.readFileSync(await download.path(),'utf8');
   assert.ok(csv.startsWith('\ufeff'),'CSV 需要 BOM 以便試算表正確顯示中文');
   for(const cell of ['學生','介面測試學生','待批與未交不當零分','教師確認平均'])assert.ok(csv.includes(cell),`CSV 缺少 ${cell}`);
+  // 待批 0 題的學生不需要「批閱與建議」，避免教師以為還有東西要批。
+  const resultBtnTexts=await page.$$eval('.results-table [data-student-result]',bs=>bs.map(b=>b.innerText.trim()));
+  assert.match(resultBtnTexts[0],/查看/,'待批 0 題時只寫「查看」');
+  assert.doesNotMatch(resultBtnTexts[0],/批閱與建議/,'待批 0 題不該出現「批閱與建議」');
+  assert.match(resultBtnTexts[1],/批閱與建議/,'有待批題目時才寫「批閱與建議」');
 
   await page.locator('[data-student-result]').first().click();
   await page.locator('[data-hw-review]').first().click();
@@ -1897,6 +1902,17 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   assert.match(await page.evaluate(()=>drafts[0].figure),/^data:image\/(webp|png);base64,/,'草稿要帶上裁好的圖形');
   assert.equal(await page.evaluate(()=>drafts[0].content),'如圖，求斜邊長。','題目文字不可被圖形影響');
   await page.screenshot({path:path.join(__dirname,'..','MathPath-拆題圖形靠右.png'),fullPage:true});
+  // 拆題步驟可以點回上一步：走錯了不必從頭再匯入一次。
+  assert.equal(await page.locator('.stepper .step').count(),3,'拆題要有三個步驟');
+  assert.match(await page.locator('.stepper .step.active').innerText(),/拆題與核驗/,'第二步要標成目前步驟');
+  assert.equal(await page.locator('.stepper [data-import-step="3"]').isDisabled(),true,'不能跳到還沒到的步驟');
+  assert.equal(await page.locator('.stepper [data-import-step="1"]').isDisabled(),false,'上一步要能點');
+  await page.locator('.stepper [data-import-step="1"]').click();   // 有草稿時會先確認，對話框自動接受
+  await page.waitForFunction(()=>!!document.querySelector('#paper-drop'),{timeout:8000});
+  assert.equal(await page.evaluate(()=>importStage),1,'要回到第一步');
+  assert.equal(await page.evaluate(()=>drafts.length),0,'回到第一步要清掉已拆分的題目');
+  assert.match(await page.locator('#paper-filename').innerText(),/試卷\.png/,'第一步要保留剛選的試卷檔名');
+  await page.screenshot({path:path.join(__dirname,'..','MathPath-拆題回到上一步.png'),fullPage:true});
   console.log('PASS: 拆題（圖片）自動框出題目圖形、裁好放在題目右邊、匯入前清掉 figureBox');
 
   // 全自動匯入：題目先寫入題庫，圖形再由前端裁好後批次補上
@@ -2359,6 +2375,14 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   assert.equal((await page.locator('#modal-root .eyebrow').innerText()).trim(),'YOUR THINKING','自主練習用學生視角呈現');
   await page.screenshot({path:path.join(__dirname,'..','MathPath-自主練習只讀.png'),fullPage:true});
   await page.locator('[data-action=close-modal]').click();
+  // 教師在題庫是「檢視題目」——教師不進行自主練習，寫「開始練習」會誤導。
+  await page.evaluate(()=>navigate('bank'));
+  await page.locator('.question-card').first().waitFor({timeout:8000});
+  const bankBtn=page.locator('.question-card button[data-qid]').first();
+  assert.match(await bankBtn.innerText(),/檢視題目/,'教師的題庫卡片要寫「檢視題目」');
+  assert.doesNotMatch(await bankBtn.innerText(),/開始練習/,'教師不該看到「開始練習」');
+  assert.doesNotMatch(await page.locator('.hero').innerText(),/開始今日練習/,'教師的題庫首屏也不該出現「開始今日練習」');
+  await page.screenshot({path:path.join(__dirname,'..','MathPath-教師題庫檢視題目.png'),fullPage:true});
   // 對照：學生的錯題本仍保留「再練一次」
   await page.route('**/api/session',route=>route.fulfill({json:{user:{id:1,name:'介面測試學生',role:'student'}}}));
   await page.route('**/api/state', route => route.fulfill({json:{user:{id:1,name:'介面測試學生',role:'student'},
