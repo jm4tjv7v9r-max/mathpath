@@ -59,7 +59,8 @@ ADMIN_DOWNLOADS = ('/api/admin/backup/db', '/api/admin/archive/questions',
 RESTORE_UPLOADS = ('/api/admin/restore/db', '/api/admin/restore/questions',
                    '/api/admin/restore/students')
 # 教師「一鍵 AI 全部批閱」單次最多處理的作答數，避免一次請求過久；剩下的再按一次即可。
-AI_REVIEW_LIMIT = 40
+# MATH_AI_REVIEW_LIMIT 可調整：一個班 30 人 × 5 題 ＝ 150 題，預設 200 剛好一批做完。
+AI_REVIEW_LIMIT_DEFAULT = 200
 # 自動備份：每幾秒檢查一次「是否該備份了」（免費方案會被休眠，所以是檢查逾期而非固定時刻）。
 BACKUP_CHECK_SECONDS = 300
 # ── AI 生成變式題：同一道參考題每次都要產生不同的題目 ──
@@ -2322,6 +2323,45 @@ def ai_max_tokens():
     return value if 256 <= value <= 32000 else None
 
 
+def ai_concurrency():
+    """同時進行的 AI 請求上限；MATH_AI_CONCURRENCY 可調整（預設 16）。
+
+    這個值決定「一次能批幾題」。太小會讓交作業死線前的批次排隊好幾小時，
+    太大則可能撞到供應商的併發限制。DeepSeek flash 的併發上限是 2500，
+    所以預設 16 仍遠低於限制；小型部署（1 位教師）可調到 4 以節省資源。
+    """
+    try:
+        value = int(os.environ.get('MATH_AI_CONCURRENCY', '') or 16)
+    except ValueError:
+        return 16
+    return min(128, max(1, value))
+
+
+def db_timeout():
+    """等待 SQLite 寫入鎖的秒數；MATH_DB_TIMEOUT 可調整（預設 30 秒）。
+
+    SQLite 同時間只允許一個寫入者。學生在同一時段集中提交時，寫入會排隊；
+    逾時太短會直接回「database is locked」，讓學生以為答案沒送出去。
+    """
+    try:
+        value = float(os.environ.get('MATH_DB_TIMEOUT', '') or 30)
+    except ValueError:
+        return 30.0
+    return min(300.0, max(1.0, value))
+
+
+def ai_review_limit():
+    """教師「一鍵 AI 全部批閱」單次最多處理幾題；MATH_AI_REVIEW_LIMIT 可調整。
+
+    太小會讓教師批一個班要按很多次；太大則單次請求過久、容易逾時。
+    """
+    try:
+        value = int(os.environ.get('MATH_AI_REVIEW_LIMIT', '') or AI_REVIEW_LIMIT_DEFAULT)
+    except ValueError:
+        return AI_REVIEW_LIMIT_DEFAULT
+    return min(2000, max(1, value))
+
+
 def salvage_json(text, limit=40):
     """從被截斷的 JSON 救回最後一個完整結構（AI 回應過長時仍可取回前面的題目）。
 
@@ -2533,7 +2573,7 @@ class AIClient:
     def __init__(self):
         self.lock = threading.Lock()
         self.opener = build_opener(ProxyHandler({}), NoRedirect())
-        self.slots = threading.BoundedSemaphore(4)
+        self.slots = threading.BoundedSemaphore(ai_concurrency())
         self.truncated = False
         self.draw = ''
         self.configure(env_ai_config())
@@ -3256,7 +3296,7 @@ class Application:
 
     @contextmanager
     def db(self):
-        db = sqlite3.connect(self.db_path, timeout=10)
+        db = sqlite3.connect(self.db_path, timeout=db_timeout())
         db.row_factory = sqlite3.Row
         db.execute('PRAGMA foreign_keys=ON')
         db.execute('PRAGMA busy_timeout=10000')
@@ -4619,7 +4659,7 @@ class Application:
             if not self.ai.configured:
                 fail(409, '尚未設定 AI 模型；請設定伺服器環境變數後再試。')
             self.ai.consent(body.get('consentExternal'))
-            pending, skipped = rows[:AI_REVIEW_LIMIT], []
+            pending, skipped = rows[:ai_review_limit()], []
             reviewed, failed = [], []
             for row in pending:
                 q = questions.get(row['question_id'])

@@ -28,8 +28,36 @@ from urllib.request import HTTPHandler, HTTPSHandler, ProxyHandler, Request, bui
 
 MAX_OBJECT = 12 * 1024 * 1024
 # 備份檔（資料庫快照／題庫歸檔）不是圖片，走另一條路徑與上限。
-MAX_BACKUP_OBJECT = 512 * 1024 * 1024
-BACKUP_TIMEOUT = 300
+# 預設 512 MB：100 人規模的資料庫約 200 MB，很夠用。
+# 學生人數多、或多年不重置學生資料時，用 MATH_BACKUP_MAX_MB 放大（例如 4096）。
+# 注意：上傳是單次 PUT，愈大愈容易逾時；BACKUP_TIMEOUT 也要跟著放大。
+MAX_BACKUP_OBJECT_DEFAULT = 512 * 1024 * 1024
+BACKUP_TIMEOUT_DEFAULT = 300
+
+
+def max_backup_object():
+    """備份單檔上限；MATH_BACKUP_MAX_MB 可調整（預設 512 MB，最大 5120 MB）。
+
+    超過 R2 單次 PUT 的上限（5 GB）就沒有意義了，所以夾在 5120 MB 以內。
+    """
+    import os
+    try:
+        value = int(os.environ.get('MATH_BACKUP_MAX_MB', '') or 512)
+    except ValueError:
+        return MAX_BACKUP_OBJECT_DEFAULT
+    return min(5120, max(16, value)) * 1024 * 1024
+
+
+def backup_timeout():
+    """備份上傳的逾時秒數；MATH_BACKUP_TIMEOUT 可調整（預設 300 秒，最大 3600）。"""
+    import os
+    try:
+        value = int(os.environ.get('MATH_BACKUP_TIMEOUT', '') or BACKUP_TIMEOUT_DEFAULT)
+    except ValueError:
+        return BACKUP_TIMEOUT_DEFAULT
+    return min(3600, max(30, value))
+
+
 ALLOWED_MIME = ('image/png', 'image/jpeg', 'image/webp')
 EXTENSIONS = {'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp'}
 
@@ -151,11 +179,12 @@ class Storage:
         檔名由呼叫端決定並帶時間戳，這樣即使資料庫整份遺失，
         也能只憑網盤上的檔名判斷哪一份最新。
         """
-        if len(data) > MAX_BACKUP_OBJECT:
-            self.fail(400, f'備份檔過大（超過 {MAX_BACKUP_OBJECT // 1024 // 1024} MB），未上傳。')
+        limit = max_backup_object()
+        if len(data) > limit:
+            self.fail(400, f'備份檔過大（超過 {limit // 1024 // 1024} MB），未上傳。')
         key = self.key_for(folder, name)
         try:
-            self._request('PUT', key, data, mime, timeout=BACKUP_TIMEOUT)
+            self._request('PUT', key, data, mime, timeout=backup_timeout())
         except StorageError as exc:
             self.fail(503, f'物件儲存暫時無法使用，備份未上傳：{exc}')
         return key

@@ -21,6 +21,7 @@ from unittest.mock import patch
 import zlib
 
 import server
+import storage
 
 
 PYTHON = '/Users/laokunleng/.workbuddy-ai/binaries/python/envs/default/bin/python'
@@ -2241,6 +2242,48 @@ class AIFailureTests(unittest.TestCase):
         with patch.dict('os.environ', {'MATH_AI_TIMEOUT': 'abc', 'MATH_AI_MAX_TOKENS': 'abc'}, clear=True):
             self.assertEqual(server.ai_timeout(), 120.0)
             self.assertIsNone(server.ai_max_tokens())
+
+    def test_scale_env_defaults_and_clamps(self):
+        """併發、資料庫逾時、一鍵全批、備份上限都要能靠環境變數調整，且夾在安全範圍內。"""
+        with patch.dict('os.environ', {}, clear=True):
+            self.assertEqual(server.ai_concurrency(), 16)
+            self.assertEqual(server.db_timeout(), 30.0)
+            self.assertEqual(server.ai_review_limit(), 200)
+            self.assertEqual(storage.max_backup_object(), 512 * 1024 * 1024)
+            self.assertEqual(storage.backup_timeout(), 300)
+        with patch.dict('os.environ', {'MATH_AI_CONCURRENCY': '32', 'MATH_DB_TIMEOUT': '60',
+                                       'MATH_AI_REVIEW_LIMIT': '500', 'MATH_BACKUP_MAX_MB': '4096',
+                                       'MATH_BACKUP_TIMEOUT': '900'}, clear=True):
+            self.assertEqual(server.ai_concurrency(), 32)
+            self.assertEqual(server.db_timeout(), 60.0)
+            self.assertEqual(server.ai_review_limit(), 500)
+            self.assertEqual(storage.max_backup_object(), 4096 * 1024 * 1024)
+            self.assertEqual(storage.backup_timeout(), 900)
+        with patch.dict('os.environ', {'MATH_AI_CONCURRENCY': '99999', 'MATH_DB_TIMEOUT': '99999',
+                                       'MATH_AI_REVIEW_LIMIT': '99999', 'MATH_BACKUP_MAX_MB': '99999',
+                                       'MATH_BACKUP_TIMEOUT': '99999'}, clear=True):
+            self.assertEqual(server.ai_concurrency(), 128)
+            self.assertEqual(server.db_timeout(), 300.0)
+            self.assertEqual(server.ai_review_limit(), 2000)
+            # 超過 R2 單次 PUT 的上限就沒有意義，所以夾在 5120 MB。
+            self.assertEqual(storage.max_backup_object(), 5120 * 1024 * 1024)
+            self.assertEqual(storage.backup_timeout(), 3600)
+        with patch.dict('os.environ', {'MATH_AI_CONCURRENCY': '0', 'MATH_DB_TIMEOUT': '0',
+                                       'MATH_AI_REVIEW_LIMIT': '0', 'MATH_BACKUP_MAX_MB': '0',
+                                       'MATH_BACKUP_TIMEOUT': '0'}, clear=True):
+            self.assertEqual(server.ai_concurrency(), 1)
+            self.assertEqual(server.db_timeout(), 1.0)
+            self.assertEqual(server.ai_review_limit(), 1)
+            self.assertEqual(storage.max_backup_object(), 16 * 1024 * 1024)
+            self.assertEqual(storage.backup_timeout(), 30)
+        with patch.dict('os.environ', {'MATH_AI_CONCURRENCY': 'abc', 'MATH_DB_TIMEOUT': 'abc',
+                                       'MATH_AI_REVIEW_LIMIT': 'abc', 'MATH_BACKUP_MAX_MB': 'abc',
+                                       'MATH_BACKUP_TIMEOUT': 'abc'}, clear=True):
+            self.assertEqual(server.ai_concurrency(), 16)
+            self.assertEqual(server.db_timeout(), 30.0)
+            self.assertEqual(server.ai_review_limit(), 200)
+            self.assertEqual(storage.max_backup_object(), 512 * 1024 * 1024)
+            self.assertEqual(storage.backup_timeout(), 300)
 
 
 class RubricTests(unittest.TestCase):

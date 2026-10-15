@@ -1,38 +1,38 @@
 # Render Blueprint：一鍵建立「前端 + 後端同一個服務」，避免跨站 cookie 導致無法登入。
+#
+# ★ 最優方案（100 位學生規模）：plan=starter ＋ 2 GB 持久磁碟 ＋ Cloudflare R2。
+#   - starter 才能掛持久磁碟（免費方案不支援），這是「重新部署不會清空資料」的唯一辦法。
+#   - 磁碟 2 GB 就夠：資料庫一年約 200 MB，加上備份暫存檔仍綽綽有餘。
+#   - 圖片一律走 Cloudflare R2（免費 10 GB），所以磁碟不需要很大。
+#   總成本：US$7（starter）+ US$0.50（2 GB 磁碟）= 每月約 US$7.5。
+#
+#   若只想先試用、不想付費：把 plan 改成 free 並把下面 disk: 整段註解掉。
+#   代價是每次重新部署都會清空題庫、學生帳號與作答（回到 2 個演示帳號 + 16 題種子題）。
 services:
   - type: web
     name: mathpath
     runtime: python
-    plan: free
+    plan: starter
     region: singapore
     buildCommand: pip install -r requirements.txt
     startCommand: python -u server.py --host 0.0.0.0 --port $PORT
     healthCheckPath: /api/health
-    # --- 資料保存（重要）---
-    # Render 免費版的檔案系統是「暫時性」的：重新部署或重啟就清空，
-    # 而且免費方案**不支援**持久磁碟。也就是說免費版上的題庫、學生帳號與作答，
-    # 每次 push 觸發部署後都會消失（回到 2 個演示帳號 + 16 題種子題）。
-    #
-    # 要真的保存資料，兩種做法（見 deployment-cloud.md 的說明）：
-    #
-    # 做法 1（推薦，最省）：把圖片放 Cloudflare R2（填上面 4 個 R2_* 變數即可），
-    #   資料庫就會一直很小；再把整個 data/ 目錄定期用「設定與隱私 → 資料管理」
-    #   的「下載完整資料庫備份」帶回本機保存。
-    #
-    # 做法 2：升級到付費實例（Starter 以上）後，把下面 3 行的註解拿掉再 push。
-    #   掛載路徑必須是 data/ 的絕對路徑；Render 的 Python 服務原始碼在
-    #   /opt/render/project/src，所以資料庫會落在該目錄下的 data/。
-    #   注意：掛了磁碟之後重新部署會有數秒停機，且該服務不能同時跑多個實例。
-    #
-    # disk:
-    #   name: mathpath-data
-    #   mountPath: /opt/render/project/src/data
-    #   sizeGB: 10
+    # --- 資料保存（最優方案的核心）---
+    # 掛載路徑必須是 data/ 的絕對路徑；Render 的 Python 服務原始碼在
+    # /opt/render/project/src，所以資料庫會落在該目錄下的 data/。
+    # 注意：掛了磁碟之後重新部署會有數秒停機，且該服務不能同時跑多個實例
+    #       （對 100 人規模完全不是問題）。
+    disk:
+      name: mathpath-data
+      mountPath: /opt/render/project/src/data
+      sizeGB: 2
     envVars:
       - key: PYTHON_VERSION
         value: "3.13"
-      # --- AI 模型端點（可選，不填也能跑，AI 功能會停用）---
-      # 以 DeepSeek 為例：base_url=https://api.deepseek.com/v1、model/vision_model=deepseek-flash
+      # --- AI 模型端點 ---
+      # DeepSeek：base_url=https://api.deepseek.com/v1
+      #            model=deepseek-flash、vision_model=deepseek-flash
+      # ⚠ 視覺模型只能用 deepseek-flash；deepseek-v4-pro 不支援圖片輸入。
       - key: MATH_AI_BASE_URL
         sync: false
       - key: MATH_AI_MODEL
@@ -41,12 +41,13 @@ services:
         sync: false
       - key: MATH_AI_API_KEY
         sync: false
-      # 省錢模式：off=關閉思考（預設，輸出 token 少很多）；on=開啟思考（較準確但較貴）
+      # 省錢模式：off=關閉思考（預設，輸出 token 少很多）；on=開啟思考（較準確但貴很多）
       - key: MATH_AI_THINKING
         sync: false
       # 強烈建議設定：鎖住「更換模型端點」頁面，避免任何人亂改 AI 設定
       - key: MATH_ADMIN_TOKEN
         sync: false
+      # --- 網盤（Cloudflare R2）：學生手寫圖、教師批註、題庫圖形、資料庫備份 ---
       - key: R2_ACCOUNT_ID
         sync: false
       - key: R2_ACCESS_KEY_ID
@@ -69,3 +70,20 @@ services:
         sync: false
       - key: MATH_BACKUP_KEEP
         sync: false
+      # --- 規模調校（留空＝使用預設值，下面註解是預設值）---
+      # 同時進行的 AI 請求上限。太小會讓交作業死線前的批次排隊好幾小時；
+      # DeepSeek flash 的併發上限是 2500，所以 16 仍遠低於限制。
+      - key: MATH_AI_CONCURRENCY
+        sync: false            # 預設 16
+      # 等待 SQLite 寫入鎖的秒數。學生集中提交時寫入會排隊，太短會回「database is locked」。
+      - key: MATH_DB_TIMEOUT
+        sync: false            # 預設 30
+      # 教師「一鍵 AI 全部批閱」單次最多處理幾題。一個班 30 人 × 5 題 = 150 題。
+      - key: MATH_AI_REVIEW_LIMIT
+        sync: false            # 預設 200
+      # 備份單檔上限（MB）與上傳逾時（秒）。100 人規模的資料庫約 200 MB，預設很夠用；
+      # 學生人數多、或多年不重置學生資料時才需要放大（例如 4096 / 900）。
+      - key: MATH_BACKUP_MAX_MB
+        sync: false            # 預設 512
+      - key: MATH_BACKUP_TIMEOUT
+        sync: false            # 預設 300
