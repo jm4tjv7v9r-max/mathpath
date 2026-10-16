@@ -45,7 +45,7 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   const mockReport=()=>({score:5,maxScore:5,percent:100,totalScoredPoints:5,pendingCount:0,confirmedScore:null,confirmedCount:0,aiScore:null,ruleScore:5,topicStats:[{topic:'幾何',scoredCount:1,totalCount:1,score:5,maxScore:5,percent:100}],suggestion:advice,answeredCount:1});
   let quizStarted=false,quizSubmitted=false,quizStartSeen=0,durationSent=null;
   let reviewSent=null,aiReviewSent=null,bulkSent=null,resetSent=null,vacuumCalled=0,backupCalled=0;
-  let editSent=null;const restoreSent={};let aiGenerated=null;
+  let editSent=null;const restoreSent={};let aiGenerated=null;let teacherCreated=null;
   const quizReport=()=>({score:quizSubmitted?6:null,maxScore:6,totalScoredPoints:quizSubmitted?6:0,pendingCount:0,confirmedScore:null,confirmedCount:0,gradedCount:quizSubmitted?1:0,questionCount:1,percent:quizSubmitted?100:null,aiScore:null,ruleScore:quizSubmitted?6:null,topicStats:[],suggestion:advice});
   const quizSub=()=>({status:quizSubmitted?'submitted':'not_started',submittedAt:quizSubmitted?stamp:null,resubmittedAt:null,submitCount:quizSubmitted?1:0,late:false,correction:null,startedAt:quizStarted?stamp:null,expiresAt:quizStarted?quizDeadline:null,remainingSeconds:quizStarted?1800:null,timeUsedSeconds:quizStarted?0:null,expired:false});
   const AI_ISSUE={x:0.3,y:0.4,label:'符號錯誤',comment:'這裡應為負號'};
@@ -834,20 +834,58 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   const editBtn=page.locator('[data-edit-user]').first();
   assert.equal(await editBtn.count(),1,'每列學生要有編輯按鈕');
   await editBtn.click();
-  await page.locator('#student-edit-form').waitFor();
+  await page.locator('#account-edit-form').waitFor();
   await page.locator('#edit-name').fill('陳大文');
   await page.locator('#edit-seat').fill('7');
-  await page.locator('#student-edit-form button[type=submit]').click();
-  await page.waitForFunction(()=>document.querySelector('#student-edit-form')===null);
+  await page.locator('#account-edit-form button[type=submit]').click();
+  await page.waitForFunction(()=>document.querySelector('#account-edit-form')===null);
   assert.deepEqual(editSent.body,{name:'陳大文',seat:'7'},'只送出有改動的欄位');
   // 重設密碼會一起送出，並提示已登出該生
   await page.locator('[data-edit-user]').first().click();
   await page.locator('#edit-password').fill('BrandNewPass99');
-  await page.locator('#student-edit-form button[type=submit]').click();
-  await page.waitForFunction(()=>document.querySelector('#student-edit-form')===null);
+  await page.locator('#account-edit-form button[type=submit]').click();
+  await page.waitForFunction(()=>document.querySelector('#account-edit-form')===null);
   assert.deepEqual(editSent.body,{password:'BrandNewPass99'});
   assert.match(await page.locator('#toast').innerText(),/已登出該生目前的登入/);
 
+  await page.locator('[data-action=close-modal]').click();
+
+  // ── 帳號管理：新增與編輯教師帳號（教師專用）──
+  // 後註冊的 route 先匹配，所以只覆蓋 /api/users，其餘 fallback 回原本的模擬。
+  await page.route('https://mathpath.test/**',route=>{const url=new URL(route.request().url());
+    if(url.pathname==='/api/teachers'&&route.request().method()==='POST'){teacherCreated=route.request().postDataJSON();
+      return route.fulfill({json:{user:{id:9,username:teacherCreated.username,name:teacherCreated.name,role:'teacher',seat:null}}});}
+    if(url.pathname==='/api/users')return route.fulfill({json:{users:[
+      {id:9,username:'teacher2',name:'李老師',role:'teacher',seat:null},
+      {id:1,username:'student',name:'介面測試學生',role:'student',seat:'1'}]}});
+    return route.fallback();});
+  await page.locator('#manage-users').click();
+  await page.locator('#teacher-create-form').waitFor();
+  const rosterRows=(await page.locator('.roster-row').allInnerTexts()).map(t=>t.replace(/\s+/g,' ').trim());
+  assert.equal(rosterRows.length,2,'帳號管理要同時列出教師與學生');
+  assert.match(rosterRows[0],/教師.*李老師.*teacher2.*編輯/,'教師列要有「教師」角色標籤與帳號');
+  assert.match(await page.locator('.account-group').first().innerText(),/教師帳號（1）/);
+  assert.match(await page.locator('.account-group').last().innerText(),/獨立學生帳戶（1）/);
+  // 建立教師帳號：要送出 role=teacher
+  await page.locator('#teacher-name').fill('王老師');
+  await page.locator('#teacher-username').fill('teacher3');
+  await page.locator('#teacher-password').fill('NewTeacherPass1');
+  await page.locator('#teacher-create-form button[type=submit]').click();
+  await page.waitForFunction(()=>document.querySelector('#toast').textContent.includes('教師帳號'));
+  assert.deepEqual(teacherCreated,{username:'teacher3',name:'王老師',password:'NewTeacherPass1'},'建立教師要送出帳號、姓名與初始密碼');
+  assert.match(await page.locator('#toast').innerText(),/請把帳號與初始密碼私下交給對方/);
+  // 編輯教師：沒有班內號欄位、姓名必填
+  await page.locator('[data-edit-user]').first().click();
+  await page.locator('#account-edit-form').waitFor();
+  assert.match(await page.locator('#modal-root h2').innerText(),/編輯教師帳號/);
+  assert.equal(await page.locator('#edit-seat').count(),0,'教師沒有班內號欄位');
+  assert.equal(await page.locator('#edit-name').getAttribute('required'),'','教師姓名必填');
+  assert.equal(await page.locator('#edit-username').inputValue(),'teacher2');
+  await page.locator('#edit-password').fill('AnotherPass123');
+  await page.locator('#account-edit-form button[type=submit]').click();
+  await page.waitForFunction(()=>document.querySelector('#account-edit-form')===null);
+  assert.deepEqual(editSent.body,{password:'AnotherPass123'},'教師只送出有改動的欄位');
+  await page.screenshot({path:path.join(__dirname,'..','MathPath-教師帳號管理.png'),fullPage:true});
   await page.locator('[data-action=close-modal]').click();
 
   // ── 設定與隱私：資料管理（教師專用）──

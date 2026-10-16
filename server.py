@@ -4113,6 +4113,31 @@ class Application:
                     fail(409, '帳戶名稱已存在。')
                 raise
             return {'user': created}, headers
+        if path == '/api/teachers' and method == 'POST':
+            # 建立教師帳號（設定與隱私 → 帳號管理）。
+            # 刻意獨立於 /api/users：那個端點只建立學生、不接受 role 參數，
+            # 免得角色可以從學生名單那條路被塞進來（見 test_users_validation_and_no_role_injection）。
+            self.teacher(user)
+            fields(body, ('username', 'name', 'password'), ('username', 'name', 'password'))
+            username = text(body['username'], '帳戶名稱', 40, strip=False)
+            if not re.fullmatch(r'[A-Za-z0-9_.-]{3,40}', username):
+                fail(400, '帳戶名稱須為3至40個 ASCII 字母、數字或 _ . -。')
+            # 教師姓名必填：批閱記錄與成績表都會顯示，空名會認不出是誰。
+            name = text(body['name'], '姓名', 60)
+            pw = text(body['password'], '密碼', 256, strip=False)
+            if len(pw) < 10:
+                fail(400, '密碼必須至少10字。')
+            try:
+                with self.db() as db:
+                    cur = db.execute('INSERT INTO users(username,name,role,password,demo,seat) VALUES(?,?,?,?,?,?)',
+                                     (username, name, 'teacher', password_hash(pw), 0, None))
+                    created = {'id': cur.lastrowid, 'username': username, 'name': name, 'role': 'teacher',
+                               'seat': None}
+            except sqlite3.IntegrityError as exc:
+                if exc.sqlite_errorcode == sqlite3.SQLITE_CONSTRAINT_UNIQUE:
+                    fail(409, '帳戶名稱已存在。')
+                raise
+            return {'user': created}, headers
         if path == '/api/users/bulk' and method == 'POST':
             self.teacher(user)
             fields(body, ('students',), ('students',))
@@ -4153,12 +4178,12 @@ class Application:
             return {'count': len(created), 'users': created}, headers
         update_user = re.fullmatch(r'/api/users/([1-9]\d{0,17})/update', path)
         if method == 'POST' and update_user:
-            # 編輯學生：只改有填的欄位；重設密碼會同時登出該生。
+            # 編輯帳戶：只改有填的欄位；重設密碼會同時登出該使用者。
             self.teacher(user)
             fields(body, ('username', 'name', 'seat', 'password'), ())
             with self.db() as db:
                 db.execute('BEGIN IMMEDIATE')
-                return self.dataadmin.update_student(db, int(update_user[1]), body), headers
+                return self.dataadmin.update_user(db, int(update_user[1]), body), headers
         if path == '/api/admin/storage' and method == 'GET':
             self.teacher(user)
             with self.db() as db:

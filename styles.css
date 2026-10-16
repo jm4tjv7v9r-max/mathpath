@@ -578,3 +578,8 @@ button.step.done{color:#5b7365}
 button.step.done span{background:#e7f0ea;color:#3d5145}
 button.step.done:hover{color:var(--green)}
 button.step.done:hover span{background:var(--mint);color:var(--green)}
+
+/* ── 帳號管理（設定與隱私）：分組標題與教師角色標籤 ── */
+.account-group{margin:20px 0 8px;font-size:calc(16px*var(--fs));color:#2b4034;font-weight:500}
+.role-badge{display:inline-block;text-align:center;border-radius:5px;background:#e8eef6;color:#2c5a86;
+  font-size:calc(12px*var(--fs));padding:1px 8px;margin-right:7px;vertical-align:middle;font-weight:600}

@@ -3192,10 +3192,71 @@ class DataAdminTests(unittest.TestCase):
         self.request('POST', path, {'role': 'teacher'}, cookie=self.teacher, expect=400)
         self.request('POST', path, {'username': 'ab'}, cookie=self.teacher, expect=400)
         self.request('POST', path, {'password': 'short'}, cookie=self.teacher, expect=400)
-        self.request('POST', f'/api/users/{self.teacher_id()}/update', {'name': 'x'},
-                     cookie=self.teacher, expect=404)
+        # 教師帳號現在也能編輯（見 test_teacher_accounts_can_be_created_and_edited），
+        # 但學生專屬的班內號欄位會被拒絕。
+        self.request('POST', f'/api/users/{self.teacher_id()}/update', {'seat': '1'},
+                     cookie=self.teacher, expect=400)
         self.request('POST', '/api/users/999999/update', {'name': 'x'}, cookie=self.teacher, expect=404)
         self.request('POST', '/api/users/0/update', {'name': 'x'}, cookie=self.teacher, expect=404)
+
+    def test_teacher_accounts_can_be_created_and_edited(self):
+        """教師可在「設定與隱私 → 帳號管理」新增其他教師，並編輯帳號、姓名與重設密碼。
+
+        這解決了「忘了教師密碼就只能開 Render Shell 重設」的問題：只要還有另一位
+        教師能登入，就能幫忙重設。
+        """
+        body = {'username': 'coteacher', 'name': '李老師', 'password': 'CoTeacherPass1'}
+        _, out, _ = self.request('POST', '/api/teachers', body, cookie=self.teacher, expect=200)
+        made = out['user']
+        self.assertEqual(made['role'], 'teacher')
+        self.assertIsNone(made['seat'], '教師不屬於任何班級，不該有班內號')
+        # 新教師真的能登入，而且拿到教師權限。
+        cookie = self.login('coteacher', 'CoTeacherPass1')
+        _, state, _ = self.request('GET', '/api/state', cookie=cookie, expect=200)
+        self.assertEqual(state['user']['role'], 'teacher')
+        self.request('GET', '/api/users', cookie=cookie, expect=200)
+        # 帳號名稱撞號 409；缺姓名、帶班內號、未知角色一律 400。
+        self.request('POST', '/api/teachers', dict(body, name='重複'), cookie=self.teacher, expect=409)
+        self.request('POST', '/api/teachers', {'username': 'noname', 'password': 'CoTeacherPass1'},
+                     cookie=self.teacher, expect=400)
+        self.request('POST', '/api/teachers', {'username': 'blank', 'name': '   ',
+                                              'password': 'CoTeacherPass1'}, cookie=self.teacher, expect=400)
+        self.request('POST', '/api/teachers', dict(body, username='seated', seat='3'),
+                     cookie=self.teacher, expect=400)
+        self.request('POST', '/api/teachers', dict(body, username='admin1', role='admin'),
+                     cookie=self.teacher, expect=400)
+        self.request('POST', '/api/teachers', dict(body, username='admin2', role='Teacher'),
+                     cookie=self.teacher, expect=400)
+        # 編輯教師：改姓名與帳號
+        path = f"/api/users/{made['id']}/update"
+        _, out, _ = self.request('POST', path, {'name': '李大明', 'username': 'coteacher2'},
+                                 cookie=self.teacher, expect=200)
+        self.assertEqual(out['user']['name'], '李大明')
+        self.assertEqual(out['user']['username'], 'coteacher2')
+        self.assertEqual(out['changed'], ['帳號', '姓名'])
+        # 教師沒有班內號，也不允許把姓名清空
+        self.request('POST', path, {'seat': '1'}, cookie=self.teacher, expect=400)
+        self.request('POST', path, {'name': '   '}, cookie=self.teacher, expect=400)
+        self.request('POST', path, {}, cookie=self.teacher, expect=400)
+        # 重設教師密碼會撤銷他目前的登入
+        self.login('coteacher2', 'CoTeacherPass1')
+        _, out, _ = self.request('POST', path, {'password': 'CoTeacherPass2'},
+                                 cookie=self.teacher, expect=200)
+        self.assertTrue(out['passwordReset'])
+        self.assertEqual(out['sessionsRevoked'], 2, '這位教師先後登入兩次，兩個工作階段都要撤銷')
+        self.request('POST', '/api/login',
+                     {'username': 'coteacher2', 'password': 'CoTeacherPass1'}, expect=401)
+        self.login('coteacher2', 'CoTeacherPass2')
+        # 學生既不能新增也不能編輯教師帳號
+        self.request('POST', '/api/teachers',
+                     {'username': 'sneaky', 'name': '偷加', 'password': 'SneakyPass123'},
+                     cookie=self.student, expect=403)
+        self.request('POST', path, {'name': '偷改'}, cookie=self.student, expect=403)
+        # 學年重置只清學生，教師帳號要留下來（否則重置後沒人能登入）。
+        with self.app.db() as db:
+            self.app.dataadmin.reset_students(db, 'RESET')
+            kept = db.execute("SELECT count(*) FROM users WHERE role='teacher'").fetchone()[0]
+        self.assertEqual(kept, 2)
 
     def teacher_id(self):
         with self.app.db() as db:

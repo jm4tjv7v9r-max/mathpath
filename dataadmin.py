@@ -345,6 +345,64 @@ class DataAdmin:
                 'kept': {'questions': kept_questions, 'teachers': teachers,
                          'notice': '題庫、教師帳號、內建演示帳號與日曆提醒都保留。'}}
 
+    # ---------- 編輯帳戶 ----------
+    def update_user(self, db, uid, body):
+        """依角色分派：教師走 update_teacher()，其餘走 update_student()。"""
+        row = db.execute('SELECT role FROM users WHERE id=?', (uid,)).fetchone()
+        if row is None:
+            self.fail(404, '找不到這個帳戶。')
+        if row['role'] == 'teacher':
+            return self.update_teacher(db, uid, body)
+        return self.update_student(db, uid, body)
+
+    def update_teacher(self, db, uid, body):
+        """修改教師的帳號、姓名或重設密碼；只填要改的欄位。
+
+        重設密碼時會一併刪除該教師所有登入工作階段，避免舊密碼仍然有效。
+        教師不屬於任何班級，所以沒有班內號欄位——帶了直接拒絕，
+        免得前端誤把學生的欄位送進來而默默寫入無意義的資料。
+        """
+        allowed = {'username', 'name', 'password'}
+        if not isinstance(body, dict) or not body or set(body) - allowed:
+            self.fail(400, '教師帳戶只接受帳號、姓名或新密碼，且至少要填一項。')
+        row = db.execute('SELECT * FROM users WHERE id=?', (uid,)).fetchone()
+        if row is None or row['role'] != 'teacher':
+            self.fail(404, '找不到這位教師。')
+        username = row['username']
+        if 'username' in body:
+            candidate = self.text(body['username'], '帳號', 40, strip=False)
+            if not re.fullmatch(r'[A-Za-z0-9_.-]{3,40}', candidate):
+                self.fail(400, '帳號須為 3 至 40 個 ASCII 字母、數字或 _ . -。')
+            if candidate != username and db.execute('SELECT 1 FROM users WHERE username=?',
+                                                    (candidate,)).fetchone():
+                self.fail(409, '這個帳號已經有人使用。')
+            username = candidate
+        assignments, values, changed = [], [], []
+        if 'username' in body:
+            assignments.append('username=?')
+            values.append(username)
+            changed.append('帳號')
+        if 'name' in body:
+            # 教師姓名不可留空：批閱記錄與成績表都會顯示，空名會讓人認不出是誰。
+            assignments.append('name=?')
+            values.append(self.text(body['name'], '姓名', 60))
+            changed.append('姓名')
+        revoked = 0
+        if 'password' in body and str(body['password']).strip():
+            fresh = self.text(body['password'], '新密碼', 256, strip=False)
+            if len(fresh) < 10:
+                self.fail(400, '新密碼必須至少 10 字。')
+            assignments.append('password=?')
+            values.append(self.password_hash(fresh))
+            revoked = db.execute('DELETE FROM sessions WHERE user_id=?', (uid,)).rowcount
+            changed.append('密碼')
+        if not assignments:
+            self.fail(400, '沒有要修改的欄位。')
+        db.execute('UPDATE users SET %s WHERE id=?' % ','.join(assignments), (*values, uid))
+        updated = db.execute('SELECT id,username,name,role,seat FROM users WHERE id=?', (uid,)).fetchone()
+        return {'user': dict(updated), 'changed': changed,
+                'passwordReset': bool(revoked), 'sessionsRevoked': revoked}
+
     # ---------- 編輯學生 ----------
     def update_student(self, db, uid, body):
         """修改學生的學號、姓名、班內號或重設密碼；只填要改的欄位。
