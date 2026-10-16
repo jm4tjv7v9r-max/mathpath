@@ -452,6 +452,57 @@ class APITests(unittest.TestCase):
                      {'questions': [dict(self.draft, topic='比賽題', subtopic='圓周角定理')]},
                      cookie=self.teacher, expect=400)
 
+    def test_teacher_can_update_every_question_setting(self):
+        # 教師可以修改題目的所有設定（含題解、評分標準）；驗證沿用 question_valid，不因修改而放寬。
+        _, imported, _ = self.request('POST', '/api/questions/import', {'questions': [self.draft]},
+                                      cookie=self.teacher, expect=200)
+        qid = imported['questions'][0]['id']
+        changed = dict(self.draft, title='改過的標題', content='改過的內容 $x=1$。',
+                       topic='比賽題', subtopic='AIMO', level=3, grade='中六', points=12,
+                       qtype='解答題', options=[], answer='$x=1$',
+                       steps=['第一步：移項。', '第二步：求解。'], analysis='考點說明',
+                       hint='提示', source='教師修訂',
+                       rubric=[{'label': '過程', 'percent': 60}, {'label': '答案', 'percent': 40}])
+        _, result, _ = self.request('POST', f'/api/questions/{qid}/update', {'question': changed},
+                                    cookie=self.teacher, expect=200)
+        q = result['question']
+        self.assertEqual(q['title'], '改過的標題')
+        self.assertEqual((q['topic'], q['subtopic']), ('比賽題', 'AIMO'))
+        self.assertEqual((q['level'], q['grade'], q['points']), (3, '中六', 12))
+        self.assertEqual(q['steps'], ['第一步：移項。', '第二步：求解。'])
+        self.assertEqual([r['label'] for r in q['rubric']], ['過程', '答案'])
+        # 讀回來要一致，不是只有回應好看。
+        _, state, _ = self.request('GET', '/api/state', cookie=self.teacher, expect=200)
+        stored = next(x for x in state['questions'] if x['id'] == qid)
+        self.assertEqual(stored['title'], '改過的標題')
+        self.assertEqual(stored['analysis'], '考點說明')
+        self.assertEqual(stored['source'], '教師修訂')
+        # 學生不能改。
+        self.request('POST', f'/api/questions/{qid}/update', {'question': changed},
+                     cookie=self.student, expect=403)
+        # 子分類不屬於該主分類要擋下來。
+        self.request('POST', f'/api/questions/{qid}/update',
+                     {'question': dict(changed, subtopic='圓周角定理')}, cookie=self.teacher, expect=400)
+        # 找不到的題目回 404。
+        self.request('POST', '/api/questions/999999/update', {'question': changed},
+                     cookie=self.teacher, expect=404)
+
+    def test_question_figure_can_be_replaced_and_removed(self):
+        # 沒帶 figure＝保留原圖；帶空字串＝移除；帶新圖＝取代。
+        _, imported, _ = self.request('POST', '/api/questions/import',
+                                      {'questions': [dict(self.draft, figure=png_url())]},
+                                      cookie=self.teacher, expect=200)
+        qid = imported['questions'][0]['id']
+        self.assertTrue(imported['questions'][0]['figure'], '匯入時應該有圖形')
+        _, kept, _ = self.request('POST', f'/api/questions/{qid}/update',
+                                  {'question': dict(self.draft, title='只改標題')},
+                                  cookie=self.teacher, expect=200)
+        self.assertTrue(kept['question']['figure'], '沒動圖形就要保留原本那張')
+        _, gone, _ = self.request('POST', f'/api/questions/{qid}/update',
+                                  {'question': dict(self.draft, title='移除圖形'), 'figure': ''},
+                                  cookie=self.teacher, expect=200)
+        self.assertFalse(gone['question'].get('figure'), '送空字串要移除圖形')
+
     def test_import_atomic_validation(self):
         for invalid in [dict(self.draft, level=0), dict(self.draft, points=True), dict(self.draft, topic='任意'),
                         dict(self.draft, tags='abc'), dict(self.draft, steps=[1]), dict(self.draft, grade='小六'),

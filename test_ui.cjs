@@ -2391,6 +2391,32 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   assert.doesNotMatch(await bankBtn.innerText(),/開始練習/,'教師不該看到「開始練習」');
   assert.doesNotMatch(await page.locator('.hero').innerText(),/開始今日練習/,'教師的題庫首屏也不該出現「開始今日練習」');
   await page.screenshot({path:path.join(__dirname,'..','MathPath-教師題庫檢視題目.png'),fullPage:true});
+  // 教師可以在題庫直接編輯題目：表單要帶入現值（含題解與選項），存檔送出完整設定。
+  let questionUpdate=null;
+  await page.route('**/api/questions/1/update',route=>{
+    questionUpdate=route.request().postDataJSON();
+    return route.fulfill({json:{question:{...questionUpdate.question,id:1}}});
+  });
+  await page.locator('.question-card [data-editq]').first().click();
+  await page.locator('#editq-title').waitFor({timeout:8000});
+  assert.equal(await page.locator('#editq-title').inputValue(),q.title,'編輯表單要帶入現有標題');
+  assert.equal(await page.locator('#editq-topic').inputValue(),q.topic,'要帶入主分類');
+  assert.equal(await page.locator('#editq-answer').inputValue(),q.answer,'要帶入參考答案');
+  assert.equal(await page.locator('#editq-points').inputValue(),'6','要帶入分值');
+  assert.match(await page.locator('#editq-steps').inputValue(),/零乘積|分解/,'要帶入詳解步驟（題解）');
+  assert.equal(await page.locator('#editq-options input').count(),4,'選擇題要帶入四個選項');
+  await page.screenshot({path:path.join(__dirname,'..','MathPath-編輯題目.png'),fullPage:true});
+  await page.locator('#editq-title').fill('改過的標題');
+  await page.locator('#editq-points').fill('9');
+  await page.locator('#editq-add').click();
+  await page.locator('#modal-root .modal').waitFor({state:'detached',timeout:8000});
+  assert.equal(questionUpdate.question.title,'改過的標題','要送出改過的標題');
+  assert.equal(questionUpdate.question.points,9,'要送出改過的分值');
+  assert.equal(questionUpdate.question.answer,q.answer,'沒改的欄位也要一起送出（整份設定）');
+  assert.ok(questionUpdate.question.steps.length>0,'詳解步驟要一起送出');
+  assert.equal(questionUpdate.question.options.length,4,'選項要一起送出');
+  assert.equal(questionUpdate.figure,undefined,'沒有動圖形時不該送 figure（保留原本那張）');
+  console.log('PASS: 教師可在題庫編輯題目（所有設定帶入現值、存檔送出完整設定、不動圖形就不送 figure）');
   // 對照：學生的錯題本仍保留「再練一次」
   await page.route('**/api/session',route=>route.fulfill({json:{user:{id:1,name:'介面測試學生',role:'student'}}}));
   await page.route('**/api/state', route => route.fulfill({json:{user:{id:1,name:'介面測試學生',role:'student'},

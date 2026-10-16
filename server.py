@@ -3819,13 +3819,41 @@ class Application:
 
     def insert_question(self, db, q, figure=None, figure_mime=None):
         figure_key = None
+        has_figure = figure is not None
         if figure is not None and self.storage.mode == 'r2':
             # 二進位存到物件儲存，資料庫只留 key 字串。
             figure_key = self.storage.put('figures', figure, figure_mime)
             figure = None
         cur = db.execute('INSERT INTO questions(payload,figure,figure_mime,figure_key) VALUES(?,?,?,?)',
                          (json.dumps(q, ensure_ascii=False), figure, figure_mime, figure_key))
-        return {'id': cur.lastrowid, **q}
+        # question_public 要從這裡知道有沒有圖形，才會附上圖形網址；
+        # 圖形本身存在獨立欄位（BLOB 或物件儲存的 key），不在 payload 裡。
+        return {'id': cur.lastrowid, **q, 'figure': has_figure}
+
+    def update_question(self, db, qid, q, body):
+        """更新題目（教師）。body 有帶 figure 就換圖（空字串＝移除），沒帶就保留原圖。
+
+        換圖時順手刪掉舊的物件——否則反覆換圖會在網盤累積沒人引用的檔案。
+        刪不掉不影響更新，殘留可由物件儲存的生命週期規則清理。
+        """
+        row = db.execute('SELECT * FROM questions WHERE id=?', (qid,)).fetchone()
+        if not row:
+            fail(404, '找不到題目。')
+        old_key = row['figure_key']
+        if 'figure' in body:
+            figure, figure_mime = decode_figure(body['figure'])
+            figure_key = None
+            if figure is not None and self.storage.mode == 'r2':
+                figure_key = self.storage.put('figures', figure, figure_mime)
+                figure = None
+        else:
+            figure, figure_mime, figure_key = row['figure'], row['figure_mime'], row['figure_key']
+        has_figure = figure is not None or figure_key is not None
+        db.execute('UPDATE questions SET payload=?,figure=?,figure_mime=?,figure_key=? WHERE id=?',
+                   (json.dumps(q, ensure_ascii=False), figure, figure_mime, figure_key, qid))
+        if 'figure' in body and old_key and old_key != figure_key:
+            self.storage.delete(old_key)
+        return {'id': qid, **q, 'figure': has_figure}
 
     @staticmethod
     def user_public(row):
@@ -4508,6 +4536,19 @@ class Application:
                          for q, figure, figure_mime in prepared]
             return {'count': len(prepared),
                     'questions': [self.question_public(q, user) for q in saved]}, headers
+        match = re.fullmatch(r'/api/questions/([1-9]\d{0,17})/update', path)
+        if method == 'POST' and match:
+            # 教師修改題目的所有設定（含題解與圖形）。驗證沿用 question_valid，
+            # 不因為是「修改」而放寬；子分類不屬於該主分類一樣會被擋。
+            self.teacher(user)
+            fields(body, ('question', 'figure'), ('question',))
+            item = body['question']
+            if not isinstance(item, dict):
+                fail(400, 'question 必須是物件。')
+            q = question_valid(item)
+            with self.db() as db:
+                saved = self.update_question(db, int(match[1]), q, body)
+            return {'question': self.question_public(saved, user)}, headers
         if method == 'POST' and path == '/api/attempts':
             fields(body, ('questionId', 'answerText', 'image', 'consentExternal', 'assignmentId', 'mockId', 'skipped'),
                    ('questionId',))
