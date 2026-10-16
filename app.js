@@ -652,6 +652,13 @@ const topicTree = {
 "定積分求平面圖形面積",
 "定積分求旋轉體體積",
 "定積分的物理應用"
+],
+"比賽題": [
+"金蓮花",
+"校際",
+"AIMO",
+"思維",
+"其他"
 ]
 };
 const topics = Object.keys(topicTree);

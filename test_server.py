@@ -438,6 +438,20 @@ class APITests(unittest.TestCase):
         self.assertEqual(state['topicTree'], server.TOPIC_TREE)
         self.assertEqual(state['grades'], server.GRADES)
 
+    def test_competition_topic_exists_with_subtopics(self):
+        # 課外比賽題獨立成一個主分類，子分類依比賽／來源區分；
+        # 這是教師用來按來源挑題的依據，不能被誤刪。
+        self.assertEqual(server.TOPIC_TREE.get('比賽題'), ['金蓮花', '校際', 'AIMO', '思維', '其他'])
+        self.assertIn('比賽題', server.TOPICS)
+        for sub in ('金蓮花', '校際', 'AIMO', '思維', '其他'):
+            self.assertIn(sub, server.SUBTOPICS)
+        # 主分類 + 正確子分類要能匯入；子分類不屬於它就要被擋。
+        good = dict(self.draft, topic='比賽題', subtopic='AIMO')
+        self.request('POST', '/api/questions/import', {'questions': [good]}, cookie=self.teacher, expect=200)
+        self.request('POST', '/api/questions/import',
+                     {'questions': [dict(self.draft, topic='比賽題', subtopic='圓周角定理')]},
+                     cookie=self.teacher, expect=400)
+
     def test_import_atomic_validation(self):
         for invalid in [dict(self.draft, level=0), dict(self.draft, points=True), dict(self.draft, topic='任意'),
                         dict(self.draft, tags='abc'), dict(self.draft, steps=[1]), dict(self.draft, grade='小六'),

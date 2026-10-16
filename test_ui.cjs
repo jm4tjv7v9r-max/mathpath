@@ -622,6 +622,14 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   assert.match(await page.locator('.right-panel').nth(1).innerText(), /知識點練習表現/);
   await page.locator('[data-topic="全部題目"]').click();
 
+  // 課外比賽題：獨立成一個主分類，子分類依比賽／來源區分（前端分類樹要跟後端一致）
+  await page.locator('.topic-tab', {hasText:'比賽題'}).first().click();
+  await page.locator('.subtopic-tabs').waitFor({timeout:5000});
+  assert.deepEqual(await page.locator('.subtopic-tab').allInnerTexts(),
+    ['全部子分類','金蓮花','校際','AIMO','思維','其他'],
+    '比賽題的子分類應為金蓮花／校際／AIMO／思維／其他');
+  await page.locator('[data-topic="全部題目"]').click();
+
   // 全自動拆分並匯入：一次完成拆分、題型分類與入庫
   await page.locator('[data-page=import]').first().click();
   await page.locator('#sample-paper').click();
