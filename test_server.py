@@ -1445,6 +1445,28 @@ class APITests(unittest.TestCase):
                          cookie=self.teacher, expect=200)
             self.assertNotIn('figure', ai.call_args[0][0])
 
+    def test_scanned_pdf_paper_is_rendered_page_by_page(self):
+        # 掃描版試卷沒有文字層：由伺服器逐頁渲染成圖片交給視覺模型，
+        # 不要叫教師自己轉檔。頁面圖只存在伺服器，前端沒有原圖可裁，
+        # 所以不要求模型回報圖形範圍（否則會回一個前端用不到的框）。
+        self.app.ai.configured = True
+        self.app.ai.mode = 'local'
+        self.app.ai.vision = 'vision'
+        page = {**self.draft, 'title': '掃描題'}
+        with patch.object(self.app.ai, 'call', return_value={'drafts': [page]}) as ai:
+            _, result, _ = self.request('POST', '/api/papers/parse',
+                                        {'name': '掃描卷', 'dataUrl': scanned_pdf_url(page_count=2),
+                                         'mime': 'application/pdf'},
+                                        cookie=self.teacher, expect=200)
+        self.assertEqual(ai.call_count, 2, '兩頁要各呼叫一次視覺模型')
+        for call in ai.call_args_list:
+            self.assertEqual(call[1]['model'], 'vision', '掃描版要走視覺模型')
+            self.assertTrue(call[1]['image'].startswith('data:image/png;base64,'), '每頁要送渲染後的 PNG')
+            self.assertNotIn('figure', call[0][0], '前端裁不到原圖，不應要求圖形範圍')
+        self.assertEqual(len(result['drafts']), 2, '兩頁的結果都要併入')
+        self.assertIn('逐頁識別', result['method'], '拆分方式要說明是逐頁識別，不能說成長試卷切段')
+        self.assertNotIn('長試卷', result['method'])
+
     def test_auto_import_returns_figure_boxes_for_the_browser_to_crop(self):
         # 全自動匯入：題目已寫入題庫，圖形改由前端裁好後用 /api/questions/figures 補上。
         self.app.ai.configured = True
@@ -2359,6 +2381,45 @@ class HostAllowlistTests(unittest.TestCase):
                     'https://user:pw@mathshomework.link'):
             with self.assertRaises(ValueError):
                 server.MathServer(('127.0.0.1', 0), self.App(), [bad])
+
+
+class PaperPdfTests(unittest.TestCase):
+    """掃描版 PDF 的拆題支援：由伺服器逐頁渲染成圖片，不要叫教師自己轉檔。"""
+
+    @staticmethod
+    def decode(url):
+        return base64.b64decode(url.split(',', 1)[1])
+
+    def test_scanned_pdf_renders_one_image_per_page(self):
+        data = self.decode(scanned_pdf_url(page_count=2))
+        # 沒有文字層：預設要報錯（免得默默產生空題目），empty_ok 時才回空字串。
+        with self.assertRaises(server.APIError):
+            server.pdf_text(data)
+        self.assertEqual(server.pdf_text(data, empty_ok=True), '')
+        images = server.pdf_page_images(data)
+        self.assertEqual(len(images), 2, '兩頁要各渲染成一張圖')
+        for image in images:
+            self.assertTrue(image.startswith('data:image/png;base64,'))
+            png = self.decode(image)
+            self.assertTrue(png.startswith(b'\x89PNG\r\n\x1a\n'))
+            self.assertGreater(png_size(png)[0], 0)
+
+    def test_text_pdf_is_not_rendered(self):
+        # 有文字層的 PDF 直接抽文字就好，不必浪費一次渲染。
+        self.assertIn('x=3', server.pdf_text(self.decode(text_pdf_url()), empty_ok=True))
+
+    def test_page_limit_is_enforced(self):
+        data = self.decode(scanned_pdf_url(page_count=3))
+        with self.assertRaises(server.APIError) as ctx:
+            server.pdf_page_images(data, max_pages=2)
+        self.assertEqual(ctx.exception.status, 413)
+
+    def test_broken_pdf_fails_clearly_instead_of_500(self):
+        # 損壞或非 PDFium 認得的檔案要回 422 並說清楚，不能變成 500。
+        with self.assertRaises(server.APIError) as ctx:
+            server.pdf_page_images(b'%PDF-1.4\n%%EOF')
+        self.assertEqual(ctx.exception.status, 422)
+        self.assertIn('逐頁', ctx.exception.message)
 
 
 class RubricTests(unittest.TestCase):

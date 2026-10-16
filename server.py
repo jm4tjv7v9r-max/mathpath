@@ -458,7 +458,10 @@ def paper_drafts(app, name, body):
     """把試卷解析成題目草稿：AI 可用時交給 AI，否則用規則。回傳 (drafts, method)。"""
     if ('text' in body) == ('dataUrl' in body):
         fail(400, '請提供文字或檔案其中一項。')
-    image = None
+    images, value = [], ''
+    # 只有「前端拿得到原圖」的來源才要求模型回報圖形範圍（figureBox）：
+    # 圖片上傳是瀏覽器直接送的、能裁；掃描版 PDF 的頁面圖只存在伺服器，前端裁不到。
+    croppable = False
     if 'text' in body:
         if 'mime' in body:
             fail(400, '貼上文字時不應提供 mime。')
@@ -466,29 +469,35 @@ def paper_drafts(app, name, body):
     else:
         mime = body.get('mime')
         if mime not in ('image/png', 'image/jpeg', 'application/pdf'):
-            fail(400, '僅支援 PNG、JPEG 或文字型 PDF。')
+            fail(400, '僅支援 PNG、JPEG 或 PDF。')
         if mime == 'application/pdf':
             data, actual = decode_data_url(body['dataUrl'], ('application/pdf',))
-            value = pdf_text(data)
+            # 文字型 PDF 直接抽文字；掃描版沒有文字層，改由伺服器逐頁渲染成圖片
+            # 交給視覺模型——不要叫教師自己轉檔。
+            value = pdf_text(data, empty_ok=True)
+            if not value:
+                images = pdf_page_images(data)
         else:
             _, actual = validate_image(body['dataUrl'])
-            image = body['dataUrl']
-            value = ''
+            images = [body['dataUrl']]
+            croppable = True
         if actual != mime:
             fail(400, 'mime 與檔案格式不相符。')
-    can_ai = app.ai.configured and (not image or app.ai.vision)
-    if image and not can_ai:
+    can_ai = app.ai.configured and (not images or app.ai.vision)
+    if images and not can_ai:
         fail(409, '圖片識別需要設定 MATH_AI_BASE_URL、MATH_AI_MODEL 及 MATH_AI_VISION_MODEL；也可貼上題目文字。')
     # 未同意的外部文本使用規則處理，不默默上傳。
-    if can_ai and (app.ai.mode != 'external' or body.get('consentExternal') is True or image):
+    if can_ai and (app.ai.mode != 'external' or body.get('consentExternal') is True or images):
         app.ai.consent(body.get('consentExternal'))
         # 長試卷分段處理：單次請求的輸出會隨題數暴增，容易超過模型輸出上限而被截斷。
-        chunks = [value] if image else paper_chunks(value)
+        # 有圖片時一頁一段（掃描版 PDF 逐頁各一張圖）；文字試卷才依題號切塊。
+        chunks = [''] * len(images) if images else paper_chunks(value)
         drafts, skipped, failures, truncated = [], 0, 0, False
         figure_count = 0
         for index, chunk in enumerate(chunks):
+            image = images[index] if images else None
             try:
-                result = app.ai.call(parse_instruction(len(chunks), index, bool(image)),
+                result = app.ai.call(parse_instruction(len(chunks), index, croppable),
                                      {'name': name, 'text': chunk}, image=image,
                                      model=app.ai.vision if image else None)
             except APIError as exc:
@@ -513,7 +522,7 @@ def paper_drafts(app, name, body):
             for item in items:
                 # 圖形範圍必須在寬容修正之前取出：coerce_ai_draft 會把白名單以外的欄位濾掉。
                 # 只做檢查與正規化，實際裁切交由瀏覽器（那裡才有原圖尺寸）。
-                box = figure_box(item.get('figure')) if image else None
+                box = figure_box(item.get('figure')) if croppable else None
                 fixed = coerce_ai_draft(item)
                 if fixed is None:
                     skipped += 1
@@ -533,7 +542,9 @@ def paper_drafts(app, name, body):
                       '請貼上含有編號的完整題目，或改用手動輸入。')
         notes = []
         if len(chunks) > 1:
-            notes.append(f'長試卷已分 {len(chunks)} 段拆分')
+            # 掃描版 PDF 是一頁一張圖，不是「長試卷切段」，講法要分開。
+            notes.append(f'掃描版 PDF 逐頁識別，共 {len(chunks)} 頁' if images
+                         else f'長試卷已分 {len(chunks)} 段拆分')
         if truncated:
             notes.append('AI 回應曾被截斷，已保留可讀取的題目；建議分批拆分')
         if failures:
@@ -3150,7 +3161,12 @@ def rule_parse(name, value):
     return drafts
 
 
-def pdf_text(data):
+def pdf_text(data, empty_ok=False):
+    """抽取 PDF 的文字層。
+
+    empty_ok=True 時，沒有文字層（掃描版）回空字串而不是報錯——
+    呼叫端要負責改走「逐頁渲染成圖片」那條路（見 pdf_page_images）。
+    """
     if not data.startswith(b'%PDF-'):
         fail(400, '檔案內容不是有效 PDF。')
     try:
@@ -3176,6 +3192,8 @@ def pdf_text(data):
     except Exception:
         fail(422, 'PDF 無法讀取，請複製題目文字後貼上。')
     if not extracted:
+        if empty_ok:
+            return ''
         fail(422, '此 PDF 沒有可抽取文字，可能是掃描版。請配置視覺識別模型，並轉為逐頁 PNG / JPEG 圖片上傳。')
     return text(extracted, 'PDF 文字')
 
@@ -3207,6 +3225,72 @@ def pdf_embedded_jpeg(data, limit=40, minimum=5_000):
 
 
 PDF_RENDER_LOCK = threading.Lock()  # PDFium 不是執行緒安全，單次完整渲染序列化。
+
+# 教師拆題用的掃描版 PDF 頁數上限。學生作答是「一題一個 PDF、最多 8 頁」，
+# 試卷則是一份很多題，所以放寬；超過就明確拒絕，不截斷內容。
+PAPER_PDF_MAX_PAGES = 20
+
+
+def png_data_url(width, height, raw):
+    """把 RGB 掃描線編成 PNG 資料 URL（純標準庫，不需要 Pillow/NumPy）。"""
+    def chunk(kind, payload):
+        return struct.pack('>I', len(payload)) + kind + payload + struct.pack('>I', zlib.crc32(kind + payload) & 0xffffffff)
+    png = (b'\x89PNG\r\n\x1a\n'
+           + chunk(b'IHDR', struct.pack('>IIBBBBB', width, height, 8, 2, 0, 0, 0))
+           + chunk(b'IDAT', zlib.compress(bytes(raw), 6)) + chunk(b'IEND', b''))
+    return 'data:image/png;base64,' + base64.b64encode(png).decode()
+
+
+def pdf_page_images(data, max_pages=PAPER_PDF_MAX_PAGES):
+    """把掃描版 PDF 逐頁渲染成 PNG 資料 URL，供教師拆題使用。
+
+    教師端沒有「逐頁上傳」的動線，所以由伺服器代勞：文字型 PDF 走 pdf_text()，
+    沒有文字層的掃描版就逐頁渲染後交給視覺模型（學生作答的 PDF 已經是這樣處理的）。
+    逐頁各送一張圖，一頁一次呼叫；超過頁數上限明確拒絕，不截斷。
+    """
+    if not data.startswith(b'%PDF-'):
+        fail(400, '檔案內容不是有效 PDF。')
+    try:
+        import pypdfium2 as pdfium
+    except ImportError:
+        fail(422, 'PDF 頁面渲染尚未安裝；請改為逐頁截圖上傳，或請管理員安裝 requirements.txt。')
+    images = []
+    try:
+        with PDF_RENDER_LOCK:
+            doc = pdfium.PdfDocument(data)
+            try:
+                if len(doc) > max_pages:
+                    fail(413, f'試卷 PDF 最多 {max_pages} 頁，請分批上傳。')
+                for index in range(len(doc)):
+                    page = doc[index]
+                    try:
+                        pw, ph = page.get_size()
+                        if not (math.isfinite(pw) and math.isfinite(ph) and pw > 0 and ph > 0):
+                            fail(422, 'PDF 頁面尺寸無效。')
+                        scale = min(2.0, 1200 / pw, 1600 / ph)
+                        bitmap = page.render(scale=scale, force_bitmap_format=pdfium.raw.FPDFBitmap_BGR,
+                                             rev_byteorder=True, fill_color=(255, 255, 255, 255))
+                        try:
+                            width, height, stride = bitmap.width, bitmap.height, bitmap.stride
+                            raw = bytearray()
+                            for y in range(height):
+                                start = y * stride
+                                raw.extend(b'\x00' + bytes(bitmap.buffer[start:start + width * 3]))
+                            images.append(png_data_url(width, height, raw))
+                        finally:
+                            bitmap.close()
+                    finally:
+                        page.close()
+            finally:
+                doc.close()
+    except APIError:
+        raise
+    except Exception:
+        # 檔案損壞或不是 PDFium 認得的格式：明確拒絕，不要讓它變成 500。
+        fail(422, 'PDF 無法渲染（檔案可能損壞或格式不標準）；請確認檔案完整，或改為逐頁截圖上傳。')
+    if not images:
+        fail(422, '這份 PDF 沒有可渲染的頁面。')
+    return images
 
 
 def student_pdf_answer(data):
