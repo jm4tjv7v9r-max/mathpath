@@ -3016,6 +3016,9 @@ async function uploadFile(path,file){
 function countList(obj){if(!obj)return '';return Object.entries(obj).filter(([,v])=>v).map(([k,v])=>`${k} ${v}`).join(' · ');}
 function dataAdminHtml(){
   if(S.user?.role!=='teacher')return '';
+  // 備份、歸檔、還原與學年重置都會動到全校資料，只限管理員（最早建立的教師帳號）。
+  if(!S.user.isOwner)return `<section class="panel panel-pad" style="margin-top:20px"><h2>${icon('file')}資料管理</h2>
+  <p class="info-note">資料備份、歸檔、還原與學年重置都會影響<strong>全校</strong>的資料，只限<strong>管理員帳號</strong>（學校最早建立的那個教師帳號）使用。需要備份或匯出時，請找管理員協助。</p></section>`;
   return `<section class="panel panel-pad" style="margin-top:20px"><h2>${icon('file')}資料管理</h2>
   <p class="field-hint">題庫歸檔與學生作業歸檔是分開的：<strong>題庫跨學年保留</strong>，學生資料每學年重新設定。下載的檔案由你自行保存，伺服器不會留存。</p>
   <div class="metric-row" id="admin-stats">${adminStatsCards(ADMIN_STATS)}</div>
@@ -3041,7 +3044,7 @@ function dataAdminHtml(){
   </div></section>`;
 }
 async function loadAdminStats(notify){
-  if(S.user?.role!=='teacher')return;
+  if(S.user?.role!=='teacher'||!S.user.isOwner)return;
   try{ADMIN_STATS=await api('/api/admin/storage');
     const box=$('#admin-stats');if(box)box.innerHTML=adminStatsCards(ADMIN_STATS);
     const count=$('#admin-question-count');if(count)count.textContent=ADMIN_STATS.counts.questions;
@@ -3050,6 +3053,8 @@ async function loadAdminStats(notify){
   catch(e){if(notify)toast(e.message);}
 }
 function bindDataAdmin(){
+  // 非管理員看到的是提示區塊，底下沒有任何資料管理控制項可以綁。
+  if(S.user?.role!=='teacher'||!S.user.isOwner)return;
   bindBackupZone();
   $$('[data-admin-download]').forEach(b=>b.onclick=()=>{const a=document.createElement('a');a.href=b.dataset.adminDownload;a.rel='noopener';document.body.appendChild(a);a.click();a.remove();toast('已開始下載，請查看瀏覽器的下載項目。');});
   if($('#admin-refresh'))$('#admin-refresh').onclick=()=>loadAdminStats(true);
@@ -3122,10 +3127,13 @@ function bulkHeaderFields(cells){const kinds=cells.map(v=>Object.keys(BULK_HEADE
 function bulkGuessFields(parts){const isUser=v=>/^[A-Za-z0-9_.-]{3,40}$/.test(v),isSeat=v=>/^[A-Za-z]{0,2}\d{1,3}$/.test(v)||/^[A-Za-z]\d{0,2}$/.test(v),isPw=v=>v.length>=10||(v.length>=6&&/\d/.test(v)&&/[A-Za-z]/.test(v));if(parts.length===3){if(isUser(parts[0])&&isSeat(parts[1]))return['username','seat','password'];if(isUser(parts[1]))return['name','username','password'];return null;}if(parts.length===2){if(isUser(parts[0])&&(!parts[1]||isPw(parts[1])))return['username','password'];if(isUser(parts[1]))return['name','username'];return null;}if(parts.length===1&&isUser(parts[0]))return['username'];return null;}
 // 名單解析：姓名可以完全省略（只有學號、班內號、密碼也能匯入）；密碼省略時自動產生。
 function parseBulkStudents(text,order='auto'){const rows=[],errors=[];let fields=BULK_ORDERS[order]||null;const fixed=!!fields;String(text||'').split(/\r?\n/).forEach((line,i)=>{const raw=line.trim();if(!raw||raw.startsWith('#'))return;const parts=raw.split(/[,\t，;；]/).map(v=>v.trim());const header=bulkHeaderFields(parts);if(header){if(!fixed)fields=header;return;}if(!fields)fields=bulkGuessFields(parts);if(!fields){errors.push(`第 ${i+1} 行格式不正確：需要「學號,班內號,密碼」或「姓名,學號,密碼」，每行一位學生。`);return;}const least=fields[fields.length-1]==='password'?fields.length-1:fields.length;if(parts.length<least||parts.length>fields.length){errors.push(`第 ${i+1} 行欄位數不正確，需要「${fields.map(f=>BULK_FIELD_NAMES[f]).join(',')}」。`);return;}const rec={};fields.forEach((f,idx)=>{rec[f]=(parts[idx]||'').trim();});if(!rec.username){errors.push(`第 ${i+1} 行學號不可留空。`);return;}if(!/^[A-Za-z0-9_.-]{3,40}$/.test(rec.username)){errors.push(`第 ${i+1} 行學號須為3至40個英文字母、數字或 _ . -。`);return;}if(rec.seat&&!/^[A-Za-z0-9-]{1,20}$/.test(rec.seat)){errors.push(`第 ${i+1} 行班內號只接受1至20個英文字母、數字或連字號。`);return;}if(rec.password&&rec.password.length<10){errors.push(`第 ${i+1} 行密碼必須至少10字。`);return;}rows.push({name:rec.name||'',username:rec.username,seat:rec.seat||'',password:rec.password||randomPassword(),generated:!rec.password});});return{rows,errors,fields};}
-let ROSTER_USERS=[];
+let ROSTER_USERS=[],ROSTER_OWNER=null;
+// 誰能改這個帳號：管理員可改全部；教師可改自己與自己建立的學生；其餘只可檢視。
+function canEditAccount(u){return !!S.user?.isOwner||u.id===S.user?.id||(u.role==='student'&&u.createdBy===S.user?.id);}
 function accountRow(u){
-  const teacher=u.role==='teacher';
-  return `<div class="roster-row"><span class="roster-who">${teacher?'<span class="role-badge">教師</span>':u.seat?`<span class="seat-badge">${esc(u.seat)}</span>`:''}${esc(u.name)}${u.username===u.name?'':`<span class="small-text">${esc(u.username)}</span>`}</span><button class="text-button" data-edit-user="${u.id}">編輯</button></div>`;
+  const teacher=u.role==='teacher',admin=u.id===ROSTER_OWNER,mine=canEditAccount(u);
+  const maker=(!mine&&u.createdBy)?ROSTER_USERS.find(x=>x.id===u.createdBy):null;
+  return `<div class="roster-row"><span class="roster-who">${admin?'<span class="role-badge admin">管理員</span>':teacher?'<span class="role-badge">教師</span>':u.seat?`<span class="seat-badge">${esc(u.seat)}</span>`:''}${esc(u.name)}${u.username===u.name?'':`<span class="small-text">${esc(u.username)}</span>`}${maker?`<span class="small-text">由 ${esc(maker.name)} 建立</span>`:''}</span>${mine?`<button class="text-button" data-edit-user="${u.id}">編輯</button>`:'<span class="small-text">僅可檢視</span>'}</div>`;
 }
 // 編輯帳號：只送出有改動的欄位；重設密碼會讓該帳號目前的登入立即失效。
 function editAccountModal(id){
@@ -3142,8 +3150,25 @@ function editAccountModal(id){
   <p class="field-hint">重設密碼後，${teacher?'這位教師':'這位學生'}目前的登入會立即失效，需要用新密碼重新登入。${self&&teacher?'<strong>你正在修改自己的帳號，重設密碼後會被登出。</strong>':''}</p>
   <p class="error-text" id="edit-error"></p>
   <div class="submit-row"><button class="primary" type="submit">儲存變更 ${icon('check')}</button><button class="secondary" type="button" id="edit-cancel">返回帳號管理</button></div>
-  </form>`);
+  </form>
+  ${S.user?.isOwner&&!self?`<div class="danger-zone" style="margin-top:18px">
+    <h3>${icon('trash')}刪除帳號</h3>
+    <p>${teacher?'這位教師的班級與作業會轉給管理員，他建立的學生改為無歸屬（只有管理員能改）。':'會一併刪除這位學生的所有作答、手寫圖與批改紀錄。'}刪除後無法還原。</p>
+    <div class="form-field" style="max-width:240px"><label class="field-label" for="delete-confirm">輸入 DELETE 以確認</label><input id="delete-confirm" maxlength="20" placeholder="DELETE" autocomplete="off"></div>
+    <p class="error-text" id="delete-error"></p>
+    <button class="danger" type="button" id="delete-account">${icon('trash')}刪除帳號</button>
+  </div>`:''}`);
   $('#edit-cancel').onclick=()=>manageUsers();
+  if($('#delete-account'))$('#delete-account').onclick=async()=>{
+    const typed=$('#delete-confirm').value;
+    if(typed.trim().toUpperCase()!=='DELETE'){$('#delete-error').textContent='請輸入 DELETE 確認。';return;}
+    if(!window.confirm(`確定要刪除「${u.name}」的帳號嗎？此操作無法還原。`))return;
+    const b=$('#delete-account');b.disabled=true;$('#delete-error').textContent='';
+    try{const r=await api(`/api/users/${id}/delete`,{confirm:typed});
+      toast(`已刪除 ${r.deleted.name} 的帳號：${r.removed.attempts} 筆作答${r.imagesDeleted?`、${r.imagesDeleted} 張圖片`:''}。`);
+      await manageUsers();}
+    catch(err){$('#delete-error').textContent=err.message;b.disabled=false;}
+  };
   $('#account-edit-form').onsubmit=async e=>{
     e.preventDefault();
     const body={};
@@ -3163,22 +3188,23 @@ function editAccountModal(id){
     catch(err){$('#edit-error').textContent=err.message;b.disabled=false;}
   };
 }
-async function manageUsers(){try{const {users}=await api('/api/users');ROSTER_USERS=users;
+async function manageUsers(){try{const {users,ownerId}=await api('/api/users');ROSTER_USERS=users;ROSTER_OWNER=ownerId;
 const teachers=users.filter(u=>u.role==='teacher'),students=users.filter(u=>u.role==='student');
+const canAddTeacher=!!S.user?.isOwner;
 modal(`<p class="eyebrow">ACCOUNTS</p><h2>帳號管理</h2>
-<p class="modal-intro">教師帳號可佈置作業、批閱與管理資料；學生帳號各自獨立，作答與手寫圖片不與他人共用。</p>
+<p class="modal-intro">${canAddTeacher?'管理員可建立教師帳號，並修改任何帳號；教師可建立學生帳號，並修改自己建立的學生。':'你可以建立學生帳號，並修改自己建立的學生；其他帳號只可檢視。'}</p>
 <p class="account-group">教師帳號（${teachers.length}）</p>
 <div class="review-answer" style="max-height:150px;overflow:auto">${teachers.map(accountRow).join('')}</div>
-<form id="teacher-create-form">
+${canAddTeacher?`<form id="teacher-create-form">
 <div class="form-grid" style="margin-top:14px"><div class="form-field"><label class="field-label" for="teacher-name">姓名</label><input id="teacher-name" maxlength="60" required placeholder="例如：陳老師"></div>
 <div class="form-field"><label class="field-label" for="teacher-username">帳號（登入名稱）</label><input id="teacher-username" minlength="3" maxlength="40" pattern="[A-Za-z0-9_.\\-]{3,40}" required placeholder="例如：teacher2" autocomplete="off"></div></div>
 <div class="form-field"><label class="field-label" for="teacher-password">初始密碼（至少10字）</label><input id="teacher-password" type="password" minlength="10" maxlength="256" required autocomplete="new-password"></div>
 <p class="field-hint">教師權限與你相同：可佈置作業、批閱、匯入題庫、管理資料，也能重設其他帳號的密碼。請只發給信任的同事，並提醒首次登入後更換密碼。</p>
 <p class="error-text" id="teacher-error"></p>
-<button class="primary wide" type="submit">建立教師帳號 ${icon('check')}</button></form>
+<button class="primary wide" type="submit">建立教師帳號 ${icon('check')}</button></form>`:'<p class="info-note" style="margin-top:14px">只有<strong>管理員帳號</strong>（學校最早建立的那個教師帳號）能新增教師。需要新同事的帳號時，請找管理員協助。</p>'}
 <div class="divider-text"><span>學生帳號</span></div>
 <p class="account-group">獨立學生帳戶（${students.length}）</p>
-<div class="review-answer" style="max-height:180px;overflow:auto">${students.map(accountRow).join('')}</div><form id="user-create-form"><div class="form-grid" style="margin-top:20px"><div class="form-field"><label class="field-label" for="student-name">姓名（可留空，預設用學號）</label><input id="student-name" maxlength="60" placeholder="例如：陳大文"></div><div class="form-field"><label class="field-label" for="student-username">學號（登入帳戶）</label><input id="student-username" minlength="3" maxlength="40" pattern="[A-Za-z0-9_.\\-]{3,40}" required placeholder="例如：s3a01" autocomplete="off"></div><div class="form-field"><label class="field-label" for="student-seat">班內號（可留空）</label><input id="student-seat" maxlength="20" placeholder="例如：3"></div></div><div class="form-field"><label class="field-label" for="student-password">初始密碼（至少10字）</label><input id="student-password" type="password" minlength="10" maxlength="256" required autocomplete="new-password"></div><p class="field-hint">學號只接受英文字母、數字、底線、點或連字號；<strong>姓名可以留空</strong>（不匯入名字），系統會以學號作為顯示名稱。請私下將初始密碼交給學生，提醒首次登入後更換。</p><p class="error-text" id="user-error"></p><button class="primary wide" type="submit">建立學生帳戶 ${icon('check')}</button></form><div class="divider-text"><span>或批次匯入一整班</span></div><div class="bulk-tools"><label class="secondary" for="bulk-file">${icon('upload')}上傳名單檔案</label><input id="bulk-file" type="file" accept=".csv,.txt,text/csv,text/plain" hidden><button class="text-button" id="bulk-template" type="button">${icon('file')}下載名單範本</button></div><div class="form-field" style="margin-top:14px"><label class="field-label" for="bulk-order">名單欄位順序</label><select id="bulk-order"><option value="auto">自動判斷（依內容或第一行標題）</option><option value="username_seat_password">學號,班內號,密碼</option><option value="name_username_password">姓名,學號,密碼</option><option value="username_password">學號,密碼</option></select></div><p class="field-hint"><strong>姓名可以完全省略</strong>（不匯入名字）：省略時以學號作為顯示名稱，名單上不會出現空白姓名。班內號與密碼都可留空（密碼留空會自動產生）。也接受 Tab、全角逗號或分號；第一行若是標題（如「學號,班內號,密碼」）會自動略過並依標題對應欄位。以 # 開頭的行會被忽略。名單檔案請存成 UTF-8 的 CSV 或 TXT。</p><textarea class="answer-field" id="bulk-students" style="min-height:150px;font-size:calc(15px*var(--fs))" placeholder="s3a01,1,MathPass1234&#10;s3a02,2,MathPass1234&#10;s3a03,3&#10;s3a04"></textarea><div id="bulk-preview" class="field-hint"></div><div id="bulk-preview-table"></div><label class="checkbox-line"><input type="checkbox" id="bulk-class-toggle">匯入後直接建立班級（把這批學生編入同一班）</label><div class="form-field" id="bulk-class-field" hidden><label class="field-label" for="bulk-class-name">班級名稱</label><input id="bulk-class-name" maxlength="100" placeholder="例如：中三甲班"></div><p class="error-text" id="bulk-error"></p><button class="secondary wide" id="bulk-submit" style="margin-top:6px">${icon('upload')}批次建立學生帳戶</button><div id="bulk-result"></div>`,true);$('#teacher-create-form').onsubmit=async e=>{e.preventDefault();const b=$('[type="submit"]',e.target);b.disabled=true;$('#teacher-error').textContent='';try{const {user:made}=await api('/api/teachers',{username:$('#teacher-username').value,name:$('#teacher-name').value,password:$('#teacher-password').value});toast(`教師帳號「${made.name}」已建立，請把帳號與初始密碼私下交給對方。`);manageUsers();}catch(err){$('#teacher-error').textContent=err.message;b.disabled=false;}};$('#user-create-form').onsubmit=async e=>{e.preventDefault();const b=$('[type="submit"]',e.target);b.disabled=true;try{await api('/api/users',{username:$('#student-username').value,name:$('#student-name').value,seat:$('#student-seat').value,password:$('#student-password').value});toast('獨立學生帳戶已建立。');manageUsers();}catch(err){$('#user-error').textContent=err.message;b.disabled=false;}};
+<div class="review-answer" style="max-height:180px;overflow:auto">${students.map(accountRow).join('')}</div><form id="user-create-form"><div class="form-grid" style="margin-top:20px"><div class="form-field"><label class="field-label" for="student-name">姓名（可留空，預設用學號）</label><input id="student-name" maxlength="60" placeholder="例如：陳大文"></div><div class="form-field"><label class="field-label" for="student-username">學號（登入帳戶）</label><input id="student-username" minlength="3" maxlength="40" pattern="[A-Za-z0-9_.\\-]{3,40}" required placeholder="例如：s3a01" autocomplete="off"></div><div class="form-field"><label class="field-label" for="student-seat">班內號（可留空）</label><input id="student-seat" maxlength="20" placeholder="例如：3"></div></div><div class="form-field"><label class="field-label" for="student-password">初始密碼（至少10字）</label><input id="student-password" type="password" minlength="10" maxlength="256" required autocomplete="new-password"></div><p class="field-hint">學號只接受英文字母、數字、底線、點或連字號；<strong>姓名可以留空</strong>（不匯入名字），系統會以學號作為顯示名稱。請私下將初始密碼交給學生，提醒首次登入後更換。</p><p class="error-text" id="user-error"></p><button class="primary wide" type="submit">建立學生帳戶 ${icon('check')}</button></form><div class="divider-text"><span>或批次匯入一整班</span></div><div class="bulk-tools"><label class="secondary" for="bulk-file">${icon('upload')}上傳名單檔案</label><input id="bulk-file" type="file" accept=".csv,.txt,text/csv,text/plain" hidden><button class="text-button" id="bulk-template" type="button">${icon('file')}下載名單範本</button></div><div class="form-field" style="margin-top:14px"><label class="field-label" for="bulk-order">名單欄位順序</label><select id="bulk-order"><option value="auto">自動判斷（依內容或第一行標題）</option><option value="username_seat_password">學號,班內號,密碼</option><option value="name_username_password">姓名,學號,密碼</option><option value="username_password">學號,密碼</option></select></div><p class="field-hint"><strong>姓名可以完全省略</strong>（不匯入名字）：省略時以學號作為顯示名稱，名單上不會出現空白姓名。班內號與密碼都可留空（密碼留空會自動產生）。也接受 Tab、全角逗號或分號；第一行若是標題（如「學號,班內號,密碼」）會自動略過並依標題對應欄位。以 # 開頭的行會被忽略。名單檔案請存成 UTF-8 的 CSV 或 TXT。</p><textarea class="answer-field" id="bulk-students" style="min-height:150px;font-size:calc(15px*var(--fs))" placeholder="s3a01,1,MathPass1234&#10;s3a02,2,MathPass1234&#10;s3a03,3&#10;s3a04"></textarea><div id="bulk-preview" class="field-hint"></div><div id="bulk-preview-table"></div><label class="checkbox-line"><input type="checkbox" id="bulk-class-toggle">匯入後直接建立班級（把這批學生編入同一班）</label><div class="form-field" id="bulk-class-field" hidden><label class="field-label" for="bulk-class-name">班級名稱</label><input id="bulk-class-name" maxlength="100" placeholder="例如：中三甲班"></div><p class="error-text" id="bulk-error"></p><button class="secondary wide" id="bulk-submit" style="margin-top:6px">${icon('upload')}批次建立學生帳戶</button><div id="bulk-result"></div>`,true);if($('#teacher-create-form'))$('#teacher-create-form').onsubmit=async e=>{e.preventDefault();const b=$('[type="submit"]',e.target);b.disabled=true;$('#teacher-error').textContent='';try{const {user:made}=await api('/api/teachers',{username:$('#teacher-username').value,name:$('#teacher-name').value,password:$('#teacher-password').value});toast(`教師帳號「${made.name}」已建立，請把帳號與初始密碼私下交給對方。`);manageUsers();}catch(err){$('#teacher-error').textContent=err.message;b.disabled=false;}};$('#user-create-form').onsubmit=async e=>{e.preventDefault();const b=$('[type="submit"]',e.target);b.disabled=true;try{await api('/api/users',{username:$('#student-username').value,name:$('#student-name').value,seat:$('#student-seat').value,password:$('#student-password').value});toast('獨立學生帳戶已建立。');manageUsers();}catch(err){$('#user-error').textContent=err.message;b.disabled=false;}};
 const bulkPreview=()=>{const {rows,errors,fields}=parseBulkStudents($('#bulk-students').value,$('#bulk-order')?$('#bulk-order').value:'auto');const generated=rows.filter(r=>r.generated).length,noName=rows.filter(r=>!r.name).length,seated=rows.filter(r=>r.seat).length;$('#bulk-preview').innerHTML=rows.length?`將建立 <strong>${rows.length}</strong> 個帳戶${fields?`（${fields.map(f=>BULK_FIELD_NAMES[f]).join(' · ')}）`:''}${generated?`，其中 ${generated} 個自動產生密碼`:''}${noName?`，${noName} 個未填姓名（以學號顯示）`:''}${seated?`，${seated} 個有班內號`:''}`:'請輸入學生名單，每行一位。';$('#bulk-error').innerHTML=errors.length?errors.slice(0,6).map(esc).join('<br>'):'';const table=$('#bulk-preview-table');if(table)table.innerHTML=rows.length?`<div class="table-scroll" style="margin-top:10px"><table class="results-table bulk-table"><thead><tr><th>學號</th><th>班內號</th><th>顯示名稱</th><th>密碼</th></tr></thead><tbody>${rows.slice(0,8).map(r=>`<tr><td>${esc(r.username)}</td><td>${r.seat?esc(r.seat):'—'}</td><td>${esc(r.name||r.username)}</td><td>${r.generated?'自動產生':'已填'}</td></tr>`).join('')}</tbody></table></div>${rows.length>8?`<p class="field-hint">…另有 ${rows.length-8} 位未顯示。</p>`:''}`:'';return{rows,errors};};
 $('#bulk-students').oninput=bulkPreview;$('#bulk-students').onchange=bulkPreview;$('#bulk-order').onchange=bulkPreview;
 $('#bulk-file').onchange=async e=>{const f=e.target.files[0];if(!f)return;if(f.size>1024*1024)return toast('名單檔案不可超過 1 MB。');if(!/\.(csv|txt)$/i.test(f.name)&&!['text/csv','text/plain'].includes(f.type))return toast('請提供 CSV 或 TXT 名單檔案。');try{const raw=await new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result);r.onerror=()=>rej(new Error('檔案讀取失敗，請確認是 UTF-8 的 CSV 或 TXT。'));r.readAsText(f,'UTF-8');});$('#bulk-students').value=raw.replace(/^\ufeff/,'');bulkPreview();toast(`已載入名單：${f.name}`);}catch(err){toast(err.message);}e.target.value='';};

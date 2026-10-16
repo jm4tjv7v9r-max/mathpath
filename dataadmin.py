@@ -27,6 +27,8 @@ ARCHIVE_VERSION = 1
 QUESTION_FORMAT = 'mathpath-question-archive'
 STUDENT_FORMAT = 'mathpath-student-archive'
 RESET_PHRASE = 'RESET'
+# 刪除單一帳號的確認字串（比學年重置的 RESET 更明確，避免誤按）。
+DELETE_PHRASE = 'DELETE'
 # 還原：資料庫與學生歸檔用串流寫入暫存檔，題庫歸檔需整份載入記憶體，上限較嚴。
 MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024
 MAX_QUESTION_ARCHIVE_BYTES = 500 * 1024 * 1024
@@ -346,11 +348,38 @@ class DataAdmin:
                          'notice': '題庫、教師帳號、內建演示帳號與日曆提醒都保留。'}}
 
     # ---------- 編輯帳戶 ----------
-    def update_user(self, db, uid, body):
-        """依角色分派：教師走 update_teacher()，其餘走 update_student()。"""
-        row = db.execute('SELECT role FROM users WHERE id=?', (uid,)).fetchone()
+    @staticmethod
+    def owner_id(db):
+        """管理員＝最早建立的教師帳號（內建的 teacher）。"""
+        row = db.execute("SELECT id FROM users WHERE role='teacher' ORDER BY id LIMIT 1").fetchone()
+        return row['id'] if row else None
+
+    def can_manage_account(self, db, target, actor):
+        """管理員可管所有帳號；其他教師只能改自己，或自己建立的學生。
+
+        created_by 為 NULL 的帳號（升級前就存在的）視為沒有歸屬，只有管理員能改——
+        保守做法，免得新教師一進來就能改到別人的舊學生。
+        """
+        if actor is None or actor['role'] != 'teacher':
+            return False
+        if actor['id'] == self.owner_id(db):
+            return True
+        if target['id'] == actor['id']:
+            return True
+        if target['role'] != 'student':
+            return False
+        return target['created_by'] == actor['id']
+
+    def update_user(self, db, uid, body, actor=None):
+        """依角色分派：教師走 update_teacher()，其餘走 update_student()。
+
+        actor 是發起請求的教師；不給就跳過權限檢查（供內部呼叫使用）。
+        """
+        row = db.execute('SELECT * FROM users WHERE id=?', (uid,)).fetchone()
         if row is None:
             self.fail(404, '找不到這個帳戶。')
+        if actor is not None and not self.can_manage_account(db, row, actor):
+            self.fail(403, '你只能修改自己的帳號，或自己建立的學生帳號。')
         if row['role'] == 'teacher':
             return self.update_teacher(db, uid, body)
         return self.update_student(db, uid, body)
@@ -453,6 +482,62 @@ class DataAdmin:
         updated = db.execute('SELECT id,username,name,role,seat FROM users WHERE id=?', (uid,)).fetchone()
         return {'user': dict(updated), 'changed': changed,
                 'passwordReset': bool(revoked), 'sessionsRevoked': revoked}
+
+    # ---------- 刪除帳號 ----------
+    def delete_user(self, db, uid, actor, confirm):
+        """刪除一個帳號（僅管理員）。需要輸入 DELETE 確認，避免誤按。
+
+        學生：連同作答（含手寫圖與批註）、班級成員、收件紀錄、模擬測驗、日曆與訂正一併刪除。
+        教師：他的班級與作業**轉給管理員**，他建立的學生改為無歸屬（只有管理員能改）——
+        這樣刪掉一個教師帳號不會連帶清掉學生的作答紀錄。
+
+        管理員自己不能刪（會把系統鎖在門外）。
+        """
+        if not isinstance(confirm, str) or confirm.strip().upper() != DELETE_PHRASE:
+            self.fail(400, '請在確認欄輸入 %s 才能刪除帳號。' % DELETE_PHRASE)
+        row = db.execute('SELECT * FROM users WHERE id=?', (uid,)).fetchone()
+        if row is None:
+            self.fail(404, '找不到這個帳號。')
+        if uid == actor['id']:
+            self.fail(400, '不能刪除自己的帳號。')
+        if uid == self.owner_id(db):
+            self.fail(400, '不能刪除管理員帳號。')
+        # 先把網盤上的圖片 key 收起來，資料列刪掉之後就查不到了。
+        keys = []
+        for attempt in db.execute('SELECT image_key, annotation_key FROM attempts WHERE user_id=?', (uid,)):
+            keys += [k for k in (attempt['image_key'], attempt['annotation_key']) if k]
+        if row['role'] == 'teacher':
+            db.execute('UPDATE classes SET teacher_id=? WHERE teacher_id=?', (actor['id'], uid))
+            db.execute('UPDATE assignments SET teacher_id=? WHERE teacher_id=?', (actor['id'], uid))
+            db.execute('UPDATE users SET created_by=NULL WHERE created_by=?', (uid,))
+        # 他批閱／退回過的紀錄留著，但指向已刪除的帳號會變成孤兒，改為無歸屬。
+        db.execute('UPDATE attempts SET reviewed_by=NULL WHERE reviewed_by=?', (uid,))
+        db.execute('UPDATE corrections SET requested_by=NULL WHERE requested_by=?', (uid,))
+        removed = {}
+        removed['attempts'] = db.execute('DELETE FROM attempts WHERE user_id=?', (uid,)).rowcount
+        removed['sessions'] = db.execute('DELETE FROM sessions WHERE user_id=?', (uid,)).rowcount
+        removed['class_students'] = db.execute('DELETE FROM class_students WHERE user_id=?', (uid,)).rowcount
+        removed['assignment_recipients'] = db.execute(
+            'DELETE FROM assignment_recipients WHERE user_id=?', (uid,)).rowcount
+        removed['corrections'] = db.execute('DELETE FROM corrections WHERE user_id=?', (uid,)).rowcount
+        removed['calendar_notes'] = db.execute('DELETE FROM calendar_notes WHERE user_id=?', (uid,)).rowcount
+        exams = [r['id'] for r in db.execute('SELECT id FROM mock_exams WHERE user_id=?', (uid,))]
+        if exams:
+            marks = ','.join('?' * len(exams))
+            db.execute('DELETE FROM mock_questions WHERE exam_id IN (%s)' % marks, exams)
+        removed['mock_exams'] = db.execute('DELETE FROM mock_exams WHERE user_id=?', (uid,)).rowcount
+        removed['users'] = db.execute('DELETE FROM users WHERE id=?', (uid,)).rowcount
+        # 圖片刪不掉（例如網盤暫時不通）不該讓整個刪除失敗——資料列已經刪了。
+        images = 0
+        for key in keys:
+            try:
+                self.app.storage.delete(key)
+                images += 1
+            except Exception:
+                pass
+        return {'deleted': {'id': uid, 'username': row['username'], 'name': row['name'],
+                            'role': row['role']},
+                'removed': removed, 'imagesDeleted': images, 'imagesFound': len(keys)}
 
     # ---------- 還原：共用 ----------
     @staticmethod

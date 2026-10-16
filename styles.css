@@ -583,3 +583,5 @@ button.step.done:hover span{background:var(--mint);color:var(--green)}
 .account-group{margin:20px 0 8px;font-size:calc(16px*var(--fs));color:#2b4034;font-weight:500}
 .role-badge{display:inline-block;text-align:center;border-radius:5px;background:#e8eef6;color:#2c5a86;
   font-size:calc(12px*var(--fs));padding:1px 8px;margin-right:7px;vertical-align:middle;font-weight:600}
+/* 管理員（學校最早建立的教師帳號）：用琥珀色與一般教師區分 */
+.role-badge.admin{background:#faeeda;color:#854f0b}

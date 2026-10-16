@@ -86,9 +86,9 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
       return route.fulfill({json:{reviewed:2,failed:0,skipped:0,remaining:0,errors:[]}});
     }
     if(url.pathname==='/api/attempts/9/annotation'&&route.request().method()==='POST'){const sent=route.request().postDataJSON();assert.ok(/^data:image\/(png|webp);base64,/.test(sent.image),'批註圖必須是 PNG 或 WebP');assert.ok(sent.image.length>2000,'批註圖應包含手稿與筆跡');annotated=true;return route.fulfill({json:{attempt:attemptFixture()}});}
-    const user=role?{id:role==='teacher'?2:1,name:role==='teacher'?'介面測試教師':'介面測試學生',role}:null;
+    const user=role?{id:role==='teacher'?2:1,name:role==='teacher'?'介面測試教師':'介面測試學生',role,isOwner:role==='teacher'}:null;
     if(url.pathname==='/api/session')data={user};
-    else if(url.pathname==='/api/login'){const sent=route.request().postDataJSON();role=sent.username;rememberSent=sent.remember;data={user:{id:role==='teacher'?2:1,name:'介面測試',role}};}
+    else if(url.pathname==='/api/login'){const sent=route.request().postDataJSON();role=sent.username;rememberSent=sent.remember;data={user:{id:role==='teacher'?2:1,name:'介面測試',role,isOwner:role==='teacher'}};}
     else if(url.pathname==='/api/logout'){role=null;data={user:null};}
     else if(url.pathname==='/api/state')data={user,questions:[role==='teacher'?q:{...q,answer:undefined,steps:undefined}],attempts:role==='teacher'?[]:[graded(1,1,'一元二次方程',6,6),graded(2,2,'幾何',0,5)],stats:{completed:2,accuracy:55,streak:1,minutes:10},ai,topics:['一元二次方程','幾何']};
     else if(url.pathname==='/api/homework')data={classes:[{id:1,name:'中三甲班',studentCount:2,studentIds:[1,3]}],assignments:[assignment,quizAssignment],students:role==='teacher'?[student]:undefined,ai};
@@ -109,7 +109,7 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
     else if(url.pathname==='/api/assignments/2')data={assignment:quizAssignment,questions:[q],attempts:quizStarted?[graded(21,1,'一元二次方程',6,6)]:[],mySubmission:quizSub(),report:quizReport()};
     else if(url.pathname==='/api/assignments'&&route.request().method()==='POST'){durationSent=route.request().postDataJSON();return route.fulfill({json:{assignment:quizAssignment}});}
     else if(url.pathname==='/api/questions/import'){importedQuestions=route.request().postDataJSON().questions;return route.fulfill({json:{count:importedQuestions.length,questions:importedQuestions.map((qq,i)=>({id:50+i,...qq}))}});}
-    else if(url.pathname==='/api/users')data={users:[{id:1,username:'student',name:'介面測試學生',role:'student',seat:'1'}]};
+    else if(url.pathname==='/api/users')data={users:[{id:1,username:'student',name:'介面測試學生',role:'student',seat:'1',createdBy:2}],ownerId:2};
     else if(/^\/api\/users\/\d+\/update$/.test(url.pathname)){editSent={id:Number(url.pathname.split('/')[3]),body:route.request().postDataJSON()};return route.fulfill({json:{user:{id:editSent.id,username:editSent.body.username||'student',name:editSent.body.name||'介面測試學生',role:'student',seat:editSent.body.seat===undefined?'1':editSent.body.seat},changed:Object.keys(editSent.body),passwordReset:!!editSent.body.password,sessionsRevoked:editSent.body.password?1:0}});}
     else if(url.pathname==='/api/admin/restore/questions'){restoreSent.questions={replace:url.searchParams.get('replace'),bytes:route.request().postDataBuffer().length};return route.fulfill({json:{inserted:3,skipped:13,mapped:16,total:16,replaced:url.searchParams.get('replace')==='1',notice:'已保留原編號'}});}
     else if(url.pathname==='/api/admin/restore/students'){restoreSent.students={password:url.searchParams.get('password'),bytes:route.request().postDataBuffer().length};return route.fulfill({json:{written:{student:2,class:1,assignment:1,attempt:1},skipped:{},credentials:[{username:'s3a01',name:'s3a01',seat:'1',password:'FjdatfcsXnig',generated:false}],usedSharedPassword:true,unreadableImages:0,questionMapApplied:true,notice:'歸檔不含密碼'}});}
@@ -855,9 +855,9 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   await page.route('https://mathpath.test/**',route=>{const url=new URL(route.request().url());
     if(url.pathname==='/api/teachers'&&route.request().method()==='POST'){teacherCreated=route.request().postDataJSON();
       return route.fulfill({json:{user:{id:9,username:teacherCreated.username,name:teacherCreated.name,role:'teacher',seat:null}}});}
-    if(url.pathname==='/api/users')return route.fulfill({json:{users:[
-      {id:9,username:'teacher2',name:'李老師',role:'teacher',seat:null},
-      {id:1,username:'student',name:'介面測試學生',role:'student',seat:'1'}]}});
+    if(url.pathname==='/api/users')return route.fulfill({json:{ownerId:2,users:[
+      {id:9,username:'teacher2',name:'李老師',role:'teacher',seat:null,createdBy:2},
+      {id:1,username:'student',name:'介面測試學生',role:'student',seat:'1',createdBy:2}]}});
     return route.fallback();});
   await page.locator('#manage-users').click();
   await page.locator('#teacher-create-form').waitFor();
@@ -887,6 +887,22 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   assert.deepEqual(editSent.body,{password:'AnotherPass123'},'教師只送出有改動的欄位');
   await page.screenshot({path:path.join(__dirname,'..','MathPath-教師帳號管理.png'),fullPage:true});
   await page.locator('[data-action=close-modal]').click();
+
+  // ── 一般教師（非管理員）：不能新增教師、看不到資料管理 ──
+  // 直接在瀏覽器裡切換 isOwner（不動路由），測完再切回來。
+  await page.evaluate(()=>{S.user.isOwner=false;settingsPage();});
+  await page.locator('#manage-users').click();
+  await page.locator('#user-create-form').waitFor();
+  assert.equal(await page.locator('#teacher-create-form').count(),0,'一般教師不應看到新增教師表單');
+  assert.match(await page.locator('.modal').innerText(),/只有\s*管理員帳號/,'要說明只有管理員能新增教師');
+  assert.match(await page.locator('.modal').innerText(),/修改自己建立的學生/,'要說明一般教師只能改自己建立的學生');
+  await page.locator('[data-action=close-modal]').click();
+  assert.equal(await page.locator('#admin-reset').count(),0,'一般教師不應看到學年重置');
+  assert.equal(await page.locator('#admin-vacuum').count(),0,'一般教師不應看到壓實資料庫');
+  assert.equal(await page.locator('[data-admin-download]').count(),0,'一般教師不應看到備份下載');
+  assert.match(await page.locator('#main').innerText(),/只限\s*管理員帳號/,'資料管理區要說明權限');
+  await page.evaluate(()=>{S.user.isOwner=true;settingsPage();});
+  console.log('PASS: 一般教師不能新增教師、也看不到資料管理');
 
   // ── 設定與隱私：資料管理（教師專用）──
   await page.waitForFunction(()=>{const el=document.querySelector('#admin-stats');return el&&/3000 題/.test(el.innerText);});
@@ -1024,7 +1040,7 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   ];
   // 依登入身分回應，避免後面的學生情境拿到教師身分
   await page.route('**/api/state', route => route.fulfill({json:{
-    user: role?{id:role==='teacher'?2:1,name:role==='teacher'?'介面測試教師':'介面測試學生',role}:null,
+    user: role?{id:role==='teacher'?2:1,name:role==='teacher'?'介面測試教師':'介面測試學生',role,isOwner:role==='teacher'}:null,
     questions: role==='teacher'?pickerQuestions:pickerQuestions.map(x=>({...x,answer:undefined,steps:undefined})),
     attempts: role==='teacher'?[]:[graded(1,1,'一元二次方程',6,6),graded(2,2,'幾何',0,5)],
     stats:{completed:2,accuracy:55,streak:1,minutes:10}, ai, topics:['一元二次方程','幾何']}}));
@@ -1529,7 +1545,7 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   ];
   // 依目前登入身分回應狀態（覆寫前面學生情境用的固定狀態）。
   await page.route('**/api/state', route => route.fulfill({json:{
-    user: role?{id:role==='teacher'?2:1,name:role==='teacher'?'介面測試教師':'介面測試學生',role}:null,
+    user: role?{id:role==='teacher'?2:1,name:role==='teacher'?'介面測試教師':'介面測試學生',role,isOwner:role==='teacher'}:null,
     questions:practiceQuestions, attempts:[], stats:{completed:0,accuracy:0,streak:0,minutes:0},
     ai:{configured:true,mode:'local'}, topics:['一元二次方程','函數']}}));
   await page.locator('#account').click();await page.locator('#logout-btn').click();await page.waitForSelector('#homework-login');
@@ -1905,9 +1921,9 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   console.log('PASS: 本轮订正边界、绝对截止时间、busy 封存协调、异步页面与上传防串、草稿隔离、75题分页/30题上限、AI核验副本、键盘焦点与文字对比度回归');
 
   // 拆題（圖片）：AI 框出的題目圖形要自動裁好、放在題目右邊，匯入時一併帶上
-  await page.route('**/api/session',route=>route.fulfill({json:{user:{id:2,name:'介面測試教師',role:'teacher'}}}));
+  await page.route('**/api/session',route=>route.fulfill({json:{user:{id:2,name:'介面測試教師',role:'teacher',isOwner:true}}}));
   await page.route('**/api/homework',route=>route.fulfill({json:{classes:[{id:1,name:'中三甲班',studentCount:1,studentIds:[1]}],assignments:[],students:[student]}}));
-  await page.route('**/api/state',route=>route.fulfill({json:{user:{id:2,name:'介面測試教師',role:'teacher'},
+  await page.route('**/api/state',route=>route.fulfill({json:{user:{id:2,name:'介面測試教師',role:'teacher',isOwner:true},
     questions:[q,{...q,id:2,title:'直角三角形求斜邊',topic:'幾何',subtopic:'點、線、面、體'}],attempts:[],stats:{completed:0,accuracy:0,streak:0,minutes:0},ai:{...ai,vision:'test-vision'},topics:['一元二次方程','幾何']}}));
   await page.route('**/api/papers/parse',route=>route.fulfill({json:{
     method:'AI 識別（1 題偵測到圖形，將自動裁到題目右邊）',
@@ -2382,8 +2398,8 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   const teacherAttempts=[{...graded(5,1,'一元二次方程',6,6),assignmentId:1,student:{id:1,name:'介面測試學生',username:'student'}},
                          {...handwritten,id:9,assignmentId:1},
                          {...graded(7,2,'幾何',0,5),student:{id:1,name:'介面測試學生',username:'student'}}];
-  await page.route('**/api/session',route=>route.fulfill({json:{user:{id:2,name:'介面測試教師',role:'teacher'}}}));
-  await page.route('**/api/state', route => route.fulfill({json:{user:{id:2,name:'介面測試教師',role:'teacher'},
+  await page.route('**/api/session',route=>route.fulfill({json:{user:{id:2,name:'介面測試教師',role:'teacher',isOwner:true}}}));
+  await page.route('**/api/state', route => route.fulfill({json:{user:{id:2,name:'介面測試教師',role:'teacher',isOwner:true},
     questions:[q,{...q,id:2,title:'直角三角形求斜邊',topic:'幾何'}],attempts:teacherAttempts,
     stats:{completed:2,accuracy:55,streak:1,minutes:10},ai,topics:['一元二次方程','幾何']}}));
   await page.reload({waitUntil:'networkidle'});

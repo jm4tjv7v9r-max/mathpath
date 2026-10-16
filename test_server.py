@@ -833,15 +833,17 @@ class APITests(unittest.TestCase):
             self.request('POST', '/api/users', body, cookie=cookie, expect=status)
         _, result, _ = self.request('POST', '/api/users', body, cookie=self.teacher, expect=200)
         created = result['user']
+        # createdBy 記錄是誰建立的（內建 teacher 是 id=2），用來判斷一般教師能改哪些帳號。
         self.assertEqual(created, {'id': 3, 'username': body['username'], 'name': body['name'],
-                                   'role': 'student', 'seat': None})
+                                   'role': 'student', 'seat': None, 'createdBy': 2})
         self.request('POST', '/api/users', body, cookie=self.teacher, expect=409)
         self.request('POST', '/api/users', dict(body, username='student'), cookie=self.teacher, expect=409)
         _, listing, _ = self.request('GET', '/api/users', cookie=self.teacher, expect=200)
-        self.assertEqual(set(listing), {'users'})
+        self.assertEqual(set(listing), {'users', 'ownerId'})
         self.assertEqual(listing['users'][-1], created)
         for user in listing['users']:
-            self.assertEqual(set(user), {'id', 'username', 'name', 'role', 'seat'})
+            self.assertEqual(set(user), {'id', 'username', 'name', 'role', 'seat', 'createdBy'})
+        self.assertEqual(listing['ownerId'], 2, 'ownerId 是最早建立的教師（內建 teacher）')
         with self.app.db() as db:
             row = db.execute('SELECT * FROM users WHERE id=?', (created['id'],)).fetchone()
             self.assertEqual(row['demo'], 0)
@@ -853,7 +855,9 @@ class APITests(unittest.TestCase):
         self.request('POST', '/api/login', {'username': body['username'], 'password': 'WrongPass123!'}, expect=401)
         cookie = self.login(body['username'], body['password'])
         _, session, _ = self.request('GET', '/api/session', cookie=cookie, expect=200)
-        self.assertEqual(session['user'], {k: created[k] for k in ('id', 'name', 'role', 'seat')})
+        # /api/session 與 /api/login 都會附 isOwner（前端靠它決定要不要顯示管理員功能）。
+        self.assertEqual(session['user'],
+                         {**{k: created[k] for k in ('id', 'name', 'role', 'seat')}, 'isOwner': False})
         self.assertEqual(session['notice'], '')
         self.request('GET', '/api/users', cookie=cookie, expect=403)
         self.request('POST', '/api/users', dict(body, username='forbidden'), cookie=cookie, expect=403)
@@ -3257,6 +3261,96 @@ class DataAdminTests(unittest.TestCase):
             self.app.dataadmin.reset_students(db, 'RESET')
             kept = db.execute("SELECT count(*) FROM users WHERE role='teacher'").fetchone()[0]
         self.assertEqual(kept, 2)
+
+    def test_teacher_account_permissions_and_deletion(self):
+        """管理員（最早建立的教師）可管所有帳號；一般教師只能改自己與自己建立的學生。
+
+        刪除帳號只有管理員能做，且要輸入確認字串。
+        """
+        _, out, _ = self.request('POST', '/api/teachers',
+                                 {'username': 'coteacher', 'name': '李老師', 'password': 'CoTeacherPass1'},
+                                 cookie=self.teacher, expect=200)
+        mate = out['user']
+        mate_cookie = self.login('coteacher', 'CoTeacherPass1')
+        # 一般教師不能新增教師——不能自己擴權。
+        self.request('POST', '/api/teachers',
+                     {'username': 'sneaky', 'name': '偷加', 'password': 'SneakyPass123'},
+                     cookie=mate_cookie, expect=403)
+        # 一般教師不能碰資料管理（備份、歸檔、還原、壓實、學年重置）。
+        self.request('GET', '/api/admin/storage', cookie=mate_cookie, expect=403)
+        self.request('GET', '/api/admin/backup/db', cookie=mate_cookie, expect=403)
+        for path, body in (('/api/admin/vacuum', {}), ('/api/admin/backup/upload', {}),
+                           ('/api/admin/reset/students', {'confirm': 'RESET'})):
+            self.request('POST', path, body, cookie=mate_cookie, expect=403)
+        # 自己建立的學生可以改。
+        _, out, _ = self.request('POST', '/api/users',
+                                 {'username': 'm1a01', 'name': '他的學生', 'password': 'MateStudent12'},
+                                 cookie=mate_cookie, expect=200)
+        own_student = out['user']
+        self.assertEqual(own_student['createdBy'], mate['id'], '要記錄建立者')
+        self.request('POST', f"/api/users/{own_student['id']}/update", {'seat': '5'},
+                     cookie=mate_cookie, expect=200)
+        # 管理員建立的學生不能改（created_by 不是他）。
+        _, out, _ = self.request('POST', '/api/users',
+                                 {'username': 'a1b2c3', 'name': '管理員的學生', 'password': 'OwnerStudent12'},
+                                 cookie=self.teacher, expect=200)
+        boss_student = out['user']
+        self.request('POST', f"/api/users/{boss_student['id']}/update", {'seat': '9'},
+                     cookie=mate_cookie, expect=403)
+        # 不能改別的教師，也不能改管理員；自己的帳號可以改。
+        self.request('POST', f"/api/users/{self.teacher_id()}/update", {'name': '偷改'},
+                     cookie=mate_cookie, expect=403)
+        self.request('POST', f"/api/users/{mate['id']}/update", {'name': '李大明'},
+                     cookie=mate_cookie, expect=200)
+        # 一般教師不能刪除任何帳號。
+        self.request('POST', f"/api/users/{boss_student['id']}/delete", {'confirm': 'DELETE'},
+                     cookie=mate_cookie, expect=403)
+        # 管理員刪除要輸入確認字串，且不能刪自己。
+        self.request('POST', f"/api/users/{boss_student['id']}/delete", {'confirm': 'nope'},
+                     cookie=self.teacher, expect=400)
+        self.request('POST', f"/api/users/{self.teacher_id()}/delete", {'confirm': 'DELETE'},
+                     cookie=self.teacher, expect=400)
+        _, out, _ = self.request('POST', f"/api/users/{boss_student['id']}/delete",
+                                 {'confirm': 'DELETE'}, cookie=self.teacher, expect=200)
+        self.assertEqual(out['deleted']['username'], 'a1b2c3')
+        self.assertEqual(out['removed']['users'], 1)
+        self.request('POST', f"/api/users/{boss_student['id']}/update", {'name': 'x'},
+                     cookie=self.teacher, expect=404)
+        # 刪除學生會連同他的作答一起刪掉。
+        _, _, ids = self.scenario()
+        with self.app.db() as db:
+            before = db.execute('SELECT count(*) FROM attempts WHERE user_id=?',
+                                (ids[0],)).fetchone()[0]
+        self.assertGreater(before, 0, '情境資料應該有一筆作答')
+        _, out, _ = self.request('POST', f'/api/users/{ids[0]}/delete', {'confirm': 'DELETE'},
+                                 cookie=self.teacher, expect=200)
+        self.assertEqual(out['removed']['attempts'], before)
+        with self.app.db() as db:
+            left = db.execute('SELECT count(*) FROM attempts WHERE user_id=?', (ids[0],)).fetchone()[0]
+        self.assertEqual(left, 0)
+        # 刪除教師：他的班級與作業轉給管理員，他建立的學生改為無歸屬（不會被連帶刪除）。
+        _, out, _ = self.request('POST', '/api/teachers',
+                                 {'username': 'leaving', 'name': '離職老師', 'password': 'LeavingPass12'},
+                                 cookie=self.teacher, expect=200)
+        leaver = out['user']
+        leaver_cookie = self.login('leaving', 'LeavingPass12')
+        _, out, _ = self.request('POST', '/api/users',
+                                 {'username': 'l1a01', 'name': '他的學生', 'password': 'LeaverStudent1'},
+                                 cookie=leaver_cookie, expect=200)
+        leaver_student = out['user']
+        _, room, _ = self.request('POST', '/api/classes',
+                                  {'name': '離職班', 'studentIds': [leaver_student['id']]},
+                                  cookie=leaver_cookie, expect=200)
+        _, out, _ = self.request('POST', f"/api/users/{leaver['id']}/delete", {'confirm': 'DELETE'},
+                                 cookie=self.teacher, expect=200)
+        self.assertEqual(out['deleted']['role'], 'teacher')
+        with self.app.db() as db:
+            row = db.execute('SELECT teacher_id FROM classes WHERE id=?',
+                             (room['class']['id'],)).fetchone()
+            self.assertEqual(row['teacher_id'], self.teacher_id(), '班級要轉給管理員')
+            kept = db.execute('SELECT created_by FROM users WHERE id=?',
+                              (leaver_student['id'],)).fetchone()
+            self.assertIsNone(kept['created_by'], '教師刪除後他的學生改為無歸屬，但帳號要保留')
 
     def teacher_id(self):
         with self.app.db() as db:

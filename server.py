@@ -3471,6 +3471,10 @@ class Application:
             user_columns = {r['name'] for r in db.execute('PRAGMA table_info(users)')}
             if 'seat' not in user_columns:
                 db.execute('ALTER TABLE users ADD COLUMN seat TEXT')
+            # 帳號的建立者：一般教師只能修改「自己建立的學生」，管理員不受限。
+            # 升級前就存在的帳號為 NULL——代表沒有歸屬，只有管理員能改（保守，不會讓新教師誤改別人的學生）。
+            if 'created_by' not in user_columns:
+                db.execute('ALTER TABLE users ADD COLUMN created_by INTEGER')
             db.execute('BEGIN IMMEDIATE')
             if not db.execute('SELECT 1 FROM meta WHERE key=?', ('initialized',)).fetchone():
                 for username, role, default, env, name in [
@@ -3992,6 +3996,32 @@ class Application:
         if user['role'] != 'teacher':
             fail(403, '此操作只限教師。')
 
+    @staticmethod
+    def owner_id(db):
+        """管理員＝最早建立的教師帳號（也就是內建的 teacher）。
+
+        用「最早的教師」而不是寫死帳號名稱：帳號名稱可以改，用 id 排序不受改名影響，
+        也不會因為後來新增教師而改變歸屬。
+        """
+        row = db.execute("SELECT id FROM users WHERE role='teacher' ORDER BY id LIMIT 1").fetchone()
+        return row['id'] if row else None
+
+    def require_owner(self, user, db=None):
+        """只允許管理員執行。db 可傳入呼叫端已開啟的連線，避免在交易中再開一條而互等。"""
+        if db is None:
+            with self.db() as conn:
+                owner = self.owner_id(conn)
+        else:
+            owner = self.owner_id(db)
+        if owner is None or user['id'] != owner:
+            fail(403, '此操作只限管理員帳號（學校最早建立的那個教師帳號）。')
+
+    def is_owner(self, user, db=None):
+        if db is None:
+            with self.db() as conn:
+                return user['id'] == self.owner_id(conn)
+        return user['id'] == self.owner_id(db)
+
     def notice(self, user):
         return DEMO_NOTICE if user and user['demo'] else ''
 
@@ -4024,7 +4054,11 @@ class Application:
                 fail(503, f'伺服器初始化失敗：{self.init_error}')
             fail(503, '伺服器正在初始化，請稍候再試。')
         if method == 'GET' and path == '/api/session':
-            return {'user': self.user_public(user) if user else None, 'notice': self.notice(user)}, headers
+            payload = self.user_public(user) if user else None
+            if payload:
+                # 前端靠 isOwner 決定要不要顯示「新增教師」與資料管理。
+                payload['isOwner'] = self.is_owner(user)
+            return {'user': payload, 'notice': self.notice(user)}, headers
         if method == 'POST' and path == '/api/login':
             fields(body, ('username', 'password', 'remember'), ('username', 'password'))
             remember = body.get('remember', False)
@@ -4047,7 +4081,10 @@ class Application:
                 db.execute('INSERT INTO sessions VALUES(?,?,?)',
                            (hashlib.sha256(token.encode()).hexdigest(), row['id'], time.time() + seconds))
             headers['Set-Cookie'] = self.cookie(token, seconds=seconds)
-            return {'user': self.user_public(row), 'notice': self.notice(row)}, headers
+            # 與 /api/session 一致：前端靠 isOwner 決定要不要顯示管理員功能。
+            login_user = self.user_public(row)
+            login_user['isOwner'] = self.is_owner(row)
+            return {'user': login_user, 'notice': self.notice(row)}, headers
         if user is None:
             fail(401, '請先登入。')
         homework_result = self.homework.dispatch(method, path, body, user, query)
@@ -4085,12 +4122,16 @@ class Application:
             return {'user': self.user_public(user), 'notice': '密碼已更新，其他登入工作階段已失效。'}, headers
         if path == '/api/users' and method in ('GET', 'POST'):
             self.teacher(user)
-            public_fields = ('id', 'username', 'name', 'role', 'seat')
             if method == 'GET':
+                # 名單所有教師都看得到（方便跨教師共用班級、代課），
+                # 但只有管理員與建立者能改——createdBy 讓前端決定要不要顯示「編輯」。
                 with self.db() as db:
-                    users = [{k: row[k] for k in public_fields}
-                             for row in db.execute('SELECT id,username,name,role,seat FROM users ORDER BY id')]
-                return {'users': users}, headers
+                    users = [{'id': r['id'], 'username': r['username'], 'name': r['name'], 'role': r['role'],
+                              'seat': r['seat'], 'createdBy': r['created_by']}
+                             for r in db.execute('SELECT id,username,name,role,seat,created_by '
+                                                 'FROM users ORDER BY id')]
+                    owner = self.owner_id(db)
+                return {'users': users, 'ownerId': owner}, headers
             # 姓名可省略（只有學號的名單）：留空時以學號作為顯示名稱。
             fields(body, ('username', 'name', 'password', 'seat'), ('username', 'password'))
             username = text(body['username'], '帳戶名稱', 40, strip=False)
@@ -4104,20 +4145,22 @@ class Application:
             encoded = password_hash(pw)
             try:
                 with self.db() as db:
-                    cur = db.execute('INSERT INTO users(username,name,role,password,demo,seat) VALUES(?,?,?,?,?,?)',
-                                     (username, name, 'student', encoded, 0, seat))
+                    cur = db.execute('INSERT INTO users(username,name,role,password,demo,seat,created_by) '
+                                     'VALUES(?,?,?,?,?,?,?)',
+                                     (username, name, 'student', encoded, 0, seat, user['id']))
                     created = {'id': cur.lastrowid, 'username': username, 'name': name, 'role': 'student',
-                               'seat': seat}
+                               'seat': seat, 'createdBy': user['id']}
             except sqlite3.IntegrityError as exc:
                 if exc.sqlite_errorcode == sqlite3.SQLITE_CONSTRAINT_UNIQUE:
                     fail(409, '帳戶名稱已存在。')
                 raise
             return {'user': created}, headers
         if path == '/api/teachers' and method == 'POST':
-            # 建立教師帳號（設定與隱私 → 帳號管理）。
+            # 建立教師帳號（設定與隱私 → 帳號管理）。只有管理員能新增教師——
+            # 一般教師只能管自己與自己建立的學生，不能自己擴權。
             # 刻意獨立於 /api/users：那個端點只建立學生、不接受 role 參數，
             # 免得角色可以從學生名單那條路被塞進來（見 test_users_validation_and_no_role_injection）。
-            self.teacher(user)
+            self.require_owner(user)
             fields(body, ('username', 'name', 'password'), ('username', 'name', 'password'))
             username = text(body['username'], '帳戶名稱', 40, strip=False)
             if not re.fullmatch(r'[A-Za-z0-9_.-]{3,40}', username):
@@ -4129,10 +4172,11 @@ class Application:
                 fail(400, '密碼必須至少10字。')
             try:
                 with self.db() as db:
-                    cur = db.execute('INSERT INTO users(username,name,role,password,demo,seat) VALUES(?,?,?,?,?,?)',
-                                     (username, name, 'teacher', password_hash(pw), 0, None))
+                    cur = db.execute('INSERT INTO users(username,name,role,password,demo,seat,created_by) '
+                                     'VALUES(?,?,?,?,?,?,?)',
+                                     (username, name, 'teacher', password_hash(pw), 0, None, user['id']))
                     created = {'id': cur.lastrowid, 'username': username, 'name': name, 'role': 'teacher',
-                               'seat': None}
+                               'seat': None, 'createdBy': user['id']}
             except sqlite3.IntegrityError as exc:
                 if exc.sqlite_errorcode == sqlite3.SQLITE_CONSTRAINT_UNIQUE:
                     fail(409, '帳戶名稱已存在。')
@@ -4171,38 +4215,50 @@ class Application:
                     fail(409, '帳戶名稱已存在：' + '、'.join(sorted(existing)[:5]))
                 created = []
                 for username, name, seat, encoded in prepared:
-                    cur = db.execute('INSERT INTO users(username,name,role,password,demo,seat) VALUES(?,?,?,?,?,?)',
-                                     (username, name, 'student', encoded, 0, seat))
+                    cur = db.execute('INSERT INTO users(username,name,role,password,demo,seat,created_by) '
+                                     'VALUES(?,?,?,?,?,?,?)',
+                                     (username, name, 'student', encoded, 0, seat, user['id']))
                     created.append({'id': cur.lastrowid, 'username': username, 'name': name, 'role': 'student',
-                                    'seat': seat})
+                                    'seat': seat, 'createdBy': user['id']})
             return {'count': len(created), 'users': created}, headers
         update_user = re.fullmatch(r'/api/users/([1-9]\d{0,17})/update', path)
         if method == 'POST' and update_user:
             # 編輯帳戶：只改有填的欄位；重設密碼會同時登出該使用者。
+            # 管理員可改任何帳號；一般教師只能改自己，或自己建立的學生。
             self.teacher(user)
             fields(body, ('username', 'name', 'seat', 'password'), ())
             with self.db() as db:
                 db.execute('BEGIN IMMEDIATE')
-                return self.dataadmin.update_user(db, int(update_user[1]), body), headers
+                return self.dataadmin.update_user(db, int(update_user[1]), body, actor=user), headers
+        delete_user = re.fullmatch(r'/api/users/([1-9]\d{0,17})/delete', path)
+        if method == 'POST' and delete_user:
+            # 刪除帳號：只有管理員，且要輸入確認字串。
+            # 學生的作答與手寫圖會一併刪除；教師的班級與作業轉給管理員。
+            self.require_owner(user)
+            fields(body, ('confirm',), ('confirm',))
+            confirm = text(body['confirm'], '確認字串', 40, strip=False, empty=True)
+            with self.db() as db:
+                db.execute('BEGIN IMMEDIATE')
+                return self.dataadmin.delete_user(db, int(delete_user[1]), user, confirm), headers
         if path == '/api/admin/storage' and method == 'GET':
-            self.teacher(user)
+            self.require_owner(user)
             with self.db() as db:
                 return self.dataadmin.stats(db), headers
         if path == '/api/admin/backup/upload' and method == 'POST':
             # 手動把「資料庫快照＋題庫歸檔」上傳到網盤（排程備份用同一個方法）。
-            self.teacher(user)
+            self.require_owner(user)
             fields(body, (), ())
             result = self.dataadmin.backup_to_storage('manual')
             with self.db() as db:
                 result['status'] = self.dataadmin.backup_status(db)
             return result, headers
         if path == '/api/admin/vacuum' and method == 'POST':
-            self.teacher(user)
+            self.require_owner(user)
             fields(body, (), ())
             return self.dataadmin.vacuum(), headers
         if path == '/api/admin/reset/students' and method == 'POST':
-            # 學年重置：清空學生資料與帳號，題庫與教師帳號一律保留。
-            self.teacher(user)
+            # 學年重置：清空學生資料與帳號，題庫與教師帳號一律保留。只有管理員能執行。
+            self.require_owner(user)
             fields(body, ('confirm',), ('confirm',))
             confirm = text(body['confirm'], '確認字串', 40, strip=False, empty=True)
             with self.db() as db:
@@ -4316,7 +4372,11 @@ class Application:
                         owner = db.execute('SELECT id,name,username,seat FROM users WHERE id=?', (row['user_id'],)).fetchone()
                         attempt['student'] = dict(owner)
                 own = [r for r in rows if r['user_id'] == user['id']]
-            return {'user': self.user_public(user), 'questions': questions, 'attempts': attempts,
+                account_owner = self.owner_id(db)
+            payload_user = self.user_public(user)
+            # 管理員＝最早建立的教師帳號；前端用它決定要不要顯示「新增教師」與資料管理。
+            payload_user['isOwner'] = user['role'] == 'teacher' and user['id'] == account_owner
+            return {'user': payload_user, 'questions': questions, 'attempts': attempts,
                     'stats': self.stats(own), 'ai': self.ai.public(), 'topics': TOPICS, 'grades': GRADES,
                     'topicTree': TOPIC_TREE,
                     'notice': self.notice(user), 'minutesNotice': '分鐘數僅按同日相鄰提交間隔估算，不是正式學習計時。'}, headers
@@ -5166,7 +5226,7 @@ class Handler(BaseHTTPRequestHandler):
                     restore_user, _ = restore_app.current_user(self.headers.get('Cookie'))
                     if restore_user is None:
                         fail(401, '請先登入。')
-                    restore_app.teacher(restore_user)
+                    restore_app.require_owner(restore_user)
                     self.handle_restore(path, parsed.query, restore_user)
                     return
                 body = self.read_json()
@@ -5222,7 +5282,7 @@ class Handler(BaseHTTPRequestHandler):
             if self.command == 'GET' and path in ADMIN_DOWNLOADS:
                 if user is None:
                     fail(401, '請先登入。')
-                app.teacher(user)
+                app.require_owner(user)
                 stamp = time.strftime('%Y%m%d-%H%M%S')
                 if path == '/api/admin/backup/db':
                     directory, target = app.dataadmin.backup_to_temp(stamp)
