@@ -3497,6 +3497,12 @@ class Application:
         with self.db() as db:
             self.homework.migrate(db)
             self.mock.migrate(db)
+            # 效能：/api/state 會依 assignment_id／mock_id 篩選作答（教師的批閱清單），
+            # 沒有索引時每次都要全表掃描，作答累積後每個頁面載入都會跟著變慢。
+            # 必須放在 migrate 之後——mock_id 是 mock.migrate 才加的欄位。
+            db.execute('CREATE INDEX IF NOT EXISTS attempts_assignment ON attempts(assignment_id)')
+            db.execute('CREATE INDEX IF NOT EXISTS attempts_mock ON attempts(mock_id)')
+            db.execute('CREATE INDEX IF NOT EXISTS users_role ON users(role)')
             # 一次性回填：舊版題目 payload 沒有 qtype／subtopic（欄位是後來才加的），
             # 依題面規則補回，讓題型與章節篩選在既有題庫也能運作。只做一次，不覆蓋教師已填的值。
             if not db.execute('SELECT 1 FROM meta WHERE key=?', ('qtype_backfilled',)).fetchone():
@@ -3931,8 +3937,8 @@ class Application:
         return (viewer is not None and viewer['role'] != 'teacher'
                 and row['assignment_id'] is not None and not row['teacher_reviewed'])
 
-    def attempt_public(self, db, row, viewer=None):
-        q = self.homework.question_for_attempt(db, row)
+    def attempt_public(self, db, row, viewer=None, question_cache=None):
+        q = self.homework.question_for_attempt(db, row, question_cache)
         result = {'id': row['id'], 'questionId': q['id'], 'questionTitle': q['title'], 'topic': q['topic'],
                   'score': row['score'], 'maxScore': row['max_score'], 'status': row['status'],
                   'feedback': row['feedback'], 'submittedAt': row['submitted_at'], 'answerText': row['answer_text'],
@@ -4359,18 +4365,28 @@ class Application:
             return {'active': self.ai.public(), 'economy': not self.ai.thinking}, headers
         if method == 'GET' and path == '/api/state':
             with self.db() as db:
-                questions = [self.question_public(self.question_row(r), user) for r in db.execute('SELECT * FROM questions ORDER BY id')]
+                # 題庫題目先抓好，同時當作作答題目的快取——自主練習的作答指的就是
+                # 這裡的題目，不必再逐筆查一次。
+                question_rows = db.execute('SELECT * FROM questions ORDER BY id').fetchall()
+                qcache = {('bank', r['id']): self.question_row(r) for r in question_rows}
+                questions = [self.question_public(qcache[('bank', r['id'])], user) for r in question_rows]
                 if user['role'] == 'teacher':
                     rows = db.execute('SELECT a.* FROM attempts a WHERE (a.assignment_id IS NULL AND a.mock_id IS NULL) OR EXISTS '
                                       '(SELECT 1 FROM assignments h WHERE h.id=a.assignment_id AND h.teacher_id=?) '
                                       'ORDER BY a.id DESC', (user['id'],)).fetchall()
                 else:
                     rows = db.execute('SELECT * FROM attempts WHERE user_id=? ORDER BY id DESC', (user['id'],)).fetchall()
-                attempts = [self.attempt_public(db, r, user) for r in rows]
+                # 同一題常被整班重複作答、同一位學生也有多筆作答，兩者都做快取，
+                # 免得載入一次頁面就變成上百次查詢（作答累積後整個網站都會變慢）。
+                attempts = [self.attempt_public(db, r, user, qcache) for r in rows]
                 if user['role'] == 'teacher':
+                    students = {}
                     for attempt, row in zip(attempts, rows):
-                        owner = db.execute('SELECT id,name,username,seat FROM users WHERE id=?', (row['user_id'],)).fetchone()
-                        attempt['student'] = dict(owner)
+                        sid = row['user_id']
+                        if sid not in students:
+                            students[sid] = dict(db.execute('SELECT id,name,username,seat FROM users WHERE id=?',
+                                                            (sid,)).fetchone())
+                        attempt['student'] = students[sid]
                 own = [r for r in rows if r['user_id'] == user['id']]
                 account_owner = self.owner_id(db)
             payload_user = self.user_public(user)

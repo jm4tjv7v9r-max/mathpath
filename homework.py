@@ -156,12 +156,32 @@ class Homework:
             self.fail(403, '题目不属于此作业。')
         return json.loads(row['payload'])
 
-    def question_for_attempt(self, db, row):
+    def question_for_attempt(self, db, row, cache=None):
+        """取得這筆作答對應的題目。
+
+        cache 是選用的字典：同一題常被整班重複作答（30 人 × 5 題 ＝ 150 筆作答，
+        但只有 5 個不同題目），沒有快取時每一筆都要再查一次，載入一次 /api/state
+        就會變成上百次查詢。key 要含來源——作業的題目是發布當下的快照，
+        和題庫（或另一份作業）可能不同。
+        """
         if row['assignment_id'] is not None:
-            return self.question(db, row['assignment_id'], row['question_id'])
-        if 'mock_id' in row.keys() and row['mock_id'] is not None:
-            return self.app.mock.question(db, row['mock_id'], row['question_id'])
-        return self.app.get_question(db, row['question_id'])
+            key = ('assignment', row['assignment_id'], row['question_id'])
+            if cache is not None and key in cache:
+                return cache[key]
+            result = self.question(db, row['assignment_id'], row['question_id'])
+        elif 'mock_id' in row.keys() and row['mock_id'] is not None:
+            key = ('mock', row['mock_id'], row['question_id'])
+            if cache is not None and key in cache:
+                return cache[key]
+            result = self.app.mock.question(db, row['mock_id'], row['question_id'])
+        else:
+            key = ('bank', row['question_id'])
+            if cache is not None and key in cache:
+                return cache[key]
+            result = self.app.get_question(db, row['question_id'])
+        if cache is not None:
+            cache[key] = result
+        return result
 
     def open_correction(self, db, aid, uid):
         return db.execute('SELECT * FROM corrections WHERE assignment_id=? AND user_id=? AND resolved_at IS NULL '
