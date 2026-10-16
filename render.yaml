@@ -47,6 +47,12 @@ services:
       # 強烈建議設定：鎖住「更換模型端點」頁面，避免任何人亂改 AI 設定
       - key: MATH_ADMIN_TOKEN
         sync: false
+      # ★ 自訂網域（重要）：填你的 HTTPS 網址，例如 https://mathshomework.link
+      #   沒填的話程式會用 Render 自動提供的 RENDER_EXTERNAL_URL（onrender.com），
+      #   自訂網域會因為 Host 不在白名單而被擋成 403（錯誤訊息：「網站 Host 不在允許清單內。」）。
+      #   可用逗號分隔多個；RENDER_EXTERNAL_URL 一律會一併放行，所以健康檢查不會失敗。
+      - key: MATH_PUBLIC_ORIGIN
+        sync: false
       # --- 網盤（Cloudflare R2）：學生手寫圖、教師批註、題庫圖形、資料庫備份 ---
       - key: R2_ACCOUNT_ID
         sync: false

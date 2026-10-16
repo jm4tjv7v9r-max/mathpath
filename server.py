@@ -2362,6 +2362,20 @@ def ai_review_limit():
     return min(2000, max(1, value))
 
 
+def public_origins_from_env():
+    """允許的公開來源清單（供 Host／Origin 白名單使用）。
+
+    MATH_PUBLIC_ORIGIN 可用逗號分隔多個來源，例如同時放行自訂網域；
+    Render 的 RENDER_EXTERNAL_URL 一律一併放行——否則設了自訂網域之後，
+    Render 的健康檢查（Host 是 onrender.com）會被白名單擋成 403，導致部署失敗。
+    """
+    values = [v.strip() for v in os.environ.get('MATH_PUBLIC_ORIGIN', '').split(',') if v.strip()]
+    render_url = os.environ.get('RENDER_EXTERNAL_URL', '').strip()
+    if render_url and render_url not in values:
+        values.append(render_url)
+    return values
+
+
 def salvage_json(text, limit=40):
     """從被截斷的 JSON 救回最後一個完整結構（AI 回應過長時仍可取回前面的題目）。
 
@@ -4729,7 +4743,7 @@ class MathServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
-    def __init__(self, address, app, public_origin=None):
+    def __init__(self, address, app, public_origins=None):
         self.app = app
         self.slots = threading.BoundedSemaphore(32)
         super().__init__(address, Handler)
@@ -4741,19 +4755,22 @@ class MathServer(ThreadingHTTPServer):
         # 綁 0.0.0.0 對外服務、又沒有明確公開來源時，必須放行任何 Host，
         # 否則 Render 的健康檢查（Host 是對外網址）會被 Host 白名單擋成 403，導致部署失敗。
         self.wildcard_host = (host == '0.0.0.0')
-        self.wildcard_origin = self.wildcard_host and not public_origin
-        if public_origin:
-            parsed = urlsplit(public_origin)
+        self.wildcard_origin = self.wildcard_host and not public_origins
+        # 可以同時接受多個公開來源：自訂網域 ＋ 平台自動提供的網址（Render 的 RENDER_EXTERNAL_URL）。
+        # 只放行其中一個會讓另一個被擋成 403——自訂網域進不來，或平台的健康檢查失敗。
+        for origin in (public_origins or ()):
+            parsed = urlsplit(origin)
             if parsed.scheme != 'https' or not parsed.hostname or parsed.username or parsed.password or parsed.path not in ('', '/') or parsed.query or parsed.fragment:
                 self.server_close()
                 raise ValueError('MATH_PUBLIC_ORIGIN 必須是 HTTPS 的公開同源位址，不能包含路徑或憑證。')
             parsed.port
-            self.origins.add(public_origin.rstrip('/').lower())
+            self.origins.add(origin.rstrip('/').lower())
             hosts.add(parsed.netloc.lower())
+        if public_origins:
             # 有明確公開來源時就回到嚴格白名單，避免任意 Host 偽造。
             self.wildcard_host = False
         self.hosts = hosts
-        app.secure_cookie = bool(public_origin)
+        app.secure_cookie = bool(public_origins)
 
     def process_request(self, request, client_address):
         if not self.slots.acquire(blocking=False):
@@ -5129,12 +5146,12 @@ def main():
         app = Application(args.data_dir)
         # 對外部署時優先用明確公開網址（Render 會自動提供 RENDER_EXTERNAL_URL），
         # 這樣就回到嚴格 Host/Origin 白名單並啟用 Secure cookie；拿不到時才退回 0.0.0.0 放行模式。
-        public_origin = os.environ.get('MATH_PUBLIC_ORIGIN') or os.environ.get('RENDER_EXTERNAL_URL')
-        server = MathServer((args.host, args.port), app, public_origin)
+        public_origins = public_origins_from_env()
+        server = MathServer((args.host, args.port), app, public_origins)
     except (ValueError, OSError, sqlite3.Error) as exc:
         parser.exit(1, f'后端初始化失败：{exc}\n')
     print(f'MathPath 本地后端监听 {args.host}:{args.port}；AI 模式：{app.ai.mode}。', flush=True)
-    print(f'[startup] 公開來源：{public_origin or "未設定（綁 0.0.0.0 放行模式）"}', flush=True)
+    print('[startup] 公開來源：%s' % ('、'.join(public_origins) if public_origins else '未設定（綁 0.0.0.0 放行模式）'), flush=True)
     threading.Thread(target=app.safe_initialize, daemon=True, name='mp-init').start()
     print('[startup] 背景 DB 初始化已啟動；/api/health 此時回 starting。', flush=True)
     try:

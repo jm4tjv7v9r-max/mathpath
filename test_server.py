@@ -2285,6 +2285,67 @@ class AIFailureTests(unittest.TestCase):
             self.assertEqual(storage.max_backup_object(), 512 * 1024 * 1024)
             self.assertEqual(storage.backup_timeout(), 300)
 
+    def test_public_origins_include_render_url(self):
+        """自訂網域與 Render 的 onrender.com 必須同時放行，否則健康檢查會被擋成 403。"""
+        with patch.dict('os.environ', {}, clear=True):
+            self.assertEqual(server.public_origins_from_env(), [])
+        with patch.dict('os.environ', {'RENDER_EXTERNAL_URL': 'https://mathpath-s5hr.onrender.com'}, clear=True):
+            self.assertEqual(server.public_origins_from_env(), ['https://mathpath-s5hr.onrender.com'])
+        with patch.dict('os.environ', {'MATH_PUBLIC_ORIGIN': 'https://mathshomework.link',
+                                       'RENDER_EXTERNAL_URL': 'https://mathpath-s5hr.onrender.com'}, clear=True):
+            self.assertEqual(server.public_origins_from_env(),
+                             ['https://mathshomework.link', 'https://mathpath-s5hr.onrender.com'])
+        # 逗號分隔多個自訂網域，空白的項目要忽略。
+        with patch.dict('os.environ', {'MATH_PUBLIC_ORIGIN': 'https://a.example.com, ,https://b.example.com'}, clear=True):
+            self.assertEqual(server.public_origins_from_env(),
+                             ['https://a.example.com', 'https://b.example.com'])
+        # 同一個來源不重複加入。
+        with patch.dict('os.environ', {'MATH_PUBLIC_ORIGIN': 'https://mathpath-s5hr.onrender.com',
+                                       'RENDER_EXTERNAL_URL': 'https://mathpath-s5hr.onrender.com'}, clear=True):
+            self.assertEqual(server.public_origins_from_env(), ['https://mathpath-s5hr.onrender.com'])
+
+
+class HostAllowlistTests(unittest.TestCase):
+    """對外部署的 Host 白名單：自訂網域與平台的 onrender.com 網址必須同時放行。"""
+
+    class App:
+        secure_cookie = False
+
+    def build(self, address, origins):
+        app = self.App()
+        httpd = server.MathServer(address, app, origins)
+        self.addCleanup(httpd.server_close)
+        return httpd, app
+
+    def test_single_origin_restricts_host_and_secures_cookie(self):
+        httpd, app = self.build(('127.0.0.1', 0), ['https://mathshomework.link'])
+        self.assertIn('mathshomework.link', httpd.hosts)
+        self.assertIn('https://mathshomework.link', httpd.origins)
+        self.assertFalse(httpd.wildcard_host)
+        self.assertFalse(httpd.wildcard_origin)
+        self.assertTrue(app.secure_cookie)
+
+    def test_custom_domain_and_render_url_are_both_allowed(self):
+        # 只放行其中一個會讓另一個被擋成 403：自訂網域進不來，或 Render 的健康檢查失敗。
+        httpd, app = self.build(('127.0.0.1', 0),
+                                ['https://mathshomework.link', 'https://mathpath-s5hr.onrender.com'])
+        self.assertIn('mathshomework.link', httpd.hosts)
+        self.assertIn('mathpath-s5hr.onrender.com', httpd.hosts)
+        self.assertIn('https://mathshomework.link', httpd.origins)
+        self.assertIn('https://mathpath-s5hr.onrender.com', httpd.origins)
+
+    def test_no_origin_keeps_wildcard_for_platform_health_checks(self):
+        httpd, app = self.build(('0.0.0.0', 0), [])
+        self.assertTrue(httpd.wildcard_host)
+        self.assertTrue(httpd.wildcard_origin)
+        self.assertFalse(app.secure_cookie)
+
+    def test_rejects_non_https_or_pathed_origin(self):
+        for bad in ('http://mathshomework.link', 'https://mathshomework.link/path',
+                    'https://user:pw@mathshomework.link'):
+            with self.assertRaises(ValueError):
+                server.MathServer(('127.0.0.1', 0), self.App(), [bad])
+
 
 class RubricTests(unittest.TestCase):
     """評分標準（百分比）的整理、驗證與配分換算。"""
