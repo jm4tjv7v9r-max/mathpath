@@ -386,6 +386,10 @@ def validate_text_total(value, key='', depth=0):
 
 PARSE_CHUNK_CHARS = 4000
 PARSE_MAX_CHUNKS = 8
+# 拆題的總時間預算。Cloudflare 對代理請求有 125 秒的來源逾時（Error 524），
+# 超過就回一個 HTML 錯誤頁，前端只看得到「伺服器回應無效」。
+# 所以寧可自己先停下來、回報已經處理好的部分，也不要讓整個請求被網路層切斷。
+PARSE_BUDGET_SECONDS = 100
 
 
 def paper_chunks(value, limit=PARSE_CHUNK_CHARS, max_chunks=PARSE_MAX_CHUNKS):
@@ -494,12 +498,23 @@ def paper_drafts(app, name, body):
         chunks = [''] * len(images) if images else paper_chunks(value)
         drafts, skipped, failures, truncated = [], 0, 0, False
         figure_count = 0
+        budget_stopped = 0
+        started = time.monotonic()
         for index, chunk in enumerate(chunks):
+            # 超過總時間預算就停下來，剩下的段落請教師分批上傳。
+            # 硬撐下去會被 Cloudflare 的 125 秒來源逾時切斷，前端只看到「伺服器回應無效」。
+            left = PARSE_BUDGET_SECONDS - (time.monotonic() - started)
+            if drafts and left <= 5:
+                budget_stopped = len(chunks) - index
+                break
             image = images[index] if images else None
             try:
                 result = app.ai.call(parse_instruction(len(chunks), index, croppable),
                                      {'name': name, 'text': chunk}, image=image,
-                                     model=app.ai.vision if image else None)
+                                     model=app.ai.vision if image else None,
+                                     # 除以 2：call() 在 JSON 解析失敗時會再試一次，
+                                     # 兩次都要塞得進剩下的預算。
+                                     timeout=max(5.0, min(ai_timeout(), left / 2)))
             except APIError as exc:
                 if not drafts:
                     raise
@@ -549,6 +564,8 @@ def paper_drafts(app, name, body):
             notes.append('AI 回應曾被截斷，已保留可讀取的題目；建議分批拆分')
         if failures:
             notes.append(f'有 {failures} 段未能處理，請檢查該段題目')
+        if budget_stopped:
+            notes.append(f'已達單次處理時間上限，還有 {budget_stopped} 段未處理；請分批上傳或縮短試卷')
         if figure_count:
             notes.append(f'{figure_count} 題偵測到圖形，將自動裁到題目右邊')
         return drafts, 'AI 識別' + ('（' + '；'.join(notes) + '）' if notes else '')
@@ -2642,24 +2659,25 @@ class AIClient:
         if self.mode == 'external' and consent is not True:
             fail(403, '資料將傳送至外部模型；必須先明確同意外部上傳。')
 
-    def call(self, instruction, payload, image=None, model=None, temperature=None):
+    def call(self, instruction, payload, image=None, model=None, temperature=None, timeout=None):
         """呼叫模型並取回 JSON 物件。
 
         回應不是有效 JSON 時（常見於模型先寫一句說明再輸出 JSON），除了盡量救援之外，
         再用更嚴格的指示重試一次；其他錯誤（金鑰、逾時、截斷）不重試，避免浪費費用。
         temperature 預設 0（批改要可重現）；生成變式題時會調高，讓同一道參考題每次產生不同題目。
+        timeout 是這一次呼叫的逾時秒數；不給就用 ai_timeout()。呼叫端要控制總時間時會傳進來。
         """
         try:
-            return self._call_once(instruction, payload, image, model, temperature)
+            return self._call_once(instruction, payload, image, model, temperature, timeout)
         except APIError as exc:
             if '不是有效 JSON' not in exc.message:
                 raise
             ai_log('JSON 解析失敗，改用嚴格指示重試一次')
             return self._call_once(
                 instruction + ' 只輸出單一 JSON 物件：第一個字元就是 {，不要任何說明文字、不要 markdown 圍欄。',
-                payload, image, model, temperature)
+                payload, image, model, temperature, timeout)
 
-    def _call_once(self, instruction, payload, image=None, model=None, temperature=None):
+    def _call_once(self, instruction, payload, image=None, model=None, temperature=None, timeout=None):
         if not self.configured:
             fail(409, '尚未設定 AI 模型；請設定伺服器環境變數後再試。')
         # 端點可能來自環境變數或介面設定；格式不對時要回可讀的錯誤，不能讓 urllib 拋出 500。
@@ -2693,7 +2711,7 @@ class AIClient:
             for attempt in range(2):
                 try:
                     with self.opener.open(Request(self.endpoint, data=body, headers=headers),
-                                          timeout=ai_timeout()) as response:
+                                          timeout=timeout or ai_timeout()) as response:
                         data = response.read(1_000_001)
                     break
                 except HTTPError as exc:

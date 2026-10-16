@@ -1083,7 +1083,7 @@ class APITests(unittest.TestCase):
         paper = '\n'.join(f'{i}. 第 {i} 題 ' + 'x' * 130 for i in range(1, 61))
         seen = []
 
-        def fake_call(instruction, payload, image=None, model=None):
+        def fake_call(instruction, payload, image=None, model=None, timeout=None):
             seen.append(instruction)
             number = payload['text'].strip().split('\n')[0].split('.')[0]
             return {'drafts': [{'title': f'第 {number} 題', 'content': '解 $x^2-1=0$。',
@@ -1105,7 +1105,7 @@ class APITests(unittest.TestCase):
                  'level': 1, 'points': 5, 'answer': '$x=1$'}
         state = {'n': 0}
 
-        def flaky(instruction, payload, image=None, model=None):
+        def flaky(instruction, payload, image=None, model=None, timeout=None):
             state['n'] += 1
             if state['n'] == 1:
                 self.app.ai.truncated = True
@@ -1466,6 +1466,30 @@ class APITests(unittest.TestCase):
         self.assertEqual(len(result['drafts']), 2, '兩頁的結果都要併入')
         self.assertIn('逐頁識別', result['method'], '拆分方式要說明是逐頁識別，不能說成長試卷切段')
         self.assertNotIn('長試卷', result['method'])
+
+    def test_parse_stops_at_time_budget_and_reports_partial(self):
+        # 拆題要控制在 Cloudflare 的 125 秒來源逾時之內：超過預算就停下來回報已完成的段落，
+        # 不要讓整個請求被網路層切斷（那樣前端只會看到「伺服器回應無效」）。
+        self.app.ai.configured = True
+        self.app.ai.mode = 'local'
+        paper = '\n'.join(f'{i}. 第 {i} 題 ' + 'x' * 130 for i in range(1, 61))
+        calls = []
+
+        def slow_call(instruction, payload, image=None, model=None, timeout=None):
+            calls.append(timeout)
+            time.sleep(0.05)
+            return {'drafts': [{'title': f'第 {len(calls)} 段', 'content': '解 $x^2-1=0$。',
+                                'topic': '一元二次方程', 'level': 1, 'points': 5, 'answer': '$x=1$'}]}
+
+        with patch.object(server, 'PARSE_BUDGET_SECONDS', 0.12), \
+                patch.object(self.app.ai, 'call', side_effect=slow_call):
+            _, body, _ = self.request('POST', '/api/papers/parse', {'name': '長卷', 'text': paper},
+                                      cookie=self.teacher, expect=200)
+        self.assertGreater(len(calls), 0, '至少要處理一段')
+        self.assertLess(len(calls), server.PARSE_MAX_CHUNKS, '不該把每一段都跑完')
+        self.assertIn('已達單次處理時間上限', body['method'])
+        self.assertEqual(len(body['drafts']), len(calls), '已完成的段落都要保留，不能整批丟掉')
+        self.assertTrue(all(t is not None for t in calls), '每次呼叫都要帶逾時，才能控制總時間')
 
     def test_auto_import_returns_figure_boxes_for_the_browser_to_crop(self):
         # 全自動匯入：題目已寫入題庫，圖形改由前端裁好後用 /api/questions/figures 補上。
