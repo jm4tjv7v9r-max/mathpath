@@ -3994,7 +3994,10 @@ class Application:
         timestamps = sorted(datetime.fromisoformat(a['submitted_at'].replace('Z', '+00:00')) for a in rows)
         seconds = sum((b - a).total_seconds() for a, b in zip(timestamps, timestamps[1:])
                       if a.date() == b.date() and 0 <= (b - a).total_seconds() <= 1800)
-        return {'completed': len(graded), 'accuracy': round(100 * sum(a['score'] for a in graded) / total, 1) if total else 0,
+        # 做題數與得分總數：學生要能看到「我做了幾題、拿了幾分」的累積。
+        earned = sum(a['score'] for a in graded)
+        return {'completed': len(graded), 'accuracy': round(100 * earned / total, 1) if total else 0,
+                'score': round(earned, 1), 'maxScore': total,
                 'streak': streak, 'minutes': int(seconds // 60)}
 
     @staticmethod

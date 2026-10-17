@@ -302,7 +302,8 @@ class APITests(unittest.TestCase):
         _, state, _ = self.request('GET', '/api/state', cookie=self.student, expect=200)
         self.assertEqual(len(state['questions']), 16)
         self.assertEqual(state['attempts'], [])
-        self.assertEqual(state['stats'], {'completed': 0, 'accuracy': 0, 'streak': 0, 'minutes': 0})
+        self.assertEqual(state['stats'], {'completed': 0, 'accuracy': 0, 'score': 0, 'maxScore': 0,
+                                      'streak': 0, 'minutes': 0})
         self.assertEqual(state['ai'], {'configured': False, 'model': '', 'vision': '', 'draw': '', 'drawCustom': False, 'mode': 'off', 'source': 'none', 'thinking': False})
         for q in state['questions']:
             self.assertNotIn('answer', q)
