@@ -2055,6 +2055,15 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   await page.waitForTimeout(250);
   assert.match(await page.locator('#toast').innerText(),/HEIC/,'不支援的格式要說明改用什麼');
   assert.equal(await page.locator('.fig-preview img').count(),0,'不支援的格式不應被當成圖形');
+  // 教師端也要吃 HEIC（用 iPhone 拍題目）：走同一個 fitFigureImage，先轉 JPEG 再縮圖。
+  if(await page.evaluate(()=>typeof window.heic2any)!=='function')
+    await page.addScriptTag({path:path.join(__dirname,'vendor','heic2any.min.js')});
+  await page.locator('#fig-manual').setInputFiles({name:'題目.heic',mimeType:'image/heic',
+    buffer:fs.readFileSync(path.join(__dirname,'bench','sample-heic.heic'))});
+  await page.waitForFunction(()=>{const i=document.querySelector('.fig-preview img');return !!(i&&i.complete&&i.naturalWidth>0);},{timeout:30000});
+  assert.equal(await page.locator('#fig-apply').isDisabled(),false,'HEIC 轉換後也要能按「使用這張圖形」');
+  assert.match(await page.locator('#toast').innerText(),/已插入/,'HEIC 要正常插入，不能跳「不支援」');
+  console.log('PASS: 教師端 HEIC 圖片（題目圖形／圖形工作室）自動轉換');
   await page.locator('#fig-manual').setInputFiles({name:'圖.png',mimeType:'image/png',buffer:HANDWRITING});
   await page.waitForFunction(()=>{const i=document.querySelector('.fig-preview img');return !!(i&&i.complete&&i.naturalWidth>0);},{timeout:8000});
   assert.equal(await page.locator('#fig-apply').isDisabled(),false,'插入圖片後才能使用');

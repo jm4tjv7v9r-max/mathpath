@@ -1399,7 +1399,7 @@ function renderFigureStudio(){
     <button class="secondary" id="fig-check" ${canCheck&&!busy?'':'disabled'} title="${S.ai.vision?'':'尚未設定視覺模型，無法自動核對'}">${icon('search')}${busy==='check'?'核對中…':'核對題目與圖形'}</button>
     ${needFix?`<button class="secondary" id="fig-fix" ${busy?'disabled':''}>${icon('spark')}依核對結果重畫</button>`:''}
     <button type="button" class="secondary" id="fig-sketch-btn">${icon('practice')}${figStudio.drawing?'收起手繪畫布':'手繪圖形'}</button>
-    <button type="button" class="secondary" id="fig-manual-btn">${icon('image')}手動插入圖片</button><input type="file" id="fig-manual" accept="image/png,image/jpeg,image/webp" hidden>
+    <button type="button" class="secondary" id="fig-manual-btn">${icon('image')}手動插入圖片</button><input type="file" id="fig-manual" accept="image/png,image/jpeg,image/webp,image/heic,image/heif,.heic,.heif" hidden>
     ${figure?`<button class="secondary" id="fig-clear">移除圖形</button>`:''}
   </div>
   ${canDraw?'':'<p class="field-hint">這道題的分類「'+esc(ctx.topic||'未分類')+'」不是幾何或向量題材，AI 不會為它畫圖（避免畫出與題目無關的圖）；如仍需要附圖，請用「手動插入圖片」。</p>'}
@@ -1432,12 +1432,15 @@ function renderFigureStudio(){
   const manual=$('#fig-manual');
   $('#fig-manual-btn').onclick=()=>manual&&manual.click();
   if(manual)manual.onchange=async e=>{
-    const f=e.target.files[0];
+    const chosen=e.target.files[0];
     // 清掉 value，同一個檔案再選一次才會再觸發 change。
     e.target.value='';
+    if(!chosen)return;
+    let f;
+    try{f=await normalizeHeicFile(chosen);}catch(err){return toast(err.message);}
     if(!f)return;
     if(!/^image\/(png|jpeg|webp)$/.test(f.type)){
-      return toast('請選擇 PNG、JPG 或 WebP 圖片；iPhone 的 HEIC 相片請先轉成 JPG，或直接截圖後貼上。');
+      return toast('請選擇 PNG、JPG、WebP 或 HEIC 圖片。');
     }
     if(f.size>12*1024*1024){
       return toast('圖片不可超過 12 MB；手機相片可先裁剪，或直接截圖後貼上。');
@@ -1811,6 +1814,29 @@ async function heicToWebp(file){
   const blob=Array.isArray(out)?out[0]:out;
   return await compressImageDataUrl(await readAsDataUrl(blob),'這張 HEIC 相片無法轉換，請改用 JPG 重新拍照。');
 }
+// 教師端（題目圖形、圖形工作室、試卷拆題）也要吃 HEIC：只轉格式、不縮圖，
+// 尺寸交給各入口自己決定（題目圖形縮到 1400px、拆題原樣送去辨識）。
+async function normalizeHeicFile(file){
+  if(!isHeicFile(file))return file;
+  const jpegName=(file.name||'photo').replace(/\.(heic|heif)$/i,'.jpg');
+  // 先試瀏覽器原生解碼（Safari 支援 HEIC），能解就不必下載轉換器。
+  try{
+    const img=await loadImageDataUrl(await readAsDataUrl(file),'');
+    const canvas=document.createElement('canvas');
+    canvas.width=img.naturalWidth;canvas.height=img.naturalHeight;
+    const ctx=canvas.getContext('2d');
+    ctx.fillStyle='#fff';ctx.fillRect(0,0,canvas.width,canvas.height);
+    ctx.drawImage(img,0,0);
+    const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/jpeg',0.95));
+    if(blob)return new File([blob],jpegName,{type:'image/jpeg'});
+  }catch{}
+  const convert=await loadHeicConverter();
+  let out;
+  try{out=await convert({blob:file,toType:'image/jpeg',quality:0.92});}
+  catch{throw new Error('這張 HEIC 相片無法轉換。可以到 iPhone 設定 → 相機 → 格式改用「最相容」，或用 JPG 重新拍照。');}
+  const blob=Array.isArray(out)?out[0]:out;
+  return new File([blob],jpegName,{type:'image/jpeg'});
+}
 async function answerImageData(file){
   // HEIC 一定要先轉成通用格式：後端只接受 PNG／JPEG／WebP。
   if(isHeicFile(file))return await heicToWebp(file);
@@ -1824,7 +1850,9 @@ async function answerImageData(file){
   throw new Error('這張相片無法壓縮，請改用 JPG／PNG 或重新拍照。');
 }
 // 把選到的圖片縮到合理尺寸再存成 WebP，避免佔用過多題庫空間。
-function fitFigureImage(file){
+async function fitFigureImage(file){
+  // 貼上的圖片與各上傳入口都會走這裡，HEIC 統一先轉成 JPEG（不縮圖，這裡才縮）。
+  file=await normalizeHeicFile(file);
   return new Promise((resolve,reject)=>{
     const reader=new FileReader();
     reader.onerror=()=>reject(new Error('圖片讀取失敗。'));
@@ -2491,7 +2519,7 @@ function editQuestionModal(id){
   let removed=false;    // 有沒有按過「移除圖形」
   const figureHtml=`<div class="form-field"><label class="field-label">題目圖形（可選）</label>
     <div class="fig-source-row">
-      <label class="secondary fig-upload" for="editq-fig-upload">${icon('image')}${hasFigure?'換一張圖形':'加入圖形'}<input id="editq-fig-upload" type="file" accept="image/png,image/jpeg,image/webp" hidden></label>
+      <label class="secondary fig-upload" for="editq-fig-upload">${icon('image')}${hasFigure?'換一張圖形':'加入圖形'}<input id="editq-fig-upload" type="file" accept="image/png,image/jpeg,image/webp,image/heic,image/heif,.heic,.heif" hidden></label>
       <button type="button" class="secondary" id="editq-fig-remove">移除圖形</button>
       <span class="small-text">不動它的話，原本的圖形會保留。</span>
     </div>
@@ -2512,9 +2540,9 @@ function editQuestionModal(id){
   paintFigure();
   const input=$('#editq-fig-upload');
   if(input)input.onchange=async e=>{
-    const f=e.target.files[0];
+    const f=await normalizeHeicFile(e.target.files[0]);
     if(!f)return;
-    if(!/^image\/(png|jpeg|webp)$/.test(f.type))return toast('請選擇 PNG、JPG 或 WebP 圖片。');
+    if(!/^image\/(png|jpeg|webp)$/.test(f.type))return toast('請選擇 PNG、JPG、WebP 或 HEIC 圖片。');
     if(f.size>4*1024*1024)return toast('圖片不可超過 4 MB，請先裁剪或壓縮。');
     try{picked=await fitFigureImage(f);removed=false;paintFigure();}
     catch(err){toast(err.message);}
@@ -2544,15 +2572,15 @@ function editQuestionModal(id){
 }
 
 function renderImportContent(){const r=$('#import-content');if(importStage===1){
-  const manualFigureHtml=`<div class="form-field"><label class="field-label">題目圖形（可選）</label><div class="fig-source-row"><label class="secondary fig-upload" for="fig-upload">${icon('image')}上傳圖形圖片<input id="fig-upload" type="file" accept="image/png,image/jpeg,image/webp" hidden></label><span class="small-text">可直接貼上截圖（Ctrl/⌘+V）；上傳後會取代手繪圖，最多 4 MB。</span></div><div id="fig-image-preview" class="fig-image-preview"></div>${figureToolbarHtml('fig','在方格上畫出三角形、坐標軸等圖形：拖曳畫直線／虛線／圓，選「點名稱」再點畫布放置，選「選擇」可拖曳移動、並用「縮放／旋轉」調整大小與角度')}<div class="canvas-wrap figure-canvas-wrap"><canvas id="figure-canvas" width="900" height="420" tabindex="0" aria-label="題目圖形畫布"></canvas></div><p class="field-hint" id="fig-status">圖形會與題目一併儲存；不畫圖也可直接加入題目。</p></div>`;
-  const manualForm=questionFormHtml('manual',{submitLabel:'加入這道題目',figureHtml:manualFigureHtml});r.innerHTML=`<div class="form-field"><label class="field-label" for="paper-name">試卷名稱</label><input id="paper-name" value="${esc(paperName)}" placeholder="例如：中三數學 · 第一學期測驗" maxlength="200"></div><label class="dropzone" id="paper-drop">${icon('upload')}<strong id="paper-filename">${paperFile?esc(paperFile.name):'點擊或拖入試卷檔案'}</strong><small>文字型 PDF / PNG / JPG · 最多 10 MB · 掃描版 PDF 自動逐頁轉圖 · 圖片會自動框出題目圖形並裁到題目右邊</small><input type="file" id="paper-upload" accept="application/pdf,image/png,image/jpeg" hidden></label><div class="divider-text"><span>或直接貼上題目文字</span></div><label class="field-label" for="paper-text">試卷內容<span class="small-text" style="font-weight:400">　數學式可用 LaTeX：$x^2-5x+6=0$、$\\frac{1}{2}$、$\\sqrt{3}$</span></label><textarea class="answer-field import-text" id="paper-text" placeholder="1. 解方程 $x^2-5x+6=0$。\n\n2. 直角三角形兩邊長為 $3\\text{cm}$ 及 $4\\text{cm}$，求斜邊長。\n\n3. 擲一枚公平骰子，求點數大於 4 的概率。" maxlength="79000">${esc(paperText)}</textarea><button class="text-button" id="sample-paper" style="font-size:calc(14px*var(--fs));margin-top:12px">填入示例試卷 ${icon('arrow')}</button>${S.ai.mode==='external'?`<label class="checkbox-line"><input type="checkbox" id="paper-consent">允許將試卷傳送到學校配置的外部 AI（未同意時，文字只用本地規則處理）</label>`:''}<div id="parse-error"></div><div class="submit-row"><span class="small-text">${S.ai.configured?'可用 AI 識別，仍需核驗':'本地規則拆題 · 分類結果需核驗'}</span><div class="row-actions"><button class="secondary" id="parse-paper">先拆分預覽 ${icon('spark')}</button><button class="primary" id="auto-import-paper">全自動拆分並匯入 ${icon('check')}</button></div></div><div class="divider-text"><span>或手動輸入題目並繪製圖形</span></div><div class="manual-entry">${manualForm}</div>`;$('#paper-name').oninput=e=>paperName=e.target.value;$('#paper-text').oninput=e=>{paperText=e.target.value;if(paperText.trim()){paperFile=null;$('#paper-filename').textContent='已使用貼上文字（不會同時提交檔案）';}};$('#sample-paper').onclick=()=>{paperName='中三數學 · 示例練習卷';paperText='1. 解方程 $x^2-5x+6=0$。\n\n2. 直角三角形兩條直角邊長為 $3\\text{ cm}$ 和 $4\\text{ cm}$，求斜邊長。\n\n3. 擲一枚公平骰子，求點數大於 4 的概率。\n\n4. 已知 $f(x)=2x+1$，求 $f(3)$。';paperFile=null;renderImportContent();};const select=async f=>{try{const dataUrl=await fileData(f,['application/pdf','image/png','image/jpeg']);paperFile={name:f.name,mime:f.type,dataUrl};paperText='';if(!paperName)paperName=f.name.replace(/\.[^.]+$/,'');renderImportContent();}catch(e){toast(e.message);}};$('#paper-upload').onchange=e=>select(e.target.files[0]);const d=$('#paper-drop');d.ondragover=e=>{e.preventDefault();d.classList.add('dragover');};d.ondragleave=()=>d.classList.remove('dragover');d.ondrop=e=>{e.preventDefault();select(e.dataTransfer.files[0]);};$('#parse-paper').onclick=parsePaper;$('#auto-import-paper').onclick=autoImportPaper;
+  const manualFigureHtml=`<div class="form-field"><label class="field-label">題目圖形（可選）</label><div class="fig-source-row"><label class="secondary fig-upload" for="fig-upload">${icon('image')}上傳圖形圖片<input id="fig-upload" type="file" accept="image/png,image/jpeg,image/webp,image/heic,image/heif,.heic,.heif" hidden></label><span class="small-text">可直接貼上截圖（Ctrl/⌘+V）；上傳後會取代手繪圖，最多 4 MB。</span></div><div id="fig-image-preview" class="fig-image-preview"></div>${figureToolbarHtml('fig','在方格上畫出三角形、坐標軸等圖形：拖曳畫直線／虛線／圓，選「點名稱」再點畫布放置，選「選擇」可拖曳移動、並用「縮放／旋轉」調整大小與角度')}<div class="canvas-wrap figure-canvas-wrap"><canvas id="figure-canvas" width="900" height="420" tabindex="0" aria-label="題目圖形畫布"></canvas></div><p class="field-hint" id="fig-status">圖形會與題目一併儲存；不畫圖也可直接加入題目。</p></div>`;
+  const manualForm=questionFormHtml('manual',{submitLabel:'加入這道題目',figureHtml:manualFigureHtml});r.innerHTML=`<div class="form-field"><label class="field-label" for="paper-name">試卷名稱</label><input id="paper-name" value="${esc(paperName)}" placeholder="例如：中三數學 · 第一學期測驗" maxlength="200"></div><label class="dropzone" id="paper-drop">${icon('upload')}<strong id="paper-filename">${paperFile?esc(paperFile.name):'點擊或拖入試卷檔案'}</strong><small>文字型 PDF / PNG / JPG · 最多 10 MB · 掃描版 PDF 自動逐頁轉圖 · 圖片會自動框出題目圖形並裁到題目右邊</small><input type="file" id="paper-upload" accept="application/pdf,image/png,image/jpeg,image/heic,image/heif,.heic,.heif" hidden></label><div class="divider-text"><span>或直接貼上題目文字</span></div><label class="field-label" for="paper-text">試卷內容<span class="small-text" style="font-weight:400">　數學式可用 LaTeX：$x^2-5x+6=0$、$\\frac{1}{2}$、$\\sqrt{3}$</span></label><textarea class="answer-field import-text" id="paper-text" placeholder="1. 解方程 $x^2-5x+6=0$。\n\n2. 直角三角形兩邊長為 $3\\text{cm}$ 及 $4\\text{cm}$，求斜邊長。\n\n3. 擲一枚公平骰子，求點數大於 4 的概率。" maxlength="79000">${esc(paperText)}</textarea><button class="text-button" id="sample-paper" style="font-size:calc(14px*var(--fs));margin-top:12px">填入示例試卷 ${icon('arrow')}</button>${S.ai.mode==='external'?`<label class="checkbox-line"><input type="checkbox" id="paper-consent">允許將試卷傳送到學校配置的外部 AI（未同意時，文字只用本地規則處理）</label>`:''}<div id="parse-error"></div><div class="submit-row"><span class="small-text">${S.ai.configured?'可用 AI 識別，仍需核驗':'本地規則拆題 · 分類結果需核驗'}</span><div class="row-actions"><button class="secondary" id="parse-paper">先拆分預覽 ${icon('spark')}</button><button class="primary" id="auto-import-paper">全自動拆分並匯入 ${icon('check')}</button></div></div><div class="divider-text"><span>或手動輸入題目並繪製圖形</span></div><div class="manual-entry">${manualForm}</div>`;$('#paper-name').oninput=e=>paperName=e.target.value;$('#paper-text').oninput=e=>{paperText=e.target.value;if(paperText.trim()){paperFile=null;$('#paper-filename').textContent='已使用貼上文字（不會同時提交檔案）';}};$('#sample-paper').onclick=()=>{paperName='中三數學 · 示例練習卷';paperText='1. 解方程 $x^2-5x+6=0$。\n\n2. 直角三角形兩條直角邊長為 $3\\text{ cm}$ 和 $4\\text{ cm}$，求斜邊長。\n\n3. 擲一枚公平骰子，求點數大於 4 的概率。\n\n4. 已知 $f(x)=2x+1$，求 $f(3)$。';paperFile=null;renderImportContent();};const select=async f=>{try{f=await normalizeHeicFile(f);const dataUrl=await fileData(f,['application/pdf','image/png','image/jpeg']);paperFile={name:f.name,mime:f.type,dataUrl};paperText='';if(!paperName)paperName=f.name.replace(/\.[^.]+$/,'');renderImportContent();}catch(e){toast(e.message);}};$('#paper-upload').onchange=e=>select(e.target.files[0]);const d=$('#paper-drop');d.ondragover=e=>{e.preventDefault();d.classList.add('dragover');};d.ondragleave=()=>d.classList.remove('dragover');d.ondrop=e=>{e.preventDefault();select(e.dataTransfer.files[0]);};$('#parse-paper').onclick=parsePaper;$('#auto-import-paper').onclick=autoImportPaper;
 initFigureCanvas();
 renderFigImage();
 const figInput=$('#fig-upload');
 if(figInput)figInput.onchange=async e=>{
-  const f=e.target.files[0];
+  const f=await normalizeHeicFile(e.target.files[0]);
   if(!f)return;
-  if(!/^image\/(png|jpeg|webp)$/.test(f.type))return toast('請選擇 PNG、JPG 或 WebP 圖片。');
+  if(!/^image\/(png|jpeg|webp)$/.test(f.type))return toast('請選擇 PNG、JPG、WebP 或 HEIC 圖片。');
   if(f.size>4*1024*1024)return toast('圖片不可超過 4 MB，請先裁剪或壓縮。');
   try{figImage=await fitFigureImage(f);renderFigImage();toast('已加入題目圖形，可繼續填寫其他欄位。');}
   catch(err){toast(err.message);}
