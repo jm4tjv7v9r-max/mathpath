@@ -598,7 +598,7 @@ button.step.done:hover span{background:var(--mint);color:var(--green)}
 /* 作答頁：右側的引導卡（從一道題到一類題／解題習慣）移到題目下方，
    讓題目與書寫區吃滿寬度——作答時最需要的是空間，不是旁邊的說明。 */
 .practice-layout{grid-template-columns:minmax(0,1fr)}
-.practice-layout .right-stack{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:4px}
+.practice-layout .right-stack{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px;margin-top:4px}
 /* 作答批閱：一筆作答不需要那麼高的列高，壓緊湊讓一屏看到更多筆（原本只看到 3 筆）。 */
 .record{padding:14px 0;gap:12px}
 .record-main strong{font-size:calc(15px*var(--fs));line-height:1.5}
@@ -619,3 +619,9 @@ button.step.done:hover span{background:var(--mint);color:var(--green)}
 .settings-details>summary::before{content:"\25B8";font-size:11px;color:var(--green)}
 .settings-details[open]>summary::before{content:"\25BE"}
 .settings-details[open]>summary{margin-bottom:4px}
+/* 拆題：右側的流程說明移到下方（表單吃滿寬度），步驟條壓矮、提示字縮小。
+   用 auto-fit 讓桌面 3 欄、手機自動 1 欄，不必另外寫 media query。 */
+.import-layout{grid-template-columns:minmax(0,1fr)}
+.import-layout .right-stack{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px;margin-top:4px}
+.stepper{padding:0 0 16px;margin-bottom:18px;gap:20px}
+.import-panel .field-hint{font-size:calc(12px*var(--fs));line-height:1.7}
