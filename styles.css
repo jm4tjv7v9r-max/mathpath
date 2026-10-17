@@ -611,3 +611,11 @@ button.step.done:hover span{background:var(--mint);color:var(--green)}
 .assignment-card{padding:18px}
 .assignment-list{gap:12px}
 .assignment-card-head h2{font-size:calc(17px*var(--fs))}
+/* 設定頁：說明性質的區塊收成可展開（環境變數範例、資料保護清單），頁面長度減半。 */
+.settings-details{margin:8px 0 4px}
+.settings-details>summary{cursor:pointer;list-style:none;display:flex;align-items:center;gap:6px;
+  font-size:calc(14px*var(--fs));color:var(--muted);padding:5px 0}
+.settings-details>summary::-webkit-details-marker{display:none}
+.settings-details>summary::before{content:"\25B8";font-size:11px;color:var(--green)}
+.settings-details[open]>summary::before{content:"\25BE"}
+.settings-details[open]>summary{margin-bottom:4px}
