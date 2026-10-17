@@ -677,3 +677,12 @@ html[data-theme=night] .tip-panel h2{color:#c8b48a}
 html[data-theme=night] .tip-panel h2 .icon{color:#c8b48a}
 html[data-theme=night] .tip-panel p{color:#a39a80}
 html[data-theme=night] .tip-panel .text-button{color:#c9a85f}
+/* 最終答案：標籤與「公式編輯器」按鈕同一列 */
+.final-answer-head{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
+.math-editor-open{display:inline-flex;align-items:center;gap:5px;font-size:calc(13px*var(--fs))}
+/* 公式編輯器（MathLive）：像紙面的輸入區 */
+.math-editor-host{border:1px solid var(--border);border-radius:12px;background:var(--surface-soft);
+  padding:16px 18px;margin:6px 0 14px;min-height:96px}
+.math-editor-host math-field{width:100%;font-size:calc(22px*var(--fs));min-height:56px;
+  --caret-color:var(--green);--selection-background-color:var(--mint)}
+html[data-theme=night] .math-editor-host{background:#1a2124}

@@ -1282,6 +1282,19 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   await page.locator('.mk-tab', {hasText:'集合'}).click();
   await page.locator('.mk-key', {hasText:'ℝ'}).click();
   assert.match(await page.locator('#final-answer').inputValue(), /\\mathbb\{R\}/, '應插入實數符號');
+
+  // 公式編輯器（MathLive）：點開後所見即所得，插入的 LaTeX 要寫回作答欄並即時渲染。
+  // 測試沒有真實伺服器，先把 MathLive 注入（正式環境是點按鈕才動態載入 vendor/mathlive.min.js）。
+  if(await page.evaluate(()=>!window.MathLive))
+    await page.addScriptTag({path:path.join(__dirname,'vendor','mathlive.min.js')});
+  await page.locator('#open-math-editor').click();
+  await page.locator('#math-editor-field').waitFor({timeout:30000});
+  await page.evaluate(()=>{const f=document.querySelector('#math-editor-field');f.value='\\frac{3}{4}';});
+  await page.screenshot({path:path.join(__dirname,'..','MathPath-公式編輯器.png'),fullPage:false});
+  await page.locator('#math-editor-ok').click();
+  assert.equal(await page.locator('#final-answer').inputValue(),'\\frac{3}{4}','公式編輯器要把 LaTeX 寫回作答欄');
+  await page.waitForFunction(()=>!!document.querySelector('#final-answer-preview .katex'),null,{timeout:8000});
+  console.log('PASS: 公式編輯器（MathLive）插入後寫回作答欄並即時渲染');
   await page.screenshot({path:path.join(__dirname,'..','MathPath-數學鍵盤.png'),fullPage:true});
 
   // ── 學生可以自己調整手寫書寫區大小（題目長、步驟多就換大一點），筆跡要保留 ──
