@@ -625,3 +625,31 @@ button.step.done:hover span{background:var(--mint);color:var(--green)}
 .import-layout .right-stack{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px;margin-top:4px}
 .stepper{padding:0 0 16px;margin-bottom:18px;gap:20px}
 .import-panel .field-hint{font-size:calc(12px*var(--fs));line-height:1.7}
+
+/* ── 版面二：墨夜（深色）── 與「晨光」完全不同的配色 ── */
+html[data-theme=night]{--bg:#111719;--paper:#1a2124;--ink:#e3eaec;--muted:#93a3a5;
+  --green:#5ed0ae;--green-dark:#3fb694;--mint:#1e2c2d;--border:#2a3437;--orange:#e2a75d;
+  --shadow:0 1px 3px rgba(0,0,0,.35),0 10px 28px rgba(0,0,0,.28)}
+html[data-theme=night] body{background:var(--bg)}
+/* 硬編碼的淡底：改成深色版的底色 */
+html[data-theme=night] .sidebar,html[data-theme=night] .topbar{background:#151c1e}
+html[data-theme=night] .workspace{background:#1e262a}
+html[data-theme=night] .code-block{background:#151c1e;border-color:var(--border);color:#8fa9a4}
+html[data-theme=night] .segmented{background:#1e262a}
+html[data-theme=night] .segmented button.active{background:#2b3538;color:#a9b9b8}
+html[data-theme=night] .choice-options li{background:#1e262a}
+html[data-theme=night] .option-letter{background:#263133;color:#7fc9ae}
+html[data-theme=night] .record-icon{background:#22302c;color:#7fb39c}
+html[data-theme=night] .step span{background:#1e262a}
+html[data-theme=night] .dropzone{background:#1e262a}
+html[data-theme=night] .role-select{background:#1e262a}
+html[data-theme=night] .roadmap-circle{background:#1e2c2d}
+html[data-theme=night] .side-note{background:#1e262a}
+/* 散落的綠灰色文字：統一改成亮色系，避免深底上看不見 */
+html[data-theme=night] .small-text,html[data-theme=night] .record-main p,
+html[data-theme=night] .right-panel .panel-sub,html[data-theme=night] .hero p,
+html[data-theme=night] .modal-intro,html[data-theme=night] .info-note,
+html[data-theme=night] .settings-panel li,html[data-theme=night] .practice-tabs button,
+html[data-theme=night] .step,html[data-theme=night] .brand small,
+html[data-theme=night] .hero-eyebrow,html[data-theme=night] .font-scale,
+html[data-theme=night] .font-scale-note,html[data-theme=night] .field-hint{color:#8ea09f}

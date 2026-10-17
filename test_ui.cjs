@@ -2581,6 +2581,18 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   assert.equal(cardAccents[0],'#2f6d55','題庫第一張卡片要是第一個色系');
   console.log('PASS: 題與題之間用四色循環區分（色條＋編號＋底色交替）');
 
+  // 版面配色：可切到「墨夜」（深色），記在 localStorage，切回「晨光」也正常。
+  await page.locator('#theme-switch [data-theme-id=night]').click();
+  await page.waitForFunction(()=>document.documentElement.dataset.theme==='night');
+  assert.equal(await page.evaluate(()=>localStorage.getItem('mathpath_theme')),'night','切換後要記住');
+  const nightBg=await page.evaluate(()=>getComputedStyle(document.body).backgroundColor);
+  assert.notEqual(nightBg,'rgb(248, 250, 249)','墨夜的背景要和晨光不同');
+  await page.screenshot({path:path.join(__dirname,'..','MathPath-版面墨夜.png'),fullPage:true});
+  await page.locator('#theme-switch [data-theme-id=day]').click();
+  await page.waitForFunction(()=>!document.documentElement.dataset.theme);
+  assert.equal(await page.evaluate(()=>localStorage.getItem('mathpath_theme')),'day','要能切回晨光');
+  console.log('PASS: 版面配色可切換（晨光／墨夜）並記在這台裝置');
+
   // 伺服器初始化失敗時，登入視窗要直接顯示原因，不能只說「正在初始化」
   await page.route('**/api/session', route => route.fulfill({status:503,json:{error:'伺服器初始化失敗：MATH_STUDENT_PASSWORD 必須是 10 至 256 個字元、且不可只有空白的密碼。'}}));
   await page.reload({waitUntil:'networkidle'});
