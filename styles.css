@@ -595,3 +595,7 @@ button.step.done:hover span{background:var(--mint);color:var(--green)}
 /* 題庫卡片內的選項是唯讀瀏覽，不需要那麼多留白；作答頁的選項維持原樣（方便點選）。 */
 .question-card .choice-options{margin-top:9px;gap:5px}
 .question-card .choice-options li{padding:6px 10px;line-height:1.5}
+/* 作答頁：右側的引導卡（從一道題到一類題／解題習慣）移到題目下方，
+   讓題目與書寫區吃滿寬度——作答時最需要的是空間，不是旁邊的說明。 */
+.practice-layout{grid-template-columns:minmax(0,1fr)}
+.practice-layout .right-stack{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:4px}
