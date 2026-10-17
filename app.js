@@ -1241,8 +1241,11 @@ function syncMathKeyboard(){
   // 數學鍵盤已經從作答頁移除（改用「開啟公式編輯器」），這裡保留只是為了相容舊結構。
   const keyboard=$('#math-keyboard');
   if(keyboard) keyboard.hidden = answerMode !== 'text';
-  // ⚠️ 預覽的更新不能綁在鍵盤存在與否上——切換作答模式時一定要重算，
-  // 否則手寫模式看不到先前輸入的數學式（學生只會看到原始 LaTeX）。
+  // 「最終答案」只在文字作答時需要（手寫解題、上傳手稿都由圖片本身作答）。
+  // ⚠️ 用 hidden 而不是移除 DOM——`#final-answer` 的值要保留，切回文字作答時還在。
+  const input=$('#final-answer');
+  const box=input&&input.closest?input.closest('.form-field'):null;
+  if(box) box.hidden = answerMode !== 'text';
   updateMathPreview();
 }
 function bindMathKeyboard(root, insert){

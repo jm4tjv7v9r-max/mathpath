@@ -1257,10 +1257,12 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   // 純文字作答仍可直接打字
   await page.locator('#final-answer').fill('x=2 或 x=3');
   assert.equal(await page.locator('#final-answer').inputValue(), 'x=2 或 x=3', '純文字作答仍可直接打字');
-  // 切到「手寫解題」：已輸入的數學式仍要以排版結果顯示，否則學生只看到原始 LaTeX。
+  // 切到「手寫解題」：整個「最終答案」區塊隱藏（手寫由圖片作答，不需要再填答案欄）。
   await page.locator('[data-answer-mode=hand]').click();
-  assert.equal(await page.locator('#final-answer-preview').isVisible(), true, '手寫解題仍應顯示排版預覽');
+  assert.equal(await page.locator('#final-answer').isVisible(), false, '手寫解題不應顯示最終答案');
   await page.locator('[data-answer-mode=text]').click();
+  assert.equal(await page.locator('#final-answer').isVisible(), true, '切回文字作答要再顯示最終答案');
+  assert.equal(await page.evaluate(()=>document.querySelector('#final-answer').value), 'x=2 或 x=3', '切換模式不能弄丟已輸入的答案');
 
   // 公式編輯器（MathLive）：點開後所見即所得，插入的 LaTeX 要寫回作答欄並即時渲染。
   // 測試沒有真實伺服器，先把 MathLive 注入（正式環境是點按鈕才動態載入 vendor/mathlive.min.js）。
