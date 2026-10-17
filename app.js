@@ -1215,20 +1215,14 @@ async function openMathEditor(){
   catch(err){toast(err.message);return;}
   const current=input.value.trim();
   modal(`<p class="eyebrow">MATH EDITOR</p><h2>公式編輯器</h2>
-  <p class="modal-intro">像在 Word 裡打公式：下方鍵盤與作答頁完全相同（常用、分數根號、希臘字母、代數、三角、微積分、數列、集合邏輯、幾何向量），點一下就會長出對應結構。完成後按「插入答案」寫回作答欄。</p>
+  <p class="modal-intro">像在 Word 裡打公式：直接輸入 LaTeX，或按輸入區右側的鍵盤圖標開啟數學符號。分數、根號、次方的結構會即時排版。完成後按「插入答案」寫回作答欄。</p>
   <div class="math-editor-host"><math-field id="math-editor-field" virtual-keyboard-mode="manual"></math-field></div>
-  ${mathKeyboardHtml('editor', false)}
   <p class="error-text" id="math-editor-error"></p>
   <div class="submit-row"><button class="primary" id="math-editor-ok">${icon('check')}插入答案</button><button class="secondary" data-action="close-modal">取消</button></div>`);
   const field=$('#math-editor-field');
   if(!field){toast('公式編輯器無法啟動，請改用數學鍵盤輸入。');return;}
   field.value=current;
   field.focus();
-  // 彈窗內的鍵盤與作答頁共用同一份 MATH_KEYBOARD 資料，插入目標改成 math-field。
-  bindMathKeyboard($('#math-keyboard-editor'), snippet=>{
-    field.insert(snippet);
-    field.focus();
-  });
   $('#math-editor-ok').onclick=()=>{
     const latex=(field.value||'').trim();
     input.value=latex;

@@ -1289,17 +1289,6 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
     await page.addScriptTag({path:path.join(__dirname,'vendor','mathlive.min.js')});
   await page.locator('#open-math-editor').click();
   await page.locator('#math-editor-field').waitFor({timeout:30000});
-  // 公式編輯器裡的鍵盤要與作答頁完全相同（同分類、同按鈕、同中文標籤）
-  const editorTabs = (await page.locator('#math-keyboard-editor [data-mk-tab]').allInnerTexts()).map(t=>t.trim());
-  const pageTabs = (await page.locator('#math-keyboard [data-mk-tab]').allInnerTexts()).map(t=>t.trim());
-  assert.ok(editorTabs.length >= 8, `公式編輯器至少要有 8 個分類（實際 ${editorTabs.length}）`);
-  assert.deepEqual(editorTabs, pageTabs, '公式編輯器的分類要與作答頁完全一致');
-  const editorKeys = await page.locator('#math-keyboard-editor [data-mk-insert]').count();
-  assert.ok(editorKeys >= 100, `公式編輯器的按鈕數要與作答頁相當（實際 ${editorKeys}）`);
-  // 點「分數」→ 結構要插入到 math-field
-  await page.locator('#math-keyboard-editor [data-mk-tab]', {hasText:'分數'}).click();
-  await page.locator('#math-keyboard-editor .mk-key', {hasText:'分數'}).first().click();
-  assert.match(await page.evaluate(()=>document.querySelector('#math-editor-field').value), /\\frac/, '點鍵盤要插入到公式編輯器');
   await page.evaluate(()=>{const f=document.querySelector('#math-editor-field');f.value='\\frac{3}{4}';});
   await page.screenshot({path:path.join(__dirname,'..','MathPath-公式編輯器.png'),fullPage:false});
   await page.locator('#math-editor-ok').click();
