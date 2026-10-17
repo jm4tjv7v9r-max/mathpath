@@ -1213,15 +1213,16 @@ async function openMathEditor(){
   toast('正在載入公式編輯器…');
   try{await loadMathLive();}
   catch(err){toast(err.message);return;}
-  const current=input.value.trim();
   modal(`<p class="eyebrow">MATH EDITOR</p><h2>公式編輯器</h2>
-  <p class="modal-intro">像在 Word 裡打公式：直接輸入 LaTeX，或按輸入區右側的鍵盤圖標開啟數學符號。分數、根號、次方的結構會即時排版。完成後按「插入答案」寫回作答欄。</p>
+  <p class="modal-intro">像在 Word 裡打公式：直接輸入 LaTeX，或按輸入區右側的鍵盤圖標開啟數學符號。分數、根號、次方的結構會即時排版。每次開啟都是空白；完成後按「插入答案」覆蓋作答欄（按「取消」不會動到原本的答案）。</p>
   <div class="math-editor-host"><math-field id="math-editor-field" virtual-keyboard-mode="manual"></math-field></div>
   <p class="error-text" id="math-editor-error"></p>
   <div class="submit-row"><button class="primary" id="math-editor-ok">${icon('check')}插入答案</button><button class="secondary" data-action="close-modal">取消</button></div>`);
   const field=$('#math-editor-field');
   if(!field){toast('公式編輯器無法啟動，請改用數學鍵盤輸入。');return;}
-  field.value=current;
+  // 每次開啟都是空白（使用者要求）：避免舊內容與新輸入混在一起。
+  // 按「取消」不會動到作答欄；只有按「插入答案」才會覆蓋。
+  field.value='';
   field.focus();
   $('#math-editor-ok').onclick=()=>{
     const latex=(field.value||'').trim();

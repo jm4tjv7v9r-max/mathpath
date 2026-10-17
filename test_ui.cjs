@@ -1268,6 +1268,9 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
     await page.addScriptTag({path:path.join(__dirname,'vendor','mathlive.min.js')});
   await page.locator('#open-math-editor').click();
   await page.locator('#math-editor-field').waitFor({timeout:30000});
+  // 每次開啟都應該是空白——作答欄已經有內容（x=2 或 x=3），但編輯器不帶入。
+  assert.equal(await page.evaluate(()=>document.querySelector('#math-editor-field').value), '',
+    '每次開啟公式編輯器都要是空白，不帶入作答欄現有內容');
   await page.evaluate(()=>{const f=document.querySelector('#math-editor-field');f.value='\\frac{3}{4}';});
   await page.screenshot({path:path.join(__dirname,'..','MathPath-公式編輯器.png'),fullPage:false});
   await page.locator('#math-editor-ok').click();
