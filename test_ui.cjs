@@ -215,7 +215,7 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   assert.ok(startStyle.pad>=10,`「開始解題」要加大內距（實際 ${startStyle.pad}px）`);
   await page.screenshot({path:path.join(__dirname,'..','MathPath-開始解題按鈕.png'),fullPage:true});
   await page.locator('[data-assignment-q]').click();
-  assert.equal(await page.locator('#hand-canvas').count(),1,'手寫解題應顯示書寫區');assert.equal(await page.locator('#math-keyboard').isVisible(),false,'手寫解題不應顯示數學鍵盤');await page.locator('[data-answer-mode=text]').click();assert.equal(await page.locator('#answer-process').count(),0,'文字作答不應再出現解題步驟輸入框');await page.locator('#final-answer').fill('x=2或3');
+  assert.equal(await page.locator('#hand-canvas').count(),1,'手寫解題應顯示書寫區');assert.equal(await page.locator('#math-keyboard').count(),0,'作答頁已不再有數學鍵盤');await page.locator('[data-answer-mode=text]').click();assert.equal(await page.locator('#answer-process').count(),0,'文字作答不應再出現解題步驟輸入框');await page.locator('#final-answer').fill('x=2或3');
   await page.waitForFunction(()=>sessionStorage.getItem('mathpath_draft_1_1_1')?.includes('x=2或3'));
   await page.reload();await page.locator('[data-assignment]').first().click();await page.locator('[data-assignment-q]').click();assert.equal(await page.locator('#final-answer').inputValue(),'x=2或3');assert.equal(await page.locator('#answer-process').count(),0,'文字作答不應有解題步驟輸入框');assert.match(await page.locator('#draft-status').innerText(),/已恢復本分頁草稿/);
   await page.locator('#account').click();await page.locator('#logout-btn').click();await page.locator('#homework-login').waitFor();assert.equal(await page.evaluate(()=>sessionStorage.getItem('mathpath_draft_1_1_1')),null);
@@ -555,7 +555,7 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   await page.locator('#choice-picker').waitFor({timeout:5000});
   assert.equal(await page.locator('.practice-question .choice-options').count(), 0, '選擇題不應在題目區重複顯示選項清單');
   assert.equal(await page.locator('.practice-tabs').count(), 0, '選擇題只有一種作答方式，不應顯示模式頁籤');
-  assert.equal(await page.locator('#math-keyboard').isVisible(), false, '選擇題不應出現數學鍵盤');
+  assert.equal(await page.locator('#math-keyboard').count(), 0, '選擇題更不應出現數學鍵盤');
   assert.equal(await page.locator('.choice-option').count(), 4, '應有 4 個可點選項');
   await page.locator('.choice-option').nth(2).click();
   await page.waitForTimeout(200);
@@ -1245,43 +1245,22 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   assert.match(await page.locator('#main').innerText(),/自主練習由 AI 即時評分並記錄分數/);
   assert.match(await page.locator('#submit-answer').innerText(),/提交並評分/);
   await page.locator('[data-answer-mode=text]').click();
-  await page.locator('#math-keyboard').waitFor({state:'visible',timeout:5000});
-  assert.ok(await page.locator('.mk-key').count() >= 40, '數學鍵盤應提供多個符號鍵');
-  assert.ok(await page.locator('.mk-tab').count() >= 5, '數學鍵盤應有多個分類');
-  // 數學鍵盤必須位於最終答案輸入框上方
+  // 作答頁不再放數學鍵盤（改由「開啟公式編輯器」彈窗提供），避免一整片按鈕把題目擠下去。
+  assert.equal(await page.locator('#math-keyboard').count(), 0, '作答頁不應再出現數學鍵盤');
+  assert.equal(await page.locator('#open-math-editor').isVisible(), true, '文字作答要有「開啟公式編輯器」入口');
+  // 入口要在最終答案輸入框「上方」
   const order = await page.evaluate(() => {
-    const kb = document.querySelector('#math-keyboard'), input = document.querySelector('#final-answer');
-    return kb.compareDocumentPosition(input) & Node.DOCUMENT_POSITION_FOLLOWING ? 'keyboard-first' : 'input-first';
+    const btn = document.querySelector('#open-math-editor'), input = document.querySelector('#final-answer');
+    return btn.compareDocumentPosition(input) & Node.DOCUMENT_POSITION_FOLLOWING ? 'button-first' : 'input-first';
   });
-  assert.equal(order, 'keyboard-first', '數學鍵盤應出現在最終答案框上方');
-  // 希臘字母分類（MathType 式直觀輸入）
-  await page.locator('.mk-tab', {hasText:'希臘'}).click();
-  assert.ok(await page.locator('.mk-panel[data-mk-panel=greek] .mk-key').count() >= 30, '希臘字母分類應有完整字母表');
-  // 點「分數」插入 \frac{}{} 並把游標放進第一個大括號，補成 \frac{1}{2}
-  await page.locator('.mk-tab', {hasText:'分數'}).click();
-  await page.locator('.mk-key', {hasText:'分數'}).first().click();
-  assert.equal(await page.locator('#final-answer').inputValue(), '\\frac{}{}', '應插入分數語法');
-  const caret = await page.evaluate(() => { const i=document.querySelector('#final-answer'); const c=i.selectionStart;
-    return {before:i.value.slice(0,c), at:i.value[c]}; });
-  assert.equal(caret.before.endsWith('{'), true, '游標應落在第一個大括號內');
-  assert.equal(caret.at, '}', '游標應緊貼大括號右邊界之前');
-  await page.keyboard.type('1');
-  await page.locator('#final-answer').evaluate(el => { const i=el.value.lastIndexOf('{}'); el.setSelectionRange(i+1,i+1); });
-  await page.keyboard.type('2');
-  assert.equal(await page.locator('#final-answer').inputValue(), '\\frac{1}{2}', '應完成分數輸入');
-  assert.ok(await page.locator('#final-answer-preview .katex').count() > 0, '預覽應以 KaTeX 渲染輸入的數學式');
-  // 切到「手寫解題」後鍵盤隱藏，但已輸入的數學式仍要以排版結果顯示，
-  // 否則學生只會看到 \frac{1}{2} 這種原始語法（容易誤解成亂碼）。
+  assert.equal(order, 'button-first', '「開啟公式編輯器」要在最終答案上方');
+  // 純文字作答仍可直接打字
+  await page.locator('#final-answer').fill('x=2 或 x=3');
+  assert.equal(await page.locator('#final-answer').inputValue(), 'x=2 或 x=3', '純文字作答仍可直接打字');
+  // 切到「手寫解題」：已輸入的數學式仍要以排版結果顯示，否則學生只看到原始 LaTeX。
   await page.locator('[data-answer-mode=hand]').click();
-  assert.equal(await page.locator('#math-keyboard').isVisible(), false, '手寫解題不應顯示數學鍵盤');
   assert.equal(await page.locator('#final-answer-preview').isVisible(), true, '手寫解題仍應顯示排版預覽');
-  assert.ok(await page.locator('#final-answer-preview .katex').count() > 0, '預覽應顯示已輸入數學式的排版結果');
   await page.locator('[data-answer-mode=text]').click();
-  assert.equal(await page.locator('#math-keyboard').isVisible(), true, '切回文字作答應再顯示數學鍵盤');
-  // 切換分類後可插入其他符號
-  await page.locator('.mk-tab', {hasText:'集合'}).click();
-  await page.locator('.mk-key', {hasText:'ℝ'}).click();
-  assert.match(await page.locator('#final-answer').inputValue(), /\\mathbb\{R\}/, '應插入實數符號');
 
   // 公式編輯器（MathLive）：點開後所見即所得，插入的 LaTeX 要寫回作答欄並即時渲染。
   // 測試沒有真實伺服器，先把 MathLive 注入（正式環境是點按鈕才動態載入 vendor/mathlive.min.js）。
