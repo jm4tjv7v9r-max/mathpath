@@ -2424,6 +2424,10 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   await page.reload({waitUntil:'networkidle'});
   await page.evaluate(()=>navigate('mistakes'));
   await page.locator('.record').first().waitFor({timeout:8000});
+  // 教師第一次進來預設篩「等待批閱」（那才是每天要做的事）；測試資料都是已批閱，
+  // 這裡先確認預設狀態，再切到「全部作答」看紀錄。
+  assert.equal(await page.locator('.history-filters [data-history=pending]').getAttribute('class'), 'active', '教師批閱頁預設要停在「等待批閱」');
+  await page.locator('.history-filters [data-history=all]').click();
   assert.match(await page.locator('#main').innerText(),/作答批閱/,'教師要進入作答批閱頁');
   assert.ok((await page.locator('.record').count())>=2,'教師要看到學生的作答紀錄');
   assert.equal(await page.locator('.record-actions [data-qid]').count(),0,'教師的作答批閱不應出現「再練一次」');
