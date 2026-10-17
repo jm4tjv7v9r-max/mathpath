@@ -1775,7 +1775,45 @@ async function compressImageDataUrl(raw,message){
   ctx.drawImage(img,0,0,out.width,out.height);
   return imageDataUrl(out);
 }
+// iPhone 預設用 HEIC 拍照，Chrome／Firefox 無法解碼（Safari 可以）。
+// 先讓瀏覽器自己試（Safari 直接成功，不必下載轉換器）；不行才動態載入
+// heic2any（約 1.3 MB，只在真的選到 HEIC 時才下載）轉成 JPEG 再壓縮。
+let heicConverter=null;
+function isHeicFile(file){
+  return /^image\/hei[cf]$/i.test(file.type||'')||/\.(heic|heif)$/i.test(file.name||'');
+}
+function loadHeicConverter(){
+  if(!heicConverter)heicConverter=new Promise((resolve,reject)=>{
+    if(window.heic2any)return resolve(window.heic2any);
+    const script=document.createElement('script');
+    script.src='vendor/heic2any.min.js';
+    script.onload=()=>window.heic2any?resolve(window.heic2any):reject(new Error('HEIC 轉換器載入失敗。'));
+    script.onerror=()=>reject(new Error('HEIC 轉換器載入失敗，請檢查網路後再試。'));
+    document.head.appendChild(script);
+  });
+  return heicConverter;
+}
+function readAsDataUrl(file){
+  return new Promise((resolve,reject)=>{
+    const reader=new FileReader();
+    reader.onload=()=>resolve(reader.result);
+    reader.onerror=()=>reject(new Error('檔案讀取失敗。'));
+    reader.readAsDataURL(file);
+  });
+}
+async function heicToWebp(file){
+  // 先試瀏覽器原生解碼（Safari 支援 HEIC），失敗才用轉換器。
+  try{return await compressImageDataUrl(await readAsDataUrl(file),'');}catch{}
+  const convert=await loadHeicConverter();
+  let out;
+  try{out=await convert({blob:file,toType:'image/jpeg',quality:0.92});}
+  catch{throw new Error('這張 HEIC 相片無法轉換。可以到 iPhone 設定 → 相機 → 格式改用「最相容」，或用 JPG 重新拍照。');}
+  const blob=Array.isArray(out)?out[0]:out;
+  return await compressImageDataUrl(await readAsDataUrl(blob),'這張 HEIC 相片無法轉換，請改用 JPG 重新拍照。');
+}
 async function answerImageData(file){
+  // HEIC 一定要先轉成通用格式：後端只接受 PNG／JPEG／WebP。
+  if(isHeicFile(file))return await heicToWebp(file);
   const raw=await fileData(file,['image/png','image/jpeg','image/webp'],ANSWER_MAX_MB);
   let small=null;
   try{small=await compressImageDataUrl(raw,'這張相片無法辨識，請改用 JPG／PNG 或重新拍照。');}catch{small=null;}

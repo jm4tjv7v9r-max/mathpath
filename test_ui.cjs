@@ -1893,6 +1893,21 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   assert.match(await page.locator('#answer-read-status').innerText(),/已壓縮至約/,'要告訴學生相片已壓縮、送出更快');
   await page.evaluate(()=>{answerFile=null;renderAnswerArea();});
 
+  // iPhone 預設用 HEIC 拍照，Chrome／Firefox 無法解碼：要自動轉成 WebP 再送出。
+  // 測試先把轉換器注入（正式環境是選到 HEIC 才動態載入 vendor/heic2any.min.js）。
+  await page.addScriptTag({path:path.join(__dirname,'vendor','heic2any.min.js')});
+  assert.equal(await page.evaluate(()=>typeof window.heic2any),'function','轉換器要能載入並掛在 window 上');
+  const heicBuffer=fs.readFileSync(path.join(__dirname,'bench','sample-heic.heic'));
+  assert.ok(heicBuffer.length>1000,'測試用的 HEIC 檔案應存在（bench/sample-heic.heic）');
+  await page.locator('#answer-upload').setInputFiles({name:'iphone.heic',mimeType:'image/heic',buffer:heicBuffer});
+  await page.waitForFunction(()=>!!answerFile&&!uploadReading,null,{timeout:30000});
+  const heicOut=await page.evaluate(()=>({url:answerFile,bytes:dataUrlBytes(answerFile)}));
+  assert.match(heicOut.url,/^data:image\/webp;base64,/,'HEIC 要自動轉成 WebP 再送出（後端只接受 PNG／JPEG／WebP）');
+  assert.ok(heicOut.bytes>0&&heicOut.bytes<400000,`HEIC 轉換後大小要合理（實際 ${heicOut.bytes}）`);
+  assert.equal(await page.locator('#answer-area img').count(),1,'轉換後要顯示預覽，讓學生確認照片');
+  await page.evaluate(()=>{answerFile=null;renderAnswerArea();});
+  console.log('PASS: HEIC 相片自動轉成 WebP（Chrome 也能上傳 iPhone 照片）');
+
   // deadline 使用服务器时间；相同 target 切题／返回不得延长；到零不访问 null。
   await page.evaluate(()=>{navigate('bank');startQuizClock({kind:'assignment',id:92},60,new Date(Date.now()+5000).toISOString());window.deadlineBefore=quizClock.deadline;startQuizClock({kind:'assignment',id:92},999);});
   assert.equal(await page.evaluate(()=>quizClock.deadline===window.deadlineBefore),true);
