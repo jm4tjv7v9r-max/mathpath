@@ -3391,6 +3391,70 @@ def student_pdf_answer(data):
         fail(422, 'PDF 無法完整渲染，未提交；請改用相片上傳。')
 
 
+def leaderboard_payload(db, month):
+    """每月每級前 10：得分榜與進步榜。
+
+    只統計「已計分」的作答（作業需教師批閱、自主練習與模擬測驗直接計），與 /api/state
+    的 stats 同一口徑。只回姓名、座號與分數——排行榜本來就是公開比較，但不外洩作答內容。
+
+    - 得分榜：該月得分排序；同時給「開學至今」（每年 9/1 起）與「累積總分」。
+    - 進步榜：該月得分 ÷ 上個月得分，比例最高者優先（上個月為 0 分不列入）。
+    """
+    now = datetime.now(timezone.utc)
+    month = (month or now.strftime('%Y-%m')).strip()
+    if not re.fullmatch(r'\d{4}-(0[1-9]|1[0-2])', month):
+        fail(400, '月份格式應為 YYYY-MM。')
+    year, mon = (int(x) for x in month.split('-'))
+    prev_month = f'{year - 1:04d}-12' if mon == 1 else f'{year:04d}-{mon - 1:02d}'
+    term_start = f'{year if mon >= 9 else year - 1:04d}-09-01'
+
+    students = {r['id']: r for r in db.execute(
+        "SELECT id,name,seat,grade FROM users WHERE role='student'")}
+    buckets = {}
+    for a in db.execute("SELECT user_id,score,submitted_at,assignment_id,teacher_reviewed "
+                        "FROM attempts WHERE status='graded'"):
+        if a['assignment_id'] is not None and not a['teacher_reviewed']:
+            continue
+        uid, day = a['user_id'], (a['submitted_at'] or '')[:10]
+        if uid not in students or not day:
+            continue
+        b = buckets.setdefault(uid, {'month': 0.0, 'prev': 0.0, 'term': 0.0, 'total': 0.0})
+        score = a['score'] or 0
+        b['total'] += score
+        if day >= term_start:
+            b['term'] += score
+        if day[:7] == month:
+            b['month'] += score
+        elif day[:7] == prev_month:
+            b['prev'] += score
+
+    score_board, progress_board = {}, {}
+    for uid, b in buckets.items():
+        st = students[uid]
+        grade = st['grade'] or '未設定年級'
+        if b['month'] > 0:
+            score_board.setdefault(grade, []).append({
+                'id': uid, 'name': st['name'], 'seat': st['seat'],
+                'monthScore': round(b['month'], 1), 'termScore': round(b['term'], 1),
+                'totalScore': round(b['total'], 1)})
+        if b['prev'] > 0:
+            progress_board.setdefault(grade, []).append({
+                'id': uid, 'name': st['name'], 'seat': st['seat'],
+                'monthScore': round(b['month'], 1), 'prevScore': round(b['prev'], 1),
+                'ratio': round(b['month'] / b['prev'], 2)})
+
+    def top(items, key):
+        ranked = sorted(items, key=key, reverse=True)[:10]
+        return [{'rank': i + 1, **x} for i, x in enumerate(ranked)]
+
+    score_board = {g: top(v, lambda x: (x['monthScore'], x['termScore'])) for g, v in score_board.items()}
+    progress_board = {g: top(v, lambda x: (x['ratio'], x['monthScore'])) for g, v in progress_board.items()}
+    return {'month': month, 'prevMonth': prev_month, 'termStart': term_start,
+            'grades': sorted(set(score_board) | set(progress_board)),
+            'score': score_board, 'progress': progress_board}
+
+
+
 class Application:
     def __init__(self, data_dir, static_dir=ROOT):
         self.data_dir = Path(data_dir).resolve()
@@ -3475,6 +3539,9 @@ class Application:
             # 升級前就存在的帳號為 NULL——代表沒有歸屬，只有管理員能改（保守，不會讓新教師誤改別人的學生）。
             if 'created_by' not in user_columns:
                 db.execute('ALTER TABLE users ADD COLUMN created_by INTEGER')
+            # 學生的年級（中一／中二／中三）：排行榜要按年級分組。舊帳號為 NULL。
+            if 'grade' not in user_columns:
+                db.execute('ALTER TABLE users ADD COLUMN grade TEXT')
             db.execute('BEGIN IMMEDIATE')
             if not db.execute('SELECT 1 FROM meta WHERE key=?', ('initialized',)).fetchone():
                 for username, role, default, env, name in [
@@ -3870,6 +3937,7 @@ class Application:
         keys = row.keys()
         result = {k: row[k] for k in ('id', 'name', 'role')}
         result['seat'] = row['seat'] if 'seat' in keys else None
+        result['grade'] = row['grade'] if 'grade' in keys else None
         return result
 
     @staticmethod
@@ -4054,6 +4122,12 @@ class Application:
     def dispatch(self, method, path, body, user, token_hash, ip, query=''):
         headers = {}
         # /api/health 即使 DB 還沒好也要能回應，讓 Render 健康檢查不會 timeout。
+        board_path = re.fullmatch(r'/api/leaderboard(?:/(\d{4}-\d{2}))?', path)
+        if method == 'GET' and board_path:
+            # 排行榜：每月每級前 10（得分榜 + 進步榜）。登入者都看得到——那是公開比較，
+            # 但只回姓名、座號與分數，不含作答內容。月份走路徑參數（本站不支援查詢參數）。
+            with self.db() as db:
+                return leaderboard_payload(db, board_path[1] or ''), headers
         if method == 'GET' and path == '/api/health':
             return self._dispatch_health(headers)
         # 其它 API 在 DB 還沒就緒時回 503，前端會自動重試。
@@ -4136,29 +4210,33 @@ class Application:
                 # 但只有管理員與建立者能改——createdBy 讓前端決定要不要顯示「編輯」。
                 with self.db() as db:
                     users = [{'id': r['id'], 'username': r['username'], 'name': r['name'], 'role': r['role'],
-                              'seat': r['seat'], 'createdBy': r['created_by']}
-                             for r in db.execute('SELECT id,username,name,role,seat,created_by '
+                              'seat': r['seat'], 'grade': r['grade'], 'createdBy': r['created_by']}
+                             for r in db.execute('SELECT id,username,name,role,seat,grade,created_by '
                                                  'FROM users ORDER BY id')]
                     owner = self.owner_id(db)
                 return {'users': users, 'ownerId': owner}, headers
             # 姓名可省略（只有學號的名單）：留空時以學號作為顯示名稱。
-            fields(body, ('username', 'name', 'password', 'seat'), ('username', 'password'))
+            fields(body, ('username', 'name', 'password', 'seat', 'grade'), ('username', 'password'))
             username = text(body['username'], '帳戶名稱', 40, strip=False)
             if not re.fullmatch(r'[A-Za-z0-9_.-]{3,40}', username):
                 fail(400, '帳戶名稱須為3至40個 ASCII 字母、數字或 _ . -。')
             name = student_name(body.get('name'), username)
             seat = seat_value(body.get('seat'))
+            try:
+                grade = self.dataadmin.grade_value(body.get('grade'))
+            except ValueError as exc:
+                fail(400, str(exc))
             pw = text(body['password'], '密碼', 256, strip=False)
             if len(pw) < 10:
                 fail(400, '密碼必須至少10字。')
             encoded = password_hash(pw)
             try:
                 with self.db() as db:
-                    cur = db.execute('INSERT INTO users(username,name,role,password,demo,seat,created_by) '
-                                     'VALUES(?,?,?,?,?,?,?)',
-                                     (username, name, 'student', encoded, 0, seat, user['id']))
+                    cur = db.execute('INSERT INTO users(username,name,role,password,demo,seat,grade,created_by) '
+                                     'VALUES(?,?,?,?,?,?,?,?)',
+                                     (username, name, 'student', encoded, 0, seat, grade, user['id']))
                     created = {'id': cur.lastrowid, 'username': username, 'name': name, 'role': 'student',
-                               'seat': seat, 'createdBy': user['id']}
+                               'seat': seat, 'grade': grade, 'createdBy': user['id']}
             except sqlite3.IntegrityError as exc:
                 if exc.sqlite_errorcode == sqlite3.SQLITE_CONSTRAINT_UNIQUE:
                     fail(409, '帳戶名稱已存在。')

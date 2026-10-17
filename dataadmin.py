@@ -349,6 +349,18 @@ class DataAdmin:
 
     # ---------- 編輯帳戶 ----------
     @staticmethod
+    def grade_value(value):
+        """年級：中一／中二／中三，或空（不列入排行榜）。"""
+        if value is None:
+            return None
+        text = str(value).strip()
+        if not text:
+            return None
+        if text not in ('中一', '中二', '中三', '中四', '中五', '中六'):
+            raise ValueError('年級須為中一至中六，或留空。')
+        return text
+
+    @staticmethod
     def owner_id(db):
         """管理員＝最早建立的教師帳號（內建的 teacher）。"""
         row = db.execute("SELECT id FROM users WHERE role='teacher' ORDER BY id LIMIT 1").fetchone()
@@ -438,9 +450,9 @@ class DataAdmin:
 
         重設密碼時會一併刪除該生所有登入工作階段，避免舊密碼仍然有效。
         """
-        allowed = {'username', 'name', 'seat', 'password'}
+        allowed = {'username', 'name', 'seat', 'grade', 'password'}
         if not isinstance(body, dict) or not body or set(body) - allowed:
-            self.fail(400, '只接受學號、姓名、班內號或新密碼，且至少要填一項。')
+            self.fail(400, '只接受學號、姓名、班內號、年級或新密碼，且至少要填一項。')
         row = db.execute('SELECT * FROM users WHERE id=?', (uid,)).fetchone()
         if row is None or row['role'] != 'student':
             self.fail(404, '找不到這位學生。')
@@ -467,6 +479,10 @@ class DataAdmin:
             assignments.append('seat=?')
             values.append(self.seat_value(body['seat']))
             changed.append('班內號')
+        if 'grade' in body:
+            assignments.append('grade=?')
+            values.append(self.grade_value(body['grade']))
+            changed.append('年級')
         revoked = 0
         if 'password' in body and str(body['password']).strip():
             fresh = self.text(body['password'], '新密碼', 256, strip=False)

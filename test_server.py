@@ -836,14 +836,14 @@ class APITests(unittest.TestCase):
         created = result['user']
         # createdBy 記錄是誰建立的（內建 teacher 是 id=2），用來判斷一般教師能改哪些帳號。
         self.assertEqual(created, {'id': 3, 'username': body['username'], 'name': body['name'],
-                                   'role': 'student', 'seat': None, 'createdBy': 2})
+                                   'role': 'student', 'seat': None, 'grade': None, 'createdBy': 2})
         self.request('POST', '/api/users', body, cookie=self.teacher, expect=409)
         self.request('POST', '/api/users', dict(body, username='student'), cookie=self.teacher, expect=409)
         _, listing, _ = self.request('GET', '/api/users', cookie=self.teacher, expect=200)
         self.assertEqual(set(listing), {'users', 'ownerId'})
         self.assertEqual(listing['users'][-1], created)
         for user in listing['users']:
-            self.assertEqual(set(user), {'id', 'username', 'name', 'role', 'seat', 'createdBy'})
+            self.assertEqual(set(user), {'id', 'username', 'name', 'role', 'seat', 'grade', 'createdBy'})
         self.assertEqual(listing['ownerId'], 2, 'ownerId 是最早建立的教師（內建 teacher）')
         with self.app.db() as db:
             row = db.execute('SELECT * FROM users WHERE id=?', (created['id'],)).fetchone()
@@ -858,7 +858,7 @@ class APITests(unittest.TestCase):
         _, session, _ = self.request('GET', '/api/session', cookie=cookie, expect=200)
         # /api/session 與 /api/login 都會附 isOwner（前端靠它決定要不要顯示管理員功能）。
         self.assertEqual(session['user'],
-                         {**{k: created[k] for k in ('id', 'name', 'role', 'seat')}, 'isOwner': False})
+                         {**{k: created[k] for k in ('id', 'name', 'role', 'seat', 'grade')}, 'isOwner': False})
         self.assertEqual(session['notice'], '')
         self.request('GET', '/api/users', cookie=cookie, expect=403)
         self.request('POST', '/api/users', dict(body, username='forbidden'), cookie=cookie, expect=403)
@@ -3352,6 +3352,62 @@ class DataAdminTests(unittest.TestCase):
             kept = db.execute('SELECT created_by FROM users WHERE id=?',
                               (leaver_student['id'],)).fetchone()
             self.assertIsNone(kept['created_by'], '教師刪除後他的學生改為無歸屬，但帳號要保留')
+
+    def test_leaderboard_by_grade_and_month(self):
+        """每月每級前 10：得分榜（該月／開學至今／累積）與進步榜（本月 ÷ 上月）。"""
+        students = {}
+        for uname, name, grade in (('l3a', '中三甲', '中三'), ('l3b', '中三乙', '中三'), ('l2a', '中二甲', '中二')):
+            _, out, _ = self.request('POST', '/api/users',
+                                     {'username': uname, 'name': name, 'password': 'LeaderPass12', 'grade': grade},
+                                     cookie=self.teacher, expect=200)
+            students[uname] = out['user']
+            self.assertEqual(out['user']['grade'], grade, '年級要寫入')
+        # 年級不合法要 400
+        self.request('POST', '/api/users',
+                     {'username': 'lbad', 'name': '壞年級', 'password': 'LeaderPass12', 'grade': '中七'},
+                     cookie=self.teacher, expect=400)
+        with self.app.db() as db:
+            qid = db.execute('SELECT id FROM questions LIMIT 1').fetchone()['id']
+
+            def add(uid, score, day):
+                db.execute("INSERT INTO attempts(user_id,question_id,answer_text,max_score,status,feedback,"
+                           "submitted_at,method,score) VALUES(?,?,?,?,?,?,?,?,?)",
+                           (uid, qid, 'x', 10, 'graded', '', day + 'T10:00:00Z', 'rule', score))
+
+            # 本月（2026-10）：中三甲 30 分、中三乙 12 分、中二甲 50 分
+            add(students['l3a']['id'], 30, '2026-10-05')
+            add(students['l3b']['id'], 12, '2026-10-06')
+            add(students['l2a']['id'], 50, '2026-10-07')
+            # 上月（2026-09）：中三甲 10 分、中三乙 12 分 → 進步比例 3.0 vs 1.0
+            add(students['l3a']['id'], 10, '2026-09-10')
+            add(students['l3b']['id'], 12, '2026-09-11')
+            # 上學年（2026-03）：只計入累積，不計入開學至今
+            add(students['l3a']['id'], 7, '2026-03-01')
+
+        _, board, _ = self.request('GET', '/api/leaderboard/2026-10', cookie=self.teacher, expect=200)
+        self.assertEqual(board['month'], '2026-10')
+        self.assertEqual(board['prevMonth'], '2026-09')
+        self.assertEqual(board['termStart'], '2026-09-01', '學年從 9/1 起算')
+
+        # 得分榜：中三按本月得分排，中三甲 30 > 中三乙 12
+        s3 = board['score']['中三']
+        self.assertEqual([x['name'] for x in s3], ['中三甲', '中三乙'])
+        self.assertEqual(s3[0]['rank'], 1)
+        self.assertEqual(s3[0]['monthScore'], 30)
+        self.assertEqual(s3[0]['termScore'], 40, '開學至今＝9 月 10 + 10 月 30')
+        self.assertEqual(s3[0]['totalScore'], 47, '累積含上學年的 7 分')
+        self.assertEqual(board['score']['中二'][0]['name'], '中二甲', '不同年級分開排')
+
+        # 進步榜：中三甲 30/10 = 3.0，中三乙 12/12 = 1.0
+        p3 = board['progress']['中三']
+        self.assertEqual(p3[0]['name'], '中三甲')
+        self.assertEqual(p3[0]['ratio'], 3.0)
+        self.assertEqual(p3[1]['ratio'], 1.0)
+        self.assertNotIn('中二', board['progress'], '中二甲上月沒有分數，不列入進步榜')
+
+        # 月份格式錯誤要 400
+        self.request('GET', '/api/leaderboard/2026-13', cookie=self.teacher, expect=400)
+        self.request('GET', '/api/leaderboard/abc', cookie=self.teacher, expect=404)  # 路徑不匹配 → 404
 
     def teacher_id(self):
         with self.app.db() as db:
