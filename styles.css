@@ -655,3 +655,16 @@ html[data-theme=night] .hero-eyebrow,html[data-theme=night] .font-scale,
 html[data-theme=night] .font-scale-note,html[data-theme=night] .field-hint{color:#8ea09f}
 /* 次要按鈕：白底仍保留（避免與其他按鈕混淆），但字色提亮，確保墨夜版也看得到 */
 html[data-theme=night] .secondary{background:#1a2124;color:#c9d4d2;border-color:#3d484b}
+
+/* ── 墨夜：輸入框、數學鍵盤、學習建議卡（原本都是白底／淡綠底深字）── */
+html[data-theme=night] input,html[data-theme=night] textarea,html[data-theme=night] select{
+  background:#1e262a;color:#e3eaec;border-color:#33403f}
+html[data-theme=night] input::placeholder,html[data-theme=night] textarea::placeholder{
+  color:#7f918d;opacity:1}
+html[data-theme=night] .mk-key{background:#222d2f;color:#d5e0de;border-color:#2f3b3d}
+html[data-theme=night] .mk-key:hover{background:#2a3739;border-color:#3d4c4e}
+html[data-theme=night] .mk-key:active{background:#31403f}
+html[data-theme=night] .mk-tab{background:#222d2f;color:#a9b8b5;border-color:#2f3b3d}
+html[data-theme=night] .mk-tab:hover{background:#2a3739}
+html[data-theme=night] .mk-tab.active{background:var(--mint);border-color:#3d5a4f;color:var(--green)}
+html[data-theme=night] .learning-advice{background:#1b2a26;border-color:#2c3d37}
