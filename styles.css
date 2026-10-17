@@ -599,3 +599,15 @@ button.step.done:hover span{background:var(--mint);color:var(--green)}
    讓題目與書寫區吃滿寬度——作答時最需要的是空間，不是旁邊的說明。 */
 .practice-layout{grid-template-columns:minmax(0,1fr)}
 .practice-layout .right-stack{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:4px}
+/* 作答批閱：一筆作答不需要那麼高的列高，壓緊湊讓一屏看到更多筆（原本只看到 3 筆）。 */
+.record{padding:14px 0;gap:12px}
+.record-main strong{font-size:calc(15px*var(--fs));line-height:1.5}
+.record-main p{line-height:1.6;margin:5px 0}
+.record-actions{margin-top:7px}
+.history-filters{gap:6px}
+.record-advice summary{font-size:calc(12px*var(--fs));padding:1px 0}
+.record-main small{font-size:calc(12px*var(--fs))}
+/* 作業與成績：作業卡片的內距與間距收窄，清單一屏能看到更多份。 */
+.assignment-card{padding:18px}
+.assignment-list{gap:12px}
+.assignment-card-head h2{font-size:calc(17px*var(--fs))}
