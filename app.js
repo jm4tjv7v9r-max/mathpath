@@ -1155,13 +1155,14 @@ const MATH_KEYBOARD = [
     ['\\overrightarrow{}','有向線段'],['\\widehat{}','弧'],
   ]],
 ];
-function mathKeyboardHtml(){
+function mathKeyboardHtml(suffix, hidden=true){
+  const kid = suffix ? `math-keyboard-${suffix}` : 'math-keyboard';
   const tabs = MATH_KEYBOARD.map(([id,label],i)=>
     `<button type="button" class="mk-tab ${i===0?'active':''}" data-mk-tab="${id}">${esc(label)}</button>`).join('');
   const panels = MATH_KEYBOARD.map(([id,label,keys],i)=>
     `<div class="mk-panel" data-mk-panel="${id}"${i===0?'':' hidden'}>${keys.map(([tex,text])=>
       `<button type="button" class="mk-key" data-mk-insert="${esc(tex)}" title="${esc(tex)}">${esc(text)}</button>`).join('')}</div>`).join('');
-  return `<div class="math-keyboard" id="math-keyboard" hidden><div class="mk-head">${icon('practice')}<span class="mk-title">數學鍵盤</span><span class="small-text">點按插入符號，可在輸入框直接修改</span></div><div class="mk-tabs">${tabs}</div>${panels}</div>`;
+  return `<div class="math-keyboard" id="${kid}"${hidden?' hidden':''}><div class="mk-head">${icon('practice')}<span class="mk-title">數學鍵盤</span><span class="small-text">點按插入符號，可在輸入框直接修改</span></div><div class="mk-tabs">${tabs}</div>${panels}</div>`;
 }
 function insertMathSnippet(snippet){
   const input=$('#final-answer');
@@ -1214,14 +1215,20 @@ async function openMathEditor(){
   catch(err){toast(err.message);return;}
   const current=input.value.trim();
   modal(`<p class="eyebrow">MATH EDITOR</p><h2>公式編輯器</h2>
-  <p class="modal-intro">像在 Word 裡打公式：點下方按鈕就會直接長出分數、根號、次方的結構，游標可以移進分母或根號裡。完成後按「插入答案」寫回作答欄。</p>
+  <p class="modal-intro">像在 Word 裡打公式：下方鍵盤與作答頁完全相同（常用、分數根號、希臘字母、代數、三角、微積分、數列、集合邏輯、幾何向量），點一下就會長出對應結構。完成後按「插入答案」寫回作答欄。</p>
   <div class="math-editor-host"><math-field id="math-editor-field" virtual-keyboard-mode="manual"></math-field></div>
+  ${mathKeyboardHtml('editor', false)}
   <p class="error-text" id="math-editor-error"></p>
   <div class="submit-row"><button class="primary" id="math-editor-ok">${icon('check')}插入答案</button><button class="secondary" data-action="close-modal">取消</button></div>`);
   const field=$('#math-editor-field');
   if(!field){toast('公式編輯器無法啟動，請改用數學鍵盤輸入。');return;}
   field.value=current;
   field.focus();
+  // 彈窗內的鍵盤與作答頁共用同一份 MATH_KEYBOARD 資料，插入目標改成 math-field。
+  bindMathKeyboard($('#math-keyboard-editor'), snippet=>{
+    field.insert(snippet);
+    field.focus();
+  });
   $('#math-editor-ok').onclick=()=>{
     const latex=(field.value||'').trim();
     input.value=latex;
@@ -1237,11 +1244,12 @@ function syncMathKeyboard(){
   keyboard.hidden = answerMode !== 'text';
   updateMathPreview();
 }
-function bindMathKeyboard(){
-  const keyboard=$('#math-keyboard');
+function bindMathKeyboard(root, insert){
+  const keyboard=root||$('#math-keyboard');
   if(!keyboard) return;
   const input=$('#final-answer');
-  if(input) input.addEventListener('input', updateMathPreview);
+  if(!root && input) input.addEventListener('input', updateMathPreview);
+  const doInsert = insert || (snippet=>insertMathSnippet(snippet));
   keyboard.querySelectorAll('[data-mk-tab]').forEach(tab=>{
     tab.onclick=()=>{
       keyboard.querySelectorAll('[data-mk-tab]').forEach(other=>other.classList.toggle('active', other===tab));
@@ -1251,9 +1259,9 @@ function bindMathKeyboard(){
     };
   });
   keyboard.querySelectorAll('[data-mk-insert]').forEach(key=>{
-    key.onclick=()=>insertMathSnippet(key.dataset.mkInsert);
+    key.onclick=()=>doInsert(key.dataset.mkInsert);
   });
-  syncMathKeyboard();
+  if(!root) syncMathKeyboard();
 }
 function renderAnswerArea(){ensureAnswerMode();renderAnswerAreaInner();syncMathKeyboard();}
 function renderAnswerAreaInner(){const area=$('#answer-area');if(!area)return;if(answerMode==='choice'){const opts=(currentQuestion&&currentQuestion.options)||[];area.innerHTML=`<label class="field-label">點選你的答案</label><div class="choice-picker" id="choice-picker">${opts.map((o,j)=>{const L=OPTION_LETTERS[j];return `<button type="button" class="choice-option ${selectedOption===L?'selected':''}" data-choice="${L}" aria-pressed="${selectedOption===L}"><span class="option-letter">${L}</span><span class="option-text">${mathText(o)}</span></button>`;}).join('')}</div><p class="field-hint">點選一項即完成作答；自主練習提交後可即時核對，作業結果須教師覆核。</p>`;$$('[data-choice]').forEach(b=>b.addEventListener('click',()=>{selectedOption=b.dataset.choice;$('#final-answer').value=selectedOption;lastResult=null;renderAnswerArea();scheduleDraft();}));return;}if(answerMode==='hand'){area.innerHTML=`<div class="writing-toolbar"><div class="tool-group"><button class="icon-btn active" id="pen-btn" aria-label="畫筆">${icon('practice')}</button><button class="icon-btn" id="eraser-btn" aria-label="橡皮擦">${icon('eraser')}</button><span style="height:20px;border-right:1px solid var(--border);margin:0 4px"></span>${['#274b3b','#456bab','#b96c5d'].map(c=>`<button class="pen-color ${c===penColor?'selected':''}" style="background:${c}" data-color="${c}" aria-label="${c==='#274b3b'?'深綠':c==='#456bab'?'藍':'紅'}色畫筆"></button>`).join('')}<button class="icon-btn" id="undo-btn" aria-label="撤銷一筆">${icon('undo')}</button><button class="icon-btn" id="clear-btn" aria-label="清空畫布">${icon('trash')}</button></div><span class="small-text">觸控筆 / 滑鼠皆可</span></div><div class="canvas-wrap hand-canvas-wrap"><canvas id="hand-canvas" width="${handSize()[2]}" height="${handSize()[3]}" aria-label="手寫解題畫布"></canvas><div class="canvas-placeholder" id="canvas-placeholder">在這裡寫下你的思考…</div></div><div class="hand-size-row">${handSizeControl()}<span class="small-text">步驟多就換大一點；已寫的內容會保留。</span></div><p class="field-hint">提示：先寫出算式，再補上推導。切換文字模式不會清除手寫內容。</p>`;initCanvas();const sizeSel=$('#hand-size');if(sizeSel)sizeSel.onchange=()=>{const next=HAND_SIZES.find(([id])=>id===sizeSel.value);if(!next)return;const current=handSize();if(strokes.length&&next[3]<current[3]&&!confirm(`縮小後，超出範圍的筆跡不會出現在送出的圖片上（畫布內仍保留，可再放大回來）。仍要換成「${next[1]}」？`)){renderAnswerArea();return;}try{localStorage.setItem('mathpath_hand_size',next[0]);}catch{}renderAnswerArea();toast(`書寫區已換成「${next[1]}」。`);};$('#pen-btn').onclick=()=>setEraser(false);$('#eraser-btn').onclick=()=>setEraser(true);$('#undo-btn').onclick=()=>{if(strokes.length)redoStrokes.push(strokes.pop());drawCanvas();lastResult=null;scheduleDraft();};$('#clear-btn').onclick=()=>{if(!strokes.length)return;if(confirm('清空尚未提交的手寫內容？此動作無法復原。')){strokes=[];redoStrokes=[];drawCanvas();lastResult=null;scheduleDraft();}};$$('[data-color]').forEach(b=>b.onclick=()=>{penColor=b.dataset.color;setEraser(false);$$('[data-color]').forEach(x=>x.classList.toggle('selected',x===b));});}else if(answerMode==='text'){area.innerHTML=`<p class="field-hint">${icon('practice')}用下方數學鍵盤輸入數學式（例如分數、根號、次方），也可直接打字；輸入框下方會即時顯示排版結果。純文字作答（如 5 cm）同樣可以。</p>`;}else{const isPdf=!!answerFile&&answerFile.indexOf('data:application/pdf')===0;area.innerHTML=`<label class="upload-answer" id="answer-drop">${isPdf?`<span class="upload-file">${icon('file')}<strong>已選擇 PDF 作答</strong><small>提交時會先讀取 PDF 的文字；掃描檔會取用內嵌的圖片</small></span>`:answerFile?`<img src="${answerFile}" alt="待提交的手寫解題">`:`${icon('image')}<strong>上傳紙上的解題過程</strong><small>相片 JPG / PNG 最多 25 MB（上傳前會自動壓縮）、PDF 最多 20 MB；請保持完整、清晰</small>`}<input id="answer-upload" type="file" accept="image/*,application/pdf" hidden></label><div class="upload-actions"><button type="button" class="secondary" id="answer-select">選擇檔案</button><button type="button" class="secondary" id="answer-camera">${icon('image')}用手機拍照</button><button type="button" class="secondary" id="answer-remove" ${answerFile||uploadReading?'':'disabled'}>移除檔案</button><span class="small-text" id="answer-read-status" role="status">${uploadReading?'正在讀取並壓縮相片，請稍候…':answerFile?(isPdf?'已選擇 PDF 作答，提交時會先讀取 PDF 文字':'相片已壓縮至約 '+fmtBytes(dataUrlBytes(answerFile))+'，送出更快'):'可選擇檔案或用手機相機拍照。'}</span><input id="answer-capture" type="file" accept="image/*" capture="environment" hidden></div>`;
