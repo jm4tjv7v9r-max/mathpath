@@ -793,8 +793,11 @@ function guidePage(role){
   $$('[data-guide-role]').forEach(b=>b.onclick=()=>guidePage(b.dataset.guideRole));
 }
 
-function shell(){let nav=[['guide','新手上路'],['homework',S.user?.role==='teacher'?'作業與成績':'我的作業'],['calendar','日曆'],['mock','模擬測驗'],['bank','數學題庫'],['practice','自主練習'],['import','試卷拆題'],['mistakes',S.user?.role==='teacher'?'作答批閱':'我的錯題本'],['growth','學習足跡']];if(S.user?.role!=='student')nav=nav.filter(([id])=>id!=='mock');// 試卷拆題是教師功能（後端 /api/papers/parse 有 self.teacher），學生與訪客不該看到入口。
+function shell(){// 「新手上路」放最後——那是第一次來看的，不是每天要點的。
+let nav=[['homework',S.user?.role==='teacher'?'作業與成績':'我的作業'],['calendar','日曆'],['mock','模擬測驗'],['bank','數學題庫'],['practice','自主練習'],['import','試卷拆題'],['mistakes',S.user?.role==='teacher'?'作答批閱':'我的錯題本'],['growth','學習足跡'],['guide','新手上路']];if(S.user?.role!=='student')nav=nav.filter(([id])=>id!=='mock');// 試卷拆題是教師功能（後端 /api/papers/parse 有 self.teacher），學生與訪客不該看到入口。
 if(S.user?.role!=='teacher')nav=nav.filter(([id])=>id!=='import');
+// 教師不寫作業，學習足跡永遠是空的——隱藏，避免點進去看到空白頁。
+if(S.user?.role==='teacher')nav=nav.filter(([id])=>id!=='growth');
 if(S.user?.role==='teacher'){nav=nav.filter(([id])=>id!=='practice');const at=nav.findIndex(([id])=>id==='mistakes');nav.splice(at<0?nav.length:at,0,['newq','新增題目']);nav.push(['ai','模型端點']);}$('#nav').innerHTML=nav.map(([id,label])=>`<button class="nav-item ${page===id?'active':''}" data-page="${id}">${icon(id)}<span>${label}</span>${id==='bank'?`<span class="count">${S.user?S.questions.length:'示例'}</span>`:id==='import'?'<span class="new">教師</span>':''}</button>`).join('');$('#settings-nav').innerHTML=icon('settings')+'<span>設定與隱私</span>';$('#settings-nav').classList.toggle('active',page==='settings');$('#font-scale').innerHTML=fontScaleControl();$('#theme-switch').innerHTML=themeControl();$('#account').innerHTML=`<span class="avatar">${S.user?(S.user.role==='teacher'?'師':'學'):'M'}</span><span class="account-info">${S.user?esc(S.user.name):'訪客預覽'}<small>${S.user?(S.user.role==='teacher'?'教師工作空間':'中三數學學習者'):'登入後開始學習'}</small></span>${icon(S.user?'chevron':'logout')}`;$('#avatar').textContent=S.user?(S.user.role==='teacher'?'師':'學'):'M';const labels={guide:'新手上路',homework:S.user?.role==='teacher'?'作業與成績':'我的作業',calendar:'日曆',mock:'模擬測驗',ai:'模型端點',bank:'數學題庫',practice:'自主練習',import:'試卷拆題',mistakes:S.user?.role==='teacher'?'作答批閱':'我的錯題本',growth:'學習足跡',newq:'新增題目',settings:'設定與隱私'};$('#crumb').textContent=labels[page] || '數學題庫';renderCalculator();}
 
 let calCursor=null,calSelected=null;
