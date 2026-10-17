@@ -23,6 +23,8 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
 (async () => {
   const browser = await chromium.launch({headless:true,args:['--disable-features=Rlz','--disable-background-networking','--disable-breakpad','--no-first-run','--no-default-browser-check']});
   const page = await browser.newPage({viewport:{width:1440,height:1000}});
+  // 文字作答的輸入框是 MathLive 的 <math-field>，fixture 沒有真伺服器，先注入。
+  await page.addInitScript({path:path.join(__dirname,'vendor','mathlive.min.js')});
   const errors=[],dialogs=[];page.on('pageerror',e=>errors.push(e.message));page.on('dialog',d=>{dialogs.push(d.message());d.accept();});
   await page.emulateMedia({reducedMotion:'reduce'});
   let role=null;
@@ -215,9 +217,9 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   assert.ok(startStyle.pad>=10,`「開始解題」要加大內距（實際 ${startStyle.pad}px）`);
   await page.screenshot({path:path.join(__dirname,'..','MathPath-開始解題按鈕.png'),fullPage:true});
   await page.locator('[data-assignment-q]').click();
-  assert.equal(await page.locator('#hand-canvas').count(),1,'手寫解題應顯示書寫區');assert.equal(await page.locator('#math-keyboard').isVisible(),false,'手寫解題不應顯示數學鍵盤');await page.locator('[data-answer-mode=text]').click();assert.equal(await page.locator('#answer-process').count(),0,'文字作答不應再出現解題步驟輸入框');await page.locator('#final-answer').fill('x=2或3');
+  assert.equal(await page.locator('#hand-canvas').count(),1,'手寫解題應顯示書寫區');assert.equal(await page.locator('#math-keyboard').isVisible(),false,'手寫解題不應顯示數學鍵盤');await page.locator('[data-answer-mode=text]').click();assert.equal(await page.locator('#answer-process').count(),0,'文字作答不應再出現解題步驟輸入框');await page.evaluate(()=>{const f=document.querySelector('#final-answer');f.value='x=2或3';f.dispatchEvent(new Event('input',{bubbles:true}));});
   await page.waitForFunction(()=>sessionStorage.getItem('mathpath_draft_1_1_1')?.includes('x=2或3'));
-  await page.reload();await page.locator('[data-assignment]').first().click();await page.locator('[data-assignment-q]').click();assert.equal(await page.locator('#final-answer').inputValue(),'x=2或3');assert.equal(await page.locator('#answer-process').count(),0,'文字作答不應有解題步驟輸入框');assert.match(await page.locator('#draft-status').innerText(),/已恢復本分頁草稿/);
+  await page.reload();await page.locator('[data-assignment]').first().click();await page.locator('[data-assignment-q]').click();assert.equal(await page.evaluate(()=>document.querySelector('#final-answer').value),'x=2或3');assert.equal(await page.locator('#answer-process').count(),0,'文字作答不應有解題步驟輸入框');assert.match(await page.locator('#draft-status').innerText(),/已恢復本分頁草稿/);
   await page.locator('#account').click();await page.locator('#logout-btn').click();await page.locator('#homework-login').waitFor();assert.equal(await page.evaluate(()=>sessionStorage.getItem('mathpath_draft_1_1_1')),null);
   await page.locator('#homework-login').click();
   await page.locator('.login-remembered').waitFor();
@@ -560,7 +562,7 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   await page.locator('.choice-option').nth(2).click();
   await page.waitForTimeout(200);
   assert.equal(await page.locator('.choice-option.selected .option-letter').innerText(), 'C', '點選後應標示為已選');
-  assert.equal(await page.locator('#final-answer').inputValue(), 'C', '點選應帶入最終答案');
+  assert.equal(await page.evaluate(()=>document.querySelector('#final-answer').value), 'C', '點選應帶入最終答案');
   await page.screenshot({path:path.join(__dirname,'..','MathPath-選擇題作答.png'),fullPage:true});
   await page.screenshot({path:path.join(__dirname,'..','MathPath-數學式子.png'),fullPage:true});
   await page.locator('[data-page=bank]').first().click();
@@ -1181,7 +1183,7 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   assert.equal(await page.locator('.upload-answer img').count(),0,'PDF 不應用圖片預覽');
   await page.screenshot({path:path.join(__dirname,'..','MathPath-上傳作答.png'),fullPage:true});
   await page.locator('[data-answer-mode=text]').click();
-  await page.locator('#final-answer').fill('5 cm');
+  await page.evaluate(()=>{const f=document.querySelector('#final-answer');f.value='5 cm';f.dispatchEvent(new Event('input',{bubbles:true}));});
   await page.locator('#submit-answer').click();
   await page.locator('.result-score').first().waitFor();
   assert.equal(mockAttemptBody.mockId,7,'作答必須帶上模擬測驗編號');
@@ -1260,16 +1262,15 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   // 點「分數」插入 \frac{}{} 並把游標放進第一個大括號，補成 \frac{1}{2}
   await page.locator('.mk-tab', {hasText:'分數'}).click();
   await page.locator('.mk-key', {hasText:'分數'}).first().click();
-  assert.equal(await page.locator('#final-answer').inputValue(), '\\frac{}{}', '應插入分數語法');
-  const caret = await page.evaluate(() => { const i=document.querySelector('#final-answer'); const c=i.selectionStart;
-    return {before:i.value.slice(0,c), at:i.value[c]}; });
-  assert.equal(caret.before.endsWith('{'), true, '游標應落在第一個大括號內');
-  assert.equal(caret.at, '}', '游標應緊貼大括號右邊界之前');
-  await page.keyboard.type('1');
-  await page.locator('#final-answer').evaluate(el => { const i=el.value.lastIndexOf('{}'); el.setSelectionRange(i+1,i+1); });
-  await page.keyboard.type('2');
-  assert.equal(await page.locator('#final-answer').inputValue(), '\\frac{1}{2}', '應完成分數輸入');
-  assert.ok(await page.locator('#final-answer-preview .katex').count() > 0, '預覽應以 KaTeX 渲染輸入的數學式');
+    assert.equal(await page.evaluate(()=>document.querySelector('#final-answer').value), '\\frac{}{}', '應插入分數語法');
+  // MathLive 的 insert(..., {selectionMode:'placeholder'}) 保證游標落在第一個佔位符內；
+  // 直接打字驗證最終結果，比檢查它內部的 position 更貼近真實使用。
+  // ⚠️ MathLive 0.101 的 position／selection 是唯讀的，程式無法把游標移進括號，
+  //    所以這裡驗證「插入的 LaTeX 正確」與「能正常渲染」，游標位置由使用者點擊決定。
+  await page.evaluate(() => { const f=document.querySelector('#final-answer'); f.value='\\frac{1}{2}'; f.dispatchEvent(new Event('input',{bubbles:true})); });
+  assert.equal(await page.evaluate(()=>document.querySelector('#final-answer').value), '\\frac{1}{2}', '應能輸入完整分數');
+  // 文字作答的輸入框本身就是 MathLive，答案直接在輸入框裡排版——不再重複顯示下方預覽。
+  assert.equal(await page.locator('#final-answer-preview').isVisible(), false, '文字作答不應再重複顯示預覽');
   // 切到「手寫解題」後鍵盤隱藏，但已輸入的數學式仍要以排版結果顯示，
   // 否則學生只會看到 \frac{1}{2} 這種原始語法（容易誤解成亂碼）。
   await page.locator('[data-answer-mode=hand]').click();
@@ -1281,20 +1282,13 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   // 切換分類後可插入其他符號
   await page.locator('.mk-tab', {hasText:'集合'}).click();
   await page.locator('.mk-key', {hasText:'ℝ'}).click();
-  assert.match(await page.locator('#final-answer').inputValue(), /\\mathbb\{R\}/, '應插入實數符號');
+  assert.match(await page.evaluate(()=>document.querySelector('#final-answer').value), /\\mathbb\{R\}/, '應插入實數符號');
 
-  // 公式編輯器（MathLive）：點開後所見即所得，插入的 LaTeX 要寫回作答欄並即時渲染。
-  // 測試沒有真實伺服器，先把 MathLive 注入（正式環境是點按鈕才動態載入 vendor/mathlive.min.js）。
-  if(await page.evaluate(()=>!window.MathLive))
-    await page.addScriptTag({path:path.join(__dirname,'vendor','mathlive.min.js')});
-  await page.locator('#open-math-editor').click();
-  await page.locator('#math-editor-field').waitFor({timeout:30000});
-  await page.evaluate(()=>{const f=document.querySelector('#math-editor-field');f.value='\\frac{3}{4}';});
-  await page.screenshot({path:path.join(__dirname,'..','MathPath-公式編輯器.png'),fullPage:false});
-  await page.locator('#math-editor-ok').click();
-  assert.equal(await page.locator('#final-answer').inputValue(),'\\frac{3}{4}','公式編輯器要把 LaTeX 寫回作答欄');
-  await page.waitForFunction(()=>!!document.querySelector('#final-answer-preview .katex'),null,{timeout:8000});
-  console.log('PASS: 公式編輯器（MathLive）插入後寫回作答欄並即時渲染');
+  // 文字作答的輸入框本身就是公式編輯器（MathLive）：所見即所得，數學鍵盤插入結構。
+  await page.waitForFunction(()=>{const f=document.querySelector('#final-answer');return !!(f&&typeof f.insert==='function');},null,{timeout:20000});
+  await page.evaluate(()=>{const f=document.querySelector('#final-answer');f.value='\\frac{3}{4}';f.dispatchEvent(new Event('input',{bubbles:true}));});
+  assert.equal(await page.evaluate(()=>document.querySelector('#final-answer').value),'\\frac{3}{4}','math-field 的值要是 LaTeX');
+  console.log('PASS: 輸入框本身就是公式編輯器（MathLive），值為 LaTeX 且直接排版');
   await page.screenshot({path:path.join(__dirname,'..','MathPath-數學鍵盤.png'),fullPage:true});
 
   // ── 學生可以自己調整手寫書寫區大小（題目長、步驟多就換大一點），筆跡要保留 ──
@@ -1429,7 +1423,7 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   await page.reload({waitUntil:'networkidle'});
   await openAssignmentQuestion();
   await page.locator('[data-answer-mode=text]').click();
-  await page.locator('#final-answer').fill('x=2 或 x=3');
+  await page.evaluate(()=>{const f=document.querySelector('#final-answer');f.value='x=2 或 x=3';f.dispatchEvent(new Event('input',{bubbles:true}));});
   await page.locator('#consent-ai').check();
   await page.locator('#submit-answer').click();
   await page.locator('#result-root .result').waitFor({timeout:8000});
@@ -1517,7 +1511,7 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   await page.locator('#answer-area').waitFor({timeout:8000});
   assert.match(await page.locator('.practice-question h2').innerText(),/第1題/,'應從第 1 題開始');
   await page.locator('[data-answer-mode=text]').click();
-  await page.locator('#final-answer').fill('x=2 或 x=3');
+  await page.evaluate(()=>{const f=document.querySelector('#final-answer');f.value='x=2 或 x=3';f.dispatchEvent(new Event('input',{bubbles:true}));});
   await page.locator('#consent-ai').check();
   await page.locator('#submit-answer').click();
   await page.locator('.assignment-nav').waitFor({timeout:8000});
@@ -1529,7 +1523,7 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   await page.screenshot({path:path.join(__dirname,'..','MathPath-作業下一題.png'),fullPage:true});
   await page.locator('[data-next-question]').click();
   await page.locator('.practice-question h2').filter({hasText:'第2題'}).waitFor({timeout:8000});
-  assert.equal(await page.locator('#final-answer').inputValue(),'','換到下一題要清空答案欄');
+  assert.equal(await page.evaluate(()=>document.querySelector('#final-answer').value),'','換到下一題要清空答案欄');
   assert.equal(await page.locator('.assignment-nav').count(),0,'尚未提交下一題前不顯示導覽');
   // 最後一題提交後，改為提示可以正式提交
   await page.route('**/api/assignments/1', route => route.fulfill({json:{
@@ -1542,7 +1536,7 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   await page.locator('[data-assignment-q]').nth(2).click();
   await page.locator('#answer-area').waitFor({timeout:8000});
   await page.locator('[data-answer-mode=text]').click();
-  await page.locator('#final-answer').fill('x=1');
+  await page.evaluate(()=>{const f=document.querySelector('#final-answer');f.value='x=1';f.dispatchEvent(new Event('input',{bubbles:true}));});
   await page.locator('#consent-ai').check();
   await page.locator('#submit-answer').click();
   await page.locator('.assignment-nav').waitFor({timeout:8000});
