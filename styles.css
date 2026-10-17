@@ -686,15 +686,3 @@ html[data-theme=night] .tip-panel .text-button{color:#c9a85f}
 .math-editor-host math-field{width:100%;font-size:calc(22px*var(--fs));min-height:56px;
   --caret-color:var(--green);--selection-background-color:var(--mint)}
 html[data-theme=night] .math-editor-host{background:#1a2124}
-/* MathLive 的 <math-field>：升級前是 inline 元素，min-height 對它無效 → 會是一片空白。
-   給它塊級 + 最小高度，並在載入期間顯示提示，避免學生以為壞了。 */
-math-field.answer-field{display:block;min-height:56px;padding:12px 14px;background:var(--surface-soft);
-  border:1px solid var(--border);border-radius:10px;font-size:calc(19px*var(--fs))}
-math-field:not(:defined){display:block;min-height:56px;border:1px dashed var(--border);
-  border-radius:10px;background:var(--surface-soft);padding:16px 14px}
-math-field:not(:defined)::before{content:"正在載入公式編輯器…";color:var(--muted-2);font-size:calc(13px*var(--fs))}
-math-field[data-mathlive-failed]{display:block;min-height:56px;border:1px solid #c96a5a;
-  border-radius:10px;background:#fdf3f1;padding:16px 14px}
-math-field[data-mathlive-failed]::before{content:"公式編輯器載入失敗，請重新整理頁面再試。";color:#a4513c;font-size:calc(13px*var(--fs))}
-html[data-theme=night] math-field.answer-field{background:#1a2124}
-html[data-theme=night] math-field[data-mathlive-failed]{background:#2a1d1a;border-color:#6b3b32}
