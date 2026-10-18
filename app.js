@@ -3739,19 +3739,62 @@ function createClassModal(){
     catch(err){$('#class-error').textContent=err.message;b.disabled=false;}
   };
 }
-// 管理班級學生：改名稱與勾選名單。
+// 管理班級學生：名稱預設唯讀（按「改名」才可編輯）；可按匯入老師篩選學生。
 function manageClassModal(id){
   const cls=(HW.classes||[]).find(c=>c.id===id);
   if(!cls){toast('找不到這個班級。');return;}
-  const picked=new Set(cls.studentIds||[]);
   const list=HW.students||[];
-  modal(`<p class="eyebrow">CLASSROOM</p><h2>管理學生 · ${esc(cls.name)}</h2><p class="modal-intro">勾選要加入這個班級的學生。每份作業發布時會保存當下的收件名單快照。</p><form id="class-form"><div class="form-field"><label class="field-label" for="class-name">班級名稱</label><input id="class-name" value="${esc(cls.name)}" maxlength="100" required></div><div class="student-picks">${list.length?list.map(s=>`<label class="pick-row"><input type="checkbox" name="students" value="${s.id}"${picked.has(s.id)?' checked':''}><span>${s.seat?`<span class="seat-badge">${esc(s.seat)}</span>`:''}${esc(s.name)}${s.username===s.name?'':`<small>${esc(s.username)}</small>`}</span></label>`).join(''):'<p class="field-hint">還沒有學生帳戶，請先到「設定與隱私 → 帳號管理」建立。</p>'}</div><p class="error-text" id="class-error"></p><button class="primary wide" type="submit">儲存名單 ${icon('check')}</button></form>`);
+  const picked=new Set(cls.studentIds||[]);      // 真正的名單（不受畫面篩選影響）
+  const makers=[...new Set(list.map(s=>s.createdBy).filter(v=>v!==null&&v!==undefined))];
+  const makerName=(v)=>{const s=list.find(x=>x.createdBy===v);return (s&&s.createdByName)||'（未記錄）';};
+
+  const renderPicks=(filter)=>{
+    const shown=filter?list.filter(s=>String(s.createdBy)===String(filter)):list;
+    const box=$('#class-picks');
+    if(!box)return;
+    box.innerHTML=shown.length?shown.map(s=>`<label class="pick-row"><input type="checkbox" name="students" value="${s.id}"${picked.has(s.id)?' checked':''}><span>${s.seat?`<span class="seat-badge">${esc(s.seat)}</span>`:''}${esc(s.name)}${s.username===s.name?'':`<small>${esc(s.username)}</small>`}${s.createdByName?`<small>· 由 ${esc(s.createdByName)} 匯入</small>`:''}</span></label>`).join('')
+      :'<p class="field-hint">這個老師名下還沒有學生。</p>';
+    $$('#class-picks [name=students]').forEach(cb=>{
+      cb.onchange=()=>{const v=Number(cb.value);if(cb.checked)picked.add(v);else picked.delete(v);};
+    });
+  };
+
+  modal(`<p class="eyebrow">CLASSROOM</p><h2>管理學生 · ${esc(cls.name)}</h2><p class="modal-intro">勾選要加入這個班級的學生。名單在發布作業時會保存快照。</p>
+  <form id="class-form">
+    <div class="form-field">
+      <label class="field-label" for="class-name">班級名稱</label>
+      <div style="display:flex;gap:8px;align-items:center">
+        <input id="class-name" value="${esc(cls.name)}" maxlength="100" readonly style="flex:1">
+        <button type="button" class="secondary" id="class-rename">改名</button>
+      </div>
+      <p class="field-hint" id="class-rename-hint">班級名稱不會隨便改動；要改請按「改名」。</p>
+    </div>
+    <div class="form-field">
+      <label class="field-label" for="class-maker">匯入老師</label>
+      <select id="class-maker"><option value="">全部老師</option>${makers.map(v=>`<option value="${v}">${esc(makerName(v))}</option>`).join('')}</select>
+    </div>
+    <div class="student-picks" id="class-picks"></div>
+    <p class="error-text" id="class-error"></p>
+    <button class="primary wide" type="submit">儲存名單 ${icon('check')}</button>
+  </form>`);
+
+  renderPicks('');
+  $('#class-maker').onchange=e=>renderPicks(e.target.value);
+  $('#class-rename').onclick=()=>{
+    const f=$('#class-name');
+    f.readOnly=false;f.focus();f.select();
+    $('#class-rename').disabled=true;
+    $('#class-rename-hint').textContent='現在可以修改名稱了；儲存後生效。';
+  };
   $('#class-form').onsubmit=async e=>{
     e.preventDefault();const b=$('[type=submit]',e.target);b.disabled=true;
-    try{await api(`/api/classes/${id}`,{name:$('#class-name').value,studentIds:$$('[name=students]:checked').map(x=>Number(x.value))});closeModal();toast('班級名單已更新。');homeworkPage();}
-    catch(err){$('#class-error').textContent=err.message;b.disabled=false;}
+    try{
+      await api(`/api/classes/${id}`,{name:$('#class-name').value,studentIds:[...picked]});
+      closeModal();toast('班級名單已更新。');homeworkPage();
+    }catch(err){$('#class-error').textContent=err.message;b.disabled=false;}
   };
 }
+
 function createAssignmentModal(){if(!HW.classes.length)return createClassModal();const qs=S.questions.filter(q=>q.answer?.trim()&&!/待.*(?:核驗|核验|審核|审核|確認|确认)/.test(q.source+' '+q.tags.join(' ')));
   // 挑題：先選章節（主分類／子分類），或直接輸入關鍵字搜尋，再勾選要佈置的題目。
   const qById=new Map(qs.map(q=>[q.id,q]));

@@ -615,10 +615,15 @@ class Homework:
                 result = {'classes': [self.class_public(db, r, user) for r in classes],
                           'assignments': [self.assignment_public(db, r, user) for r in assignments], 'ai': self.app.ai.public()}
                 if user['role'] == 'teacher':
+                    # 一併回「匯入老師」（created_by）與名字——管理班級時可按老師篩選。
                     result['students'] = [dict(r) for r in db.execute(
-                        "SELECT id,name,username,seat FROM users WHERE role='student' "
-                        "ORDER BY CASE WHEN seat IS NULL OR trim(seat)='' THEN 1 ELSE 0 END, "
-                        "CAST(seat AS INTEGER), seat, name, id")]
+                        "SELECT s.id, s.name, s.username, s.seat, "
+                        "       s.created_by AS createdBy, "
+                        "       COALESCE(t.name, '') AS createdByName "
+                        "FROM users s LEFT JOIN users t ON t.id = s.created_by "
+                        "WHERE s.role='student' "
+                        "ORDER BY CASE WHEN s.seat IS NULL OR trim(s.seat)='' THEN 1 ELSE 0 END, "
+                        "CAST(s.seat AS INTEGER), s.seat, s.name, s.id")]
             return result
         if method == 'GET' and path == '/api/calendar':
             with self.app.db() as db:

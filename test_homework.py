@@ -116,7 +116,9 @@ class HomeworkTests(unittest.TestCase):
         self.assertEqual(result['class']['studentIds'], [1])
         teacher = self.call('GET', '/api/homework', user=self.teacher)
         self.assertEqual(len(teacher['students']), 2)
-        self.assertEqual(set(teacher['students'][0]), {'id', 'name', 'username', 'seat'})
+        self.assertEqual(set(teacher['students'][0]),
+                         {'id', 'name', 'username', 'seat', 'createdBy', 'createdByName'},
+                         '學生清單要帶「匯入老師」（createdBy／createdByName）')
         student = self.call('GET', '/api/homework')
         self.assertNotIn('students', student)
         self.assertTrue(all(c['studentIds'] == [] for c in student['classes']))
