@@ -3391,6 +3391,24 @@ def student_pdf_answer(data):
         fail(422, 'PDF 無法完整渲染，未提交；請改用相片上傳。')
 
 
+# 紙本批改的五個得分等級（外加 unreadable＝看不清）。credit 是該等級的預設得分比例。
+PAPER_LEVELS = {'excellent': 1.0, 'good': 0.85, 'partial': 0.6, 'weak': 0.35, 'wrong': 0.0}
+
+
+def level_from_credit(credit):
+    if credit is None:
+        return 'unreadable'
+    if credit >= 1:
+        return 'excellent'
+    if credit >= 0.75:
+        return 'good'
+    if credit >= 0.5:
+        return 'partial'
+    if credit >= 0.25:
+        return 'weak'
+    return 'wrong'
+
+
 PAPER_GRADE_INSTRUCTION = (
     '你是一位資深數學老師，正在批改學生寫在紙上的功課。照片可能同時包含題目與學生的手寫答案。'
     '請逐題辨識：題號、題目內容、學生的手寫答案，並判斷答案是否正確。'
@@ -3401,14 +3419,21 @@ PAPER_GRADE_INSTRUCTION = (
     '① points：題目上標示的分數（例如「（5 分）」就是 5）；題目沒標分數就給 null，不要自己猜。'
     '② box：這道題（含題目與學生答案）在照片上的位置，用 0–1 的相對座標 '
     '{"x":左, "y":上, "w":寬, "h":高}；這是為了在照片上標出批閱結果。'
-    '③ credit：0 到 1 的得分比例。全對給 1、全錯給 0；**只有部分正確**（多小題只對一半、'
-    '過程對但最後算錯、漏寫單位等）給中間值（例如 0.5），不要只給 0 或 1。'
-    '看不清、無法辨認給 null。'
+    '③ level：把這題的作答分成五個等級之一（必須是下列其中一個字串）：'
+    '\"excellent\" 完全正確（答案與過程都對）；'
+    '\"good\" 大致正確（有小瑕疵：漏單位、格式不規範、最後一步小錯但思路正確）；'
+    '\"partial\" 部分正確（多小題只對一半、或關鍵步驟對但結果錯）；'
+    '\"weak\" 少部分正確（大部分錯，只有一點對）；'
+    '\"wrong\" 完全錯誤（全錯或思路方向錯）。'
+    '看不清、無法辨認給 \"unreadable\"。'
+    '④ credit：0 到 1 的得分比例，要和 level 一致——'
+    'excellent=1、good 約 0.75–0.99、partial 約 0.5–0.74、weak 約 0.25–0.49、wrong=0；'
+    'unreadable 給 null。'
     '④ note：一句簡短的批註（繁體中文，不超過 40 字），指出錯在哪裡、或為什麼給部分分數。'
     '⑤ noteBox：這條批註要放在照片上的位置（0–1 相對座標，格式同 box），'
     '**必須放在學生手寫答案以外的空白處，不要遮住學生的字跡**；找不到合適空白就給 null。'
     '只回傳 JSON：{"questions":[{"number":str,"question":str,"studentAnswer":str,'
-    '"correct":true|false|null,"credit":number|null,"reason":str,"note":str,'
+    '"correct":true|false|null,"level":str,"credit":number|null,"reason":str,"note":str,'
     '"points":number|null,"box":{"x":number,"y":number,"w":number,"h":number}|null,'
     '"noteBox":{"x":number,"y":number,"w":number,"h":number}|null}]}。'
     '不要其他文字。'
@@ -3446,8 +3471,18 @@ def paper_grade_page(app, image, page_no, total_pages, title):
             credit = None
         elif credit < 0 or credit > 1:
             credit = None
-        if credit is not None and correct is None:
-            correct = True if credit >= 1 else (False if credit <= 0 else 'partial')
+        level = item.get('level')
+        if level not in PAPER_LEVELS and level != 'unreadable':
+            level = None
+        # 兩者互相補齊：AI 只給 level 就用預設比例；只給 credit 就推等級。
+        if level is None:
+            level = level_from_credit(credit) if credit is not None else None
+        if credit is None and level in PAPER_LEVELS:
+            credit = PAPER_LEVELS[level]
+        if level == 'unreadable':
+            correct, credit = None, None
+        elif level is not None and correct is None:
+            correct = True if level == 'excellent' else (False if level == 'wrong' else 'partial')
         note = str(item.get('note') or '').strip()[:200]
         note_box = item.get('noteBox')
         clean_note_box = None
@@ -3473,7 +3508,7 @@ def paper_grade_page(app, image, page_no, total_pages, title):
             except (KeyError, TypeError, ValueError):
                 clean_box = None
         clean.append({'number': number or str(len(clean) + 1), 'question': question,
-                      'studentAnswer': answer, 'correct': correct, 'credit': credit,
+                      'studentAnswer': answer, 'correct': correct, 'level': level, 'credit': credit,
                       'reason': reason, 'note': note, 'noteBox': clean_note_box,
                       'points': points, 'box': clean_box, 'page': page_no})
     return clean

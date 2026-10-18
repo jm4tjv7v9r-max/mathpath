@@ -3546,6 +3546,48 @@ class DataAdminTests(unittest.TestCase):
         self.assertIsNotNone(g['questions'][1]['noteBox'], '批註位置要回傳')
         self.assertEqual(g['pending'], 0, '部分正確不是待判定')
 
+    def test_paper_grade_five_levels(self):
+        """五種得分等級：AI 只給 level，credit 自動對齊；unreadable 不計分。"""
+        _, out, _ = self.request('POST', '/api/users',
+                                 {'username': 'pg4', 'name': '五級學生', 'password': 'PaperPass12'},
+                                 cookie=self.teacher, expect=200)
+        sid = out['user']['id']
+
+        class StubAI:
+            mode = 'external'; vision = 'vision-model'; draw = None; configured = True
+            def __init__(self, replies): self.replies = list(replies)
+            def consent(self, value): return True
+            def call(self, instruction, payload, **kw): return self.replies.pop(0)
+
+        levels = ['excellent', 'good', 'partial', 'weak', 'wrong', 'unreadable']
+        questions = [{'number': str(i + 1), 'question': f'Q{i+1}', 'studentAnswer': 'a',
+                      'correct': None, 'level': lv, 'credit': None, 'reason': '',
+                      'note': '', 'points': None, 'box': None, 'noteBox': None}
+                     for i, lv in enumerate(levels)]
+        original = self.app.ai
+        self.app.ai = StubAI([{'questions': questions}])
+        try:
+            _, out, _ = self.request('POST', '/api/paper-grades', {
+                'studentId': sid, 'title': '五級功課',
+                'pages': [png_url()], 'consentExternal': True},
+                cookie=self.teacher, expect=200)
+        finally:
+            self.app.ai = original
+        g = out['grade']
+        self.assertEqual([q['level'] for q in g['questions']], levels, '五級要原樣保留')
+        # 6 題裡 1 題 unreadable → 分母 5 題各 20 分
+        # 1.0 + 0.85 + 0.6 + 0.35 + 0 = 2.8 → 2.8/5 × 100 = 56
+        self.assertAlmostEqual(g['score'], 56.0, places=1)
+        self.assertEqual(g['pending'], 1, 'unreadable 仍算待教師判定')
+        # credit 要按等級自動補上
+        self.assertAlmostEqual(g['questions'][1]['credit'], 0.85, places=2)
+        self.assertAlmostEqual(g['questions'][3]['credit'], 0.35, places=2)
+        self.assertEqual(g['questions'][5]['credit'], None)
+        # correct 也要與等級一致
+        self.assertEqual(g['questions'][0]['correct'], True)
+        self.assertEqual(g['questions'][1]['correct'], 'partial')
+        self.assertEqual(g['questions'][4]['correct'], False)
+
     def teacher_id(self):
         with self.app.db() as db:
             return db.execute("SELECT id FROM users WHERE role='teacher' ORDER BY id").fetchone()[0]

@@ -3073,24 +3073,50 @@ async function paperPageData(file){
   return imageDataUrl(out);
 }
 let paperPages=[],paperGradeId=null;
+// 五級鼓勵句：同一份功課內不重複（用 used 集合挑沒用過的）。
+const PAPER_PRAISE={
+  excellent:['完全正確，思路很清楚！','這題漂亮，答案和過程都對。','做得很好，繼續保持這個水準。','完全正確，看得出你掌握了方法。','答對了，而且寫得很完整。','這題難不倒你，很好。'],
+  good:['大致正確，注意小細節就更好了。','方向對了，再檢查最後一步。','很接近了，把單位或格式補上。','思路正確，只是小地方疏忽。','答得不錯，細節再留心一點。','差一點點就完美，繼續。'],
+  partial:['一半對，關鍵步驟你抓到了。','部分正確，把錯的那半再算一次。','有對有錯，這是進步的空間。','抓住重點了一半，再加把勁。','思路有一半是對的，值得肯定。','部分對了，把後面的補完。'],
+  weak:['有一點對，別灰心，慢慢來。','先看清楚題目要求，再試一次。','這題偏難，你已經找到一個切入點。','大部分錯了，但錯在哪裡很值得看。','再從第一步想一次，你可以的。','卡住了沒關係，明天再試。'],
+  wrong:['這題不影響你的努力，繼續前進。','答案不對，但願意嘗試就值得肯定。','先讀懂題目，再想解法的第一步。','錯了不要緊，重點是找出原因。','這題先放一放，回頭再來看。','換個角度想，可能會通。'],
+  unreadable:['這題看不清，已請教師判定。','照片有點模糊，這題先不算分。','字跡看不清楚，等教師確認。']
+};
+function paperPraise(level,used){
+  const pool=PAPER_PRAISE[level]||[];
+  if(!pool.length)return '';
+  const start=Math.floor(Math.random()*pool.length);
+  for(let k=0;k<pool.length;k++){
+    const i=(start+k)%pool.length,key=level+':'+i;
+    if(!used.has(key)){used.add(key);return pool[i];}
+  }
+  return pool[start];
+}
+const PAPER_LEVEL_LABEL={excellent:'完全正確',good:'大致正確',partial:'部分正確',weak:'少部分正確',wrong:'完全錯誤',unreadable:'無法辨認'};
 function paperResultHtml(g){
   const qs=g.questions||[];
+  const used=new Set();   // 同一份功課內，鼓勵句不重複
+  const levelOf=(q)=>q.level||(q.correct===null?'unreadable':q.correct===true?'excellent':q.correct==='partial'?'partial':'wrong');
   const markOf=(q)=>{
-    if(q.correct===null)return '<span class="paper-pending">待判定</span>';
-    if(q.correct==='partial'||(q.credit!==null&&q.credit!==undefined&&q.credit>0&&q.credit<1))return '<span class="paper-part">部分正確</span>';
-    return q.correct===true?'<span class="paper-ok">✓ 對</span>':'<span class="paper-bad">✗ 錯</span>';
+    const lv=levelOf(q);
+    if(lv==='unreadable')return '<span class="paper-pending">待判定</span>';
+    const label=PAPER_LEVEL_LABEL[lv]||'';
+    const doll=lv==='excellent'?' <span class="paper-doll" title="完全正確">🎉</span>':'';
+    return `<span class="paper-level">${label}</span>${doll}`;
   };
   const rows=qs.map((q,i)=>{
+    const lv=levelOf(q);
+    const praise=paperPraise(lv,used);
     const fix=q.correct===null?`<div class="paper-judge"><button class="text-button" data-paper-judge="${i}" data-paper-verdict="1">判對</button><button class="text-button" data-paper-judge="${i}" data-paper-verdict="0">判錯</button></div>`:'';
-    return `<tr><td>${esc(q.number)}</td><td>${mathText(q.question||'')}</td><td>${mathText(q.studentAnswer||'—')}</td><td>${q.points?`${q.points} 分`:'<span class="small-text">平均</span>'}</td><td>${markOf(q)}${fix}</td><td class="small-text">${esc(q.note||q.reason||'')}</td></tr>`;
+    return `<tr><td>${esc(q.number)}</td><td>${mathText(q.question||'')}</td><td>${mathText(q.studentAnswer||'—')}</td><td>${q.points?`${q.points} 分`:'<span class="small-text">平均</span>'}</td><td>${markOf(q)}${fix}</td><td class="small-text">${esc(q.note||q.reason||'')}${praise?`<div class="paper-praise">${esc(praise)}</div>`:''}</td></tr>`;
   }).join('');
   const pagesHtml=(paperPages||[]).map((src,i)=>{
     const pageQs=qs.filter(q=>q.page===i+1);
     // 題目框：一律紅色
     const marks=pageQs.filter(q=>q.box).map(q=>{
       const b=q.box;
-      const partial=q.correct==='partial'||(q.credit!==null&&q.credit!==undefined&&q.credit>0&&q.credit<1);
-      const sym=q.correct===null?'?':partial?'◐':q.correct===true?'✓':'✗';
+      const lv=q.level||(q.correct===null?'unreadable':q.correct===true?'excellent':q.correct==='partial'?'partial':'wrong');
+      const sym=lv==='unreadable'?'?':lv==='excellent'?'✓🎉':lv==='good'?'◑':lv==='partial'?'◐':lv==='weak'?'◔':'✗';
       return `<span class="paper-mark" style="left:${b.x*100}%;top:${b.y*100}%;width:${b.w*100}%;height:${b.h*100}%">${sym}</span>`;
     }).join('');
     // 批註：紅色文字，放在 AI 找的空白處；可拖動

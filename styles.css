@@ -729,3 +729,7 @@ html[data-theme=night] .paper-bad{color:#e88a7a}
 .paper-part{color:#c0392b;font-weight:700}
 html[data-theme=night] .paper-score-badge,html[data-theme=night] .paper-note{color:#ff8a7a}
 html[data-theme=night] .paper-note{background:#00000099;border-color:#ff8a7a55}
+/* 紙本批改：等級標籤、鼓勵句、全對公仔 */
+.paper-level{color:#c0392b;font-weight:700}
+.paper-doll{font-size:calc(18px*var(--fs))}
+.paper-praise{color:#c0392b;font-size:calc(12px*var(--fs));font-style:italic;margin-top:3px;opacity:.9}
