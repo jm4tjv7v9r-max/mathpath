@@ -756,3 +756,8 @@ html[data-theme=night] .paper-notice p{color:#d9a86a}
 .paper-warn-line strong{color:#c25e00;margin-right:8px}
 html[data-theme=night] .paper-warn-line{background:#2a1c08;color:#d9a86a}
 html[data-theme=night] .paper-warn-line strong{color:#ffb15c}
+/* 紙本批改：答案卷編輯器 */
+.paper-key-editor{margin-top:14px;border-top:1px solid var(--border);padding-top:12px}
+.paper-key-editor .key-answer{width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:6px;
+  font-size:calc(13px*var(--fs));background:var(--surface-soft);color:var(--ink)}
+.paper-key-editor .key-answer:focus{outline:2px solid var(--green);outline-offset:1px}

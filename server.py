@@ -3409,6 +3409,46 @@ def level_from_credit(credit):
     return 'wrong'
 
 
+PAPER_KEY_INSTRUCTION = (
+    '你是一位資深數學老師，正在為一份**空白題目**（練習紙／試卷，沒有學生作答）建立標準答案。'
+    '請逐題辨識：題號、題目內容，並給出**標準答案**（含關鍵步驟或最終結果），'
+    '以及題目上標示的分數。'
+    '若某題看不清或無法辨識，answer 給「（無法辨識）」，不要猜。'
+    '只回傳 JSON：{"questions":[{"number":str,"question":str,"answer":str,"points":number|null}]}。'
+    '不要其他文字。'
+)
+
+
+def paper_key_page(app, image, page_no, total_pages, title):
+    """辨識單頁空白題目並生成標準答案。"""
+    instruction = (PAPER_KEY_INSTRUCTION +
+                   f'這是「{title}」的第 {page_no} / {total_pages} 頁。'
+                   '如果這一頁沒有題目（封面、空白頁），回傳 {"questions":[]}。')
+    try:
+        result = app.ai.call(instruction, {'title': title, 'page': page_no},
+                             image=image, model=app.ai.vision)
+    except APIError:
+        return []
+    items = result.get('questions') if isinstance(result, dict) else None
+    if not isinstance(items, list):
+        return []
+    clean = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        number = str(item.get('number') or '').strip()[:20]
+        question = str(item.get('question') or '').strip()[:2000]
+        answer = str(item.get('answer') or '').strip()[:2000]
+        points = item.get('points')
+        if isinstance(points, bool) or not isinstance(points, (int, float)) or points <= 0:
+            points = None
+        if not (number or question):
+            continue
+        clean.append({'number': number or str(len(clean) + 1), 'question': question,
+                      'answer': answer, 'points': points, 'page': page_no})
+    return clean
+
+
 PAPER_GRADE_INSTRUCTION = (
     '你是一位資深數學老師，正在批改學生寫在紙上的功課。照片可能同時包含題目與學生的手寫答案。'
     '請逐題辨識：題號、題目內容、學生的手寫答案，並判斷答案是否正確。'
@@ -3445,14 +3485,24 @@ PAPER_GRADE_INSTRUCTION = (
 )
 
 
-def paper_grade_page(app, image, page_no, total_pages, title):
-    """辨識單頁：題目 + 學生答案 + 對錯。失敗回空清單（不讓整份功課失敗）。"""
+def paper_grade_page(app, image, page_no, total_pages, title, key=None):
+    """辨識單頁：題目 + 學生答案 + 對錯。失敗回空清單（不讓整份功課失敗）。
+
+    `key` 是教師已確認的標準答案清單（`[{number, question, answer, points}]`）。
+    有答案卷時，**以答案卷為準**判斷對錯——不讓模型自己另解一遍，避免答案分歧。
+    """
     instruction = (PAPER_GRADE_INSTRUCTION +
                    f'這是「{title}」的第 {page_no} / {total_pages} 頁。'
                    '如果這一頁沒有題目（例如封面、空白頁），回傳 {"questions":[]}。')
+    payload = {'title': title, 'page': page_no}
+    if key:
+        payload['reference'] = key
+        instruction += ('這份功課的**標準答案**已放在 reference 欄位（教師已確認）。'
+                        '請以 reference 的答案為判斷依據，不要自己重新解題；'
+                        '若學生的答案與 reference 數學上等價，就算對。'
+                        'reference 沒有的題目才由你自行判斷。')
     try:
-        result = app.ai.call(instruction, {'title': title, 'page': page_no},
-                             image=image, model=app.ai.vision)
+        result = app.ai.call(instruction, payload, image=image, model=app.ai.vision)
     except APIError:
         return []
     items = result.get('questions') if isinstance(result, dict) else None
@@ -3554,13 +3604,13 @@ def paper_score(questions):
             'earned': round(earned, 1), 'possible': round(possible, 1), 'pending': pending}
 
 
-def paper_grade_all(app, pages, title, deadline):
+def paper_grade_all(app, pages, title, deadline, key=None):
     """逐頁辨識後彙總。"""
     graded, warnings = [], []
     for index, image in enumerate(pages, 1):
         if time.monotonic() > deadline:
             fail(504, f'還有 {len(pages) - index + 1} 頁未辨識；請減少頁數或分批上傳。')
-        page = paper_grade_page(app, image, index, len(pages), title)
+        page = paper_grade_page(app, image, index, len(pages), title, key)
         graded.extend(page['questions'])
         if page['warning']:
             warnings.append({'page': index, 'text': page['warning']})
@@ -3684,7 +3734,16 @@ class Application:
                     id INTEGER PRIMARY KEY, username TEXT UNIQUE NOT NULL, name TEXT NOT NULL,
                     role TEXT NOT NULL CHECK(role IN ('student','teacher')), password TEXT NOT NULL,
                     demo INTEGER NOT NULL DEFAULT 0);
+                CREATE TABLE IF NOT EXISTS paper_keys (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    teacher_id INTEGER NOT NULL REFERENCES users(id),
+                    title TEXT NOT NULL,
+                    questions TEXT NOT NULL DEFAULT '[]',
+                    confirmed INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    confirmed_at TEXT);
                 CREATE TABLE IF NOT EXISTS paper_grades (
+                    paper_key_id INTEGER,
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     teacher_id INTEGER NOT NULL REFERENCES users(id),
                     student_id INTEGER NOT NULL REFERENCES users(id),
@@ -3736,6 +3795,10 @@ class Application:
             # 學生的年級（中一／中二／中三）：排行榜要按年級分組。舊帳號為 NULL。
             if 'grade' not in user_columns:
                 db.execute('ALTER TABLE users ADD COLUMN grade TEXT')
+            # 紙本批改可選擇引用「答案卷」（教師已確認的標準答案）。
+            grade_columns = {r['name'] for r in db.execute('PRAGMA table_info(paper_grades)')}
+            if grade_columns and 'paper_key_id' not in grade_columns:
+                db.execute('ALTER TABLE paper_grades ADD COLUMN paper_key_id INTEGER')
             db.execute('BEGIN IMMEDIATE')
             if not db.execute('SELECT 1 FROM meta WHERE key=?', ('initialized',)).fetchone():
                 for username, role, default, env, name in [
@@ -4316,10 +4379,97 @@ class Application:
     def dispatch(self, method, path, body, user, token_hash, ip, query=''):
         headers = {}
         # /api/health 即使 DB 還沒好也要能回應，讓 Render 健康檢查不會 timeout。
+        if method == 'POST' and path == '/api/paper-keys':
+            # 第一步：教師上傳空白題目，AI 辨識題目並生成標準答案，等教師確認。
+            self.teacher(user)
+            fields(body, ('title', 'pages', 'consentExternal'), ('title', 'pages'))
+            if 'consentExternal' in body and type(body['consentExternal']) is not bool:
+                fail(400, '外部上傳同意必須是布林值。')
+            title = text(body['title'], '功課名稱', 200)
+            raw_pages = body['pages']
+            if not isinstance(raw_pages, list) or not 1 <= len(raw_pages) <= 10:
+                fail(400, '請上傳 1 至 10 頁。')
+            pages = []
+            for page in raw_pages:
+                if isinstance(page, str) and page.startswith('data:application/pdf'):
+                    data, _ = decode_data_url(page, ('application/pdf',))
+                    pages.extend(pdf_page_images(data, max_pages=10))
+                else:
+                    validate_image(page)
+                    pages.append(page)
+            if not pages:
+                fail(422, 'PDF 沒有可辨識的頁面。')
+            if len(pages) > 10:
+                fail(400, f'PDF 拆頁後共 {len(pages)} 頁，超過 10 頁上限。')
+            self.ai.consent(body.get('consentExternal'))
+            deadline = time.monotonic() + 100
+            questions = []
+            for index, image in enumerate(pages, 1):
+                if time.monotonic() > deadline:
+                    fail(504, f'還有 {len(pages) - index + 1} 頁未辨識；請減少頁數。')
+                questions.extend(paper_key_page(self, image, index, len(pages), title))
+            if not questions:
+                fail(422, 'AI 沒有辨識出任何題目；請確認上傳的是清晰的空白題目。')
+            with self.db() as db:
+                cur = db.execute('INSERT INTO paper_keys(teacher_id,title,questions,confirmed,created_at) '
+                                 'VALUES(?,?,?,?,?)',
+                                 (user['id'], title, json.dumps(questions, ensure_ascii=False), 0,
+                                  datetime.now(timezone.utc).isoformat()))
+                key_id = cur.lastrowid
+            return {'key': {'id': key_id, 'title': title, 'pages': len(pages),
+                            'questions': questions, 'confirmed': False}}, headers
+        if method == 'GET' and path == '/api/paper-keys':
+            self.teacher(user)
+            with self.db() as db:
+                if self.is_owner(user, db):
+                    rows = db.execute('SELECT * FROM paper_keys ORDER BY id DESC LIMIT 200').fetchall()
+                else:
+                    rows = db.execute('SELECT * FROM paper_keys WHERE teacher_id=? '
+                                      'ORDER BY id DESC LIMIT 200', (user['id'],)).fetchall()
+            return {'keys': [{'id': r['id'], 'title': r['title'], 'pages': 0,
+                              'questions': json.loads(r['questions']),
+                              'confirmed': bool(r['confirmed']),
+                              'createdAt': r['created_at']} for r in rows]}, headers
+        key_path = re.fullmatch(r'/api/paper-keys/([1-9]\d{0,17})', path)
+        if method == 'POST' and key_path:
+            # 第二步：教師修正／確認標準答案。confirm=true 之後才能拿來批改。
+            self.teacher(user)
+            fields(body, ('questions', 'confirm'), ('questions',))
+            items = body['questions']
+            if not isinstance(items, list) or not items:
+                fail(400, '至少要有一道題目。')
+            clean = []
+            for item in items:
+                if not isinstance(item, dict):
+                    fail(400, '題目格式不正確。')
+                # ⚠️ 不要用 `number` 當變數名——會遮蔽模組的 number() 驗證函式。
+                q_number = str(item.get('number') or '').strip()[:20]
+                question = str(item.get('question') or '').strip()[:2000]
+                answer = str(item.get('answer') or '').strip()[:2000]
+                points = item.get('points')
+                if isinstance(points, bool) or not isinstance(points, (int, float)) or points <= 0:
+                    points = None
+                if not (q_number or question):
+                    fail(400, '每題都要有題號或題目。')
+                clean.append({'number': q_number or str(len(clean) + 1), 'question': question,
+                              'answer': answer, 'points': points})
+            key_id = int(key_path[1])
+            confirm = body.get('confirm') is True
+            with self.db() as db:
+                row = db.execute('SELECT * FROM paper_keys WHERE id=?', (key_id,)).fetchone()
+                if row is None:
+                    fail(404, '找不到這份答案卷。')
+                if row['teacher_id'] != user['id'] and not self.is_owner(user, db):
+                    fail(403, '只能修改自己建立的答案卷。')
+                db.execute('UPDATE paper_keys SET questions=?, confirmed=?, confirmed_at=? WHERE id=?',
+                           (json.dumps(clean, ensure_ascii=False), 1 if confirm else 0,
+                            datetime.now(timezone.utc).isoformat() if confirm else None, key_id))
+            return {'key': {'id': key_id, 'title': row['title'], 'questions': clean,
+                            'confirmed': confirm}}, headers
         if method == 'POST' and path == '/api/paper-grades':
             # 教師上傳整份紙本功課（題目 + 學生手寫答案），AI 逐題判斷對錯並以 100 分制評分。
             self.teacher(user)
-            fields(body, ('studentId', 'title', 'pages', 'consentExternal'),
+            fields(body, ('studentId', 'title', 'pages', 'paperKeyId', 'consentExternal'),
                    ('studentId', 'title', 'pages'))
             if 'consentExternal' in body and type(body['consentExternal']) is not bool:
                 fail(400, '外部上傳同意必須是布林值。')
@@ -4347,16 +4497,29 @@ class Application:
                                      (student_id,)).fetchone()
             if student is None:
                 fail(404, '找不到這位學生。')
+            # 有答案卷就以此為準（必須已由教師確認），否則 AI 自行解題。
+            paper_key_id, key = None, None
+            if body.get('paperKeyId') is not None:
+                paper_key_id = number(body['paperKeyId'], '答案卷', 1, 10 ** 18, integer=True)
+                with self.db() as db:
+                    key_row = db.execute('SELECT * FROM paper_keys WHERE id=?',
+                                         (paper_key_id,)).fetchone()
+                if key_row is None:
+                    fail(404, '找不到這份答案卷。')
+                if not key_row['confirmed']:
+                    fail(400, '這份答案卷還沒確認；請先確認標準答案再批改。')
+                key = json.loads(key_row['questions'])
             self.ai.consent(body.get('consentExternal'))
             deadline = time.monotonic() + 100
-            result = paper_grade_all(self, pages, title, deadline)
+            result = paper_grade_all(self, pages, title, deadline, key)
             detail = json.dumps(result['questions'], ensure_ascii=False)
             with self.db() as db:
                 cur = db.execute(
-                    'INSERT INTO paper_grades(teacher_id,student_id,title,pages,total_questions,'
-                    'correct_count,score,detail,created_at) VALUES(?,?,?,?,?,?,?,?,?)',
-                    (user['id'], student_id, title, len(pages), result['totalQuestions'],
-                     result['correctCount'], result['score'], detail,
+                    'INSERT INTO paper_grades(paper_key_id,teacher_id,student_id,title,pages,'
+                    'total_questions,correct_count,score,detail,created_at) '
+                    'VALUES(?,?,?,?,?,?,?,?,?,?)',
+                    (paper_key_id, user['id'], student_id, title, len(pages),
+                     result['totalQuestions'], result['correctCount'], result['score'], detail,
                      datetime.now(timezone.utc).isoformat()))
                 grade_id = cur.lastrowid
             return {'grade': {'id': grade_id, 'studentId': student_id, 'studentName': student['name'],

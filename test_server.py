@@ -3621,6 +3621,72 @@ class DataAdminTests(unittest.TestCase):
                          '只回有問題的頁，第二頁沒有警告就不列')
         self.assertAlmostEqual(g['score'], 100.0, places=1)
 
+    def test_paper_key_flow(self):
+        """答案卷：上傳題目 → AI 生成答案 → 教師確認 → 批改時以答案卷為準。"""
+        _, out, _ = self.request('POST', '/api/users',
+                                 {'username': 'pg6', 'name': '答案卷學生', 'password': 'PaperPass12'},
+                                 cookie=self.teacher, expect=200)
+        sid = out['user']['id']
+
+        class StubAI:
+            mode = 'external'; vision = 'vision-model'; draw = None; configured = True
+            def __init__(self, replies): self.replies = list(replies); self.calls = []
+            def consent(self, value): return True
+            def call(self, instruction, payload, **kw):
+                self.calls.append((instruction, payload))
+                return self.replies.pop(0)
+
+        original = self.app.ai
+        # 第一步：AI 生成標準答案
+        stub = StubAI([{'questions': [
+            {'number': '1', 'question': '1+1', 'answer': '2', 'points': 10},
+            {'number': '2', 'question': '2+2', 'answer': '4', 'points': None}]}])
+        self.app.ai = stub
+        try:
+            _, out, _ = self.request('POST', '/api/paper-keys', {
+                'title': '第三次功課', 'pages': [png_url()], 'consentExternal': True},
+                cookie=self.teacher, expect=200)
+        finally:
+            self.app.ai = original
+        key = out['key']
+        self.assertEqual(key['confirmed'], False, '剛生成時未確認')
+        self.assertEqual(key['questions'][0]['answer'], '2')
+
+        # 未確認的答案卷不能拿來批改
+        self.request('POST', '/api/paper-grades', {
+            'studentId': sid, 'title': '第三次功課', 'pages': [png_url()],
+            'paperKeyId': key['id']}, cookie=self.teacher, expect=400)
+
+        # 教師修正第 2 題答案並確認
+        fixed = [dict(q) for q in key['questions']]
+        fixed[1]['answer'] = '4（2+2）'
+        _, out, _ = self.request('POST', f"/api/paper-keys/{key['id']}",
+                                 {'questions': fixed, 'confirm': True},
+                                 cookie=self.teacher, expect=200)
+        self.assertTrue(out['key']['confirmed'])
+        self.assertEqual(out['key']['questions'][1]['answer'], '4（2+2）')
+
+        # 批改時帶 paperKeyId → AI 要收到 reference
+        stub2 = StubAI([{'questions': [
+            {'number': '1', 'question': '1+1', 'studentAnswer': '2', 'correct': True,
+             'level': 'excellent', 'credit': 1.0, 'reason': '', 'note': '', 'points': 10,
+             'box': None, 'noteBox': None},
+            {'number': '2', 'question': '2+2', 'studentAnswer': '4', 'correct': True,
+             'level': 'excellent', 'credit': 1.0, 'reason': '', 'note': '', 'points': None,
+             'box': None, 'noteBox': None}]}])
+        self.app.ai = stub2
+        try:
+            _, out, _ = self.request('POST', '/api/paper-grades', {
+                'studentId': sid, 'title': '第三次功課', 'pages': [png_url()],
+                'paperKeyId': key['id'], 'consentExternal': True},
+                cookie=self.teacher, expect=200)
+        finally:
+            self.app.ai = original
+        payload = stub2.calls[0][1]
+        self.assertIn('reference', payload, '有答案卷時要把標準答案送給 AI')
+        self.assertEqual(payload['reference'][1]['answer'], '4（2+2）', '要用教師修正後的答案')
+        self.assertAlmostEqual(out['grade']['score'], 100.0, places=1)
+
     def teacher_id(self):
         with self.app.db() as db:
             return db.execute("SELECT id FROM users WHERE role='teacher' ORDER BY id").fetchone()[0]
