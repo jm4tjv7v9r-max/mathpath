@@ -161,6 +161,39 @@ class HomeworkTests(unittest.TestCase):
             cid = db.execute('SELECT class_id FROM assignments WHERE id=?', (aid,)).fetchone()['class_id']
         self.error(400, 'POST', f'/api/classes/{cid}/delete', {}, self.teacher)
 
+    def test_assignment_delete_permissions(self):
+        """刪除作業：只有佈置者或管理員；刪除後作業與關聯都清掉。"""
+        aid = self.assignment()
+        self.error(403, 'POST', f'/api/assignments/{aid}/delete', {}, user=self.teacher2)
+        out = self.call('POST', f'/api/assignments/{aid}/delete', {}, self.teacher)
+        self.assertEqual(out['deleted'], aid)
+        with self.app.db() as db:
+            self.assertIsNone(db.execute('SELECT 1 FROM assignments WHERE id=?', (aid,)).fetchone())
+            self.assertEqual(db.execute('SELECT count(*) FROM assignment_questions WHERE assignment_id=?',
+                                        (aid,)).fetchone()[0], 0)
+            self.assertEqual(db.execute('SELECT count(*) FROM assignment_recipients WHERE assignment_id=?',
+                                        (aid,)).fetchone()[0], 0)
+        self.error(404, 'POST', f'/api/assignments/{aid}/delete', {}, self.teacher)
+
+    def test_assignment_delete_removes_attempts(self):
+        """刪除作業會連帶刪除學生在該作業的作答（不留孤兒紀錄）。"""
+        aid = self.assignment()
+        with self.app.db() as db:
+            qid = db.execute('SELECT question_id FROM assignment_questions WHERE assignment_id=? LIMIT 1',
+                             (aid,)).fetchone()['question_id']
+            uid = db.execute('SELECT user_id FROM assignment_recipients WHERE assignment_id=? LIMIT 1',
+                             (aid,)).fetchone()['user_id']
+            db.execute("INSERT INTO attempts(user_id,question_id,answer_text,max_score,status,feedback,"
+                       "submitted_at,method,score,assignment_id) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                       (uid, qid, 'x', 10, 'graded', '', '2026-10-01T10:00:00Z', 'rule', 5, aid))
+            before = db.execute('SELECT count(*) FROM attempts WHERE assignment_id=?', (aid,)).fetchone()[0]
+            self.assertEqual(before, 1)
+        out = self.call('POST', f'/api/assignments/{aid}/delete', {}, self.teacher)
+        self.assertEqual(out['attempts'], 1, '回報刪了幾筆作答')
+        with self.app.db() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM attempts WHERE assignment_id=?',
+                                        (aid,)).fetchone()[0], 0)
+
     def test_owner_and_recipient_rbac(self):
         aid = self.assignment()
         self.error(403, 'GET', f'/api/assignments/{aid}', user=self.teacher2)

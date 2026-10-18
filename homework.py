@@ -426,7 +426,7 @@ class Homework:
         questions = self.questions(db, row['id'])
         total = db.execute('SELECT count(*) FROM assignment_recipients WHERE assignment_id=?', (row['id'],)).fetchone()[0]
         item = {'id': row['id'], 'title': row['title'], 'kind': row['kind'], 'classId': row['class_id'],
-                'className': row['class_name'],
+                'className': row['class_name'], 'teacherId': row['teacher_id'],
                 'durationMinutes': row['duration_minutes'] if 'duration_minutes' in row.keys() else None,
                 'aiGrading': self.ai_grading(row),
                 'dueAt': row['due_at'], 'createdAt': row['created_at'], 'questionCount': len(questions),
@@ -667,6 +667,25 @@ class Homework:
                 db.executemany('INSERT INTO class_students(class_id,user_id) VALUES(?,?)', [(cur.lastrowid, uid) for uid in ids])
                 result = self.class_public(db, db.execute('SELECT * FROM classes WHERE id=?', (cur.lastrowid,)).fetchone(), user)
             return {'class': result}
+        assign_del = re.fullmatch(r'/api/assignments/([1-9]\d{0,17})/delete', path)
+        if method == 'POST' and assign_del:
+            # 刪除作業：只有佈置者或管理員可以。會一併刪除學生的作答與成績——
+            # 這是不可逆的，前端要明確警告。
+            self.app.teacher(user)
+            aid = int(assign_del[1])
+            with self.app.db() as db:
+                row = db.execute('SELECT * FROM assignments WHERE id=?', (aid,)).fetchone()
+                if row is None:
+                    self.fail(404, '找不到这份作业。')
+                if row['teacher_id'] != user['id'] and not self.app.is_owner(user, db):
+                    self.fail(403, '只有布置这份作业的教师或管理员可以删除。')
+                db.execute('BEGIN IMMEDIATE')
+                # 作答（含分數、AI 建議、手寫圖）——作業沒了就沒有歸屬，一併刪。
+                removed = db.execute('DELETE FROM attempts WHERE assignment_id=?', (aid,)).rowcount
+                db.execute('DELETE FROM assignment_questions WHERE assignment_id=?', (aid,))
+                db.execute('DELETE FROM assignment_recipients WHERE assignment_id=?', (aid,))
+                db.execute('DELETE FROM assignments WHERE id=?', (aid,))
+            return {'deleted': aid, 'attempts': removed}
         class_del = re.fullmatch(r'/api/classes/([1-9]\d{0,17})/delete', path)
         if method == 'POST' and class_del:
             # 刪除班級：只有建立者或管理員可以。有作業的班級先拒絕，避免作業變孤兒、
