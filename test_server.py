@@ -3511,6 +3511,41 @@ class DataAdminTests(unittest.TestCase):
         self.request('POST', f"/api/paper-grades/{g['id']}/judge",
                      {'index': 99, 'correct': True}, cookie=self.teacher, expect=400)
 
+    def test_paper_grade_partial_credit_and_note(self):
+        """部分正確：credit 0.5 得一半分數；批註文字與位置要回傳。"""
+        _, out, _ = self.request('POST', '/api/users',
+                                 {'username': 'pg3', 'name': '部分分學生', 'password': 'PaperPass12'},
+                                 cookie=self.teacher, expect=200)
+        sid = out['user']['id']
+
+        class StubAI:
+            mode = 'external'; vision = 'vision-model'; draw = None; configured = True
+            def __init__(self, replies): self.replies = list(replies)
+            def consent(self, value): return True
+            def call(self, instruction, payload, **kw): return self.replies.pop(0)
+
+        original = self.app.ai
+        self.app.ai = StubAI([{'questions': [
+            {'number': '1', 'question': 'A', 'studentAnswer': 'x', 'correct': None, 'credit': 1.0,
+             'reason': '', 'note': '', 'points': None, 'box': None, 'noteBox': None},
+            {'number': '2', 'question': 'B', 'studentAnswer': 'y', 'correct': None, 'credit': 0.5,
+             'reason': '', 'note': '過程對，但最後一步算錯', 'points': None,
+             'box': None, 'noteBox': {'x': 0.05, 'y': 0.88, 'w': 0.4, 'h': 0.06}}]}])
+        try:
+            _, out, _ = self.request('POST', '/api/paper-grades', {
+                'studentId': sid, 'title': '部分分功課',
+                'pages': [png_url()], 'consentExternal': True},
+                cookie=self.teacher, expect=200)
+        finally:
+            self.app.ai = original
+        g = out['grade']
+        # 2 題各 50 分：第 1 題全對 50、第 2 題半分 25 → 75
+        self.assertAlmostEqual(g['score'], 75.0, places=1)
+        self.assertEqual(g['questions'][1]['correct'], 'partial', 'credit 0.5 要標成部分正確')
+        self.assertEqual(g['questions'][1]['note'], '過程對，但最後一步算錯')
+        self.assertIsNotNone(g['questions'][1]['noteBox'], '批註位置要回傳')
+        self.assertEqual(g['pending'], 0, '部分正確不是待判定')
+
     def teacher_id(self):
         with self.app.db() as db:
             return db.execute("SELECT id FROM users WHERE role='teacher' ORDER BY id").fetchone()[0]

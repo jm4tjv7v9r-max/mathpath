@@ -699,8 +699,8 @@ html[data-theme=night] .math-editor-host{background:#1a2124}
 .paper-score{display:flex;align-items:baseline;gap:6px;margin-bottom:4px}
 .paper-score strong{font-size:calc(40px*var(--fs));color:var(--green);line-height:1}
 .paper-score small{font-size:calc(15px*var(--fs));color:var(--muted)}
-.paper-ok{color:#1f8a5b;font-weight:700}
-.paper-bad{color:#b8453b;font-weight:700}
+.paper-ok{color:#c0392b;font-weight:700}
+.paper-bad{color:#c0392b;font-weight:700}
 html[data-theme=night] .paper-ok{color:#5ed0ae}
 html[data-theme=night] .paper-bad{color:#e88a7a}
 /* 紙本批改：在照片上標出批閱 */
@@ -711,10 +711,21 @@ html[data-theme=night] .paper-bad{color:#e88a7a}
 .paper-marks{position:absolute;inset:0;pointer-events:none}
 .paper-mark{position:absolute;display:grid;place-items:center;border:2px solid;border-radius:8px;
   font-weight:700;font-size:calc(22px*var(--fs));background:#fff8}
-.paper-mark.ok{border-color:#1f8a5b;color:#1f8a5b;background:#1f8a5b1f}
-.paper-mark.bad{border-color:#b8453b;color:#b8453b;background:#b8453b1f}
-.paper-mark.pending{border-color:#d6934c;color:#d6934c;background:#d6934c26}
-.paper-pending{color:#b87333;font-weight:700}
+.paper-mark{border-color:#c0392b;color:#c0392b;background:#c0392b1a}
+
+
+.paper-pending{color:#c0392b;font-weight:700}
 .paper-judge{display:flex;gap:6px;margin-top:4px}
 .paper-judge .text-button{font-size:calc(12px*var(--fs));padding:2px 6px;border:1px solid var(--border);border-radius:6px}
 @media(max-width:900px){.paper-page{max-width:100%}}
+/* 紙本批改：成績在右上角 30px、紅色批註（可拖動） */
+.paper-score-badge{position:absolute;right:14px;top:12px;font-size:30px;font-weight:700;
+  color:#c0392b;line-height:1;text-shadow:0 1px 2px #fff,0 0 6px #fff}
+.paper-score-badge small{font-size:14px;font-weight:400;margin-left:2px}
+.paper-note{position:absolute;color:#c0392b;font-size:13px;font-weight:600;line-height:1.4;
+  background:#ffffffc9;padding:2px 5px;border-radius:4px;cursor:move;touch-action:none;
+  white-space:pre-wrap;border:1px solid #c0392b55}
+.paper-note.dragging{outline:1px dashed #c0392b;background:#fff}
+.paper-part{color:#c0392b;font-weight:700}
+html[data-theme=night] .paper-score-badge,html[data-theme=night] .paper-note{color:#ff8a7a}
+html[data-theme=night] .paper-note{background:#00000099;border-color:#ff8a7a55}

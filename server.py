@@ -3397,12 +3397,20 @@ PAPER_GRADE_INSTRUCTION = (
     '判斷依據是數學上的等價性——不同解法、不同寫法但結果相同都算對；過程簡略但答案正確也算對。'
     '看不清、被遮住、或無法辨認的答案，correct 一律給 null（不猜測、不算對也不算錯），'
     '並在 reason 說明「無法辨認」。'
-    '另外兩件要一併回報：'
+    '另外幾件要一併回報：'
     '① points：題目上標示的分數（例如「（5 分）」就是 5）；題目沒標分數就給 null，不要自己猜。'
     '② box：這道題（含題目與學生答案）在照片上的位置，用 0–1 的相對座標 '
     '{"x":左, "y":上, "w":寬, "h":高}；這是為了在照片上標出批閱結果。'
+    '③ credit：0 到 1 的得分比例。全對給 1、全錯給 0；**只有部分正確**（多小題只對一半、'
+    '過程對但最後算錯、漏寫單位等）給中間值（例如 0.5），不要只給 0 或 1。'
+    '看不清、無法辨認給 null。'
+    '④ note：一句簡短的批註（繁體中文，不超過 40 字），指出錯在哪裡、或為什麼給部分分數。'
+    '⑤ noteBox：這條批註要放在照片上的位置（0–1 相對座標，格式同 box），'
+    '**必須放在學生手寫答案以外的空白處，不要遮住學生的字跡**；找不到合適空白就給 null。'
     '只回傳 JSON：{"questions":[{"number":str,"question":str,"studentAnswer":str,'
-    '"correct":true|false|null,"reason":str,"points":number|null,"box":{"x":number,"y":number,"w":number,"h":number}}]}。'
+    '"correct":true|false|null,"credit":number|null,"reason":str,"note":str,'
+    '"points":number|null,"box":{"x":number,"y":number,"w":number,"h":number}|null,'
+    '"noteBox":{"x":number,"y":number,"w":number,"h":number}|null}]}。'
     '不要其他文字。'
 )
 
@@ -3433,6 +3441,24 @@ def paper_grade_page(app, image, page_no, total_pages, title):
         reason = str(item.get('reason') or '').strip()[:400]
         if not (number or question or answer):
             continue
+        credit = item.get('credit')
+        if isinstance(credit, bool) or not isinstance(credit, (int, float)) or not math.isfinite(credit):
+            credit = None
+        elif credit < 0 or credit > 1:
+            credit = None
+        if credit is not None and correct is None:
+            correct = True if credit >= 1 else (False if credit <= 0 else 'partial')
+        note = str(item.get('note') or '').strip()[:200]
+        note_box = item.get('noteBox')
+        clean_note_box = None
+        if isinstance(note_box, dict):
+            try:
+                nv = [float(note_box[k]) for k in ('x', 'y', 'w', 'h')]
+                if all(math.isfinite(v) for v in nv) and nv[2] > 0 and nv[3] > 0:
+                    clean_note_box = {'x': round(nv[0], 4), 'y': round(nv[1], 4),
+                                      'w': round(nv[2], 4), 'h': round(nv[3], 4)}
+            except (KeyError, TypeError, ValueError):
+                clean_note_box = None
         points = item.get('points')
         if isinstance(points, bool) or not isinstance(points, (int, float)) or points <= 0:
             points = None
@@ -3447,7 +3473,8 @@ def paper_grade_page(app, image, page_no, total_pages, title):
             except (KeyError, TypeError, ValueError):
                 clean_box = None
         clean.append({'number': number or str(len(clean) + 1), 'question': question,
-                      'studentAnswer': answer, 'correct': correct, 'reason': reason,
+                      'studentAnswer': answer, 'correct': correct, 'credit': credit,
+                      'reason': reason, 'note': note, 'noteBox': clean_note_box,
                       'points': points, 'box': clean_box, 'page': page_no})
     return clean
 
@@ -3472,12 +3499,15 @@ def paper_score(questions):
     pending = 0
     for q, weight in zip(questions, raw):
         points = weight * scale
-        if q['correct'] is None:
-            pending += 1
-            continue
+        credit = q.get('credit')
+        if credit is None:
+            # 向後相容：舊資料（或 AI 沒給 credit）只有 correct 三態。
+            if q['correct'] is None:
+                pending += 1
+                continue
+            credit = 1.0 if q['correct'] is True else 0.0
         possible += points
-        if q['correct']:
-            earned += points
+        earned += points * credit
     return {'score': round(100 * earned / possible, 1) if possible else 0.0,
             'earned': round(earned, 1), 'possible': round(possible, 1), 'pending': pending}
 
@@ -4278,6 +4308,37 @@ class Application:
                               'unreadable': result['unreadable'], 'pending': result['pending'],
                               'earned': result['earned'], 'possible': result['possible'],
                               'score': result['score'], 'questions': result['questions']}}, headers
+        notes_path = re.fullmatch(r'/api/paper-grades/([1-9]\d{0,17})/notes', path)
+        if method == 'POST' and notes_path:
+            # 教師拖動批註後保存位置（0–1 相對座標）。
+            self.teacher(user)
+            fields(body, ('index', 'noteBox'), ('index', 'noteBox'))
+            index = number(body['index'], '題目序號', 0, 999, integer=True)
+            box = body['noteBox']
+            if not isinstance(box, dict):
+                fail(400, '批註位置格式不正確。')
+            try:
+                values = [float(box[k]) for k in ('x', 'y', 'w', 'h')]
+            except (KeyError, TypeError, ValueError):
+                fail(400, '批註位置格式不正確。')
+            if not all(math.isfinite(v) for v in values) or values[2] <= 0 or values[3] <= 0:
+                fail(400, '批註位置格式不正確。')
+            clean = {'x': round(values[0], 4), 'y': round(values[1], 4),
+                     'w': round(values[2], 4), 'h': round(values[3], 4)}
+            grade_id = int(notes_path[1])
+            with self.db() as db:
+                row = db.execute('SELECT * FROM paper_grades WHERE id=?', (grade_id,)).fetchone()
+                if row is None:
+                    fail(404, '找不到這筆批改紀錄。')
+                if row['teacher_id'] != user['id'] and not self.is_owner(user, db):
+                    fail(403, '只能修改自己建立的批改紀錄。')
+                questions = json.loads(row['detail'])
+                if not 0 <= index < len(questions):
+                    fail(400, '題目序號超出範圍。')
+                questions[index]['noteBox'] = clean
+                db.execute('UPDATE paper_grades SET detail=? WHERE id=?',
+                           (json.dumps(questions, ensure_ascii=False), grade_id))
+            return {'noteBox': clean}, headers
         judge_path = re.fullmatch(r'/api/paper-grades/([1-9]\d{0,17})/judge', path)
         if method == 'POST' and judge_path:
             # 教師補判：AI 看不清（correct=null）的題目由教師判定，之後一併重算分數。
@@ -4298,6 +4359,7 @@ class Application:
                 if not 0 <= index < len(questions):
                     fail(400, '題目序號超出範圍。')
                 questions[index]['correct'] = verdict
+                questions[index]['credit'] = 1.0 if verdict else 0.0
                 questions[index]['judgedByTeacher'] = True
                 summary = paper_score(questions)
                 db.execute('UPDATE paper_grades SET detail=?, score=?, total_questions=?, correct_count=? '

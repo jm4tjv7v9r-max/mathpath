@@ -3075,29 +3075,67 @@ async function paperPageData(file){
 let paperPages=[],paperGradeId=null;
 function paperResultHtml(g){
   const qs=g.questions||[];
+  const markOf=(q)=>{
+    if(q.correct===null)return '<span class="paper-pending">待判定</span>';
+    if(q.correct==='partial'||(q.credit!==null&&q.credit!==undefined&&q.credit>0&&q.credit<1))return '<span class="paper-part">部分正確</span>';
+    return q.correct===true?'<span class="paper-ok">✓ 對</span>':'<span class="paper-bad">✗ 錯</span>';
+  };
   const rows=qs.map((q,i)=>{
-    const mark=q.correct===true?'<span class="paper-ok">✓ 對</span>':q.correct===false?'<span class="paper-bad">✗ 錯</span>':'<span class="paper-pending">待判定</span>';
     const fix=q.correct===null?`<div class="paper-judge"><button class="text-button" data-paper-judge="${i}" data-paper-verdict="1">判對</button><button class="text-button" data-paper-judge="${i}" data-paper-verdict="0">判錯</button></div>`:'';
-    return `<tr><td>${esc(q.number)}</td><td>${mathText(q.question||'')}</td><td>${mathText(q.studentAnswer||'—')}</td><td>${q.points?`${q.points} 分`:'<span class="small-text">平均</span>'}</td><td>${mark}${fix}</td><td class="small-text">${esc(q.reason||'')}</td></tr>`;
+    return `<tr><td>${esc(q.number)}</td><td>${mathText(q.question||'')}</td><td>${mathText(q.studentAnswer||'—')}</td><td>${q.points?`${q.points} 分`:'<span class="small-text">平均</span>'}</td><td>${markOf(q)}${fix}</td><td class="small-text">${esc(q.note||q.reason||'')}</td></tr>`;
   }).join('');
-  // 在原始照片上標出批閱：用 AI 回報的 box（0–1 相對座標）疊加 ✓／✗／？
-  const marks=qs.filter(q=>q.box).map(q=>{
-    const b=q.box,cls=q.correct===true?'ok':q.correct===false?'bad':'pending';
-    const sym=q.correct===true?'✓':q.correct===false?'✗':'?';
-    return `<span class="paper-mark ${cls}" style="left:${b.x*100}%;top:${b.y*100}%;width:${b.w*100}%;height:${b.h*100}%">${sym}</span>`;
+  const pagesHtml=(paperPages||[]).map((src,i)=>{
+    const pageQs=qs.filter(q=>q.page===i+1);
+    // 題目框：一律紅色
+    const marks=pageQs.filter(q=>q.box).map(q=>{
+      const b=q.box;
+      const partial=q.correct==='partial'||(q.credit!==null&&q.credit!==undefined&&q.credit>0&&q.credit<1);
+      const sym=q.correct===null?'?':partial?'◐':q.correct===true?'✓':'✗';
+      return `<span class="paper-mark" style="left:${b.x*100}%;top:${b.y*100}%;width:${b.w*100}%;height:${b.h*100}%">${sym}</span>`;
+    }).join('');
+    // 批註：紅色文字，放在 AI 找的空白處；可拖動
+    const notes=pageQs.filter(q=>q.note&&q.noteBox).map(q=>{
+      const b=q.noteBox,idx=qs.indexOf(q);
+      return `<div class="paper-note" data-note-index="${idx}" style="left:${b.x*100}%;top:${b.y*100}%;width:${b.w*100}%" title="拖動可移動批註">${esc(q.note)}</div>`;
+    }).join('');
+    // 成績在第一頁右上角（30px）
+    const badge=i===0?`<div class="paper-score-badge">${g.score}<small>/100</small></div>`:'';
+    return `<figure class="paper-page"><img src="${src}" alt="第 ${i+1} 頁"><figcaption>第 ${i+1} 頁</figcaption>${badge}<div class="paper-marks">${marks}</div>${notes}</figure>`;
   }).join('');
-  const pagesHtml=(paperPages||[]).map((src,i)=>`<figure class="paper-page"><img src="${src}" alt="第 ${i+1} 頁"><figcaption>第 ${i+1} 頁</figcaption><div class="paper-marks">${qs.filter(q=>q.page===i+1&&q.box).map(q=>{
-    const b=q.box,cls=q.correct===true?'ok':q.correct===false?'bad':'pending';
-    const sym=q.correct===true?'✓':q.correct===false?'✗':'?';
-    return `<span class="paper-mark ${cls}" style="left:${b.x*100}%;top:${b.y*100}%;width:${b.w*100}%;height:${b.h*100}%">${sym}</span>`;
-  }).join('')}</div></figure>`).join('');
   return `<section class="panel panel-pad" style="margin-top:16px">
-    <div class="paper-score"><strong>${g.score}</strong><small>/ 100</small></div>
     <p class="small-text">${esc(g.studentName||'')} · ${esc(g.title)} · ${g.pages} 頁 · 可判斷 ${g.totalQuestions} 題、答對 ${g.correctCount} 題${g.pending?` · <strong class="paper-pending">${g.pending} 題待教師判定</strong>`:''}</p>
     ${pagesHtml?`<div class="paper-pages">${pagesHtml}</div>`:''}
-    <table class="board-table" style="margin-top:10px"><thead><tr><th>題號</th><th>題目</th><th>學生答案</th><th>配分</th><th>判定</th><th>說明</th></tr></thead><tbody>${rows}</tbody></table>
-    <p class="field-hint">AI 判定僅供參考，請教師覆核後才當作正式成績。待判定的題目請按「判對／判錯」，分數會立即重算。</p></section>`;
+    <table class="board-table" style="margin-top:10px"><thead><tr><th>題號</th><th>題目</th><th>學生答案</th><th>配分</th><th>判定</th><th>批註</th></tr></thead><tbody>${rows}</tbody></table>
+    <p class="field-hint">AI 判定僅供參考，請教師覆核後才當作正式成績。待判定的題目請按「判對／判錯」，分數會立即重算。批註可直接拖動到合適位置。</p></section>`;
 }
+// 批註拖動：pointer 事件（滑鼠與觸控都支援），放開後保存位置。
+let paperDrag=null;
+document.addEventListener('pointerdown',e=>{
+  const note=e.target.closest?e.target.closest('.paper-note'):null;
+  if(!note||!paperGradeId)return;
+  const fig=note.closest('.paper-page'),img=fig&&fig.querySelector('img');
+  if(!img)return;
+  e.preventDefault();
+  paperDrag={el:note,img,startX:e.clientX,startY:e.clientY,left:note.offsetLeft,top:note.offsetTop,index:Number(note.dataset.noteIndex)};
+  note.classList.add('dragging');
+  try{note.setPointerCapture(e.pointerId);}catch(_){}
+});
+document.addEventListener('pointermove',e=>{
+  if(!paperDrag)return;
+  paperDrag.el.style.left=(paperDrag.left+e.clientX-paperDrag.startX)+'px';
+  paperDrag.el.style.top=(paperDrag.top+e.clientY-paperDrag.startY)+'px';
+});
+document.addEventListener('pointerup',async()=>{
+  if(!paperDrag)return;
+  const {el,img,index}=paperDrag;paperDrag=null;
+  el.classList.remove('dragging');
+  const w=img.clientWidth||1,h=img.clientHeight||1;
+  const box={x:Math.max(0,Math.min(1,el.offsetLeft/w)),y:Math.max(0,Math.min(1,el.offsetTop/h)),
+             w:Math.max(0.05,Math.min(1,el.offsetWidth/w)),h:Math.max(0.02,Math.min(1,el.offsetHeight/h))};
+  try{await api(`/api/paper-grades/${paperGradeId}/notes`,{index,noteBox:box});toast('批註位置已保存。');}
+  catch(err){toast(err.message);}
+});
+
 async function paperGradePage(){
   page='paper';shell();
   if(S.user?.role!=='teacher')return bank();
