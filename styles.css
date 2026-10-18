@@ -695,3 +695,11 @@ html[data-theme=night] .math-editor-host{background:#1a2124}
 .board-table strong{font-weight:700}
 .board-rank{width:46px;font-weight:700;color:var(--muted-2);font-variant-numeric:tabular-nums}
 .board-rank.top{color:var(--green);font-size:calc(16px*var(--fs))}
+/* 紙本批改：分數與判定 */
+.paper-score{display:flex;align-items:baseline;gap:6px;margin-bottom:4px}
+.paper-score strong{font-size:calc(40px*var(--fs));color:var(--green);line-height:1}
+.paper-score small{font-size:calc(15px*var(--fs));color:var(--muted)}
+.paper-ok{color:#1f8a5b;font-weight:700}
+.paper-bad{color:#b8453b;font-weight:700}
+html[data-theme=night] .paper-ok{color:#5ed0ae}
+html[data-theme=night] .paper-bad{color:#e88a7a}

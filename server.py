@@ -3391,6 +3391,67 @@ def student_pdf_answer(data):
         fail(422, 'PDF 無法完整渲染，未提交；請改用相片上傳。')
 
 
+PAPER_GRADE_INSTRUCTION = (
+    '你是一位資深數學老師，正在批改學生寫在紙上的功課。照片可能同時包含題目與學生的手寫答案。'
+    '請逐題辨識：題號、題目內容、學生的手寫答案，並判斷答案是否正確。'
+    '判斷依據是數學上的等價性——不同解法、不同寫法但結果相同都算對；過程簡略但答案正確也算對。'
+    '看不清、被遮住、或無法辨認的答案，correct 一律給 null（不猜測、不算對也不算錯），'
+    '並在 reason 說明「無法辨認」。'
+    '只回傳 JSON：{"questions":[{"number":str,"question":str,"studentAnswer":str,'
+    '"correct":true|false|null,"reason":str}]}。不要其他文字。'
+)
+
+
+def paper_grade_page(app, image, page_no, total_pages, title):
+    """辨識單頁：題目 + 學生答案 + 對錯。失敗回空清單（不讓整份功課失敗）。"""
+    instruction = (PAPER_GRADE_INSTRUCTION +
+                   f'這是「{title}」的第 {page_no} / {total_pages} 頁。'
+                   '如果這一頁沒有題目（例如封面、空白頁），回傳 {"questions":[]}。')
+    try:
+        result = app.ai.call(instruction, {'title': title, 'page': page_no},
+                             image=image, model=app.ai.vision)
+    except APIError:
+        return []
+    items = result.get('questions') if isinstance(result, dict) else None
+    if not isinstance(items, list):
+        return []
+    clean = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        number = str(item.get('number') or '').strip()[:20]
+        question = str(item.get('question') or '').strip()[:2000]
+        answer = str(item.get('studentAnswer') or '').strip()[:2000]
+        correct = item.get('correct')
+        if correct not in (True, False, None):
+            correct = None
+        reason = str(item.get('reason') or '').strip()[:400]
+        if not (number or question or answer):
+            continue
+        clean.append({'number': number or str(len(clean) + 1), 'question': question,
+                      'studentAnswer': answer, 'correct': correct, 'reason': reason,
+                      'page': page_no})
+    return clean
+
+
+def paper_grade_all(app, pages, title, deadline):
+    """逐頁辨識後彙總。每題平均：分數 = 答對題數 / 可判斷題數 × 100。
+
+    ⚠️ 只把「能判斷對錯」的題目算進分母——看不清的不冤枉學生，另計 unreadable。
+    """
+    graded = []
+    for index, image in enumerate(pages, 1):
+        if time.monotonic() > deadline:
+            fail(504, f'還有 {len(pages) - index + 1} 頁未辨識；請減少頁數或分批上傳。')
+        graded.extend(paper_grade_page(app, image, index, len(pages), title))
+    judged = [x for x in graded if x['correct'] is not None]
+    correct = sum(1 for x in judged if x['correct'])
+    total = len(judged)
+    return {'questions': graded, 'totalQuestions': total, 'correctCount': correct,
+            'unreadable': len(graded) - total,
+            'score': round(100 * correct / total, 1) if total else 0.0}
+
+
 def leaderboard_payload(db, month):
     """每月每級前 10：得分榜與進步榜。
 
@@ -3501,6 +3562,17 @@ class Application:
                     id INTEGER PRIMARY KEY, username TEXT UNIQUE NOT NULL, name TEXT NOT NULL,
                     role TEXT NOT NULL CHECK(role IN ('student','teacher')), password TEXT NOT NULL,
                     demo INTEGER NOT NULL DEFAULT 0);
+                CREATE TABLE IF NOT EXISTS paper_grades (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    teacher_id INTEGER NOT NULL REFERENCES users(id),
+                    student_id INTEGER NOT NULL REFERENCES users(id),
+                    title TEXT NOT NULL,
+                    pages INTEGER NOT NULL,
+                    total_questions INTEGER NOT NULL,
+                    correct_count INTEGER NOT NULL,
+                    score REAL NOT NULL,
+                    detail TEXT NOT NULL DEFAULT '[]',
+                    created_at TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS sessions (
                     token_hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id),
                     expires REAL NOT NULL);
@@ -4122,6 +4194,62 @@ class Application:
     def dispatch(self, method, path, body, user, token_hash, ip, query=''):
         headers = {}
         # /api/health 即使 DB 還沒好也要能回應，讓 Render 健康檢查不會 timeout。
+        if method == 'POST' and path == '/api/paper-grades':
+            # 教師上傳整份紙本功課（題目 + 學生手寫答案），AI 逐題判斷對錯並以 100 分制評分。
+            self.teacher(user)
+            fields(body, ('studentId', 'title', 'pages', 'consentExternal'),
+                   ('studentId', 'title', 'pages'))
+            if 'consentExternal' in body and type(body['consentExternal']) is not bool:
+                fail(400, '外部上傳同意必須是布林值。')
+            student_id = number(body['studentId'], '學生', 1, 10 ** 18, integer=True)
+            title = text(body['title'], '功課名稱', 200)
+            pages = body['pages']
+            if not isinstance(pages, list) or not 1 <= len(pages) <= 10:
+                fail(400, '請上傳 1 至 10 頁。')
+            for page in pages:
+                validate_image(page)          # 逐頁驗證格式與大小（PNG／JPEG／WebP）
+            with self.db() as db:
+                student = db.execute("SELECT id,name FROM users WHERE id=? AND role='student'",
+                                     (student_id,)).fetchone()
+            if student is None:
+                fail(404, '找不到這位學生。')
+            self.ai.consent(body.get('consentExternal'))
+            deadline = time.monotonic() + 100
+            result = paper_grade_all(self, pages, title, deadline)
+            detail = json.dumps(result['questions'], ensure_ascii=False)
+            with self.db() as db:
+                cur = db.execute(
+                    'INSERT INTO paper_grades(teacher_id,student_id,title,pages,total_questions,'
+                    'correct_count,score,detail,created_at) VALUES(?,?,?,?,?,?,?,?,?)',
+                    (user['id'], student_id, title, len(pages), result['totalQuestions'],
+                     result['correctCount'], result['score'], detail,
+                     datetime.now(timezone.utc).isoformat()))
+                grade_id = cur.lastrowid
+            return {'grade': {'id': grade_id, 'studentId': student_id, 'studentName': student['name'],
+                              'title': title, 'pages': len(pages),
+                              'totalQuestions': result['totalQuestions'],
+                              'correctCount': result['correctCount'],
+                              'unreadable': result['unreadable'], 'score': result['score'],
+                              'questions': result['questions']}}, headers
+        if method == 'GET' and path == '/api/paper-grades':
+            # 紙本批改紀錄：教師看自己建的；管理員看全部。
+            self.teacher(user)
+            with self.db() as db:
+                if self.is_owner(user, db):
+                    rows = db.execute(
+                        'SELECT g.*, s.name AS student_name FROM paper_grades g '
+                        'JOIN users s ON s.id=g.student_id ORDER BY g.id DESC LIMIT 200').fetchall()
+                else:
+                    rows = db.execute(
+                        'SELECT g.*, s.name AS student_name FROM paper_grades g '
+                        'JOIN users s ON s.id=g.student_id WHERE g.teacher_id=? '
+                        'ORDER BY g.id DESC LIMIT 200', (user['id'],)).fetchall()
+            return {'grades': [{'id': r['id'], 'studentId': r['student_id'],
+                                'studentName': r['student_name'], 'title': r['title'],
+                                'pages': r['pages'], 'totalQuestions': r['total_questions'],
+                                'correctCount': r['correct_count'], 'score': r['score'],
+                                'createdAt': r['created_at'],
+                                'questions': json.loads(r['detail'])} for r in rows]}, headers
         board_path = re.fullmatch(r'/api/leaderboard(?:/(\d{4}-\d{2}))?', path)
         if method == 'GET' and board_path:
             # 排行榜：每月每級前 10（得分榜 + 進步榜）。登入者都看得到——那是公開比較，

@@ -798,7 +798,9 @@ let nav=[['homework',S.user?.role==='teacher'?'作業與成績':'我的作業'],
 if(S.user?.role!=='teacher')nav=nav.filter(([id])=>id!=='import');
 // 教師不寫作業，學習足跡永遠是空的——隱藏，避免點進去看到空白頁。
 if(S.user?.role==='teacher')nav=nav.filter(([id])=>id!=='growth');
-if(S.user?.role==='teacher'){nav=nav.filter(([id])=>id!=='practice');const at=nav.findIndex(([id])=>id==='mistakes');nav.splice(at<0?nav.length:at,0,['newq','新增題目']);nav.push(['ai','模型端點']);}$('#nav').innerHTML=nav.map(([id,label])=>`<button class="nav-item ${page===id?'active':''}" data-page="${id}">${icon(id)}<span>${label}</span>${id==='bank'?`<span class="count">${S.user?S.questions.length:'示例'}</span>`:id==='import'?'<span class="new">教師</span>':''}</button>`).join('');$('#settings-nav').innerHTML=icon('settings')+'<span>設定與隱私</span>';$('#settings-nav').classList.toggle('active',page==='settings');$('#font-scale').innerHTML=fontScaleControl();$('#theme-switch').innerHTML=themeControl();$('#account').innerHTML=`<span class="avatar">${S.user?(S.user.role==='teacher'?'師':'學'):'M'}</span><span class="account-info">${S.user?esc(S.user.name):'訪客預覽'}<small>${S.user?(S.user.role==='teacher'?'教師工作空間':'中三數學學習者'):'登入後開始學習'}</small></span>${icon(S.user?'chevron':'logout')}`;$('#avatar').textContent=S.user?(S.user.role==='teacher'?'師':'學'):'M';const labels={guide:'新手上路',homework:S.user?.role==='teacher'?'作業與成績':'我的作業',calendar:'日曆',board:'排行榜',mock:'模擬測驗',ai:'模型端點',bank:'數學題庫',practice:'自主練習',import:'試卷拆題',mistakes:S.user?.role==='teacher'?'作答批閱':'我的錯題本',growth:'學習足跡',newq:'新增題目',settings:'設定與隱私'};$('#crumb').textContent=labels[page] || '數學題庫';renderCalculator();}
+if(S.user?.role==='teacher'){nav=nav.filter(([id])=>id!=='practice');
+  const mi=nav.findIndex(([id])=>id==='mistakes');
+  nav.splice(mi<0?nav.length:mi+1,0,['paper','紙本批改']);const at=nav.findIndex(([id])=>id==='mistakes');nav.splice(at<0?nav.length:at,0,['newq','新增題目']);nav.push(['ai','模型端點']);}$('#nav').innerHTML=nav.map(([id,label])=>`<button class="nav-item ${page===id?'active':''}" data-page="${id}">${icon(id)}<span>${label}</span>${id==='bank'?`<span class="count">${S.user?S.questions.length:'示例'}</span>`:id==='import'?'<span class="new">教師</span>':''}</button>`).join('');$('#settings-nav').innerHTML=icon('settings')+'<span>設定與隱私</span>';$('#settings-nav').classList.toggle('active',page==='settings');$('#font-scale').innerHTML=fontScaleControl();$('#theme-switch').innerHTML=themeControl();$('#account').innerHTML=`<span class="avatar">${S.user?(S.user.role==='teacher'?'師':'學'):'M'}</span><span class="account-info">${S.user?esc(S.user.name):'訪客預覽'}<small>${S.user?(S.user.role==='teacher'?'教師工作空間':'中三數學學習者'):'登入後開始學習'}</small></span>${icon(S.user?'chevron':'logout')}`;$('#avatar').textContent=S.user?(S.user.role==='teacher'?'師':'學'):'M';const labels={guide:'新手上路',homework:S.user?.role==='teacher'?'作業與成績':'我的作業',calendar:'日曆',board:'排行榜',mock:'模擬測驗',ai:'模型端點',bank:'數學題庫',practice:'自主練習',import:'試卷拆題',mistakes:S.user?.role==='teacher'?'作答批閱':'我的錯題本',paper:'紙本批改',growth:'學習足跡',newq:'新增題目',settings:'設定與隱私'};$('#crumb').textContent=labels[page] || '數學題庫';renderCalculator();}
 
 let calCursor=null,calSelected=null;
 const calPad=n=>String(n).padStart(2,'0');
@@ -3057,6 +3059,73 @@ function reviewModal(id,onDone=null,snapshot=null,queue=null,viewOnly=false){
   }else{const retry=$('#retry-from-review');if(retry)retry.onclick=()=>{closeModal();openQuestion(a.questionId);};}
   paintAllAiInk();
 }
+// 紙本批改：教師上傳整份功課（題目 + 學生手寫答案），AI 逐題判斷並以 100 分制評分。
+async function paperPageData(file){
+  const raw=await fileData(file,['image/png','image/jpeg','image/webp'],12);
+  const img=await loadImageDataUrl(raw,'這頁無法辨識，請改用 JPG／PNG 或重新拍照。');
+  const scale=Math.min(1,2000/Math.max(img.naturalWidth,img.naturalHeight));
+  const out=document.createElement('canvas');
+  out.width=Math.max(1,Math.round(img.naturalWidth*scale));
+  out.height=Math.max(1,Math.round(img.naturalHeight*scale));
+  const ctx=out.getContext('2d');
+  ctx.fillStyle='#fff';ctx.fillRect(0,0,out.width,out.height);
+  ctx.drawImage(img,0,0,out.width,out.height);
+  return imageDataUrl(out);
+}
+function paperResultHtml(g){
+  const rows=(g.questions||[]).map(q=>{
+    const mark=q.correct===true?'<span class="paper-ok">✓</span>':q.correct===false?'<span class="paper-bad">✗</span>':'<span class="small-text">?</span>';
+    return `<tr><td>${esc(q.number)}</td><td>${mathText(q.question||'')}</td><td>${mathText(q.studentAnswer||'—')}</td><td>${mark}</td><td class="small-text">${esc(q.reason||'')}</td></tr>`;
+  }).join('');
+  return `<section class="panel panel-pad" style="margin-top:16px">
+    <div class="paper-score"><strong>${g.score}</strong><small>/ 100</small></div>
+    <p class="small-text">${esc(g.studentName||'')} · ${esc(g.title)} · ${g.pages} 頁 · 可判斷 ${g.totalQuestions} 題、答對 ${g.correctCount} 題${g.unreadable?` · ${g.unreadable} 題無法辨認（不計分）`:''}</p>
+    <table class="board-table" style="margin-top:10px"><thead><tr><th>題號</th><th>題目</th><th>學生答案</th><th>判定</th><th>說明</th></tr></thead><tbody>${rows}</tbody></table>
+    <p class="field-hint">AI 判定僅供參考，請教師覆核後才當作正式成績。</p></section>`;
+}
+async function paperGradePage(){
+  page='paper';shell();
+  if(S.user?.role!=='teacher')return bank();
+  $('#main').innerHTML=`<div class="fade-in">${heading('PAPER GRADING','紙本批改','上傳整份功課（題目＋學生手寫答案），AI 逐題判斷對錯，以 100 分為滿分。')}<section class="panel panel-pad"><p class="small-text">載入中…</p></section></div>`;
+  let roster=[],history=[];
+  try{const [a,b]=await Promise.all([api('/api/users'),api('/api/paper-grades')]);roster=a.users.filter(u=>u.role==='student');history=b.grades;}
+  catch(err){toast(err.message);}
+  const options=roster.map(u=>`<option value="${u.id}">${esc(u.name)}${u.seat?` · 座號 ${esc(u.seat)}`:''}${u.grade?` · ${esc(u.grade)}`:''}</option>`).join('');
+  const historyHtml=history.length?`<section class="panel panel-pad" style="margin-top:16px"><h2 style="margin-bottom:10px">最近的批改</h2><table class="board-table"><thead><tr><th>日期</th><th>學生</th><th>功課</th><th>得分</th></tr></thead><tbody>${history.slice(0,20).map(g=>`<tr><td class="small-text">${esc((g.createdAt||'').slice(0,10))}</td><td>${esc(g.studentName)}</td><td>${esc(g.title)}</td><td><strong>${g.score}</strong></td></tr>`).join('')}</tbody></table></section>`:'';
+  $('#main').innerHTML=`<div class="fade-in">${heading('PAPER GRADING','紙本批改','上傳整份功課（題目＋學生手寫答案），AI 逐題判斷對錯，以 100 分為滿分。')}
+    <section class="panel panel-pad">
+      <div class="form-grid">
+        <div class="form-field"><label class="field-label" for="paper-student">學生</label><select id="paper-student">${options||'<option value="">（還沒有學生帳號）</option>'}</select></div>
+        <div class="form-field"><label class="field-label" for="paper-title">功課名稱</label><input id="paper-title" maxlength="200" placeholder="例如：第三次功課"></div>
+      </div>
+      <div class="form-field"><label class="field-label" for="paper-files">功課照片（1–10 頁，含題目與學生答案）</label><input id="paper-files" type="file" accept="image/*" multiple></div>
+      <p class="field-hint">拍照請保持整頁清晰、四角完整。最多 10 頁，每頁會各呼叫一次 AI，約需 10–30 秒。</p>
+      <p class="error-text" id="paper-error"></p>
+      <button class="primary" id="paper-submit">${icon('spark')}開始 AI 批改</button>
+      <div id="paper-result"></div>
+    </section>${historyHtml}</div>`;
+  $('#paper-submit').onclick=async()=>{
+    const studentId=Number($('#paper-student').value||0);
+    const title=$('#paper-title').value.trim();
+    const files=[...($('#paper-files').files||[])];
+    const err=$('#paper-error'),btn=$('#paper-submit');
+    err.textContent='';
+    if(!studentId)return err.textContent='請先選擇學生。';
+    if(!title)return err.textContent='請填寫功課名稱。';
+    if(!files.length)return err.textContent='請至少上傳一頁。';
+    if(files.length>10)return err.textContent='最多 10 頁。';
+    btn.disabled=true;const original=btn.innerHTML;
+    try{
+      const pages=[];
+      for(let i=0;i<files.length;i++){btn.innerHTML=`${icon('clock')}處理第 ${i+1}/${files.length} 頁…`;pages.push(await paperPageData(files[i]));}
+      btn.innerHTML=`${icon('spark')}AI 判斷中…`;
+      const out=await api('/api/paper-grades',{studentId,title,pages});
+      $('#paper-result').innerHTML=paperResultHtml(out.grade);
+      toast(`批改完成：${out.grade.score} / 100`);
+    }catch(e){err.textContent=e.message;}
+    finally{btn.disabled=false;btn.innerHTML=original;}
+  };
+}
 async function leaderboardPage(month){
   page='board';shell();
   if(!S.user)return loginModal(leaderboardPage);
@@ -3370,7 +3439,7 @@ $('#bulk-class-toggle').onchange=e=>{$('#bulk-class-field').hidden=!e.target.che
 $('#bulk-submit').onclick=async()=>{const {rows,errors}=bulkPreview();if(errors.length)return toast('請先修正名單格式錯誤。');if(!rows.length)return toast('請輸入至少一位學生。');if(rows.length>200)return toast('每批最多200位學生。');const makeClass=$('#bulk-class-toggle').checked,className=$('#bulk-class-name').value.trim();if(makeClass&&!className)return toast('請填寫班級名稱，或取消建立班級。');const b=$('#bulk-submit');b.disabled=true;b.textContent='正在建立…';try{const {users:created}=await api('/api/users/bulk',{students:rows.map(r=>({username:r.username,name:r.name,seat:r.seat,password:r.password}))});let classNote='';if(makeClass){try{const {class:room}=await api('/api/classes',{name:className,studentIds:created.map(u=>u.id)});classNote=`<div class="hint-box" style="margin-top:12px">已同時建立班級「${esc(room.name)}」，共 ${room.studentCount} 位學生，可直接佈置作業。</div>`;}catch(err){classNote=`<div class="inline-error" style="margin-top:12px">帳戶已建立，但班級未建立：${esc(err.message)}可在「作業與成績」重新建立班級。</div>`;}}const merged=rows.map((r,i)=>({username:r.username,password:r.password,name:(created[i]&&created[i].name)||r.name||r.username,seat:(created[i]&&created[i].seat)||r.seat||''}));const hasName=merged.some(r=>r.name!==r.username),hasSeat=merged.some(r=>r.seat);const cols=[['學號',r=>r.username]].concat(hasName?[['姓名',r=>r.name]]:[],hasSeat?[['班內號',r=>r.seat]]:[],[['密碼',r=>r.password]]);const text=[cols.map(c=>c[0]).join('\t'),...merged.map(r=>cols.map(c=>c[1](r)).join('\t'))].join('\n');$('#bulk-result').innerHTML=`<div class="import-warning">已建立 ${created.length} 個帳戶${merged.some(r=>r.name===r.username)?`（${merged.filter(r=>r.name===r.username).length} 個未填姓名，以學號顯示）`:""}。密碼只會顯示這一次，請立即複製並私下發給學生。</div>${classNote}<pre class="code-block">${esc(text)}</pre><button class="secondary wide" id="bulk-copy" style="margin-top:10px">${icon('file')}複製帳號密碼</button>`;$('#bulk-copy').onclick=async()=>{try{await navigator.clipboard.writeText(text);toast('已複製，請妥善保管。');}catch{toast('無法自動複製，請手動選取。');}};$('#bulk-students').value='';$('#bulk-class-toggle').checked=false;$('#bulk-class-field').hidden=true;$('#bulk-class-name').value='';bulkPreview();toast(`已建立 ${created.length} 個學生帳戶。`);}catch(err){$('#bulk-error').textContent=err.message;}finally{b.disabled=false;b.innerHTML=icon('upload')+'批次建立學生帳戶';}};}catch(e){toast(e.message);}}
 function deploymentHelp(){modal(`<p class="eyebrow">SERVER SETUP</p><h2>啟動與部署說明</h2><p class="modal-intro">資料保存在網站伺服器；實際位置由管理員確認。以下是可選部署方式，不代表目前網站的部署狀態。</p><h3>本機預覽</h3><p class="info-note">雙擊 start.command，或用 Python 3 啟動：</p><pre class="code-block">python3 server.py --host 127.0.0.1 --port 8765</pre><p class="info-note">瀏覽器開啟 http://127.0.0.1:8765。</p><h3>校內連線</h3><p class="info-note">由資訊人員將 --host 設為伺服器的校內 IP，並限制防火牆只允許校內來源；正式使用需反向代理 HTTPS。不要把演示帳戶直接用於全校。</p><h3>目前帳戶範圍</h3><p class="info-note">初始演示配置包含學生與教師帳戶；實際帳戶由管理員確認。教師可在「設定與隱私」建立獨立學生帳戶，避免共用作答紀錄。可在「作業與成績」建立班級並發布作業；校內單一登入及批量帳戶管理仍可再擴充。</p><div class="import-warning">資料保存在網站伺服器；實際位置由管理員確認。預設資料庫路徑為 data/mathpath.sqlite3；備份及保存年限應按學校規定安排。AI 必須另行配置，未配置時手写作答由教師批閱。</div>`);}
 function navigate(target){if(busy)return toast('目前操作正在進行，請等待完成。');preserveDraft();if(page==='practice'&&strokes.length&&target!=='practice'&&!lastResult&&!confirm('尚未提交的手寫內容未保存。確定離開？'))return;beginView();$('#sidebar').classList.remove('open');if(target!=='practice'){assignmentContext=null;mockContext=null;stopQuizClock();}page=target;switch(target){case'guide':guidePage();break;
-case'homework':homeworkPage();break;case'calendar':calendarPage();break;case'board':leaderboardPage();break;case'mock':mockPage();break;case'ai':aiConfigPage();break;case'bank':bank();break;case'practice':practice();break;case'import':importPage();break;case'newq':newQuestionPage();break;case'mistakes':recordsPage();break;case'growth':growthPage();break;case'settings':settingsPage();break;default:bank();}window.scrollTo({top:0,behavior:'instant'});}
+case'homework':homeworkPage();break;case'calendar':calendarPage();break;case'board':leaderboardPage();break;case'mock':mockPage();break;case'ai':aiConfigPage();break;case'bank':bank();break;case'practice':practice();break;case'import':importPage();break;case'newq':newQuestionPage();break;case'mistakes':recordsPage();break;case'paper':paperGradePage();break;case'growth':growthPage();break;case'settings':settingsPage();break;default:bank();}window.scrollTo({top:0,behavior:'instant'});}
 document.addEventListener('click',e=>{const b=e.target.closest('button');if(!b||b.disabled)return;if(b.dataset.fontScale){applyFontScale(b.dataset.fontScale);shell();toast(`字體已設為「${FONT_SCALES.find(([id])=>id===b.dataset.fontScale)[1]}」，只影響這台裝置。`);return;}
 if(b.dataset.themeId){applyTheme(b.dataset.themeId);shell();toast(`版面已設為「${THEMES.find(([id])=>id===b.dataset.themeId)[1]}」，只影響這台裝置。`);return;}
 if(b.id==='open-math-editor'){openMathEditor();return;}if(b.dataset.page)return navigate(b.dataset.page);if(b.dataset.assignment)return assignmentPage(Number(b.dataset.assignment));if(b.dataset.mock)return mockExamPage(Number(b.dataset.mock));if(b.dataset.mockQ)return openMockQuestion(Number(b.dataset.mockQ));if(b.dataset.results)return resultsPage(Number(b.dataset.results));if(b.dataset.skipQ)return skipQuestionFromList(b.dataset.skipQ);

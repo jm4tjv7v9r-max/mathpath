@@ -3409,6 +3409,55 @@ class DataAdminTests(unittest.TestCase):
         self.request('GET', '/api/leaderboard/2026-13', cookie=self.teacher, expect=400)
         self.request('GET', '/api/leaderboard/abc', cookie=self.teacher, expect=404)  # 路徑不匹配 → 404
 
+    def test_paper_grade_scores_by_average_per_question(self):
+        """紙本批改：逐頁辨識 → 每題平均 → 100 分制；看不清的不算分母。"""
+        _, out, _ = self.request('POST', '/api/users',
+                                 {'username': 'pg1', 'name': '紙本學生', 'password': 'PaperPass12',
+                                  'grade': '中三'}, cookie=self.teacher, expect=200)
+        sid = out['user']['id']
+
+        class StubAI:
+            mode = 'external'; vision = 'vision-model'; draw = None; configured = True
+            def __init__(self, replies): self.replies = list(replies); self.calls = []
+            def consent(self, value): return True
+            def call(self, instruction, payload, **kw):
+                self.calls.append((instruction, payload))
+                return self.replies.pop(0)
+
+        original = self.app.ai
+        stub = StubAI([
+            {'questions': [
+                {'number': '1', 'question': '1+1', 'studentAnswer': '2', 'correct': True, 'reason': ''},
+                {'number': '2', 'question': '2+2', 'studentAnswer': '5', 'correct': False, 'reason': '應為 4'}]},
+            {'questions': [
+                {'number': '3', 'question': '3+3', 'studentAnswer': '6', 'correct': True, 'reason': ''},
+                {'number': '4', 'question': '4+4', 'studentAnswer': '?', 'correct': None, 'reason': '無法辨認'}]},
+        ])
+        self.app.ai = stub
+        try:
+            _, out, _ = self.request('POST', '/api/paper-grades', {
+                'studentId': sid, 'title': '第一次功課',
+                'pages': [png_url(), png_url()], 'consentExternal': True},
+                cookie=self.teacher, expect=200)
+        finally:
+            self.app.ai = original
+        g = out['grade']
+        self.assertEqual(len(stub.calls), 2, '每頁一次 AI 呼叫')
+        self.assertEqual(g['totalQuestions'], 3, '看不清的不計入分母')
+        self.assertEqual(g['correctCount'], 2)
+        self.assertEqual(g['unreadable'], 1)
+        self.assertAlmostEqual(g['score'], 66.7, places=1)
+        self.assertEqual(g['studentName'], '紙本學生')
+        _, listing, _ = self.request('GET', '/api/paper-grades', cookie=self.teacher, expect=200)
+        self.assertEqual(listing['grades'][0]['title'], '第一次功課')
+        self.assertEqual(len(listing['grades'][0]['questions']), 4)
+        self.request('POST', '/api/paper-grades',
+                     {'studentId': sid, 'title': 'x', 'pages': [png_url()] * 11},
+                     cookie=self.teacher, expect=400)
+        self.request('POST', '/api/paper-grades',
+                     {'studentId': sid, 'title': 'x', 'pages': [png_url()]},
+                     cookie=self.student, expect=403)
+
     def teacher_id(self):
         with self.app.db() as db:
             return db.execute("SELECT id FROM users WHERE role='teacher' ORDER BY id").fetchone()[0]
