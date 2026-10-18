@@ -3588,6 +3588,39 @@ class DataAdminTests(unittest.TestCase):
         self.assertEqual(g['questions'][1]['correct'], 'partial')
         self.assertEqual(g['questions'][4]['correct'], False)
 
+    def test_paper_grade_page_warning(self):
+        """AI 偵測到跨頁跡象時，要回報 pageWarnings（哪一頁、什麼問題）。"""
+        _, out, _ = self.request('POST', '/api/users',
+                                 {'username': 'pg5', 'name': '跨頁學生', 'password': 'PaperPass12'},
+                                 cookie=self.teacher, expect=200)
+        sid = out['user']['id']
+
+        class StubAI:
+            mode = 'external'; vision = 'vision-model'; draw = None; configured = True
+            def __init__(self, replies): self.replies = list(replies)
+            def consent(self, value): return True
+            def call(self, instruction, payload, **kw): return self.replies.pop(0)
+
+        q = lambda n: {'number': str(n), 'question': f'Q{n}', 'studentAnswer': 'a',
+                       'correct': True, 'level': 'excellent', 'credit': 1.0, 'reason': '',
+                       'note': '', 'points': None, 'box': None, 'noteBox': None}
+        original = self.app.ai
+        self.app.ai = StubAI([
+            {'questions': [q(1)], 'pageWarning': '第 2 題的算式在頁尾被切斷'},
+            {'questions': [q(3)], 'pageWarning': None},
+        ])
+        try:
+            _, out, _ = self.request('POST', '/api/paper-grades', {
+                'studentId': sid, 'title': '跨頁功課',
+                'pages': [png_url(), png_url()], 'consentExternal': True},
+                cookie=self.teacher, expect=200)
+        finally:
+            self.app.ai = original
+        g = out['grade']
+        self.assertEqual(g['pageWarnings'], [{'page': 1, 'text': '第 2 題的算式在頁尾被切斷'}],
+                         '只回有問題的頁，第二頁沒有警告就不列')
+        self.assertAlmostEqual(g['score'], 100.0, places=1)
+
     def teacher_id(self):
         with self.app.db() as db:
             return db.execute("SELECT id FROM users WHERE role='teacher' ORDER BY id").fetchone()[0]

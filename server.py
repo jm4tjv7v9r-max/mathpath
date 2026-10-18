@@ -3432,10 +3432,15 @@ PAPER_GRADE_INSTRUCTION = (
     '④ note：一句簡短的批註（繁體中文，不超過 40 字），指出錯在哪裡、或為什麼給部分分數。'
     '⑤ noteBox：這條批註要放在照片上的位置（0–1 相對座標，格式同 box），'
     '**必須放在學生手寫答案以外的空白處，不要遮住學生的字跡**；找不到合適空白就給 null。'
+    '⑥ pageWarning：這一頁有沒有「跨頁」的跡象？例如：頁面開頭出現沒頭沒尾的算式、'
+    '頁面結尾的算式明顯被切斷、某題只有題目沒有作答（可能在下一頁）、'
+    '或算式連到頁面邊緣還沒結束。有就簡短說明（例如「第 2 題的算式在頁尾被切斷」），'
+    '沒有就給 null。**只描述你確實看到的，不要猜。**'
     '只回傳 JSON：{"questions":[{"number":str,"question":str,"studentAnswer":str,'
     '"correct":true|false|null,"level":str,"credit":number|null,"reason":str,"note":str,'
     '"points":number|null,"box":{"x":number,"y":number,"w":number,"h":number}|null,'
-    '"noteBox":{"x":number,"y":number,"w":number,"h":number}|null}]}。'
+    '"noteBox":{"x":number,"y":number,"w":number,"h":number}|null}],'
+    '"pageWarning":str|null}。'
     '不要其他文字。'
 )
 
@@ -3451,8 +3456,10 @@ def paper_grade_page(app, image, page_no, total_pages, title):
     except APIError:
         return []
     items = result.get('questions') if isinstance(result, dict) else None
+    warning = result.get('pageWarning') if isinstance(result, dict) else None
+    warning = str(warning).strip()[:300] if warning else None
     if not isinstance(items, list):
-        return []
+        return {'questions': [], 'warning': warning}
     clean = []
     for item in items:
         if not isinstance(item, dict):
@@ -3511,7 +3518,7 @@ def paper_grade_page(app, image, page_no, total_pages, title):
                       'studentAnswer': answer, 'correct': correct, 'level': level, 'credit': credit,
                       'reason': reason, 'note': note, 'noteBox': clean_note_box,
                       'points': points, 'box': clean_box, 'page': page_no})
-    return clean
+    return {'questions': clean, 'warning': warning}
 
 
 def paper_score(questions):
@@ -3549,14 +3556,18 @@ def paper_score(questions):
 
 def paper_grade_all(app, pages, title, deadline):
     """逐頁辨識後彙總。"""
-    graded = []
+    graded, warnings = [], []
     for index, image in enumerate(pages, 1):
         if time.monotonic() > deadline:
             fail(504, f'還有 {len(pages) - index + 1} 頁未辨識；請減少頁數或分批上傳。')
-        graded.extend(paper_grade_page(app, image, index, len(pages), title))
+        page = paper_grade_page(app, image, index, len(pages), title)
+        graded.extend(page['questions'])
+        if page['warning']:
+            warnings.append({'page': index, 'text': page['warning']})
     judged = [x for x in graded if x['correct'] is not None]
     summary = paper_score(graded)
-    return {'questions': graded, 'totalQuestions': len(judged),
+    return {'questions': graded, 'pageWarnings': warnings,
+            'totalQuestions': len(judged),
             'correctCount': sum(1 for x in judged if x['correct']),
             'unreadable': len(graded) - len(judged), 'pending': summary['pending'],
             'earned': summary['earned'], 'possible': summary['possible'],
@@ -4353,6 +4364,7 @@ class Application:
                               'totalQuestions': result['totalQuestions'],
                               'correctCount': result['correctCount'],
                               'unreadable': result['unreadable'], 'pending': result['pending'],
+                              'pageWarnings': result['pageWarnings'],
                               'earned': result['earned'], 'possible': result['possible'],
                               'score': result['score'], 'questions': result['questions']}}, headers
         notes_path = re.fullmatch(r'/api/paper-grades/([1-9]\d{0,17})/notes', path)

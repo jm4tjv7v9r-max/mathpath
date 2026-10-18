@@ -749,3 +749,10 @@ html[data-theme=night] .paper-warn span{color:#e0a05c}
 html[data-theme=night] .paper-notice{background:#2a1c08;border-left-color:#e08a2e}
 html[data-theme=night] .paper-notice strong{color:#ffb15c}
 html[data-theme=night] .paper-notice p{color:#d9a86a}
+/* 紙本批改：跨頁警告（AI 主動偵測） */
+.paper-page-warnings{display:flex;flex-direction:column;gap:8px;margin:10px 0}
+.paper-warn-line{border-left:4px solid #e07b00;background:#fff8ee;padding:7px 11px;border-radius:6px;
+  color:#8a5a1f;font-size:calc(13px*var(--fs));line-height:1.6}
+.paper-warn-line strong{color:#c25e00;margin-right:8px}
+html[data-theme=night] .paper-warn-line{background:#2a1c08;color:#d9a86a}
+html[data-theme=night] .paper-warn-line strong{color:#ffb15c}
