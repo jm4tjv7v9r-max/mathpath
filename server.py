@@ -3397,8 +3397,13 @@ PAPER_GRADE_INSTRUCTION = (
     '判斷依據是數學上的等價性——不同解法、不同寫法但結果相同都算對；過程簡略但答案正確也算對。'
     '看不清、被遮住、或無法辨認的答案，correct 一律給 null（不猜測、不算對也不算錯），'
     '並在 reason 說明「無法辨認」。'
+    '另外兩件要一併回報：'
+    '① points：題目上標示的分數（例如「（5 分）」就是 5）；題目沒標分數就給 null，不要自己猜。'
+    '② box：這道題（含題目與學生答案）在照片上的位置，用 0–1 的相對座標 '
+    '{"x":左, "y":上, "w":寬, "h":高}；這是為了在照片上標出批閱結果。'
     '只回傳 JSON：{"questions":[{"number":str,"question":str,"studentAnswer":str,'
-    '"correct":true|false|null,"reason":str}]}。不要其他文字。'
+    '"correct":true|false|null,"reason":str,"points":number|null,"box":{"x":number,"y":number,"w":number,"h":number}}]}。'
+    '不要其他文字。'
 )
 
 
@@ -3428,28 +3433,69 @@ def paper_grade_page(app, image, page_no, total_pages, title):
         reason = str(item.get('reason') or '').strip()[:400]
         if not (number or question or answer):
             continue
+        points = item.get('points')
+        if isinstance(points, bool) or not isinstance(points, (int, float)) or points <= 0:
+            points = None
+        box = item.get('box')
+        clean_box = None
+        if isinstance(box, dict):
+            try:
+                values = [float(box[k]) for k in ('x', 'y', 'w', 'h')]
+                if all(math.isfinite(v) for v in values) and values[2] > 0 and values[3] > 0:
+                    clean_box = {'x': round(values[0], 4), 'y': round(values[1], 4),
+                                 'w': round(values[2], 4), 'h': round(values[3], 4)}
+            except (KeyError, TypeError, ValueError):
+                clean_box = None
         clean.append({'number': number or str(len(clean) + 1), 'question': question,
                       'studentAnswer': answer, 'correct': correct, 'reason': reason,
-                      'page': page_no})
+                      'points': points, 'box': clean_box, 'page': page_no})
     return clean
 
 
-def paper_grade_all(app, pages, title, deadline):
-    """逐頁辨識後彙總。每題平均：分數 = 答對題數 / 可判斷題數 × 100。
+def paper_score(questions):
+    """配分與計分。
 
-    ⚠️ 只把「能判斷對錯」的題目算進分母——看不清的不冤枉學生，另計 unreadable。
+    配分：**題目有標示分數就用標示**；沒標示的用「100 ÷ 總題數」的平均值；
+    最後整體正規化，讓所有題目的配分加起來剛好 100。
+    （例如 3 題：[10 分、20 分、沒標示] → 沒標示的先給 33.3，再一起縮放到總和 100。）
+
+    ⚠️ `correct is None`（AI 看不清）的題目**不計分也不計入分母**，另計 `pending`，
+    等教師判定後再算——不冤枉學生，也不偷偷給分。
     """
+    if not questions:
+        return {'score': 0.0, 'earned': 0.0, 'possible': 0.0, 'pending': 0}
+    default = 100.0 / len(questions)
+    raw = [q.get('points') or default for q in questions]
+    total_raw = sum(raw)
+    scale = 100.0 / total_raw if total_raw else 1.0
+    earned = possible = 0.0
+    pending = 0
+    for q, weight in zip(questions, raw):
+        points = weight * scale
+        if q['correct'] is None:
+            pending += 1
+            continue
+        possible += points
+        if q['correct']:
+            earned += points
+    return {'score': round(100 * earned / possible, 1) if possible else 0.0,
+            'earned': round(earned, 1), 'possible': round(possible, 1), 'pending': pending}
+
+
+def paper_grade_all(app, pages, title, deadline):
+    """逐頁辨識後彙總。"""
     graded = []
     for index, image in enumerate(pages, 1):
         if time.monotonic() > deadline:
             fail(504, f'還有 {len(pages) - index + 1} 頁未辨識；請減少頁數或分批上傳。')
         graded.extend(paper_grade_page(app, image, index, len(pages), title))
     judged = [x for x in graded if x['correct'] is not None]
-    correct = sum(1 for x in judged if x['correct'])
-    total = len(judged)
-    return {'questions': graded, 'totalQuestions': total, 'correctCount': correct,
-            'unreadable': len(graded) - total,
-            'score': round(100 * correct / total, 1) if total else 0.0}
+    summary = paper_score(graded)
+    return {'questions': graded, 'totalQuestions': len(judged),
+            'correctCount': sum(1 for x in judged if x['correct']),
+            'unreadable': len(graded) - len(judged), 'pending': summary['pending'],
+            'earned': summary['earned'], 'possible': summary['possible'],
+            'score': summary['score']}
 
 
 def leaderboard_payload(db, month):
@@ -4229,8 +4275,42 @@ class Application:
                               'title': title, 'pages': len(pages),
                               'totalQuestions': result['totalQuestions'],
                               'correctCount': result['correctCount'],
-                              'unreadable': result['unreadable'], 'score': result['score'],
-                              'questions': result['questions']}}, headers
+                              'unreadable': result['unreadable'], 'pending': result['pending'],
+                              'earned': result['earned'], 'possible': result['possible'],
+                              'score': result['score'], 'questions': result['questions']}}, headers
+        judge_path = re.fullmatch(r'/api/paper-grades/([1-9]\d{0,17})/judge', path)
+        if method == 'POST' and judge_path:
+            # 教師補判：AI 看不清（correct=null）的題目由教師判定，之後一併重算分數。
+            self.teacher(user)
+            fields(body, ('index', 'correct'), ('index', 'correct'))
+            index = number(body['index'], '題目序號', 0, 999, integer=True)
+            verdict = body['correct']
+            if verdict not in (True, False):
+                fail(400, '判定只能是對或錯。')
+            grade_id = int(judge_path[1])
+            with self.db() as db:
+                row = db.execute('SELECT * FROM paper_grades WHERE id=?', (grade_id,)).fetchone()
+                if row is None:
+                    fail(404, '找不到這筆批改紀錄。')
+                if row['teacher_id'] != user['id'] and not self.is_owner(user, db):
+                    fail(403, '只能修改自己建立的批改紀錄。')
+                questions = json.loads(row['detail'])
+                if not 0 <= index < len(questions):
+                    fail(400, '題目序號超出範圍。')
+                questions[index]['correct'] = verdict
+                questions[index]['judgedByTeacher'] = True
+                summary = paper_score(questions)
+                db.execute('UPDATE paper_grades SET detail=?, score=?, total_questions=?, correct_count=? '
+                           'WHERE id=?',
+                           (json.dumps(questions, ensure_ascii=False), summary['score'],
+                            len([q for q in questions if q['correct'] is not None]),
+                            sum(1 for q in questions if q['correct'] is True), grade_id))
+            return {'grade': {'id': grade_id, 'score': summary['score'],
+                              'earned': summary['earned'], 'possible': summary['possible'],
+                              'pending': summary['pending'],
+                              'totalQuestions': len([q for q in questions if q['correct'] is not None]),
+                              'correctCount': sum(1 for q in questions if q['correct'] is True),
+                              'questions': questions}}, headers
         if method == 'GET' and path == '/api/paper-grades':
             # 紙本批改紀錄：教師看自己建的；管理員看全部。
             self.teacher(user)

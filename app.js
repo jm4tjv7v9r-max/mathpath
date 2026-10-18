@@ -3072,16 +3072,31 @@ async function paperPageData(file){
   ctx.drawImage(img,0,0,out.width,out.height);
   return imageDataUrl(out);
 }
+let paperPages=[],paperGradeId=null;
 function paperResultHtml(g){
-  const rows=(g.questions||[]).map(q=>{
-    const mark=q.correct===true?'<span class="paper-ok">✓</span>':q.correct===false?'<span class="paper-bad">✗</span>':'<span class="small-text">?</span>';
-    return `<tr><td>${esc(q.number)}</td><td>${mathText(q.question||'')}</td><td>${mathText(q.studentAnswer||'—')}</td><td>${mark}</td><td class="small-text">${esc(q.reason||'')}</td></tr>`;
+  const qs=g.questions||[];
+  const rows=qs.map((q,i)=>{
+    const mark=q.correct===true?'<span class="paper-ok">✓ 對</span>':q.correct===false?'<span class="paper-bad">✗ 錯</span>':'<span class="paper-pending">待判定</span>';
+    const fix=q.correct===null?`<div class="paper-judge"><button class="text-button" data-paper-judge="${i}" data-paper-verdict="1">判對</button><button class="text-button" data-paper-judge="${i}" data-paper-verdict="0">判錯</button></div>`:'';
+    return `<tr><td>${esc(q.number)}</td><td>${mathText(q.question||'')}</td><td>${mathText(q.studentAnswer||'—')}</td><td>${q.points?`${q.points} 分`:'<span class="small-text">平均</span>'}</td><td>${mark}${fix}</td><td class="small-text">${esc(q.reason||'')}</td></tr>`;
   }).join('');
+  // 在原始照片上標出批閱：用 AI 回報的 box（0–1 相對座標）疊加 ✓／✗／？
+  const marks=qs.filter(q=>q.box).map(q=>{
+    const b=q.box,cls=q.correct===true?'ok':q.correct===false?'bad':'pending';
+    const sym=q.correct===true?'✓':q.correct===false?'✗':'?';
+    return `<span class="paper-mark ${cls}" style="left:${b.x*100}%;top:${b.y*100}%;width:${b.w*100}%;height:${b.h*100}%">${sym}</span>`;
+  }).join('');
+  const pagesHtml=(paperPages||[]).map((src,i)=>`<figure class="paper-page"><img src="${src}" alt="第 ${i+1} 頁"><figcaption>第 ${i+1} 頁</figcaption><div class="paper-marks">${qs.filter(q=>q.page===i+1&&q.box).map(q=>{
+    const b=q.box,cls=q.correct===true?'ok':q.correct===false?'bad':'pending';
+    const sym=q.correct===true?'✓':q.correct===false?'✗':'?';
+    return `<span class="paper-mark ${cls}" style="left:${b.x*100}%;top:${b.y*100}%;width:${b.w*100}%;height:${b.h*100}%">${sym}</span>`;
+  }).join('')}</div></figure>`).join('');
   return `<section class="panel panel-pad" style="margin-top:16px">
     <div class="paper-score"><strong>${g.score}</strong><small>/ 100</small></div>
-    <p class="small-text">${esc(g.studentName||'')} · ${esc(g.title)} · ${g.pages} 頁 · 可判斷 ${g.totalQuestions} 題、答對 ${g.correctCount} 題${g.unreadable?` · ${g.unreadable} 題無法辨認（不計分）`:''}</p>
-    <table class="board-table" style="margin-top:10px"><thead><tr><th>題號</th><th>題目</th><th>學生答案</th><th>判定</th><th>說明</th></tr></thead><tbody>${rows}</tbody></table>
-    <p class="field-hint">AI 判定僅供參考，請教師覆核後才當作正式成績。</p></section>`;
+    <p class="small-text">${esc(g.studentName||'')} · ${esc(g.title)} · ${g.pages} 頁 · 可判斷 ${g.totalQuestions} 題、答對 ${g.correctCount} 題${g.pending?` · <strong class="paper-pending">${g.pending} 題待教師判定</strong>`:''}</p>
+    ${pagesHtml?`<div class="paper-pages">${pagesHtml}</div>`:''}
+    <table class="board-table" style="margin-top:10px"><thead><tr><th>題號</th><th>題目</th><th>學生答案</th><th>配分</th><th>判定</th><th>說明</th></tr></thead><tbody>${rows}</tbody></table>
+    <p class="field-hint">AI 判定僅供參考，請教師覆核後才當作正式成績。待判定的題目請按「判對／判錯」，分數會立即重算。</p></section>`;
 }
 async function paperGradePage(){
   page='paper';shell();
@@ -3120,6 +3135,7 @@ async function paperGradePage(){
       for(let i=0;i<files.length;i++){btn.innerHTML=`${icon('clock')}處理第 ${i+1}/${files.length} 頁…`;pages.push(await paperPageData(files[i]));}
       btn.innerHTML=`${icon('spark')}AI 判斷中…`;
       const out=await api('/api/paper-grades',{studentId,title,pages});
+      paperPages=pages;paperGradeId=out.grade.id;
       $('#paper-result').innerHTML=paperResultHtml(out.grade);
       toast(`批改完成：${out.grade.score} / 100`);
     }catch(e){err.textContent=e.message;}
@@ -3442,7 +3458,15 @@ function navigate(target){if(busy)return toast('目前操作正在進行，請�
 case'homework':homeworkPage();break;case'calendar':calendarPage();break;case'board':leaderboardPage();break;case'mock':mockPage();break;case'ai':aiConfigPage();break;case'bank':bank();break;case'practice':practice();break;case'import':importPage();break;case'newq':newQuestionPage();break;case'mistakes':recordsPage();break;case'paper':paperGradePage();break;case'growth':growthPage();break;case'settings':settingsPage();break;default:bank();}window.scrollTo({top:0,behavior:'instant'});}
 document.addEventListener('click',e=>{const b=e.target.closest('button');if(!b||b.disabled)return;if(b.dataset.fontScale){applyFontScale(b.dataset.fontScale);shell();toast(`字體已設為「${FONT_SCALES.find(([id])=>id===b.dataset.fontScale)[1]}」，只影響這台裝置。`);return;}
 if(b.dataset.themeId){applyTheme(b.dataset.themeId);shell();toast(`版面已設為「${THEMES.find(([id])=>id===b.dataset.themeId)[1]}」，只影響這台裝置。`);return;}
-if(b.id==='open-math-editor'){openMathEditor();return;}if(b.dataset.page)return navigate(b.dataset.page);if(b.dataset.assignment)return assignmentPage(Number(b.dataset.assignment));if(b.dataset.mock)return mockExamPage(Number(b.dataset.mock));if(b.dataset.mockQ)return openMockQuestion(Number(b.dataset.mockQ));if(b.dataset.results)return resultsPage(Number(b.dataset.results));if(b.dataset.skipQ)return skipQuestionFromList(b.dataset.skipQ);
+if(b.id==='open-math-editor'){openMathEditor();return;}
+  if(b.dataset.paperJudge!==undefined&&paperGradeId){
+    const index=Number(b.dataset.paperJudge),verdict=b.dataset.paperVerdict==='1';
+    b.disabled=true;
+    api(`/api/paper-grades/${paperGradeId}/judge`,{index,correct:verdict})
+      .then(r=>{$('#paper-result').innerHTML=paperResultHtml(r.grade);toast(`已更新：${r.grade.score} / 100`);})
+      .catch(err=>{b.disabled=false;toast(err.message);});
+    return;
+  }if(b.dataset.page)return navigate(b.dataset.page);if(b.dataset.assignment)return assignmentPage(Number(b.dataset.assignment));if(b.dataset.mock)return mockExamPage(Number(b.dataset.mock));if(b.dataset.mockQ)return openMockQuestion(Number(b.dataset.mockQ));if(b.dataset.results)return resultsPage(Number(b.dataset.results));if(b.dataset.skipQ)return skipQuestionFromList(b.dataset.skipQ);
 if(b.dataset.assignmentQ)return openAssignmentQuestion(Number(b.dataset.assignmentQ));if(b.dataset.nextQuestion)return openAssignmentQuestion(Number(b.dataset.nextQuestion));if(b.dataset.prevQuestion)return openAssignmentQuestion(Number(b.dataset.prevQuestion));if(b.dataset.qid)return openQuestion(b.dataset.qid);if(b.dataset.topic){topic=b.dataset.topic;subtopic='';currentPage=1;return bank();}if(b.dataset.subtopic){subtopic=b.dataset.subtopic;currentPage=1;return bank();}if(b.dataset.pagination){currentPage=Number(b.dataset.pagination);return renderList();}if(b.dataset.view){viewMode=b.dataset.view;return bank();}if(b.dataset.save){const id=Number(b.dataset.save);if(bookmarks.has(id))bookmarks.delete(id);else bookmarks.add(id);saveBookmarks();b.classList.toggle('saved',bookmarks.has(id));b.setAttribute('aria-pressed',String(bookmarks.has(id)));toast(bookmarks.has(id)?'已收藏題目（本瀏覽器）':'已取消收藏');if(page==='bank'&&topic==='我的收藏')renderList();return;}if(b.dataset.answerMode){if(busy)return toast('正在保存作答，請等待完成。');preserveDraft();answerMode=b.dataset.answerMode;$$('[data-answer-mode]').forEach(x=>x.classList.toggle('active',x===b));renderAnswerArea();return;}if(b.dataset.generate)return generateQuestion(b.dataset.generate,currentQuestion&&currentQuestion.id);if(b.dataset.editq)return editQuestionModal(b.dataset.editq);if(b.dataset.aigen)return aiGenerateModal(b.dataset.aigen);if(b.dataset.aifig)return openFigureStudioForQuestion(b.dataset.aifig);if(b.dataset.aifigManual)return openFigureStudioForQuestion(b.dataset.aifigManual,true);if(b.dataset.aifigClear)return clearQuestionFigure(b.dataset.aifigClear);if(b.dataset.genKind)return generateQuestion(b.dataset.genKind,b.dataset.genQid);if(b.dataset.removeDraft){drafts.splice(Number(b.dataset.removeDraft),1);return renderImportContent();}if(b.dataset.history){historyFilter=b.dataset.history;historyFilterTouched=true;return recordsPage();}if(b.dataset.review)return reviewModal(b.dataset.review,null,null,(b.dataset.reviewQueue||'').split(',').map(Number).filter(n=>n),b.dataset.reviewView==='1');
 if(b.dataset.editUser)return editAccountModal(Number(b.dataset.editUser));switch(b.dataset.action){case'login':loginModal();break;case'close-modal':closeReviewAware();break;case'collection':topic='我的收藏';search='';currentPage=1;bank();break;case'start':requireLogin(()=>{const a=S.attempts.find(a=>a.status==='graded'&&a.score<a.maxScore);openQuestion(a?.questionId||S.questions[0]?.id||1);});break;case'hand-demo':openQuestion(1);break;}});
 $('#account').onclick=accountModal;$('#avatar').onclick=accountModal;$('#menu-btn').onclick=()=>$('#sidebar').classList.toggle('open');$('#help-btn').innerHTML=icon('help');$('#help-btn').onclick=()=>{modal(`<p class="eyebrow">LEARN WITH MATHPATH</p><h2>讓練習真正帶來理解</h2><ul class="feature-list"><li><strong>01 · 選一個知識點</strong>在題庫搜尋、篩選難度，從基礎題開始。</li><li><strong>02 · 寫出解題過程</strong>用滑鼠或觸控筆手寫、輸入文字，或上傳紙本手稿。</li><li><strong>03 · 看回饋，再練一次</strong>接入 AI 可取得建議評分；教師可覆核並給簡要建議。</li><li><strong>04 · 相似鞏固，進階加深</strong>做同知識點題目，練到能說清楚原因，再挑戰進階題。</li></ul><button class="primary wide" id="help-guide">看圖文版新手上路 ${icon('arrow')}</button><div class="import-warning">資料保存在網站伺服器；實際位置由管理員確認。作業分數與 AI 建議須教師覆核；自主練習可即時評分，未配置 AI 的手稿待批閱。所有學習紀錄均來自實際提交。</div>`);$('#help-guide').onclick=()=>{closeModal();guidePage();};};

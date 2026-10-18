@@ -3458,6 +3458,59 @@ class DataAdminTests(unittest.TestCase):
                      {'studentId': sid, 'title': 'x', 'pages': [png_url()]},
                      cookie=self.student, expect=403)
 
+    def test_paper_grade_uses_marked_points_and_teacher_judgement(self):
+        """有標示分數就按分值；沒標示用平均；AI 看不清的等教師補判後重算。"""
+        _, out, _ = self.request('POST', '/api/users',
+                                 {'username': 'pg2', 'name': '分值學生', 'password': 'PaperPass12'},
+                                 cookie=self.teacher, expect=200)
+        sid = out['user']['id']
+
+        class StubAI:
+            mode = 'external'; vision = 'vision-model'; draw = None; configured = True
+            def __init__(self, replies): self.replies = list(replies)
+            def consent(self, value): return True
+            def call(self, instruction, payload, **kw): return self.replies.pop(0)
+
+        original = self.app.ai
+        self.app.ai = StubAI([{'questions': [
+            # 10 分、答對
+            {'number': '1', 'question': 'A', 'studentAnswer': 'x', 'correct': True, 'reason': '',
+             'points': 10, 'box': {'x': 0.1, 'y': 0.1, 'w': 0.5, 'h': 0.2}},
+            # 20 分、答錯
+            {'number': '2', 'question': 'B', 'studentAnswer': 'y', 'correct': False, 'reason': '錯',
+             'points': 20, 'box': {'x': 0.1, 'y': 0.4, 'w': 0.5, 'h': 0.2}},
+            # 沒標分數、看不清 → 等教師
+            {'number': '3', 'question': 'C', 'studentAnswer': '?', 'correct': None, 'reason': '無法辨認',
+             'points': None, 'box': None}]}])
+        try:
+            _, out, _ = self.request('POST', '/api/paper-grades', {
+                'studentId': sid, 'title': '分值功課',
+                'pages': [png_url()], 'consentExternal': True},
+                cookie=self.teacher, expect=200)
+        finally:
+            self.app.ai = original
+        g = out['grade']
+        # 3 題：10、20、沒標示（先給 33.3）→ 總和 63.3 → 縮放到 100
+        # 可判斷的是前兩題（15.8 + 31.6 = 47.4），答對第一題（15.8）→ 33.3 分
+        self.assertAlmostEqual(g['score'], 33.3, places=1)
+        self.assertEqual(g['pending'], 1, '看不清的那題要標成待教師判定')
+        self.assertEqual(g['questions'][2]['points'], None)
+        self.assertIsNotNone(g['questions'][0]['box'], '要回報題目位置，才能在照片上標批閱')
+
+        # 教師補判第 3 題為「對」→ 重算：可判斷三題全算，答對兩題（15.8 + 52.6 = 68.4）
+        _, out, _ = self.request('POST', f"/api/paper-grades/{g['id']}/judge",
+                                 {'index': 2, 'correct': True}, cookie=self.teacher, expect=200)
+        g2 = out['grade']
+        self.assertEqual(g2['pending'], 0, '補判後不應再有待判定')
+        self.assertEqual(g2['questions'][2]['judgedByTeacher'], True)
+        self.assertAlmostEqual(g2['score'], 68.4, places=1)
+        # 判定必須是布林
+        self.request('POST', f"/api/paper-grades/{g['id']}/judge",
+                     {'index': 2, 'correct': 'yes'}, cookie=self.teacher, expect=400)
+        # 序號超出範圍
+        self.request('POST', f"/api/paper-grades/{g['id']}/judge",
+                     {'index': 99, 'correct': True}, cookie=self.teacher, expect=400)
+
     def teacher_id(self):
         with self.app.db() as db:
             return db.execute("SELECT id FROM users WHERE role='teacher' ORDER BY id").fetchone()[0]
