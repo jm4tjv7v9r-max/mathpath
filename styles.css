@@ -627,6 +627,11 @@ button.step.done:hover span{background:var(--mint);color:var(--green)}
 .import-panel .field-hint{font-size:calc(12px*var(--fs));line-height:1.7}
 
 /* ── 版面二：墨夜（深色）── 與「晨光」完全不同的配色 ── */
+html[data-theme=night] .nav-item.active{background:#1e3a30;color:#7fd8b8}
+html[data-theme=night] .nav-item .count{background:#26302c;color:#a8c4b8}
+html[data-theme=night] .segmented button.active{background:#2a3437;color:#8fdcc0;box-shadow:none}
+html[data-theme=night] .badge.l2{background:#3a3117;color:#e0b562}
+html[data-theme=night] .badge.l3{background:#2c2740;color:#b6a8e0}
 html[data-theme=night]{--surface:#1c2528;--surface-soft:#1a2124;--surface-green:#22302c;--line-soft:#2f3b3d;--muted-2:#8ea09f;--bg:#111719;--paper:#1a2124;--ink:#e3eaec;--muted:#93a3a5;
   --green:#5ed0ae;--green-dark:#3fb694;--mint:#1e2c2d;--border:#2a3437;--orange:#e2a75d;
   --shadow:0 1px 3px rgba(0,0,0,.35),0 10px 28px rgba(0,0,0,.28)}
