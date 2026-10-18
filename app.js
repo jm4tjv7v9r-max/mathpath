@@ -3196,6 +3196,8 @@ async function paperGradePage(){
         <div class="form-field"><label class="field-label" for="paper-title">功課名稱</label><input id="paper-title" maxlength="200" placeholder="例如：第三次功課"></div>
         <div class="form-field"><label class="field-label" for="paper-class">班級</label><select id="paper-class"><option value="">全部學生（不分班）</option>${classes.map(c=>`<option value="${c.id}">${esc(c.name)}（${c.studentCount} 人）</option>`).join('')}</select></div>
       </div>
+      <label class="consent-check"><input type="checkbox" id="paper-consent">
+        <span>我同意把這份功課（題目與學生作答）傳送給外部 AI 模型辨識與批改。同一份功課只需勾一次，換功課時請重新確認。</span></label>
     </section>
     <section class="panel panel-pad" style="margin-bottom:16px">
       <h2 style="margin-bottom:6px">第一步：建立答案卷（建議先做）</h2>
@@ -3229,12 +3231,13 @@ async function paperGradePage(){
     if(!title)return err.textContent='請填寫功課名稱。';
     if(!files.length)return err.textContent='請上傳空白題目。';
     if(files.length>10)return err.textContent='最多 10 頁。';
+    if(!$('#paper-consent').checked)return err.textContent='請先勾選「同意傳送給外部 AI 模型」。';
     btn.disabled=true;const original=btn.innerHTML;
     try{
       const pages=[];
       for(let i=0;i<files.length;i++){btn.innerHTML=`${icon('clock')}處理第 ${i+1}/${files.length} 頁…`;pages.push(await paperPageData(files[i]));}
       btn.innerHTML=`${icon('spark')}AI 生成答案中…`;
-      const out=await api('/api/paper-keys',{title,pages});
+      const out=await api('/api/paper-keys',{title,pages,consentExternal:true});
       const key=out.key;
       $('#key-result').innerHTML=`<div class="paper-key-editor">
         <p class="small-text">AI 生成的標準答案如下。請逐題核對，可直接修改；確認後才能拿來批改。</p>
@@ -3279,13 +3282,14 @@ async function paperGradePage(){
     if(!title)return err.textContent='請填寫功課名稱。';
     if(!files.length)return err.textContent='請至少上傳一頁。';
     if(files.length>10)return err.textContent='最多 10 頁。';
+    if(!$('#paper-consent').checked)return err.textContent='請先勾選「同意傳送給外部 AI 模型」。';
     btn.disabled=true;const original=btn.innerHTML;
     try{
       const pages=[];
       for(let i=0;i<files.length;i++){btn.innerHTML=`${icon('clock')}處理第 ${i+1}/${files.length} 頁…`;pages.push(await paperPageData(files[i]));}
       btn.innerHTML=`${icon('spark')}AI 判斷中…`;
       const keyId=Number($('#paper-key').value||0);
-      const out=await api('/api/paper-grades',{studentId,title,pages,...(keyId?{paperKeyId:keyId}:{})});
+      const out=await api('/api/paper-grades',{studentId,title,pages,consentExternal:true,...(keyId?{paperKeyId:keyId}:{})});
       paperPages=pages;paperGradeId=out.grade.id;
       $('#paper-result').innerHTML=paperResultHtml(out.grade);
       // 同一份功課要逐個學生上傳：功課名稱與班級保留，學號與檔案清空，直接換下一位。

@@ -761,3 +761,8 @@ html[data-theme=night] .paper-warn-line strong{color:#ffb15c}
 .paper-key-editor .key-answer{width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:6px;
   font-size:calc(13px*var(--fs));background:var(--surface-soft);color:var(--ink)}
 .paper-key-editor .key-answer:focus{outline:2px solid var(--green);outline-offset:1px}
+/* 紙本批改：外部上傳同意 */
+.consent-check{display:flex;gap:9px;align-items:flex-start;margin-top:12px;padding:10px 12px;
+  border:1px solid var(--border);border-radius:9px;background:var(--surface-soft);cursor:pointer;
+  font-size:calc(13px*var(--fs));line-height:1.6;color:var(--ink)}
+.consent-check input{margin-top:3px;flex:0 0 auto;width:16px;height:16px;accent-color:var(--green)}
