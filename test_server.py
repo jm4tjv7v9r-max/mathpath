@@ -3687,6 +3687,17 @@ class DataAdminTests(unittest.TestCase):
         self.assertEqual(payload['reference'][1]['answer'], '4（2+2）', '要用教師修正後的答案')
         self.assertAlmostEqual(out['grade']['score'], 100.0, places=1)
 
+    def test_large_data_url_not_counted_as_text(self):
+        """base64 圖檔／PDF 不算「文字總長」——否則上傳 PDF 一定被 80,000 字上限擋掉。"""
+        big = 'data:application/pdf;base64,' + 'A' * 400000
+        total = server.validate_text_total({'pages': [big, big]})
+        self.assertEqual(total, len('pages'), 'pages 的內容不計，只剩 key 名本身的長度')
+        self.assertLess(total, server.MAX_TEXT)
+        # 一般文字仍然要算
+        self.assertEqual(server.validate_text_total({'title': 'abc'}), len('title') + 3)
+        # 圖片欄位同樣不計
+        self.assertEqual(server.validate_text_total({'image': big}), len('image'))
+
     def teacher_id(self):
         with self.app.db() as db:
             return db.execute("SELECT id FROM users WHERE role='teacher' ORDER BY id").fetchone()[0]

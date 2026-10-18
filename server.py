@@ -372,7 +372,10 @@ def validate_text_total(value, key='', depth=0):
     if depth > 15:
         fail(400, '資料結構過深。')
     if isinstance(value, str):
-        if key in ('image', 'dataUrl', 'figure'):
+        # 這些欄位放的是 base64 圖檔／PDF，不該算進「文字總長」——否則一張圖就會
+        # 撞破 80,000 字的上限（紙本批改的 pages 是陣列，元素本身沒有 key，所以
+        # 由下面的 list 分支把父層 key 傳下來）。
+        if key in ('image', 'dataUrl', 'figure', 'pages'):
             return 0
         if '\x00' in value or re.search(r'[\ud800-\udfff]', value):
             fail(400, '文字不可包含空字元或無效 Unicode。')
@@ -380,7 +383,8 @@ def validate_text_total(value, key='', depth=0):
     if isinstance(value, dict):
         return sum(validate_text_total(v, k, depth + 1) + len(k) for k, v in value.items())
     if isinstance(value, list):
-        return sum(validate_text_total(v, '', depth + 1) for v in value)
+        # 元素繼承父層的 key：pages 這種「dataUrl 陣列」才不會被當成純文字計算。
+        return sum(validate_text_total(v, key, depth + 1) for v in value)
     return 0
 
 
