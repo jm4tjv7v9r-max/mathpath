@@ -766,3 +766,8 @@ html[data-theme=night] .paper-warn-line strong{color:#ffb15c}
   border:1px solid var(--border);border-radius:9px;background:var(--surface-soft);cursor:pointer;
   font-size:calc(13px*var(--fs));line-height:1.6;color:var(--ink)}
 .consent-check input{margin-top:3px;flex:0 0 auto;width:16px;height:16px;accent-color:var(--green)}
+/* 頂欄快速連結：日曆／排行榜／新手上路 */
+.topbar-link{background:transparent;border:1px solid var(--border);border-radius:8px;
+  padding:5px 12px;font-size:calc(13px*var(--fs));font-weight:600;color:var(--ink);cursor:pointer}
+.topbar-link:hover{background:var(--surface-soft);border-color:var(--green);color:var(--green)}
+html[data-theme=night] .topbar-link{color:#dbe6e6}
