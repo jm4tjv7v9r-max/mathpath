@@ -3177,6 +3177,9 @@ document.addEventListener('pointerup',async()=>{
 async function paperGradePage(){
   page='paper';shell();
   if(S.user?.role!=='teacher')return bank();
+  // 確認答案卷或重新載入時，不要把教師填過的功課名稱／班級弄丟。
+  const savedTitle=sessionStorage.getItem('paperTitle')||'';
+  const savedClass=sessionStorage.getItem('paperClass')||'';
   $('#main').innerHTML=`<div class="fade-in">${heading('PAPER GRADING','紙本批改','上傳整份功課（題目＋學生手寫答案），AI 逐題判斷對錯，以 100 分為滿分。')}<section class="panel panel-pad"><p class="small-text">載入中…</p></section></div>`;
   let roster=[],history=[],keys=[],classes=[];
   try{
@@ -3193,8 +3196,8 @@ async function paperGradePage(){
       <h2 style="margin-bottom:6px">這份功課（填一次就好）</h2>
       <p class="small-text" style="margin:0 0 10px">功課名稱與班級只要填一次，之後逐個學生上傳時不必再填。</p>
       <div class="form-grid">
-        <div class="form-field"><label class="field-label" for="paper-title">功課名稱</label><input id="paper-title" maxlength="200" placeholder="例如：第三次功課"></div>
-        <div class="form-field"><label class="field-label" for="paper-class">班級</label><select id="paper-class"><option value="">全部學生（不分班）</option>${classes.map(c=>`<option value="${c.id}">${esc(c.name)}（${c.studentCount} 人）</option>`).join('')}</select></div>
+        <div class="form-field"><label class="field-label" for="paper-title">功課名稱</label><input id="paper-title" maxlength="200" value="${esc(savedTitle)}" placeholder="例如：第三次功課"></div>
+        <div class="form-field"><label class="field-label" for="paper-class">班級</label><select id="paper-class"><option value="">全部學生（不分班）</option>${classes.map(c=>`<option value="${c.id}"${String(c.id)===savedClass?' selected':''}>${esc(c.name)}（${c.studentCount} 人）</option>`).join('')}</select></div>
       </div>
       <label class="consent-check"><input type="checkbox" id="paper-consent">
         <span>我同意把這份功課（題目與學生作答）傳送給外部 AI 模型辨識與批改。同一份功課只需勾一次，換功課時請重新確認。</span></label>
@@ -3206,6 +3209,7 @@ async function paperGradePage(){
       <p class="error-text" id="key-error"></p>
       <button class="secondary" id="key-build">${icon('spark')}生成標準答案</button>
       <div id="key-result"></div>
+      <div id="key-answers"></div>
     </section>
     <section class="panel panel-pad">
       <h2 style="margin-bottom:10px">第二步：批改學生作業</h2>
@@ -3254,7 +3258,15 @@ async function paperGradePage(){
         try{
           await api(`/api/paper-keys/${key.id}`,{questions,confirm:true});
           toast('答案卷已確認，之後批改會以它為準。');
-          paperGradePage();
+          // 只把新確認的答案卷加進下拉，不重載整頁——重載會把功課名稱與班級洗掉。
+          const sel=$('#paper-key');
+          if(sel&&!Array.from(sel.options).some(o=>o.value===String(key.id))){
+            const opt=document.createElement('option');
+            opt.value=String(key.id);opt.textContent=`${title}（${questions.length} 題，已確認）`;
+            sel.appendChild(opt);
+          }
+          if(sel)sel.value=String(key.id);
+          $('#key-result').innerHTML=`<div class="paper-key-editor"><p class="small-text">✅ 答案卷已確認（${questions.length} 題），已自動選用於批改。</p></div>`;
         }catch(e2){$('#key-confirm-error').textContent=e2.message;btn2.disabled=false;}
       };
     }catch(e){err.textContent=e.message;}
@@ -3270,7 +3282,45 @@ async function paperGradePage(){
       ? list.map(u=>`<option value="${u.id}">${esc(u.name)}${u.seat?` · ${esc(u.seat)}`:''}${u.grade?` · ${esc(u.grade)}`:''}</option>`).join('')
       : '<option value="">（這個班還沒有學生）</option>';
   };
-  $('#paper-class').onchange=fillStudents;
+  // 選了答案卷 → 直接把標準答案列出來（教師要能回頭核對），並提供匯入題庫。
+  const renderKeyAnswers=()=>{
+    const id=Number($('#paper-key').value||0);
+    const key=keys.find(k=>k.id===id);
+    const box=$('#key-answers');
+    if(!box)return;
+    if(!key){box.innerHTML='';return;}
+    box.innerHTML=`<div class="paper-key-editor">
+      <h3 style="margin:0 0 8px;font-size:calc(16px*var(--fs))">已確認的標準答案 · ${esc(key.title)}（${key.questions.length} 題）</h3>
+      <table class="board-table"><thead><tr><th>題號</th><th>題目</th><th>標準答案</th><th>配分</th></tr></thead><tbody>
+      ${key.questions.map(q=>`<tr><td>${esc(q.number)}</td><td>${mathText(q.question||'')}</td><td>${mathText(q.answer||'—')}</td><td>${q.points?q.points+' 分':'<span class="small-text">平均</span>'}</td></tr>`).join('')}
+      </tbody></table>
+      <p class="field-hint">要修改答案請重新生成，或在批改時用「判對／判錯」個別修正。</p>
+      <div class="row-actions" style="margin-top:10px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+        <label class="field-label" for="key-import-topic" style="margin:0">匯入分類</label>
+        <select id="key-import-topic" style="max-width:200px">${Object.keys(topicTree).map(t=>`<option value="${esc(t)}"${t==='代數'?' selected':''}>${esc(t)}</option>`).join('')}</select>
+        <button class="secondary" id="key-import">${icon('upload')}把這 ${key.questions.length} 題匯入題庫</button>
+      </div>
+      <p class="field-hint">匯入後可在題庫編輯難度、詳解與子分類。題型預設為「解答題」。</p></div>`;
+    $('#key-import').onclick=async()=>{
+      const btn=$('#key-import');btn.disabled=true;
+      try{
+        const payload=key.questions.map((q,i)=>({
+          title:`${key.title} 第 ${q.number} 題`,
+          content:q.question||`第 ${q.number} 題`,
+          answer:q.answer||'',
+          topic:($('#key-import-topic')||{}).value||'代數', grade:'中三', qtype:'解答題',
+          points:q.points||5, level:2, source:`紙本批改 · ${key.title}`
+        }));
+        const r=await api('/api/questions/import',{questions:payload});
+        await refresh();
+        toast(`已匯入 ${r.count||payload.length} 題到題庫（分類與難度請再到題庫調整）`);
+      }catch(e){toast(e.message);btn.disabled=false;}
+    };
+  };
+  $('#paper-key').onchange=renderKeyAnswers;
+  renderKeyAnswers();
+  $('#paper-class').onchange=()=>{sessionStorage.setItem('paperClass',$('#paper-class').value);fillStudents();};
+  $('#paper-title').oninput=()=>sessionStorage.setItem('paperTitle',$('#paper-title').value);
   fillStudents();
   $('#paper-submit').onclick=async()=>{
     const studentId=Number($('#paper-student').value||0);

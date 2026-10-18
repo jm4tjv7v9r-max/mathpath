@@ -3698,6 +3698,27 @@ class DataAdminTests(unittest.TestCase):
         # 圖片欄位同樣不計
         self.assertEqual(server.validate_text_total({'image': big}), len('image'))
 
+    def test_paper_key_import_payload(self):
+        """答案卷匯入題庫：前端組的 payload 要能通過 question_valid。
+
+        （匯入時 topic 用「代數」、qtype 用「解答題」、points 沒標就給 5——
+        這三個都是實際踩過的坑：TOPICS 沒有「其他」、QTYPES 沒有「計算題」、
+        points 是必填不能傳 null。）
+        """
+        payload = {'questions': [{
+            'title': '第三次功課 第 1 題', 'content': '1+1=?', 'answer': '2',
+            'topic': '代數', 'grade': '中三', 'qtype': '解答題',
+            'points': 5, 'level': 2, 'source': '紙本批改 · 第三次功課'}]}
+        _, out, _ = self.request('POST', '/api/questions/import', payload,
+                                 cookie=self.teacher, expect=200)
+        self.assertEqual(out['count'], 1, '後端回的是 count，不是 imported')
+        # 對照：題型若用「計算題」（QTYPES 沒有）要 400
+        bad = {'questions': [dict(payload['questions'][0], qtype='計算題')]}
+        self.request('POST', '/api/questions/import', bad, cookie=self.teacher, expect=400)
+        # 對照：points 傳 null 要 400
+        bad2 = {'questions': [dict(payload['questions'][0], points=None)]}
+        self.request('POST', '/api/questions/import', bad2, cookie=self.teacher, expect=400)
+
     def teacher_id(self):
         with self.app.db() as db:
             return db.execute("SELECT id FROM users WHERE role='teacher' ORDER BY id").fetchone()[0]
