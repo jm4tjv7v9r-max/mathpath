@@ -4334,6 +4334,9 @@ class Application:
 
     @staticmethod
     def teacher(user):
+        # 未登入要回 401（原本直接讀 user['role']，None 會拋 TypeError 被轉成 400）。
+        if not user:
+            fail(401, '請先登入。')
         if user['role'] != 'teacher':
             fail(403, '此操作只限教師。')
 
@@ -4623,8 +4626,10 @@ class Application:
                                 'questions': json.loads(r['detail'])} for r in rows]}, headers
         board_path = re.fullmatch(r'/api/leaderboard(?:/(\d{4}-\d{2}))?', path)
         if method == 'GET' and board_path:
-            # 排行榜：每月每級前 10（得分榜 + 進步榜）。登入者都看得到——那是公開比較，
-            # 但只回姓名、座號與分數，不含作答內容。月份走路徑參數（本站不支援查詢參數）。
+            # 排行榜：每月每級前 10（得分榜 + 進步榜）。**必須登入**——榜上有全班姓名與分數，
+            # 不能讓未登入的人看到（冒煙測試發現原本漏了這個檢查）。
+            if not user:
+                fail(401, '請先登入才能查看排行榜。')
             with self.db() as db:
                 return leaderboard_payload(db, board_path[1] or ''), headers
         if method == 'GET' and path == '/api/health':
