@@ -635,6 +635,15 @@ html[data-theme=night] .badge.l3{background:#2c2740;color:#b6a8e0}
 html[data-theme=night]{--surface:#1c2528;--surface-soft:#1a2124;--surface-green:#22302c;--line-soft:#2f3b3d;--muted-2:#8ea09f;--bg:#111719;--paper:#1a2124;--ink:#e3eaec;--muted:#93a3a5;
   --green:#5ed0ae;--green-dark:#3fb694;--mint:#1e2c2d;--border:#2a3437;--orange:#e2a75d;
   --shadow:0 1px 3px rgba(0,0,0,.35),0 10px 28px rgba(0,0,0,.28)}
+/* 對話框與側欄底部：基礎規則寫死 background:#fff，墨夜下不會自動變暗 */
+html[data-theme=night] .modal{background:#161c1e;border-color:#2a3437;color:#e3eaec}
+html[data-theme=night] .account{background:#161c1e}
+html[data-theme=night] .account .avatar{background:#3a3117;color:#e0b562}
+html[data-theme=night] .font-scale{color:#93a3a5}
+html[data-theme=night] .font-scale button{background:#1a2124;color:#a9b9b8;border-color:#2a3437}
+html[data-theme=night] .font-scale button:hover{background:#22302c}
+html[data-theme=night] #settings-nav{color:#c9d4d2}
+html[data-theme=night] #settings-nav.active{background:#1e3a30;color:#7fd8b8}
 html[data-theme=night] body{background:var(--bg)}
 /* 硬編碼的淡底：改成深色版的底色 */
 html[data-theme=night] .sidebar,html[data-theme=night] .topbar{background:#151c1e}
