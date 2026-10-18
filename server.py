@@ -3452,6 +3452,11 @@ def paper_key_page(app, image, page_no, total_pages, title):
 PAPER_GRADE_INSTRUCTION = (
     '你是一位資深數學老師，正在批改學生寫在紙上的功課。照片可能同時包含題目與學生的手寫答案。'
     '請逐題辨識：題號、題目內容、學生的手寫答案，並判斷答案是否正確。'
+    '⚠️ **學生可能不按題號順序作答**（跳題、先做後面、把答案寫在頁邊），甚至**沒有寫題號**。'
+    '你必須根據「題目內容」判斷每一份作答屬於哪一題，**不要只按答案出現的先後順序配對**。'
+    '回報的 number 要填「這份作答對應到哪一題」的題號（例如學生先做第 3 題，'
+    '第一個答案就要標 number="3"），不是你看到的順序。'
+    '如果實在無法判斷某份作答屬於哪一題，number 填 "?"，並在 reason 說明「無法對應題號」。'
     '判斷依據是數學上的等價性——不同解法、不同寫法但結果相同都算對；過程簡略但答案正確也算對。'
     '看不清、被遮住、或無法辨認的答案，correct 一律給 null（不猜測、不算對也不算錯），'
     '並在 reason 說明「無法辨認」。'
@@ -3497,10 +3502,12 @@ def paper_grade_page(app, image, page_no, total_pages, title, key=None):
     payload = {'title': title, 'page': page_no}
     if key:
         payload['reference'] = key
-        instruction += ('這份功課的**標準答案**已放在 reference 欄位（教師已確認）。'
+        instruction += ('這份功課的**標準答案**已放在 reference 欄位（教師已確認，按題號排列）。'
                         '請以 reference 的答案為判斷依據，不要自己重新解題；'
                         '若學生的答案與 reference 數學上等價，就算對。'
-                        'reference 沒有的題目才由你自行判斷。')
+                        '**reference 的順序是題號順序，學生卷上的順序可能完全不同**——'
+                        '請逐題把學生的作答對應到 reference 的題號（按題目內容對應），'
+                        '再用該題的標準答案判斷。reference 沒有的題目才由你自行判斷。')
     try:
         result = app.ai.call(instruction, payload, image=image, model=app.ai.vision)
     except APIError:
