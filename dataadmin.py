@@ -382,6 +382,36 @@ class DataAdmin:
             return False
         return target['created_by'] == actor['id']
 
+    def purge_student_images(self, db, uid, actor):
+        """清除某位學生的手寫圖與批註圖（網盤物件），但**保留作答紀錄與分數**。
+
+        權限：匯入這位學生的教師，或管理員。
+        回傳 {images: 刪掉的物件數, attempts: 清掉圖片的作答筆數}。
+        """
+        row = db.execute('SELECT * FROM users WHERE id=?', (uid,)).fetchone()
+        if row is None:
+            self.fail(404, '找不到這位學生。')
+        if row['role'] != 'student':
+            self.fail(400, '只能清除學生的手寫圖。')
+        if actor['id'] != self.owner_id(db) and row['created_by'] != actor['id']:
+            self.fail(403, '只有匯入這位學生的教師或管理員可以清除。')
+        keys = []
+        for attempt in db.execute('SELECT image_key, annotation_key FROM attempts WHERE user_id=?', (uid,)):
+            keys += [k for k in (attempt['image_key'], attempt['annotation_key']) if k]
+        images = 0
+        for key in keys:
+            try:
+                self.app.storage.delete(key)
+                images += 1
+            except Exception:
+                pass
+        db.execute('BEGIN IMMEDIATE')
+        attempts = db.execute(
+            "UPDATE attempts SET image=NULL, image_key=NULL, image_mime=NULL, annotation_key=NULL "
+            "WHERE user_id=? AND (image IS NOT NULL OR image_key IS NOT NULL OR annotation_key IS NOT NULL)",
+            (uid,)).rowcount
+        return {'images': images, 'attempts': attempts}
+
     def update_user(self, db, uid, body, actor=None):
         """依角色分派：教師走 update_teacher()，其餘走 update_student()。
 

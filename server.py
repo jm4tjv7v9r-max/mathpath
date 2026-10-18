@@ -4835,6 +4835,13 @@ class Application:
             with self.db() as db:
                 db.execute('BEGIN IMMEDIATE')
                 return self.dataadmin.delete_user(db, int(delete_user[1]), user, confirm), headers
+        purge_img = re.fullmatch(r'/api/users/([1-9]\d{0,17})/images/delete', path)
+        if method == 'POST' and purge_img:
+            # 清除學生手寫圖（網盤物件）與批註圖；作答紀錄與分數保留。
+            # 權限：匯入這位學生的教師或管理員（在 purge_student_images 內判）。
+            self.teacher(user)
+            with self.db() as db:
+                return self.dataadmin.purge_student_images(db, int(purge_img[1]), user), headers
         if path == '/api/admin/storage' and method == 'GET':
             self.require_owner(user)
             with self.db() as db:

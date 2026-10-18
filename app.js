@@ -3625,7 +3625,7 @@ function canDeleteAccount(u){
 function accountRow(u){
   const teacher=u.role==='teacher',admin=u.id===ROSTER_OWNER,mine=canEditAccount(u);
   const maker=(!mine&&u.createdBy)?ROSTER_USERS.find(x=>x.id===u.createdBy):null;
-  return `<div class="roster-row"><span class="roster-who">${admin?'<span class="role-badge admin">管理員</span>':teacher?'<span class="role-badge">教師</span>':u.seat?`<span class="seat-badge">${esc(u.seat)}</span>`:''}${esc(u.name)}${u.username===u.name?'':`<span class="small-text">${esc(u.username)}</span>`}${maker?`<span class="small-text">由 ${esc(maker.name)} 建立</span>`:''}</span><span style="display:flex;gap:10px;align-items:center">${mine?`<button class="text-button" data-edit-user="${u.id}">編輯</button>`:'<span class="small-text">僅可檢視</span>'}${canDeleteAccount(u)?`<button class="text-button" data-del-user="${u.id}" data-del-uname="${esc(u.name)}" data-del-role="${u.role}" style="color:#b8453b">刪除</button>`:''}</span></div>`;
+  return `<div class="roster-row"><span class="roster-who">${admin?'<span class="role-badge admin">管理員</span>':teacher?'<span class="role-badge">教師</span>':u.seat?`<span class="seat-badge">${esc(u.seat)}</span>`:''}${esc(u.name)}${u.username===u.name?'':`<span class="small-text">${esc(u.username)}</span>`}${maker?`<span class="small-text">由 ${esc(maker.name)} 建立</span>`:''}</span><span style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">${mine?`<button class="text-button" data-edit-user="${u.id}">編輯</button>`:'<span class="small-text">僅可檢視</span>'}${u.role==='student'&&canDeleteAccount(u)?`<button class="text-button" data-purge-img="${u.id}" data-purge-name="${esc(u.name)}" style="color:#b87333">清除手寫圖</button>`:''}${canDeleteAccount(u)?`<button class="text-button" data-del-user="${u.id}" data-del-uname="${esc(u.name)}" data-del-role="${u.role}" style="color:#b8453b">刪除</button>`:''}</span></div>`;
 }
 // 編輯帳號：只送出有改動的欄位；重設密碼會讓該帳號目前的登入立即失效。
 function editAccountModal(id){
@@ -3713,6 +3713,14 @@ document.addEventListener('click',e=>{const b=e.target.closest('button');if(!b||
 if(b.dataset.themeId){applyTheme(b.dataset.themeId);shell();toast(`版面已設為「${THEMES.find(([id])=>id===b.dataset.themeId)[1]}」，只影響這台裝置。`);return;}
 if(b.id==='open-math-editor'){openMathEditor();return;}
   if(b.dataset.manageClass){manageClassModal(Number(b.dataset.manageClass));return;}
+  if(b.dataset.purgeImg){
+    const uid=Number(b.dataset.purgeImg),uname=b.dataset.purgeName||'';
+    if(!confirm(`清除「${uname}」的所有手寫圖與批註圖？\n\n⚠️ 會刪除網盤上的圖片檔，無法復原。\n作答紀錄與分數會保留。`))return;
+    b.disabled=true;
+    api(`/api/users/${uid}/images/delete`,{}).then(r=>{toast(`已清除 ${r.images} 個圖片、${r.attempts} 筆作答的圖片欄位。`);manageUsers();})
+      .catch(err=>{b.disabled=false;toast(err.message);});
+    return;
+  }
   if(b.dataset.delUser){
     const uid=Number(b.dataset.delUser),uname=b.dataset.delUname||'',urole=b.dataset.delRole||'student';
     const warn=urole==='teacher'

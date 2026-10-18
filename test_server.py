@@ -3796,6 +3796,39 @@ class DataAdminTests(unittest.TestCase):
         self.request('POST', f'/api/users/{t3}/delete', {'confirm': 'DELETE'},
                      cookie=self.teacher, expect=200)
 
+    def test_purge_student_images(self):
+        """清除學生手寫圖：匯入老師或管理員；只清圖片欄位，作答與分數保留。"""
+        _, out, _ = self.request('POST', '/api/users',
+                                 {'username': 'purge1', 'name': '有圖學生', 'password': 'PurgePass12'},
+                                 cookie=self.teacher, expect=200)
+        sid = out['user']['id']
+        with self.app.db() as db:
+            qid = db.execute('SELECT id FROM questions LIMIT 1').fetchone()['id']
+            db.execute("INSERT INTO attempts(user_id,question_id,answer_text,image_key,image_mime,"
+                       "max_score,status,feedback,submitted_at,method,score) "
+                       "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                       (sid, qid, 'x', 'attempts/purge.webp', 'image/webp', 10, 'graded', '',
+                        '2026-10-01T10:00:00Z', 'rule', 5))
+        # 另一位老師不能清（不是他匯入的）
+        self.request('POST', '/api/teachers',
+                     {'name': '別的老師', 'username': 'purge_t2', 'password': 'TeacherPass12'},
+                     cookie=self.teacher, expect=200)
+        t2 = self.login('purge_t2', 'TeacherPass12')
+        self.request('POST', f'/api/users/{sid}/images/delete', {}, cookie=t2, expect=403)
+        # 管理員可以清
+        out = self.request('POST', f'/api/users/{sid}/images/delete', {},
+                           cookie=self.teacher, expect=200)[1]
+        self.assertEqual(out['attempts'], 1, '清掉 1 筆作答的圖片欄位')
+        with self.app.db() as db:
+            row = db.execute('SELECT image_key, image, score FROM attempts WHERE user_id=?',
+                             (sid,)).fetchone()
+            self.assertIsNone(row['image_key'], '網盤 key 要清掉')
+            self.assertIsNone(row['image'], '資料庫的圖片也要清掉')
+            self.assertEqual(row['score'], 5, '分數要保留')
+        # 不能清教師的圖
+        self.request('POST', f'/api/users/{self.teacher_id()}/images/delete', {},
+                     cookie=self.teacher, expect=400)
+
     def teacher_id(self):
         with self.app.db() as db:
             return db.execute("SELECT id FROM users WHERE role='teacher' ORDER BY id").fetchone()[0]
