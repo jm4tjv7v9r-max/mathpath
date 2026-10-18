@@ -3250,7 +3250,18 @@ async function paperGradePage(){
           <td><input class="key-answer" data-key-index="${i}" value="${esc(q.answer||'')}" placeholder="（無法辨識，請自行填寫）"></td></tr>`).join('')}
         </tbody></table>
         <p class="error-text" id="key-confirm-error"></p>
-        <button class="primary" id="key-confirm">${icon('check')}確認這份答案卷（${key.questions.length} 題）</button></div>`;
+        <div class="row-actions" style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+          <button class="primary" id="key-confirm">${icon('check')}確認這份答案卷（${key.questions.length} 題）</button>
+          <label class="field-label" for="key-import-topic" style="margin:0">匯入分類</label>
+          <select id="key-import-topic" style="max-width:180px">${Object.keys(topicTree).map(t=>`<option value="${esc(t)}"${t==='代數'?' selected':''}>${esc(t)}</option>`).join('')}</select>
+          <button class="secondary" id="key-import">${icon('upload')}匯入題庫</button>
+        </div>
+        <p class="field-hint">核對後按「確認」才能用於批改；也可以直接匯入題庫（會用上面修改後的答案）。</p></div>`;
+      $('#key-import').onclick=()=>{
+        const qs=key.questions.map((q,i)=>({number:q.number,question:q.question,points:q.points,
+          answer:$(`.key-answer[data-key-index="${i}"]`).value.trim()}));
+        importKeyToBank(key,qs);
+      };
       $('#key-confirm').onclick=async()=>{
         const questions=key.questions.map((q,i)=>({number:q.number,question:q.question,points:q.points,
           answer:$(`.key-answer[data-key-index="${i}"]`).value.trim()}));
@@ -3282,40 +3293,65 @@ async function paperGradePage(){
       ? list.map(u=>`<option value="${u.id}">${esc(u.name)}${u.seat?` · ${esc(u.seat)}`:''}${u.grade?` · ${esc(u.grade)}`:''}</option>`).join('')
       : '<option value="">（這個班還沒有學生）</option>';
   };
-  // 選了答案卷 → 直接把標準答案列出來（教師要能回頭核對），並提供匯入題庫。
+  // 匯入題庫（生成後與已確認的答案卷共用）
+  const importKeyToBank=async(key,questions)=>{
+    const btn=$('#key-import');if(btn)btn.disabled=true;
+    try{
+      const topic=($('#key-import-topic')||{}).value||'代數';
+      const payload=questions.map(q=>({
+        title:`${key.title} 第 ${q.number} 題`,
+        content:q.question||`第 ${q.number} 題`,
+        answer:q.answer||'',
+        topic, grade:'中三', qtype:'解答題',
+        points:q.points||5, level:2, source:`紙本批改 · ${key.title}`
+      }));
+      const r=await api('/api/questions/import',{questions:payload});
+      await refresh();
+      toast(`已匯入 ${r.count||payload.length} 題到題庫（分類與難度請再到題庫調整）`);
+    }catch(e){toast(e.message);if(btn)btn.disabled=false;}
+  };
+
+  // 選了答案卷 → 列出標準答案（可修改、可儲存、可匯入）
   const renderKeyAnswers=()=>{
     const id=Number($('#paper-key').value||0);
     const key=keys.find(k=>k.id===id);
     const box=$('#key-answers');
     if(!box)return;
+    // 已確認的答案卷不能再重新生成（只可修改），避免覆蓋教師核對過的答案。
+    const buildBtn=$('#key-build');
+    if(buildBtn){
+      buildBtn.disabled=!!key;
+      buildBtn.title=key?'已確認的答案卷只可修改，不能重新生成':'';
+    }
     if(!key){box.innerHTML='';return;}
     box.innerHTML=`<div class="paper-key-editor">
       <h3 style="margin:0 0 8px;font-size:calc(16px*var(--fs))">已確認的標準答案 · ${esc(key.title)}（${key.questions.length} 題）</h3>
-      <table class="board-table"><thead><tr><th>題號</th><th>題目</th><th>標準答案</th><th>配分</th></tr></thead><tbody>
-      ${key.questions.map(q=>`<tr><td>${esc(q.number)}</td><td>${mathText(q.question||'')}</td><td>${mathText(q.answer||'—')}</td><td>${q.points?q.points+' 分':'<span class="small-text">平均</span>'}</td></tr>`).join('')}
+      <p class="small-text" style="margin:0 0 8px">已確認的答案卷**不能重新生成**，但可以直接修改答案後儲存。</p>
+      <table class="board-table"><thead><tr><th>題號</th><th>題目</th><th>標準答案（可修改）</th><th>配分</th></tr></thead><tbody>
+      ${key.questions.map((q,i)=>`<tr><td>${esc(q.number)}</td><td>${mathText(q.question||'')}</td>
+        <td><input class="key-answer" data-key-index="${i}" value="${esc(q.answer||'')}" placeholder="（未填，請自行填寫）"></td>
+        <td>${q.points?q.points+' 分':'<span class="small-text">平均</span>'}</td></tr>`).join('')}
       </tbody></table>
-      <p class="field-hint">要修改答案請重新生成，或在批改時用「判對／判錯」個別修正。</p>
       <div class="row-actions" style="margin-top:10px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+        <button class="primary" id="key-save">${icon('check')}儲存修改</button>
         <label class="field-label" for="key-import-topic" style="margin:0">匯入分類</label>
-        <select id="key-import-topic" style="max-width:200px">${Object.keys(topicTree).map(t=>`<option value="${esc(t)}"${t==='代數'?' selected':''}>${esc(t)}</option>`).join('')}</select>
-        <button class="secondary" id="key-import">${icon('upload')}把這 ${key.questions.length} 題匯入題庫</button>
+        <select id="key-import-topic" style="max-width:180px">${Object.keys(topicTree).map(t=>`<option value="${esc(t)}"${t==='代數'?' selected':''}>${esc(t)}</option>`).join('')}</select>
+        <button class="secondary" id="key-import">${icon('upload')}匯入題庫</button>
       </div>
-      <p class="field-hint">匯入後可在題庫編輯難度、詳解與子分類。題型預設為「解答題」。</p></div>`;
-    $('#key-import').onclick=async()=>{
-      const btn=$('#key-import');btn.disabled=true;
+      <p class="field-hint">儲存後會立刻用於之後的批改。匯入題庫後可在題庫編輯難度、詳解與子分類。</p></div>`;
+    const readEdited=()=>key.questions.map((q,i)=>({number:q.number,question:q.question,points:q.points,
+      answer:($(`.key-answer[data-key-index="${i}"]`)||{}).value!==undefined?$(`.key-answer[data-key-index="${i}"]`).value.trim():(q.answer||'')}));
+    $('#key-save').onclick=async()=>{
+      const btn=$('#key-save');btn.disabled=true;
       try{
-        const payload=key.questions.map((q,i)=>({
-          title:`${key.title} 第 ${q.number} 題`,
-          content:q.question||`第 ${q.number} 題`,
-          answer:q.answer||'',
-          topic:($('#key-import-topic')||{}).value||'代數', grade:'中三', qtype:'解答題',
-          points:q.points||5, level:2, source:`紙本批改 · ${key.title}`
-        }));
-        const r=await api('/api/questions/import',{questions:payload});
-        await refresh();
-        toast(`已匯入 ${r.count||payload.length} 題到題庫（分類與難度請再到題庫調整）`);
-      }catch(e){toast(e.message);btn.disabled=false;}
+        await api(`/api/paper-keys/${key.id}`,{questions:readEdited(),confirm:true});
+        toast('答案已儲存，之後批改會用新答案。');
+        const fresh=await api('/api/paper-keys');
+        keys=fresh.keys.filter(k=>k.confirmed);
+      }catch(e){toast(e.message);}
+      finally{btn.disabled=false;}
     };
+    $('#key-import').onclick=()=>importKeyToBank(key,readEdited());
   };
   $('#paper-key').onchange=renderKeyAnswers;
   renderKeyAnswers();
