@@ -646,9 +646,11 @@ class Homework:
             return {'deleted': row['id']}
         if method == 'POST' and path == '/api/classes':
             self.app.teacher(user)
-            self.fields(body, ('name', 'studentIds'), ('name', 'studentIds'))
+            # 建立班級不必先選學生：studentIds 可省略或給空陣列。
+            self.fields(body, ('name', 'studentIds'), ('name',))
             name = self.text(body['name'], '班级名称', 200)
-            ids = self.ids(body['studentIds'], '学生编号', 1000)
+            raw_ids = body.get('studentIds') or []
+            ids = self.ids(raw_ids, '学生编号', 1000) if raw_ids else []
             with self.app.db() as db:
                 db.execute('BEGIN IMMEDIATE')
                 for uid in ids:
@@ -658,6 +660,32 @@ class Homework:
                 cur = db.execute('INSERT INTO classes(teacher_id,name) VALUES(?,?)', (user['id'], name))
                 db.executemany('INSERT INTO class_students(class_id,user_id) VALUES(?,?)', [(cur.lastrowid, uid) for uid in ids])
                 result = self.class_public(db, db.execute('SELECT * FROM classes WHERE id=?', (cur.lastrowid,)).fetchone(), user)
+            return {'class': result}
+        class_path = re.fullmatch(r'/api/classes/([1-9]\d{0,17})', path)
+        if method == 'POST' and class_path:
+            # 更新班級：名稱與學生名單。建立班級時不必先選學生，之後在這裡加。
+            self.app.teacher(user)
+            self.fields(body, ('name', 'studentIds'), ('name',))
+            name = self.text(body['name'], '班级名称', 200)
+            raw_ids = body.get('studentIds') or []
+            ids = self.ids(raw_ids, '学生编号', 1000) if raw_ids else []
+            cid = int(class_path[1])
+            with self.app.db() as db:
+                row = db.execute('SELECT * FROM classes WHERE id=?', (cid,)).fetchone()
+                if row is None:
+                    self.fail(404, '找不到这个班级。')
+                if row['teacher_id'] != user['id'] and not self.app.is_owner(user, db):
+                    self.fail(403, '只能修改自己建立的班级。')
+                db.execute('BEGIN IMMEDIATE')
+                for uid in ids:
+                    r = db.execute('SELECT role FROM users WHERE id=?', (uid,)).fetchone()
+                    if not r or r['role'] != 'student':
+                        self.fail(400, '班级成员必须全部是已存在的学生。')
+                db.execute('UPDATE classes SET name=? WHERE id=?', (name, cid))
+                db.execute('DELETE FROM class_students WHERE class_id=?', (cid,))
+                db.executemany('INSERT INTO class_students(class_id,user_id) VALUES(?,?)',
+                               [(cid, uid) for uid in ids])
+                result = self.class_public(db, db.execute('SELECT * FROM classes WHERE id=?', (cid,)).fetchone(), user)
             return {'class': result}
         if method == 'POST' and path == '/api/assignments':
             self.app.teacher(user)

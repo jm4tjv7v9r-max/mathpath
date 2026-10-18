@@ -3719,6 +3719,38 @@ class DataAdminTests(unittest.TestCase):
         bad2 = {'questions': [dict(payload['questions'][0], points=None)]}
         self.request('POST', '/api/questions/import', bad2, cookie=self.teacher, expect=400)
 
+    def test_class_create_without_students_then_manage(self):
+        """建立班級不必先選學生；之後用 POST /api/classes/{id} 加入名單。"""
+        _, out, _ = self.request('POST', '/api/users',
+                                 {'username': 'cls1', 'name': '班級學生', 'password': 'ClassPass12'},
+                                 cookie=self.teacher, expect=200)
+        sid = out['user']['id']
+
+        # 建立空班級（studentIds 給空陣列）
+        _, out, _ = self.request('POST', '/api/classes',
+                                 {'name': '中三甲班', 'studentIds': []},
+                                 cookie=self.teacher, expect=200)
+        cid = out['class']['id']
+        self.assertEqual(out['class']['studentCount'], 0, '建立時不必選學生')
+
+        # 之後加學生
+        _, out, _ = self.request('POST', f'/api/classes/{cid}',
+                                 {'name': '中三甲班', 'studentIds': [sid]},
+                                 cookie=self.teacher, expect=200)
+        self.assertEqual(out['class']['studentCount'], 1)
+        self.assertIn(sid, out['class']['studentIds'])
+
+        # 改名 + 清空名單
+        _, out, _ = self.request('POST', f'/api/classes/{cid}',
+                                 {'name': '中三乙班', 'studentIds': []},
+                                 cookie=self.teacher, expect=200)
+        self.assertEqual(out['class']['name'], '中三乙班')
+        self.assertEqual(out['class']['studentCount'], 0)
+
+        # 不存在的班級 404
+        self.request('POST', '/api/classes/999999',
+                     {'name': 'x', 'studentIds': []}, cookie=self.teacher, expect=404)
+
     def teacher_id(self):
         with self.app.db() as db:
             return db.execute("SELECT id FROM users WHERE role='teacher' ORDER BY id").fetchone()[0]

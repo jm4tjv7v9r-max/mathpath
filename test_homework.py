@@ -123,12 +123,16 @@ class HomeworkTests(unittest.TestCase):
         self.assertNotIn('password', json.dumps(teacher))
 
     def test_classes_invalid_members_atomic_and_role(self):
-        for members in ([], [2], [4], [1, 999], [True], ['1'], [0], list(range(1, 1002))):
+        # 空名單不再算無效（建立班級不必先選學生），其餘無效成員仍要 400。
+        for members in ([2], [4], [1, 999], [True], ['1'], [0], list(range(1, 1002))):
             self.error(400, 'POST', '/api/classes', {'name': '班', 'studentIds': members}, self.teacher)
         self.error(403, 'POST', '/api/classes', {'name': '班', 'studentIds': [1]})
         self.error(400, 'POST', '/api/classes', {'name': ' ', 'studentIds': [1]}, self.teacher)
         with self.app.db() as db:
             self.assertEqual(db.execute('SELECT count(*) FROM classes').fetchone()[0], 1)
+        # 建立班級不必先選學生：空名單合法，studentCount 為 0。
+        created = self.call('POST', '/api/classes', {'name': '空班', 'studentIds': []}, self.teacher)
+        self.assertEqual(created['class']['studentCount'], 0)
 
     def test_owner_and_recipient_rbac(self):
         aid = self.assignment()
