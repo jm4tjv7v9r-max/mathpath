@@ -450,6 +450,7 @@ class Homework:
     def class_public(self, db, row, user):
         ids = [r[0] for r in db.execute('SELECT user_id FROM class_students WHERE class_id=? ORDER BY user_id', (row['id'],))]
         result = {'id': row['id'], 'name': row['name'], 'studentCount': len(ids),
+                  'teacherId': row['teacher_id'],
                   'studentIds': ids if user['role'] == 'teacher' else []}
         return result
 
@@ -666,6 +667,26 @@ class Homework:
                 db.executemany('INSERT INTO class_students(class_id,user_id) VALUES(?,?)', [(cur.lastrowid, uid) for uid in ids])
                 result = self.class_public(db, db.execute('SELECT * FROM classes WHERE id=?', (cur.lastrowid,)).fetchone(), user)
             return {'class': result}
+        class_del = re.fullmatch(r'/api/classes/([1-9]\d{0,17})/delete', path)
+        if method == 'POST' and class_del:
+            # 刪除班級：只有建立者或管理員可以。有作業的班級先拒絕，避免作業變孤兒、
+            # 學生成績無處可查。
+            self.app.teacher(user)
+            cid = int(class_del[1])
+            with self.app.db() as db:
+                row = db.execute('SELECT * FROM classes WHERE id=?', (cid,)).fetchone()
+                if row is None:
+                    self.fail(404, '找不到这个班级。')
+                if row['teacher_id'] != user['id'] and not self.app.is_owner(user, db):
+                    self.fail(403, '只有建立这个班级的教师或管理员可以删除。')
+                used = db.execute('SELECT count(*) AS n FROM assignments WHERE class_id=?',
+                                  (cid,)).fetchone()['n']
+                if used:
+                    self.fail(400, f'这个班级还有 {used} 份作业；请先处理这些作业再删除班级。')
+                db.execute('BEGIN IMMEDIATE')
+                db.execute('DELETE FROM class_students WHERE class_id=?', (cid,))
+                db.execute('DELETE FROM classes WHERE id=?', (cid,))
+            return {'deleted': cid}
         class_path = re.fullmatch(r'/api/classes/([1-9]\d{0,17})', path)
         if method == 'POST' and class_path:
             # 更新班級：名稱與學生名單。建立班級時不必先選學生，之後在這裡加。

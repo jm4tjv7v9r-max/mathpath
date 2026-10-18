@@ -136,6 +136,31 @@ class HomeworkTests(unittest.TestCase):
         created = self.call('POST', '/api/classes', {'name': '空班', 'studentIds': []}, self.teacher)
         self.assertEqual(created['class']['studentCount'], 0)
 
+    def test_class_delete_permissions(self):
+        """刪除班級：只有建立者或管理員；其他人 403；不存在 404。"""
+        created = self.call('POST', '/api/classes', {'name': '待刪班', 'studentIds': []}, self.teacher)
+        cid = created['class']['id']
+        self.assertEqual(created['class']['teacherId'], self.teacher['id'], '要回建立者 id 讓前端判斷')
+
+        # 另一位教師不能刪
+        self.error(403, 'POST', f'/api/classes/{cid}/delete', {}, user=self.teacher2)
+
+        # 建立者可以刪
+        out = self.call('POST', f'/api/classes/{cid}/delete', {}, self.teacher)
+        self.assertEqual(out['deleted'], cid)
+        with self.app.db() as db:
+            self.assertIsNone(db.execute('SELECT 1 FROM classes WHERE id=?', (cid,)).fetchone())
+
+        # 已經刪掉 → 404
+        self.error(404, 'POST', f'/api/classes/{cid}/delete', {}, self.teacher)
+
+    def test_class_delete_blocked_when_has_assignments(self):
+        """有作業的班級不能刪（避免作業變孤兒、學生成績無處可查）。"""
+        aid = self.assignment()
+        with self.app.db() as db:
+            cid = db.execute('SELECT class_id FROM assignments WHERE id=?', (aid,)).fetchone()['class_id']
+        self.error(400, 'POST', f'/api/classes/{cid}/delete', {}, self.teacher)
+
     def test_owner_and_recipient_rbac(self):
         aid = self.assignment()
         self.error(403, 'GET', f'/api/assignments/{aid}', user=self.teacher2)
