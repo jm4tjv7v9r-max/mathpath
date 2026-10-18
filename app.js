@@ -3178,22 +3178,29 @@ async function paperGradePage(){
   page='paper';shell();
   if(S.user?.role!=='teacher')return bank();
   $('#main').innerHTML=`<div class="fade-in">${heading('PAPER GRADING','紙本批改','上傳整份功課（題目＋學生手寫答案），AI 逐題判斷對錯，以 100 分為滿分。')}<section class="panel panel-pad"><p class="small-text">載入中…</p></section></div>`;
-  let roster=[],history=[],keys=[];
+  let roster=[],history=[],keys=[],classes=[];
   try{
-    const [a,b,c]=await Promise.all([api('/api/users'),api('/api/paper-grades'),api('/api/paper-keys')]);
-    roster=a.users.filter(u=>u.role==='student');history=b.grades;keys=c.keys.filter(k=>k.confirmed);
+    const [a,b,c,d]=await Promise.all([api('/api/users'),api('/api/paper-grades'),
+      api('/api/paper-keys'),api('/api/homework')]);
+    roster=a.users.filter(u=>u.role==='student');history=b.grades;
+    keys=c.keys.filter(k=>k.confirmed);classes=d.classes||[];
   }
   catch(err){toast(err.message);}
   const options=roster.map(u=>`<option value="${u.id}">${esc(u.name)}${u.seat?` · 座號 ${esc(u.seat)}`:''}${u.grade?` · ${esc(u.grade)}`:''}</option>`).join('');
   const historyHtml=history.length?`<section class="panel panel-pad" style="margin-top:16px"><h2 style="margin-bottom:10px">最近的批改</h2><table class="board-table"><thead><tr><th>日期</th><th>學生</th><th>功課</th><th>得分</th></tr></thead><tbody>${history.slice(0,20).map(g=>`<tr><td class="small-text">${esc((g.createdAt||'').slice(0,10))}</td><td>${esc(g.studentName)}</td><td>${esc(g.title)}</td><td><strong>${g.score}</strong></td></tr>`).join('')}</tbody></table></section>`:'';
   $('#main').innerHTML=`<div class="fade-in">${heading('PAPER GRADING','紙本批改','上傳整份功課（題目＋學生手寫答案），AI 逐題判斷對錯，以 100 分為滿分。')}
     <section class="panel panel-pad" style="margin-bottom:16px">
+      <h2 style="margin-bottom:6px">這份功課（填一次就好）</h2>
+      <p class="small-text" style="margin:0 0 10px">功課名稱與班級只要填一次，之後逐個學生上傳時不必再填。</p>
+      <div class="form-grid">
+        <div class="form-field"><label class="field-label" for="paper-title">功課名稱</label><input id="paper-title" maxlength="200" placeholder="例如：第三次功課"></div>
+        <div class="form-field"><label class="field-label" for="paper-class">班級</label><select id="paper-class"><option value="">全部學生（不分班）</option>${classes.map(c=>`<option value="${c.id}">${esc(c.name)}（${c.studentCount} 人）</option>`).join('')}</select></div>
+      </div>
+    </section>
+    <section class="panel panel-pad" style="margin-bottom:16px">
       <h2 style="margin-bottom:6px">第一步：建立答案卷（建議先做）</h2>
       <p class="small-text" style="margin:0 0 10px">上傳**空白題目**（練習紙／試卷）→ AI 生成標準答案 → 你核對後確認。之後批改會以這份答案為準，比讓 AI 自己解題準得多。</p>
-      <div class="form-grid">
-        <div class="form-field"><label class="field-label" for="key-title">功課名稱</label><input id="key-title" maxlength="200" placeholder="例如：第三次功課"></div>
-        <div class="form-field"><label class="field-label" for="key-files">空白題目（1–10 頁，可 PDF）</label><input id="key-files" type="file" accept="image/*,application/pdf,.heic,.heif" multiple></div>
-      </div>
+      <div class="form-field"><label class="field-label" for="key-files">空白題目（1–10 頁，可 PDF）</label><input id="key-files" type="file" accept="image/*,application/pdf,.heic,.heif" multiple></div>
       <p class="error-text" id="key-error"></p>
       <button class="secondary" id="key-build">${icon('spark')}生成標準答案</button>
       <div id="key-result"></div>
@@ -3201,8 +3208,7 @@ async function paperGradePage(){
     <section class="panel panel-pad">
       <h2 style="margin-bottom:10px">第二步：批改學生作業</h2>
       <div class="form-grid">
-        <div class="form-field"><label class="field-label" for="paper-student">學生</label><select id="paper-student">${options||'<option value="">（還沒有學生帳號）</option>'}</select></div>
-        <div class="form-field"><label class="field-label" for="paper-title">功課名稱</label><input id="paper-title" maxlength="200" placeholder="例如：第三次功課"></div>
+        <div class="form-field"><label class="field-label" for="paper-student">學號／學生</label><select id="paper-student">${options||'<option value="">（還沒有學生帳號）</option>'}</select></div>
         <div class="form-field"><label class="field-label" for="paper-key">使用答案卷（建議）</label><select id="paper-key"><option value="">不使用（AI 自行解題）</option>${keys.map(k=>`<option value="${k.id}">${esc(k.title)}（${k.questions.length} 題，已確認）</option>`).join('')}</select></div>
       </div>
       <div class="import-warning paper-notice">
@@ -3217,7 +3223,7 @@ async function paperGradePage(){
     </section>${historyHtml}</div>`;
   // ── 第一步：建立答案卷 ──
   $('#key-build').onclick=async()=>{
-    const title=$('#key-title').value.trim(),files=[...($('#key-files').files||[])];
+    const title=$('#paper-title').value.trim(),files=[...($('#key-files').files||[])];
     const err=$('#key-error'),btn=$('#key-build');
     err.textContent='';
     if(!title)return err.textContent='請填寫功課名稱。';
@@ -3251,6 +3257,18 @@ async function paperGradePage(){
     }catch(e){err.textContent=e.message;}
     finally{btn.disabled=false;btn.innerHTML=original;}
   };
+  // 班級切換 → 學號下拉只列該班學生
+  const fillStudents=()=>{
+    const cid=Number($('#paper-class').value||0);
+    const cls=classes.find(c=>c.id===cid);
+    const ids=cls&&cls.studentIds?new Set(cls.studentIds):null;
+    const list=ids?roster.filter(u=>ids.has(u.id)):roster;
+    $('#paper-student').innerHTML=list.length
+      ? list.map(u=>`<option value="${u.id}">${esc(u.name)}${u.seat?` · ${esc(u.seat)}`:''}${u.grade?` · ${esc(u.grade)}`:''}</option>`).join('')
+      : '<option value="">（這個班還沒有學生）</option>';
+  };
+  $('#paper-class').onchange=fillStudents;
+  fillStudents();
   $('#paper-submit').onclick=async()=>{
     const studentId=Number($('#paper-student').value||0);
     const title=$('#paper-title').value.trim();
@@ -3270,10 +3288,12 @@ async function paperGradePage(){
       const out=await api('/api/paper-grades',{studentId,title,pages,...(keyId?{paperKeyId:keyId}:{})});
       paperPages=pages;paperGradeId=out.grade.id;
       $('#paper-result').innerHTML=paperResultHtml(out.grade);
-      // 同一份功課常要逐個學生上傳：保留功課名稱，只清空已選檔案，方便直接換下一位。
+      // 同一份功課要逐個學生上傳：功課名稱與班級保留，學號與檔案清空，直接換下一位。
       $('#paper-title').value=title;
       $('#paper-files').value='';
-      toast(`批改完成：${out.grade.score} / 100 · 可直接換學生上傳同一份功課`);
+      fillStudents();
+      $('#paper-student').selectedIndex=0;
+      toast(`批改完成：${out.grade.score} / 100 · 請選下一位學生（功課名稱與班級已保留）`);
     }catch(e){err.textContent=e.message;}
     finally{btn.disabled=false;btn.innerHTML=original;}
   };
