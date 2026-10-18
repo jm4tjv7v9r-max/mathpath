@@ -794,8 +794,8 @@ function guidePage(role){
 }
 
 function shell(){// 「新手上路」放最後——那是第一次來看的，不是每天要點的。
-// 日曆（看截止）、排行榜（激勵）、新手上路放最上方；其餘按使用頻率排。
-let nav=[['calendar','日曆'],['board','排行榜'],['guide','新手上路'],['homework',S.user?.role==='teacher'?'作業與成績':'我的作業'],['mock','模擬測驗'],['bank','數學題庫'],['practice','自主練習'],['import','試卷拆題'],['mistakes',S.user?.role==='teacher'?'作答批閱':'我的錯題本'],['growth','學習足跡']];if(S.user?.role!=='student')nav=nav.filter(([id])=>id!=='mock');// 試卷拆題是教師功能（後端 /api/papers/parse 有 self.teacher），學生與訪客不該看到入口。
+// 日曆、排行榜、新手上路已移到頂欄快速連結，側欄只留其餘功能（按使用頻率排）。
+let nav=[['homework',S.user?.role==='teacher'?'作業與成績':'我的作業'],['mock','模擬測驗'],['bank','數學題庫'],['practice','自主練習'],['import','試卷拆題'],['mistakes',S.user?.role==='teacher'?'作答批閱':'我的錯題本'],['growth','學習足跡']];if(S.user?.role!=='student')nav=nav.filter(([id])=>id!=='mock');// 試卷拆題是教師功能（後端 /api/papers/parse 有 self.teacher），學生與訪客不該看到入口。
 if(S.user?.role!=='teacher')nav=nav.filter(([id])=>id!=='import');
 // 教師不寫作業，學習足跡永遠是空的——隱藏，避免點進去看到空白頁。
 if(S.user?.role==='teacher')nav=nav.filter(([id])=>id!=='growth');

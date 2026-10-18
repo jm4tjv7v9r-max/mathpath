@@ -140,8 +140,11 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   await page.goto('https://mathpath.test');await page.locator('#homework-login').waitFor();
   await page.screenshot({path:path.join(__dirname,'..','MathPath-作业版预览.png'),fullPage:true});
 
-  // 新手上路：訪客就看得到，圖文步驟 ＋ 角色切換 ＋ 說明彈窗入口
-  await page.locator('.nav-item[data-page=guide]').click();
+  // 新手上路：訪客就看得到（入口在頂欄快速連結，側欄已移除）
+  assert.ok(await page.locator('.topbar-link[data-page=guide]').count() >= 1, '頂欄要有新手上路快速連結');
+  assert.ok(await page.locator('.topbar-link[data-page=calendar]').count() >= 1, '頂欄要有日曆快速連結');
+  assert.ok(await page.locator('.topbar-link[data-page=board]').count() >= 1, '頂欄要有排行榜快速連結');
+  await page.locator('.topbar-link[data-page=guide]').click();
   await page.locator('.guide-step').first().waitFor({timeout:8000});
   assert.equal(await page.locator('.guide-step').count(),6,'新手上路應有 6 個步驟');
   assert.equal(await page.locator('.guide-svg').count(),6,'每一步都要有一張插圖');
