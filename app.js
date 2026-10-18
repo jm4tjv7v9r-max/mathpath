@@ -3616,10 +3616,16 @@ function parseBulkStudents(text,order='auto'){const rows=[],errors=[];let fields
 let ROSTER_USERS=[],ROSTER_OWNER=null;
 // 誰能改這個帳號：管理員可改全部；教師可改自己與自己建立的學生；其餘只可檢視。
 function canEditAccount(u){return !!S.user?.isOwner||u.id===S.user?.id||(u.role==='student'&&u.createdBy===S.user?.id);}
+// 誰可以刪這個帳號：教師→只有管理員（且不能刪自己與管理員）；學生→匯入老師或管理員。
+function canDeleteAccount(u){
+  if(!S.user||!u)return false;
+  if(u.role==='teacher')return !!S.user.isOwner&&u.id!==S.user.id&&u.id!==ROSTER_OWNER;
+  return !!S.user.isOwner||u.createdBy===S.user.id;
+}
 function accountRow(u){
   const teacher=u.role==='teacher',admin=u.id===ROSTER_OWNER,mine=canEditAccount(u);
   const maker=(!mine&&u.createdBy)?ROSTER_USERS.find(x=>x.id===u.createdBy):null;
-  return `<div class="roster-row"><span class="roster-who">${admin?'<span class="role-badge admin">管理員</span>':teacher?'<span class="role-badge">教師</span>':u.seat?`<span class="seat-badge">${esc(u.seat)}</span>`:''}${esc(u.name)}${u.username===u.name?'':`<span class="small-text">${esc(u.username)}</span>`}${maker?`<span class="small-text">由 ${esc(maker.name)} 建立</span>`:''}</span>${mine?`<button class="text-button" data-edit-user="${u.id}">編輯</button>`:'<span class="small-text">僅可檢視</span>'}</div>`;
+  return `<div class="roster-row"><span class="roster-who">${admin?'<span class="role-badge admin">管理員</span>':teacher?'<span class="role-badge">教師</span>':u.seat?`<span class="seat-badge">${esc(u.seat)}</span>`:''}${esc(u.name)}${u.username===u.name?'':`<span class="small-text">${esc(u.username)}</span>`}${maker?`<span class="small-text">由 ${esc(maker.name)} 建立</span>`:''}</span><span style="display:flex;gap:10px;align-items:center">${mine?`<button class="text-button" data-edit-user="${u.id}">編輯</button>`:'<span class="small-text">僅可檢視</span>'}${canDeleteAccount(u)?`<button class="text-button" data-del-user="${u.id}" data-del-uname="${esc(u.name)}" data-del-role="${u.role}" style="color:#b8453b">刪除</button>`:''}</span></div>`;
 }
 // 編輯帳號：只送出有改動的欄位；重設密碼會讓該帳號目前的登入立即失效。
 function editAccountModal(id){
@@ -3707,6 +3713,19 @@ document.addEventListener('click',e=>{const b=e.target.closest('button');if(!b||
 if(b.dataset.themeId){applyTheme(b.dataset.themeId);shell();toast(`版面已設為「${THEMES.find(([id])=>id===b.dataset.themeId)[1]}」，只影響這台裝置。`);return;}
 if(b.id==='open-math-editor'){openMathEditor();return;}
   if(b.dataset.manageClass){manageClassModal(Number(b.dataset.manageClass));return;}
+  if(b.dataset.delUser){
+    const uid=Number(b.dataset.delUser),uname=b.dataset.delUname||'',urole=b.dataset.delRole||'student';
+    const warn=urole==='teacher'
+      ? `刪除教師「${uname}」？\n\n他的班級與作業會轉給管理員；他建立的學生改為無歸屬。\n\n請輸入 DELETE 確認：`
+      : `刪除學生「${uname}」？\n\n⚠️ 會一併刪除他的所有作答、手寫圖、批改紀錄、班級成員與模擬測驗，無法復原。\n\n請輸入 DELETE 確認：`;
+    const typed=prompt(warn);
+    if(typed===null)return;
+    if(typed.trim()!=='DELETE')return toast('未輸入 DELETE，已取消。');
+    b.disabled=true;
+    api(`/api/users/${uid}/delete`,{confirm:'DELETE'}).then(()=>{toast('帳號已刪除。');manageUsers();})
+      .catch(err=>{b.disabled=false;toast(err.message);});
+    return;
+  }
   if(b.dataset.delAssign){
     const aid=Number(b.dataset.delAssign),atitle=b.dataset.delTitle||'';
     if(!confirm(`確定刪除作業「${atitle}」？\n\n⚠️ 這會一併刪除所有學生在這份作業的作答、分數與批閱紀錄，無法復原。`))return;

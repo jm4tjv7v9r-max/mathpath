@@ -3751,6 +3751,51 @@ class DataAdminTests(unittest.TestCase):
         self.request('POST', '/api/classes/999999',
                      {'name': 'x', 'studentIds': []}, cookie=self.teacher, expect=404)
 
+    def test_delete_student_permissions(self):
+        """刪學生：匯入老師或管理員；其他老師 403；要輸入 DELETE。"""
+        self.request('POST', '/api/teachers',
+                     {'name': '二號老師', 'username': 'del_t2', 'password': 'TeacherPass12'},
+                     cookie=self.teacher, expect=200)
+        t2 = self.login('del_t2', 'TeacherPass12')
+        _, out, _ = self.request('POST', '/api/users',
+                                 {'username': 'del_s1', 'name': '待刪學生', 'password': 'DeletePass12'},
+                                 cookie=self.teacher, expect=200)
+        sid = out['user']['id']
+        # 不是他匯入的 → 403
+        self.request('POST', f'/api/users/{sid}/delete', {'confirm': 'DELETE'}, cookie=t2, expect=403)
+        # 沒輸入 DELETE → 400
+        self.request('POST', f'/api/users/{sid}/delete', {'confirm': 'no'}, cookie=self.teacher, expect=400)
+        # 管理員可以刪
+        self.request('POST', f'/api/users/{sid}/delete', {'confirm': 'DELETE'},
+                     cookie=self.teacher, expect=200)
+        self.request('POST', f'/api/users/{sid}/delete', {'confirm': 'DELETE'},
+                     cookie=self.teacher, expect=404)
+
+    def test_delete_teacher_requires_owner(self):
+        """刪教師：只有管理員；不能刪自己與管理員。"""
+        _, out, _ = self.request('POST', '/api/teachers',
+                                 {'name': '三號老師', 'username': 'del_t3', 'password': 'TeacherPass12'},
+                                 cookie=self.teacher, expect=200)
+        t3 = out['user']['id']
+        t3cookie = self.login('del_t3', 'TeacherPass12')
+        # 再建一位教師，讓 t3 試著刪他 → 403（只有管理員能刪教師）
+        _, out, _ = self.request('POST', '/api/teachers',
+                                 {'name': '四號老師', 'username': 'del_t4', 'password': 'TeacherPass12'},
+                                 cookie=self.teacher, expect=200)
+        t4 = out['user']['id']
+        self.request('POST', f'/api/users/{t4}/delete', {'confirm': 'DELETE'},
+                     cookie=t3cookie, expect=403)
+        # 一般教師刪自己 → 400（「不能刪除自己的帳號」的判斷在權限之前）
+        self.request('POST', f'/api/users/{t3}/delete', {'confirm': 'DELETE'},
+                     cookie=t3cookie, expect=400)
+        # 管理員不能刪自己
+        me = self.request('GET', '/api/session', cookie=self.teacher, expect=200)[1]['user']['id']
+        self.request('POST', f'/api/users/{me}/delete', {'confirm': 'DELETE'},
+                     cookie=self.teacher, expect=400)
+        # 管理員可以刪其他教師
+        self.request('POST', f'/api/users/{t3}/delete', {'confirm': 'DELETE'},
+                     cookie=self.teacher, expect=200)
+
     def teacher_id(self):
         with self.app.db() as db:
             return db.execute("SELECT id FROM users WHERE role='teacher' ORDER BY id").fetchone()[0]

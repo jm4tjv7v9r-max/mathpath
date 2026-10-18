@@ -518,6 +518,12 @@ class DataAdmin:
             self.fail(400, '不能刪除自己的帳號。')
         if uid == self.owner_id(db):
             self.fail(400, '不能刪除管理員帳號。')
+        # 權限：教師帳號只有管理員能刪；學生帳號由「匯入老師」或管理員刪。
+        if actor['id'] != self.owner_id(db):
+            if row['role'] == 'teacher':
+                self.fail(403, '只有管理員可以刪除教師帳號。')
+            if row['created_by'] != actor['id']:
+                self.fail(403, '只有匯入這位學生的教師或管理員可以刪除。')
         # 先把網盤上的圖片 key 收起來，資料列刪掉之後就查不到了。
         keys = []
         for attempt in db.execute('SELECT image_key, annotation_key FROM attempts WHERE user_id=?', (uid,)):

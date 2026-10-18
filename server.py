@@ -4827,9 +4827,9 @@ class Application:
                 return self.dataadmin.update_user(db, int(update_user[1]), body, actor=user), headers
         delete_user = re.fullmatch(r'/api/users/([1-9]\d{0,17})/delete', path)
         if method == 'POST' and delete_user:
-            # 刪除帳號：只有管理員，且要輸入確認字串。
+            # 刪除帳號：學生＝匯入老師或管理員；教師＝只有管理員（細部在 delete_user 內判）。
             # 學生的作答與手寫圖會一併刪除；教師的班級與作業轉給管理員。
-            self.require_owner(user)
+            self.teacher(user)
             fields(body, ('confirm',), ('confirm',))
             confirm = text(body['confirm'], '確認字串', 40, strip=False, empty=True)
             with self.db() as db:
