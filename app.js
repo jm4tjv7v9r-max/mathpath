@@ -3188,6 +3188,10 @@ async function paperGradePage(){
         <div class="form-field"><label class="field-label" for="paper-student">學生</label><select id="paper-student">${options||'<option value="">（還沒有學生帳號）</option>'}</select></div>
         <div class="form-field"><label class="field-label" for="paper-title">功課名稱</label><input id="paper-title" maxlength="200" placeholder="例如：第三次功課"></div>
       </div>
+      <div class="import-warning paper-notice">
+        <strong>⚠️ 重要提醒：同一題的解題過程不可跨頁</strong>
+        <p>請確認每一題的作答（連同解題過程）都完整落在同一頁。若一題的過程被切到下一頁，AI 只看得到半題，會誤判為錯或無法辨認——這是最常見的批改失準原因。</p>
+      </div>
       <div class="form-field"><label class="field-label" for="paper-files">功課照片（1–10 頁，含題目與學生答案）</label><input id="paper-files" type="file" accept="image/*,application/pdf,.heic,.heif" multiple></div>
       <p class="field-hint">同一份功課可以逐個學生上傳：批改完換學生再按一次即可，功課名稱會保留。支援手機拍照（含 iPhone 的 HEIC）、JPG／PNG／WebP 與 PDF。拍照請保持整頁清晰、四角完整。最多 10 頁（PDF 會自動拆頁計算），每頁各呼叫一次 AI，約需 10–30 秒。</p>
       <p class="error-text" id="paper-error"></p>

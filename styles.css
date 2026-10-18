@@ -742,3 +742,10 @@ html[data-theme=night] .paper-note{background:#00000099;border-color:#ff8a7a55}
 html[data-theme=night] .paper-warn{background:#2a1c08;border-color:#e08a2e}
 html[data-theme=night] .paper-warn strong{color:#ffb15c}
 html[data-theme=night] .paper-warn span{color:#e0a05c}
+/* 紙本批改：跨頁提醒（上傳前的顯眼警示） */
+.paper-notice{margin:0 0 14px;border-left:4px solid #e07b00;background:#fff8ee}
+.paper-notice strong{display:block;color:#c25e00;font-size:calc(15px*var(--fs));font-weight:800;margin-bottom:4px}
+.paper-notice p{margin:0;color:#8a5a1f;font-size:calc(13px*var(--fs));line-height:1.6}
+html[data-theme=night] .paper-notice{background:#2a1c08;border-left-color:#e08a2e}
+html[data-theme=night] .paper-notice strong{color:#ffb15c}
+html[data-theme=night] .paper-notice p{color:#d9a86a}
