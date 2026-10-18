@@ -4317,8 +4317,20 @@ class Application:
             pages = body['pages']
             if not isinstance(pages, list) or not 1 <= len(pages) <= 10:
                 fail(400, '請上傳 1 至 10 頁。')
+            # PDF 在後端拆頁（前端無法可靠地把 PDF 轉圖）；拆完連同圖片一起算頁數。
+            expanded = []
             for page in pages:
-                validate_image(page)          # 逐頁驗證格式與大小（PNG／JPEG／WebP）
+                if isinstance(page, str) and page.startswith('data:application/pdf'):
+                    data, _ = decode_data_url(page, ('application/pdf',))
+                    expanded.extend(pdf_page_images(data, max_pages=10))
+                else:
+                    validate_image(page)      # 逐頁驗證格式與大小（PNG／JPEG／WebP）
+                    expanded.append(page)
+            if not expanded:
+                fail(422, 'PDF 沒有可辨識的頁面，請確認檔案是否損壞。')
+            if len(expanded) > 10:
+                fail(400, f'PDF 拆頁後共 {len(expanded)} 頁，超過 10 頁上限；請分批上傳。')
+            pages = expanded
             with self.db() as db:
                 student = db.execute("SELECT id,name FROM users WHERE id=? AND role='student'",
                                      (student_id,)).fetchone()

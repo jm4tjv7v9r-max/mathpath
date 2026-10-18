@@ -3061,6 +3061,14 @@ function reviewModal(id,onDone=null,snapshot=null,queue=null,viewOnly=false){
 }
 // 紙本批改：教師上傳整份功課（題目 + 學生手寫答案），AI 逐題判斷並以 100 分制評分。
 async function paperPageData(file){
+  // HEIC／HEIF（iPhone 預設格式）：先轉成 WebP。Safari 原生支援，其他瀏覽器用 heic2any。
+  if(/^image\/hei[cf]/i.test(file.type)||/\.hei[cf]$/i.test(file.name||'')){
+    return await heicToWebp(file);
+  }
+  // PDF：不在前端轉圖（可能多頁），原樣交給後端渲染。
+  if(file.type==='application/pdf'||/\.pdf$/i.test(file.name||'')){
+    return await fileData(file,['application/pdf'],20);
+  }
   const raw=await fileData(file,['image/png','image/jpeg','image/webp'],12);
   const img=await loadImageDataUrl(raw,'這頁無法辨識，請改用 JPG／PNG 或重新拍照。');
   const scale=Math.min(1,2000/Math.max(img.naturalWidth,img.naturalHeight));
@@ -3126,7 +3134,10 @@ function paperResultHtml(g){
     }).join('');
     // 成績在第一頁右上角（30px）
     const badge=i===0?`<div class="paper-score-badge">${g.score}<small>/100</small></div>`:'';
-    return `<figure class="paper-page"><img src="${src}" alt="第 ${i+1} 頁"><figcaption>第 ${i+1} 頁</figcaption>${badge}<div class="paper-marks">${marks}</div>${notes}</figure>`;
+    // 整份作業一題都判定不了：第一頁右下角用橙色大字提醒
+    const allUnreadable=qs.length>0&&qs.every(q=>q.level==='unreadable'||q.correct===null);
+    const warn=(i===0&&allUnreadable)?`<div class="paper-warn"><strong>AI 無法辨識這份作業</strong><span>請教師逐題判定，或重新上傳更清晰的照片</span></div>`:'';
+    return `<figure class="paper-page"><img src="${src}" alt="第 ${i+1} 頁"><figcaption>第 ${i+1} 頁</figcaption>${badge}${warn}<div class="paper-marks">${marks}</div>${notes}</figure>`;
   }).join('');
   return `<section class="panel panel-pad" style="margin-top:16px">
     <p class="small-text">${esc(g.studentName||'')} · ${esc(g.title)} · ${g.pages} 頁 · 可判斷 ${g.totalQuestions} 題、答對 ${g.correctCount} 題${g.pending?` · <strong class="paper-pending">${g.pending} 題待教師判定</strong>`:''}</p>
@@ -3177,8 +3188,8 @@ async function paperGradePage(){
         <div class="form-field"><label class="field-label" for="paper-student">學生</label><select id="paper-student">${options||'<option value="">（還沒有學生帳號）</option>'}</select></div>
         <div class="form-field"><label class="field-label" for="paper-title">功課名稱</label><input id="paper-title" maxlength="200" placeholder="例如：第三次功課"></div>
       </div>
-      <div class="form-field"><label class="field-label" for="paper-files">功課照片（1–10 頁，含題目與學生答案）</label><input id="paper-files" type="file" accept="image/*" multiple></div>
-      <p class="field-hint">拍照請保持整頁清晰、四角完整。最多 10 頁，每頁會各呼叫一次 AI，約需 10–30 秒。</p>
+      <div class="form-field"><label class="field-label" for="paper-files">功課照片（1–10 頁，含題目與學生答案）</label><input id="paper-files" type="file" accept="image/*,application/pdf,.heic,.heif" multiple></div>
+      <p class="field-hint">同一份功課可以逐個學生上傳：批改完換學生再按一次即可，功課名稱會保留。支援手機拍照（含 iPhone 的 HEIC）、JPG／PNG／WebP 與 PDF。拍照請保持整頁清晰、四角完整。最多 10 頁（PDF 會自動拆頁計算），每頁各呼叫一次 AI，約需 10–30 秒。</p>
       <p class="error-text" id="paper-error"></p>
       <button class="primary" id="paper-submit">${icon('spark')}開始 AI 批改</button>
       <div id="paper-result"></div>
@@ -3201,7 +3212,10 @@ async function paperGradePage(){
       const out=await api('/api/paper-grades',{studentId,title,pages});
       paperPages=pages;paperGradeId=out.grade.id;
       $('#paper-result').innerHTML=paperResultHtml(out.grade);
-      toast(`批改完成：${out.grade.score} / 100`);
+      // 同一份功課常要逐個學生上傳：保留功課名稱，只清空已選檔案，方便直接換下一位。
+      $('#paper-title').value=title;
+      $('#paper-files').value='';
+      toast(`批改完成：${out.grade.score} / 100 · 可直接換學生上傳同一份功課`);
     }catch(e){err.textContent=e.message;}
     finally{btn.disabled=false;btn.innerHTML=original;}
   };
