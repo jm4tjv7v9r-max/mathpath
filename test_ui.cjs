@@ -2534,6 +2534,23 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   assert.equal(questionUpdate.question.options.length,4,'選項要一起送出');
   assert.equal(questionUpdate.figure,undefined,'沒有動圖形時不該送 figure（保留原本那張）');
   console.log('PASS: 教師可在題庫編輯題目（所有設定帶入現值、存檔送出完整設定、不動圖形就不送 figure）');
+  // 只生成評分標準：已有答案的題目可以只補 rubric，不會改動答案。
+  await page.route('**/api/questions/*/rubric', route => route.fulfill({json:{
+    rubric:[{label:'列出 $180-55-65$ 的算式',percent:60},
+            {label:'求出 $60^\\circ$ 並寫出單位',percent:40}],
+    notice:'這是 AI 草稿：請逐項核對文字與百分比，確認後再儲存題目。'}}));
+  await page.locator('.question-card [data-editq]').first().click();
+  await page.locator('#editq-title').waitFor({timeout:8000});
+  // 選擇題是客觀題，評分標準欄位是隱藏的；改成解答題才會出現「只生成評分標準」。
+  await page.locator('#editq-qtype').selectOption('解答題');
+  await page.locator('#editq-ai-rubric').waitFor({timeout:8000});
+  await page.locator('#editq-ai-rubric').click();
+  await page.waitForFunction(()=>document.querySelectorAll('[data-rubric-list="editq"] .rubric-row').length===2,{timeout:8000});
+  assert.equal(await page.locator('[data-rubric-list="editq"] .rubric-label').first().inputValue(),
+               '列出 $180-55-65$ 的算式','生成的要點要填進編輯器，讓教師可修改');
+  assert.match(await page.locator('[data-rubric-total="editq"]').innerText(),/總和 100%/,'生成的百分比要加總成 100');
+  await page.locator('#modal-root .modal [data-action=close-modal]').click();
+  console.log('PASS: 只生成評分標準（用現有答案拆評分要點、不動答案、百分比加總 100）');
   // 對照：學生的錯題本仍保留「再練一次」
   await page.route('**/api/session',route=>route.fulfill({json:{user:{id:1,name:'介面測試學生',role:'student'}}}));
   await page.route('**/api/state', route => route.fulfill({json:{user:{id:1,name:'介面測試學生',role:'student'},

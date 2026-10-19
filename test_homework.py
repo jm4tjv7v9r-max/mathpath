@@ -719,6 +719,40 @@ class HomeworkTests(unittest.TestCase):
             self.assertEqual(db.execute('SELECT COUNT(*) FROM grading_samples').fetchone()[0], 1,
                              '沒改分就不該記樣本')
 
+    def test_rubric_draft_uses_existing_answer_and_never_saves(self):
+        """只補評分標準：用題目現有的答案與詳解，回草稿但不自動寫入題庫。
+
+        教師手上通常已有核對過的答案，重生成答案會把它換掉——所以這條路徑
+        刻意只碰 rubric。
+        """
+        self.configure_ai()
+        created = self.call('POST', '/api/questions/import', {'questions': [{
+            'title': '三角形內角和', 'content': '三角形兩角為 $55^\\circ$、$65^\\circ$，求第三角。',
+            'topic': '幾何', 'level': 1, 'qtype': '解答題', 'points': 6, 'answer': '$60^\\circ$',
+            'steps': ['180−55−65=60'], 'options': [], 'tags': [], 'hint': ''}]}, self.teacher)
+        qid = created['questions'][0]['id']
+        draft = [{'label': '列出 180−55−65 的算式', 'percent': 60},
+                 {'label': '求出 60° 並寫出單位', 'percent': 40}]
+        with patch.object(self.app.ai, 'call', return_value={'rubric': draft}) as ai:
+            out = self.call('POST', f'/api/questions/{qid}/rubric',
+                            {'consentExternal': True}, self.teacher)
+        self.assertEqual(out['rubric'], draft)
+        self.assertIn('草稿', out['notice'], '要說清楚這是草稿，需教師核對')
+        sent = ai.call_args_list[0][0][1]
+        self.assertEqual(sent['answer'], '$60^\\circ$', '要用題目現有的答案')
+        self.assertIn('180−55−65=60', sent['steps'], '要用題目現有的詳解')
+        with self.app.db() as db:
+            row = db.execute('SELECT payload FROM questions WHERE id=?', (qid,)).fetchone()
+        self.assertEqual(json.loads(row['payload']).get('rubric') or [], [],
+                         '只回草稿，不能自動寫進題庫')
+        # 客觀題不需要評分標準
+        obj = self.call('POST', '/api/questions/import', {'questions': [{
+            'title': '正方形面積', 'content': '邊長 6 cm，求面積。', 'topic': '幾何', 'level': 1,
+            'qtype': '填空題', 'points': 5, 'answer': '$36\\text{ cm}^2$',
+            'options': [], 'tags': [], 'hint': ''}]}, self.teacher)
+        self.error(400, 'POST', f'/api/questions/{obj["questions"][0]["id"]}/rubric',
+                   {'consentExternal': True}, self.teacher)
+
     def test_objective_question_score_comes_from_rule_check(self):
         """選擇題／填空題沒有過程分：規則層判得了最終答案時，就由它定分。
 

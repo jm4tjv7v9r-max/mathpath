@@ -1693,6 +1693,41 @@ def ai_answer_draft(app, body):
     return {**answer, 'qtype': qtype, 'options': options, 'method': 'AI 生成'}
 
 
+def ai_rubric_draft(app, q):
+    """只為「已有答案」的題目生成評分標準，不重寫答案與詳解。
+
+    教師通常已經有題目和核對過的解法，缺的只是 rubric；重新生成答案會把
+    教師確認過的內容換掉，所以這裡刻意只補評分標準，且只回草稿、由教師儲存。
+    """
+    if not app.ai.configured:
+        fail(409, '尚未設定 AI 模型；請先設定模型端點。')
+    qtype = q.get('qtype') or ''
+    if qtype in OBJECTIVE_QTYPES:
+        fail(400, '選擇題／填空題是客觀題（只有對或錯），不需要評分標準。')
+    answer = (q.get('answer') or '').strip()
+    steps = [str(s) for s in (q.get('steps') or []) if str(s).strip()]
+    if not answer and not steps:
+        fail(409, '這題還沒有參考答案或詳解；請先填寫，或改用「AI 生成答案與評分標準」。')
+    instruction = (
+        '你是資深數學教師。請只為以下題目產生評分標準，不要重寫答案與詳解。'
+        '返回 {rubric:[{label:str,percent:number}]}。'
+        'rubric：3 至 6 項，每項 {label:評分要點,percent:佔分百分比}，全部 percent 加總必須等於 100。'
+        'label 要具體、可判定（例如「正確列出 180−55−65 的算式」「求出 60° 並寫出單位」），'
+        '不要寫「理解題意」「思路清晰」這種無法判定的空話。'
+        '若詳解裡有明確的關鍵步驟，評分要點要跟著那些步驟走。'
+        '數學式一律用 LaTeX：行內用 $...$。')
+    result = app.ai.call(instruction, {
+        'question': {'title': q.get('title', ''), 'content': q.get('content', ''),
+                     'topic': q.get('topic', ''), 'qtype': qtype, 'points': q.get('points', 5)},
+        'answer': answer, 'steps': steps})
+    raw = result.get('rubric') if isinstance(result, dict) else None
+    rubric = normalize_rubric(raw)
+    if len(rubric) < 2:
+        fail(502, 'AI 沒有產生可用的評分標準；請確認參考答案完整後再試一次。')
+    return {'rubric': rubric[:6],
+            'notice': '這是 AI 草稿：請逐項核對文字與百分比，確認後再儲存題目。'}
+
+
 def match_topic(value):
     """把 AI 回傳的分類名寬容對應到合法的第一層主分類；對不到回 None。"""
     if not isinstance(value, str):
@@ -5448,6 +5483,20 @@ class Application:
             with self.db() as db:
                 saved = self.update_question(db, int(match[1]), q, body)
             return {'question': self.question_public(saved, user)}, headers
+        rubric_path = re.fullmatch(r'/api/questions/([1-9]\d{0,17})/rubric', path)
+        if method == 'POST' and rubric_path:
+            # 只補評分標準：教師手上已有題目與核對過的答案，缺的只是 rubric。
+            # 重生成答案會把教師確認過的解法換掉，所以這裡刻意不碰 answer／steps。
+            self.teacher(user)
+            fields(body, ('consentExternal',), ())
+            if 'consentExternal' in body and type(body['consentExternal']) is not bool:
+                fail(400, '外部上傳同意必須是布林值。')
+            with self.db() as db:
+                row = db.execute('SELECT * FROM questions WHERE id=?', (int(rubric_path[1]),)).fetchone()
+            if row is None:
+                fail(404, '找不到這道題目。')
+            self.ai.consent(body.get('consentExternal'))
+            return ai_rubric_draft(self, self.question_row(row)), headers
         if method == 'POST' and path == '/api/attempts':
             fields(body, ('questionId', 'answerText', 'image', 'consentExternal', 'assignmentId', 'mockId', 'skipped'),
                    ('questionId',))

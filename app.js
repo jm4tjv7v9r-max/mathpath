@@ -71,9 +71,13 @@ function rubricEditorHtml(scope, items){
 // 客觀題（選擇題／填空題）：作答只有對或錯，用答案核對評分即可，不需要評分標準／評分步驟。
 const OBJECTIVE_QTYPES = ['選擇題','填空題'];
 const isObjectiveQtype = t => OBJECTIVE_QTYPES.includes(t);
-function rubricFieldHtml(scope, items, qtype){
+function rubricFieldHtml(scope, items, qtype, qid){
   const objective = isObjectiveQtype(qtype);
-  return `<div class="form-field" data-rubric-field="${scope}"${objective?' style="display:none"':''}>${rubricEditorHtml(scope, items)}</div>
+  // 只有「已存在的題目」才有 qid：新增題目時還沒有 id，改用上面的「AI 生成答案與評分標準」。
+  const aiButton = qid
+    ? `<div class="ai-answer-row"><button type="button" class="secondary" id="${scope}-ai-rubric">${icon('spark')}只生成評分標準</button><span class="small-text">依現有的參考答案與詳解拆出評分要點（不會改動答案）</span></div>`
+    : '';
+  return `<div class="form-field" data-rubric-field="${scope}"${objective?' style="display:none"':''}>${rubricEditorHtml(scope, items)}${aiButton}</div>
     <div class="form-field objective-note" data-objective-note="${scope}"${objective?'':' style="display:none"'}>客觀題（選擇題／填空題）以「答案是否正確」評分，不需要評分標準，也不會產生 AI 評分步驟。</div>`;
 }
 function toggleRubricField(scope, qtype){
@@ -2431,6 +2435,23 @@ async function aiFillQuestion(prefix, state, btn){
   }catch(e){ toast(e.message); }
   finally{ btn.disabled = false; btn.innerHTML = old; }
 }
+
+// 只補評分標準：用題目「現有的」答案與詳解拆出評分要點，不會改動答案。
+// 給已經有題目、只缺 rubric 的情況用（重生成答案會把教師核對過的解法換掉）。
+async function aiFillRubric(prefix, state, btn, qid){
+  if(!qid) return;
+  if(!S.ai.configured) return toast('AI 尚未設定：請先設定模型端點。');
+  if(!aiConfirmExternal()) return;
+  const old = btn.innerHTML;
+  btn.disabled = true; btn.innerHTML = icon('clock') + '生成中…';
+  try{
+    const r = await api(`/api/questions/${qid}/rubric`, {consentExternal:true});
+    state.rubric = (r.rubric||[]).map(x=>({label:x.label||'', percent:Number(x.percent)||0}));
+    rubricBind(prefix, state.rubric);
+    toast(r.notice || '已生成評分標準草稿，請核對後再儲存。');
+  }catch(e){ toast(e.message); }
+  finally{ btn.disabled = false; btn.innerHTML = old; }
+}
 // ── 教師手動新增題目 ──
 // 不必先匯入整份試卷：填好欄位、加上圖形，按「建立題目」就直接進題庫。
 // 圖形用題目圖形工作室（AI 生成／核對／手繪／上傳都在同一個地方）；
@@ -2491,7 +2512,7 @@ function questionFormHtml(prefix, opts){
   <div class="form-grid"><div class="form-field"><label class="field-label" for="${prefix}-answer">參考答案（可留空）</label><input id="${prefix}-answer" maxlength="4000" placeholder="例如：5 cm"></div><div class="form-field"><label class="field-label" for="${prefix}-hint">解題提示</label><input id="${prefix}-hint" maxlength="4000" placeholder="例如：用畢氏定理"></div></div>
   <div class="form-field"><label class="field-label" for="${prefix}-steps">詳解步驟（每行一步）<span class="small-text" style="font-weight:400">　支援 LaTeX：$x^2-5x+6=0$</span></label><textarea class="answer-field import-text" id="${prefix}-steps" maxlength="40000" placeholder="第一步：設未知數…&#10;第二步：列式…&#10;第三步：求解並檢查…"></textarea></div>
   <div class="form-field"><label class="field-label" for="${prefix}-analysis">詳細解釋（考點 · 解題思路 · 常見錯誤）</label><textarea class="answer-field import-text" id="${prefix}-analysis" maxlength="6000" placeholder="說明本題考什麼、解題關鍵與容易出錯的地方。"></textarea></div>
-  ${rubricFieldHtml(prefix, [], qtype)}
+  ${rubricFieldHtml(prefix, [], qtype, o.qid)}
   <div class="ai-answer-row"><button type="button" class="secondary" id="${prefix}-ai-answer">${icon('spark')}AI 生成答案與評分標準</button><span class="small-text">依題目內容自動產生答案、詳解、詳細解釋與評分標準百分比（可再修改）</span></div>
   ${o.figureHtml||''}
   <p class="error-text" id="${prefix}-error"></p>
@@ -2535,6 +2556,7 @@ function wireQuestionForm(prefix, state, opts){
   renderQuestionOptions(prefix,state);
   rubricBind(prefix,state.rubric);
   if(el('ai-answer'))el('ai-answer').onclick=()=>aiFillQuestion(prefix,state,el('ai-answer'));
+  if(el('ai-rubric'))el('ai-rubric').onclick=()=>aiFillRubric(prefix,state,el('ai-rubric'),o.qid);
   el('add').onclick=()=>{
     const title=el('title').value.trim(),content=el('content').value.trim();
     if(!title)return el('error').textContent='請填寫題目標題。';
@@ -2598,7 +2620,7 @@ function editQuestionModal(id){
     </div>
     <div id="editq-fig-preview" class="fig-image-preview"></div>
     <p class="field-hint" id="editq-fig-status"></p></div>`;
-  modal(`<h2>編輯題目</h2><p class="field-hint">修改後直接更新題庫。已經批閱過的分數不變，但學生之後看到的題目會是新的版本。</p>${questionFormHtml('editq',{submitLabel:'儲存修改',figureHtml})}`,true);
+  modal(`<h2>編輯題目</h2><p class="field-hint">修改後直接更新題庫。已經批閱過的分數不變，但學生之後看到的題目會是新的版本。</p>${questionFormHtml('editq',{submitLabel:'儲存修改',figureHtml,qid:q.id})}`,true);
   const el=id=>$('#editq-'+id);
   const paintFigure=()=>{
     const box=$('#editq-fig-preview');
@@ -2623,6 +2645,7 @@ function editQuestionModal(id){
   const rm=$('#editq-fig-remove');
   if(rm)rm.onclick=()=>{picked=null;removed=true;paintFigure();};
   wireQuestionForm('editq',state,{
+    qid:q.id,
     figure:()=>picked||undefined,
     onSubmit:async draft=>{
       const body={question:draft};
