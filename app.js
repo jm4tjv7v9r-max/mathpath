@@ -89,6 +89,18 @@ function rubricListHtml(items, points){
   return `<ul class="rubric-view">${items.map(it=>{const pct=Number(it.percent)||0;
     return `<li><span class="rubric-view-label">${mathText(it.label||'')}</span><span class="rubric-view-percent">${pct}%${points?` · ${Math.round(points*pct)/100} 分`:''}</span></li>`;}).join('')}</ul>`;
 }
+// 批閱用：把評分要點做成可勾選的清單，勾完自動加總填入分數欄（仍可手動微調）。
+// 只給教師看；學生端一律用 rubricListHtml（唯讀），避免洩漏評分標準。
+function rubricChecklistHtml(items, points){
+  const rows=(items||[]).filter(it=>it&&String(it.label||'').trim());
+  if(!rows.length) return '';
+  const pctTotal=rows.reduce((s,it)=>s+(Number(it.percent)||0),0);
+  const body=rows.map((it,j)=>{const pct=Number(it.percent)||0;const pts=points?Math.round(points*pct)/100:0;
+    return `<label class="rubric-check-row"><input type="checkbox" data-rubric-points="${pts}" data-rubric-pct="${pct}"><span class="rubric-check-label">${mathText(it.label||'')}</span><span class="rubric-check-pts">${pct}%${points?` · ${pts} 分`:''}</span></label>`;}).join('');
+  // 要點合計不是 100% 時先講清楚，教師才知道「全勾也不會滿分」是正常的。
+  const note=Math.abs(pctTotal-100)<0.01?'':`（要點合計 ${Math.round(pctTotal*10)/10}%，全勾為 ${Math.round((points||0)*pctTotal)/100} 分）`;
+  return `<div class="rubric-check" id="review-rubric"><div class="rubric-check-head"><strong>評分要點</strong><span class="small-text">勾選即自動加總，仍可手動微調</span><span class="rubric-check-actions"><button type="button" class="text-button" id="rubric-all">全選</button><button type="button" class="text-button" id="rubric-none">清除</button></span></div>${body}<p class="rubric-check-total"><span id="rubric-total-hint">已勾 0/${rows.length} 項 · 合計 0 分</span>${note}</p></div>`;
+}
 // 編輯器的即時排版預覽：輸入框只能顯示原始 LaTeX，這裡讓教師看到排版後的式子。
 function rubricPreviewRender(scope){
   const store = rubricStores.get(scope);
@@ -3026,7 +3038,7 @@ function reviewModal(id,onDone=null,snapshot=null,queue=null,viewOnly=false){
   // viewOnly：學生的自主練習不屬教師批閱範圍，只給看、不給打分也不給批註。
   const q=snapshot||(a.assignmentId&&assignmentDetail?.assignment?.id===a.assignmentId?assignmentDetail.questions.find(q=>q.id===a.questionId):null)||S.questions.find(q=>q.id===a.questionId),teacher=S.user.role==='teacher'&&!viewOnly,showRetry=S.user?.role!=='teacher';
   const progress=list.length>1?`待批閱佇列：第 ${pos+1} / ${list.length} 題`:'';
-  modal(`<p class="eyebrow">${teacher?'TEACHER REVIEW':'YOUR THINKING'}</p><h2>${esc(a.questionTitle)}</h2><p class="modal-intro">${a.maxScore} 分${a.student?' · '+esc(a.student.name):''}${progress?' · '+progress:''}</p>${q&&(q.content||q.figure)?stemHtml(q,{options:false}):''}${annotationBlock(a,teacher)}${a.skipped&&teacher?`<div class="hint-box">${icon('help')}學生標示本題不會，沒有作答內容。可以給 0 分，或用「退回訂正」要求他重做。</div>`:''}${teacher&&a.reviewFlags?.length?`<div class="hint-box review-flag-box">${icon('help')}<div><strong>建議覆核</strong><ul class="review-flag-list">${a.reviewFlags.map(f=>`<li>${esc(f.message)}</li>`).join('')}</ul><small>這是系統的交叉檢查提示，不是自動改分；請以你看到的推導為準。</small></div></div>`:''}${a.answerText?`<div class="review-answer">${mathText(a.answerText)}</div>`:''}${teacher&&(q?.answer||q?.steps?.length||q?.analysis||q?.rubric?.length)?`<div class="hint-box"><strong>教師參考答案：</strong>${q?.answer?mathText(q.answer):'（未填）'}${(q?.steps||[]).length?`<ol class="solution-steps">${q.steps.map(x=>`<li>${mathText(x)}</li>`).join('')}</ol>`:''}${q?.analysis?`<p class="solution-analysis">${mathText(q.analysis)}</p>`:''}${rubricListHtml(q?.rubric,a.maxScore)}</div>`:''}${a.awaitingReview&&!teacher?`<div class="hint-box">${icon('clock')}教師批閱後才會顯示分數、AI 批閱結果、參考答案與學習建議。你的作答已保存。</div>`:`<p class="info-note${feedbackClass(a.feedback)}">${mathText(a.feedback)}</p>${suggestionCard(a.suggestion)}<p class="field-hint">AI 原建議分：${scoreText(a.aiScore)} · 規則原分：${scoreText(a.ruleScore)} · 教師確認：${scoreText(a.confirmedScore)}</p>`}${teacher?`<form id="review-form"><div class="form-field"><label class="field-label" for="review-score">評分（0–${a.maxScore}）</label><input id="review-score" type="number" min="0" max="${a.maxScore}" step="0.5" value="${a.score??''}" required></div><div class="form-field"><label class="field-label" for="review-feedback">簡要評語 / 下一步建議 <span class="small-text">· 可留空</span></label><textarea class="answer-field" id="review-feedback" placeholder="可留空；若要寫，指出做得好的步驟，再給一個具體可改進的地方。" maxlength="12000"></textarea></div><p id="review-error" class="error-text"></p>${a.aiScore!=null?`<button class="secondary wide" type="button" id="adopt-ai">${icon('spark')}採用 AI 建議（${a.aiScore} 分）</button>`:''}<button class="primary wide" type="submit">${nextId?'保存並看下一題':'保存教師批閱'} ${icon('check')}</button></form>`:`${showRetry?`<button class="secondary wide" id="retry-from-review">再練一次 ${icon('arrow')}</button>`:''}`}`,true);
+  modal(`<p class="eyebrow">${teacher?'TEACHER REVIEW':'YOUR THINKING'}</p><h2>${esc(a.questionTitle)}</h2><p class="modal-intro">${a.maxScore} 分${a.student?' · '+esc(a.student.name):''}${progress?' · '+progress:''}</p>${q&&(q.content||q.figure)?stemHtml(q,{options:false}):''}${annotationBlock(a,teacher)}${a.skipped&&teacher?`<div class="hint-box">${icon('help')}學生標示本題不會，沒有作答內容。可以給 0 分，或用「退回訂正」要求他重做。</div>`:''}${teacher&&a.reviewFlags?.length?`<div class="hint-box review-flag-box">${icon('help')}<div><strong>建議覆核</strong><ul class="review-flag-list">${a.reviewFlags.map(f=>`<li>${esc(f.message)}</li>`).join('')}</ul><small>這是系統的交叉檢查提示，不是自動改分；請以你看到的推導為準。</small></div></div>`:''}${a.answerText?`<div class="review-answer">${mathText(a.answerText)}</div>`:''}${teacher&&(q?.answer||q?.steps?.length||q?.analysis||q?.rubric?.length)?`<div class="hint-box"><strong>教師參考答案：</strong>${q?.answer?mathText(q.answer):'（未填）'}${(q?.steps||[]).length?`<ol class="solution-steps">${q.steps.map(x=>`<li>${mathText(x)}</li>`).join('')}</ol>`:''}${q?.analysis?`<p class="solution-analysis">${mathText(q.analysis)}</p>`:''}${rubricChecklistHtml(q?.rubric,a.maxScore)}</div>`:''}${a.awaitingReview&&!teacher?`<div class="hint-box">${icon('clock')}教師批閱後才會顯示分數、AI 批閱結果、參考答案與學習建議。你的作答已保存。</div>`:`<p class="info-note${feedbackClass(a.feedback)}">${mathText(a.feedback)}</p>${suggestionCard(a.suggestion)}<p class="field-hint">AI 原建議分：${scoreText(a.aiScore)} · 規則原分：${scoreText(a.ruleScore)} · 教師確認：${scoreText(a.confirmedScore)}</p>`}${teacher?`<form id="review-form"><div class="form-field"><label class="field-label" for="review-score">評分（0–${a.maxScore}）</label><input id="review-score" type="number" min="0" max="${a.maxScore}" step="any" value="${a.score??''}" required></div><div class="form-field"><label class="field-label" for="review-feedback">簡要評語 / 下一步建議 <span class="small-text">· 可留空</span></label><textarea class="answer-field" id="review-feedback" placeholder="可留空；若要寫，指出做得好的步驟，再給一個具體可改進的地方。" maxlength="12000"></textarea></div><p id="review-error" class="error-text"></p>${a.aiScore!=null?`<button class="secondary wide" type="button" id="adopt-ai">${icon('spark')}採用 AI 建議（${a.aiScore} 分）</button>`:''}<button class="primary wide" type="submit">${nextId?'保存並看下一題':'保存教師批閱'} ${icon('check')}</button></form>`:`${showRetry?`<button class="secondary wide" id="retry-from-review">再練一次 ${icon('arrow')}</button>`:''}`}`,true);
   if(teacher&&a.image){annotationDone=nextId?(()=>reviewModal(nextId,onDone,snapFor(nextId),list)):(onDone||(()=>recordsPage()));initAnnotation(a);}
   // 存檔只更新這一筆作答（就地取代），不再整頁重抓；佇列還有下一題就直接換題。
   const saveReview=async(score,feedback)=>{
@@ -3054,6 +3066,24 @@ function reviewModal(id,onDone=null,snapshot=null,queue=null,viewOnly=false){
     }
   };
   if(teacher){
+    // 評分要點勾選：勾完自動加總填進分數欄。一項都沒勾時不動分數欄，
+    // 免得把教師已經打好的分數清掉（開啟已批過的作答時就是這種情況）。
+    const rubricBox=$('#review-rubric');
+    if(rubricBox){
+      const boxes=()=>[...rubricBox.querySelectorAll('input[type=checkbox]')];
+      const hint=$('#rubric-total-hint');
+      const refresh=()=>{
+        const picked=boxes().filter(b=>b.checked);
+        const sum=picked.reduce((s,b)=>s+(Number(b.dataset.rubricPoints)||0),0);
+        const total=Math.round(sum*10)/10;
+        if(hint)hint.textContent=`已勾 ${picked.length}/${boxes().length} 項 · 合計 ${total} 分`;
+        if(picked.length)$('#review-score').value=String(total);
+      };
+      boxes().forEach(b=>b.onchange=refresh);
+      const all=$('#rubric-all'),none=$('#rubric-none');
+      if(all)all.onclick=()=>{boxes().forEach(b=>b.checked=true);refresh();};
+      if(none)none.onclick=()=>{boxes().forEach(b=>b.checked=false);refresh();};
+    }
     $('#review-form').onsubmit=async e=>{e.preventDefault();await saveReview(Number($('#review-score').value),$('#review-feedback').value);};
     const adopt=$('#adopt-ai');
     if(adopt)adopt.onclick=()=>{$('#review-score').value=a.aiScore;saveReview(a.aiScore,$('#review-feedback').value);};

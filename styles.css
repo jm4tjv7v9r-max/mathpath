@@ -789,3 +789,18 @@ html[data-theme=night] .paper-warn-line strong{color:#ffb15c}
   padding:5px 12px;font-size:calc(13px*var(--fs));font-weight:600;color:var(--ink);cursor:pointer}
 .topbar-link:hover{background:var(--surface-soft);border-color:var(--green);color:var(--green)}
 html[data-theme=night] .topbar-link{color:#dbe6e6}
+/* 批閱：評分要點勾選（勾完自動加總，仍可手動微調）。全部用語義變數，墨夜自動跟著換。 */
+.rubric-check{margin-top:12px;padding-top:11px;border-top:1px solid var(--border);display:grid;gap:7px}
+.rubric-check-head{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+.rubric-check-head strong{color:var(--ink)}
+.rubric-check-actions{margin-left:auto;display:flex;gap:12px}
+.rubric-check-actions .text-button{font-size:calc(13px*var(--fs))}
+.rubric-check-row{display:flex;align-items:flex-start;gap:9px;padding:8px 10px;border:1px solid var(--border);
+  border-radius:8px;background:var(--surface-green);cursor:pointer;font-size:calc(14px*var(--fs));line-height:1.6}
+.rubric-check-row:hover{border-color:var(--green)}
+.rubric-check-row input{margin:4px 0 0;flex:0 0 auto;width:calc(17px*var(--fs));height:calc(17px*var(--fs));
+  accent-color:var(--green);cursor:pointer}
+.rubric-check-label{flex:1 1 auto;min-width:0;word-break:break-word;color:var(--ink)}
+.rubric-check-pts{flex:0 0 auto;color:var(--green);font-weight:600;white-space:nowrap}
+.rubric-check-total{margin:0;font-size:calc(13px*var(--fs));color:var(--muted)}
+.rubric-check-total #rubric-total-hint{font-weight:600;color:var(--green)}

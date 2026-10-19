@@ -1653,6 +1653,41 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   assert.equal(await page.locator('#results-filter option[value=flagged]').count(),1,'要能只看有建議覆核的學生');
   console.log('PASS: 教師批閱佇列（存檔即換下一題、最後一題收尾、可採用 AI 建議、顯示建議覆核）');
 
+  // 評分要點勾選計分：勾選即自動加總填入分數欄（仍可手動微調），全選／清除可用。
+  // 修的是「rubric 只能看不能勾」——教師不必自己算百分比，也就不會打錯分。
+  const rubricQuestion={...assignmentQuestion,rubric:[
+    {label:'正確列式 $x^2-5x+6=0$',percent:30},
+    {label:'因式分解正確',percent:40},
+    {label:'寫出兩個根',percent:30}]};
+  const rubricAttempt={...handwritten,id:301,questionId:1,aiScore:null,score:null,status:'pending',teacherReviewed:false,reviewFlags:[]};
+  await page.route('**/api/assignments/1/results', resultsFixture(false));
+  await page.route('**/api/assignments/1', route => route.fulfill({json:{
+    assignment:{...assignment,aiGrading:false}, questions:[rubricQuestion], attempts:[rubricAttempt],
+    mySubmission:{status:'submitted',submittedAt:stamp,resubmittedAt:null,submitCount:1,late:false,correction:null},
+    report:{score:null,maxScore:6,totalScoredPoints:0,pendingCount:1,confirmedScore:null,confirmedCount:0,topicStats:[],suggestion:advice}}}));
+  await page.locator('[data-page=homework]').first().click();
+  await page.locator('[data-results]').first().click();
+  await page.locator('[data-student-result]').first().click();
+  await page.locator('[data-hw-review]').first().click();
+  await page.locator('#review-rubric').waitFor({timeout:8000});
+  assert.equal(await page.locator('#review-rubric .rubric-check-row').count(),3,'三個評分要點都要列出來');
+  const rubricBoxes=page.locator('#review-rubric input[type=checkbox]');
+  await rubricBoxes.nth(0).check();
+  assert.equal(await page.locator('#review-score').inputValue(),'1.8','勾第一項要填入 30% × 6 分');
+  await rubricBoxes.nth(1).check();
+  assert.equal(await page.locator('#review-score').inputValue(),'4.2','兩項要加總成 70% × 6 分');
+  assert.match(await page.locator('#rubric-total-hint').innerText(),/已勾 2\/3 項 · 合計 4\.2 分/,'要顯示已勾幾項與合計分數');
+  assert.ok(await page.locator('#review-rubric .katex').count()>0,'評分要點裡的數學式要排版');
+  await page.locator('#rubric-all').click();
+  assert.equal(await page.locator('#review-score').inputValue(),'6','全選要剛好滿分');
+  await page.locator('#rubric-none').click();
+  assert.equal(await page.locator('#review-score').inputValue(),'6','取消勾選不應把已填的分數清掉');
+  await page.locator('#review-score').fill('4.5');
+  await page.locator('#review-form button[type=submit]').click();
+  await page.waitForFunction(()=>!document.querySelector('#modal-root .modal'),{timeout:8000});
+  assert.equal(queueBodies[queueBodies.length-1].score,4.5,'勾完仍可手動微調再送出');
+  console.log('PASS: 評分要點可勾選計分（勾完自動加總、全選／清除、仍可微調）');
+
   // 未啟用 AI 評分的作業不應出現一鍵批閱
   await page.route('**/api/assignments/1/results', resultsFixture(false));
   await page.locator('[data-page=homework]').first().click();
