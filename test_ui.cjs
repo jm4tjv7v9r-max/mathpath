@@ -1668,6 +1668,15 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   assert.match(qRows[0],/第 1 題/,'得分率最低的排最前');
   assert.match(qRows[0],/33\.3%/);
   assert.match(qRows[0],/要重教/,'低分且已批 2 人以上要標出來');
+  // 整班連續批閱：所有待批作答排成一條佇列，存檔即跳下一題（手機一路滑完一班）
+  await page.locator('#review-all-pending').waitFor({timeout:8000});
+  assert.match(await page.locator('#review-all-pending').innerText(),/連續批閱（3 題）/,
+               '要有整班連續批閱的入口，並顯示待批題數');
+  await page.locator('#review-all-pending').click();
+  await page.waitForFunction(()=>/待批閱佇列：第 1 \/ 3 題/.test(document.querySelector('#modal-root .modal')?.textContent||''),{timeout:8000});
+  assert.ok(await page.locator('#modal-root .modal.review-modal').count()>0,'批閱彈窗要有 review-modal 類別（手機樣式用）');
+  await page.locator('[data-action=close-modal]').click();
+  console.log('PASS: 整班連續批閱（待批作答排成一條佇列，存檔即跳下一題）');
   console.log('PASS: 教師批閱佇列（存檔即換下一題、最後一題收尾、可採用 AI 建議、顯示建議覆核）');
 
   // 評分要點勾選計分：勾選即自動加總填入分數欄（仍可手動微調），全選／清除可用。

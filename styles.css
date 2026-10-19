@@ -458,6 +458,15 @@ html[data-theme=night] .badge.paper-done{background:#1d3a33;color:#7de0bd;border
 /* 逐題表現：要重教的那一列淡橙底，一眼掃到 */
 tr.question-weak td{background:#fdf6ec}
 html[data-theme=night] tr.question-weak td{background:#33291c}
+/* 手機連續批閱：手稿放大、評分欄貼底，看完一題按一下就到下一題 */
+@media(max-width:740px){
+  .modal.review-modal{width:100%;max-height:96dvh;padding:16px 14px 0;border-radius:12px}
+  .modal.review-modal .mark-wrap img{max-height:44dvh;width:100%;object-fit:contain}
+  .modal.review-modal #review-form{position:sticky;bottom:0;z-index:2;margin-top:12px;
+    padding:10px 0 16px;background:var(--paper);border-top:1px solid var(--border)}
+  .modal.review-modal #review-score{font-size:calc(20px*var(--fs));padding:14px}
+  .modal.review-modal #review-form button[type=submit]{padding:16px;font-size:calc(17px*var(--fs))}
+}
 .review-flag-box{display:flex;gap:9px;align-items:flex-start;background:#fdf8ec;border-color:#efe2c8;color:#8a6f3a}
 .review-flag-box strong{display:block;margin-bottom:2px}
 .review-flag-list{margin:0;padding-left:18px;font-size:calc(14px*var(--fs));line-height:1.75}
