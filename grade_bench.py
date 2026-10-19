@@ -18,6 +18,7 @@
 請把 expect 換成你們真實批過的卷 —— 用別人的標記只反映別人的標準。
 """
 import argparse
+import base64
 import json
 import statistics
 import sys
@@ -40,6 +41,43 @@ def load(name):
         print(f'找不到 {path}', file=sys.stderr)
         sys.exit(2)
     return json.loads(path.read_text(encoding='utf-8'))
+
+
+def load_cases(value):
+    """讀取案例檔：預設 bench/grading_cases.json，也可以指定校內自己的檔案。
+
+    絕對路徑、相對 bench/ 的路徑都可以；用校內真卷時把 expect 換成教師給的分數。
+    """
+    if not value:
+        return load('grading_cases.json')
+    path = Path(value)
+    if not path.is_absolute():
+        path = BENCH / path
+    if not path.exists():
+        print(f'找不到 {path}', file=sys.stderr)
+        sys.exit(2)
+    return json.loads(path.read_text(encoding='utf-8'))
+
+
+def case_image(case):
+    """把案例的 image 轉成 data URL：可寫 'data:...'、或相對於 bench/ 的檔名。"""
+    value = case.get('image')
+    if not value:
+        return None
+    if value.startswith('data:'):
+        return value
+    path = Path(value)
+    if not path.is_absolute():
+        path = BENCH / path
+    if not path.exists():
+        print(f'找不到圖片 {path}（案例 {case.get("id")}）', file=sys.stderr)
+        sys.exit(2)
+    mime = {'.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+            '.webp': 'image/webp'}.get(path.suffix.lower())
+    if not mime:
+        print(f'{path.name}：只收 PNG／JPEG／WebP（HEIC 請先轉檔）', file=sys.stderr)
+        sys.exit(2)
+    return f'data:{mime};base64,' + base64.b64encode(path.read_bytes()).decode()
 
 
 # ── 第一層：規則核對（確定性）────────────────────────────────────────────
@@ -114,8 +152,8 @@ def import_question(app, teacher, question):
     return result['questions'][0]['id']
 
 
-def run_ai_bench():
-    data = load('grading_cases.json')
+def run_ai_bench(data=None):
+    data = data or load('grading_cases.json')
     tmp, app, teacher, student = build_benchmark_app()
     try:
         if not app.ai.configured:
@@ -144,9 +182,13 @@ def run_ai_bench():
                 try:
                     # 基準測試是維護者在自己的機器上跑自己的題目，等同已同意外部傳送；
                     # 同意機制是後來才加的，這裡要明確帶上，否則一律 403 跑不動。
-                    attempt = app.dispatch('POST', '/api/attempts',
-                                           {'questionId': qid, 'answerText': case['answerText'],
-                                            'consentExternal': True},
+                    body = {'questionId': qid, 'answerText': case['answerText'],
+                            'consentExternal': True}
+                    # 手寫作答：image 是 data URL 或相對於 bench/ 的檔名。
+                    image = case_image(case)
+                    if image:
+                        body['image'] = image
+                    attempt = app.dispatch('POST', '/api/attempts', body,
                                            student, None, '127.0.0.1', None)[0]['attempt']
                     score = attempt['score']
                     method = attempt['gradingMethod']
@@ -314,9 +356,15 @@ def run_self_test():
                                        student, None, '127.0.0.1', None)[0]['attempt']
                 points = case['question']['points']
                 want = points / 2
-                steps_ok = (abs(sum(s['max'] for s in attempt['steps']) - points) < 0.01
-                            and abs(sum(s['earned'] for s in attempt['steps']) - want) < 0.01)
-                scored = attempt['score'] is not None and abs(attempt['score'] - want) < 0.01
+                # 客觀題（選擇題／填空題）由規則層定分、沒有過程分：
+                # 假模型的「一半分數」不該被採用，步驟也必須是空的。
+                if case['question'].get('qtype') in ('選擇題', '填空題'):
+                    steps_ok = attempt['steps'] == []
+                    scored = attempt['score'] in (0, points)
+                else:
+                    steps_ok = (abs(sum(s['max'] for s in attempt['steps']) - points) < 0.01
+                                and abs(sum(s['earned'] for s in attempt['steps']) - want) < 0.01)
+                    scored = attempt['score'] is not None and abs(attempt['score'] - want) < 0.01
                 good = attempt['gradingMethod'] == 'ai-practice' and scored and steps_ok
                 ok = ok and good
                 shown = '—' if attempt['score'] is None else f'{attempt["score"]:g}'
@@ -345,6 +393,7 @@ def main():
     group.add_argument('--rule-only', action='store_true', help='只量規則核對（不需要 AI）')
     group.add_argument('--ai', action='store_true', help='量 AI 批改（需要已設定的模型端點）')
     group.add_argument('--self-test', action='store_true', help='用假模型驗證管線（不是準確度）')
+    parser.add_argument('--cases', help='案例檔（預設 bench/grading_cases.json；可指向校內自己的檔案）')
     args = parser.parse_args()
 
     if args.self_test:
@@ -358,7 +407,7 @@ def main():
     if args.rule_only:
         return 0
 
-    report = run_ai_bench()
+    report = run_ai_bench(load_cases(args.cases))
     if report is None:
         return 2
     print_ai_report(report)
