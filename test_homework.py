@@ -753,6 +753,59 @@ class HomeworkTests(unittest.TestCase):
         self.error(400, 'POST', f'/api/questions/{obj["questions"][0]["id"]}/rubric',
                    {'consentExternal': True}, self.teacher)
 
+    def test_second_pass_switch_can_adjust_and_never_loses_first_score(self):
+        """第二輪自我核對是開關：開了才多問一次，改分要說理由，失敗要保留第一次的分數。
+
+        每次作答本來就會呼叫模型兩次（批改＋學習建議），開關只影響批改那一段。
+        """
+        self.configure_ai()
+        aid = self.ai_assignment((1,))
+        first = {'score': 5, 'feedback': '大致正確。',
+                 'steps': [{'label': '整體', 'earned': 5, 'max': 6, 'comment': ''}]}
+        second = {'score': 3, 'changed': True, 'reason': '漏寫第二個根'}
+        advice = {'strength': '有寫出步驟。', 'focus': '根的數目。', 'nextStep': '再練一題。',
+                  'recommendedIds': []}
+
+        def fake(instruction, payload, image=None, model=None, temperature=None):
+            if '第二位批改老師' in instruction:
+                return second
+            if '建议' in instruction:
+                return advice
+            return first
+
+        with patch.dict('os.environ', {'MATH_AI_SECOND_PASS': 'on'}):
+            with patch.object(self.app.ai, 'call', side_effect=fake) as ai:
+                attempt = self.attempt(aid, 1, answer='x=2')
+        self.assertEqual(ai.call_count, 3, '批改＋第二輪＋學習建議')
+        # 作業的 AI 分數要等教師批閱才對學生揭露，所以直接看資料庫那一列。
+        with self.app.db() as db:
+            stored = db.execute('SELECT score, feedback, ai_steps FROM attempts WHERE id=?',
+                                (attempt['id'],)).fetchone()
+        self.assertEqual(stored['score'], 3)
+        self.assertIn('第二輪覆核', stored['feedback'])
+        self.assertIn('漏寫第二個根', stored['feedback'])
+        self.assertEqual(sum(s['earned'] for s in json.loads(stored['ai_steps'])), 3,
+                         '步驟分項要跟著新分數換算，不能總分 3 但步驟加起來 5')
+
+        # 第二輪失敗 → 保留第一次的分數，不能讓整筆批改作廢
+        def failing(instruction, payload, image=None, model=None, temperature=None):
+            if '第二位批改老師' in instruction:
+                raise server.APIError(502, '模型掛了')
+            return advice if '建议' in instruction else first
+
+        with patch.dict('os.environ', {'MATH_AI_SECOND_PASS': 'on'}):
+            with patch.object(self.app.ai, 'call', side_effect=failing):
+                fallback = self.attempt(aid, 1, answer='x=2')
+        with self.app.db() as db:
+            kept = db.execute('SELECT score FROM attempts WHERE id=?', (fallback['id'],)).fetchone()
+        self.assertEqual(kept['score'], 5, '第二輪失敗不能丟掉第一次的分數')
+
+        # 預設關閉：批改＋學習建議，只兩次
+        with patch.dict('os.environ', {'MATH_AI_SECOND_PASS': 'off'}):
+            with patch.object(self.app.ai, 'call', side_effect=fake) as once:
+                self.attempt(aid, 1, answer='x=2')
+        self.assertEqual(once.call_count, 2, '預設關閉時不該多打一次模型')
+
     def test_objective_question_score_comes_from_rule_check(self):
         """選擇題／填空題沒有過程分：規則層判得了最終答案時，就由它定分。
 

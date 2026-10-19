@@ -90,6 +90,10 @@ services:
       # 每人每日上限。學生一天做 20 題 × 2 次（作答＋再練）＝ 40 次，留足餘裕。
       - key: MATH_AI_PER_DAY
         value: "600"
+      # 第二輪自我核對：多問一次「這樣給分對嗎」，只在發現明確錯誤時改分。
+      # 成本 +1 次呼叫（每題 3 次），預設關閉；邊界分數常被家長質疑時再開。
+      - key: MATH_AI_SECOND_PASS
+        value: "off"
       # 等待 SQLite 寫入鎖的秒數。學生集中提交時寫入會排隊，太短會回「database is locked」。
       - key: MATH_DB_TIMEOUT
         sync: false            # 預設 30

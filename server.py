@@ -2422,6 +2422,11 @@ def ai_per_day():
     return min(100000, max(0, value))
 
 
+def second_pass_enabled():
+    """第二輪自我核對開關；MATH_AI_SECOND_PASS=on 才開（預設關閉，成本 +1 次呼叫）。"""
+    return (os.environ.get('MATH_AI_SECOND_PASS', '') or '').strip().lower() in ('1', 'on', 'true', 'yes')
+
+
 def ai_concurrency():
     """同時進行的 AI 請求上限；MATH_AI_CONCURRENCY 可調整（預設 16）。
 
@@ -4253,6 +4258,15 @@ class Application:
                              + f'，得 {final:g}/{q["points"]:g} 分。）')
                 steps = []
             score = final
+        # 第二輪自我核對（選用，預設關閉）：多問一次「這樣給分對嗎」，
+        # 只在發現明確錯誤時改分。成本 +1 次呼叫，邊界分數最值得開。
+        # 客觀題已經由規則層定分，不必再問模型。
+        if second_pass_enabled() and q.get('qtype') not in ('選擇題', '填空題'):
+            reviewed, feedback = self.ai_second_pass(q, answer, image, score, feedback, steps)
+            if reviewed != score:
+                # 分數變了，步驟分項要跟著換算，否則「總分 3 但步驟加起來 5」會讓教師困惑。
+                steps, _ = normalize_ai_steps(steps, q['points'], reviewed)
+                score = reviewed
         flags = grade_cross_check(q, answer, score, q['points'], rule)
         if adjusted:
             # 配分換算是系統動作、不是評分可疑，寫進評語就好，不列入「建議覆核」旗標。
@@ -4291,6 +4305,35 @@ class Application:
         note = ('AI 即時評分（自主練習；分數只作個人練習紀錄，不需教師批閱）。\n'
                 if practice else 'AI 建議評分，僅供教師復核，不可直接用於正式考試。\n')
         return score, note + feedback, steps, adjusted
+
+    def ai_second_pass(self, q, answer, image, score, feedback, steps):
+        """請模型獨立覆核自己的第一次評分，回傳（可能調整過的）分數與評語。
+
+        刻意寫成「沒把握就不要改」——第二輪的價值是抓明顯錯誤（漏給步驟分、
+        多給不存在的分），不是重新猜一次。任何失敗都保留第一次的結果。
+        """
+        try:
+            result = self.ai.call(
+                '你是第二位批改老師。以下是題目、參考答案、學生作答，以及第一位老師的評分結果。'
+                '請獨立檢查這個分數是否與作答相符：有沒有漏給步驟分、有沒有多給不存在的分？'
+                '只有在發現明確錯誤時才改分；沒有把握就不要改（changed 設 false）。'
+                '返回 {score:number,changed:bool,reason:str}；score 介乎 0 至 points。',
+                {'question': q, 'answerText': answer,
+                 'firstPass': {'score': score, 'feedback': feedback, 'steps': steps}},
+                image=image, model=(self.ai.vision or self.ai.model) if image else None)
+            if not isinstance(result, dict):
+                return score, feedback
+            new_score = number(result['score'], '覆核分數', 0, q['points'])
+            if not result.get('changed') or abs(new_score - score) < 1e-9:
+                return score, feedback
+            reason = str(result.get('reason') or '').strip()[:300]
+            note = f'\n（第二輪覆核：分數由 {score:g} 調整為 {new_score:g}'
+            note += f'；理由：{reason}）' if reason else '。）'
+            return new_score, feedback + note
+        except (APIError, KeyError, TypeError, ValueError) as exc:
+            # 第二輪只是加分項：失敗不能讓整筆批改作廢，也不能因此丟掉第一次的分數。
+            ai_log(f'第二輪覆核失敗，保留第一次評分：{exc}')
+            return score, feedback
 
     def attempt_image_url(self, row):
         """取回手寫作答圖片的 data URL；沒有圖片時回 None。"""
