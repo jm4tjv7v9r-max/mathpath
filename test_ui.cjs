@@ -2801,6 +2801,23 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   assert.doesNotMatch(rosterHtml[2],/data-disable-user/,'不能停用自己（管理員）');
   console.log('PASS: 帳號停用（停用／重新啟用按鈕、已停用標記、不能停用自己）');
 
+  // 紙本功課在學習足跡獨立呈現：不混進做題數與正確率，也不進排行榜。
+  await page.route('**/api/state', route => route.fulfill({json:{
+    user:{id:1,name:'介面測試學生',role:'student'},
+    questions:[{...q,answer:undefined,steps:undefined}], attempts:[],
+    stats:{completed:0,accuracy:0,score:0,maxScore:0,streak:0,minutes:0,
+           paperCount:3,paperAverage:78.5,paperLastAt:'2026-10-18T09:00:00Z'},
+    ai, topics:['一元二次方程','幾何']}}));
+  await page.reload({waitUntil:'networkidle'});
+  await page.locator('[data-page=growth]').first().click();
+  await page.waitForFunction(()=>/紙本功課/.test(document.querySelector('#main')?.textContent||''),{timeout:8000});
+  const paperCard=page.locator('#main section.panel', {hasText:'紙本功課'});
+  const paperText=await paperCard.innerText();
+  assert.match(paperText,/3\s*份/,'要顯示已批幾份');
+  assert.match(paperText,/78\.5 分/,'要顯示平均分');
+  assert.match(paperText,/不計入上面的做題數/, '要說清楚不混進做題數');
+  console.log('PASS: 學習足跡顯示紙本功課（獨立統計，不混進做題數與排行榜）');
+
   // 伺服器初始化失敗時，登入視窗要直接顯示原因，不能只說「正在初始化」
   await page.route('**/api/session', route => route.fulfill({status:503,json:{error:'伺服器初始化失敗：MATH_STUDENT_PASSWORD 必須是 10 至 256 個字元、且不可只有空白的密碼。'}}));
   await page.reload({waitUntil:'networkidle'});

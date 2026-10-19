@@ -4604,6 +4604,21 @@ class Application:
         return result
 
     @staticmethod
+    def paper_stats(db, uid):
+        """紙本批改的個人累計（份數、平均、最近一次）。
+
+        刻意**不併進**做題數／正確率，也不進排行榜：紙本是 100 分制、一次批改算
+        一份功課，混進「一題一筆」的線上統計會讓數字失真，也讓排名不公平。
+        """
+        row = db.execute('SELECT COUNT(*) AS n, AVG(score) AS avg_score, MAX(created_at) AS last_at '
+                         'FROM paper_grades WHERE student_id=?', (uid,)).fetchone()
+        count = row['n'] or 0
+        return {'paperCount': count,
+                'paperAverage': (round(row['avg_score'], 1)
+                                 if count and row['avg_score'] is not None else None),
+                'paperLastAt': row['last_at'] if count else None}
+
+    @staticmethod
     def stats(rows):
         # 教師佈置的作業要等教師批閱後才計入學生的練習統計，避免批閱前就洩漏分數。
         rows = [a for a in rows if a['assignment_id'] is None or a['teacher_reviewed']]
@@ -5292,12 +5307,16 @@ class Application:
                                                             (sid,)).fetchone())
                         attempt['student'] = students[sid]
                 own = [r for r in rows if r['user_id'] == user['id']]
+                # 紙本累計要在連線還開著時算（下面 return 時 with 已結束）。
+                paper = self.paper_stats(db, user['id']) if user['role'] == 'student' else {}
                 account_owner = self.owner_id(db)
             payload_user = self.user_public(user)
             # 管理員＝最早建立的教師帳號；前端用它決定要不要顯示「新增教師」與資料管理。
             payload_user['isOwner'] = user['role'] == 'teacher' and user['id'] == account_owner
+            stats = self.stats(own)
+            stats.update(paper)
             return {'user': payload_user, 'questions': questions, 'attempts': attempts,
-                    'stats': self.stats(own), 'ai': self.ai.public(), 'topics': TOPICS, 'grades': GRADES,
+                    'stats': stats, 'ai': self.ai.public(), 'topics': TOPICS, 'grades': GRADES,
                     'topicTree': TOPIC_TREE,
                     'notice': self.notice(user), 'minutesNotice': '分鐘數僅按同日相鄰提交間隔估算，不是正式學習計時。'}, headers
         match = re.fullmatch(r'/api/questions/([1-9]\d{0,17})/(recommendations|generate)', path)

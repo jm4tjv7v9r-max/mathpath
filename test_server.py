@@ -303,7 +303,9 @@ class APITests(unittest.TestCase):
         self.assertEqual(len(state['questions']), 16)
         self.assertEqual(state['attempts'], [])
         self.assertEqual(state['stats'], {'completed': 0, 'accuracy': 0, 'score': 0, 'maxScore': 0,
-                                      'streak': 0, 'minutes': 0})
+                                      'streak': 0, 'minutes': 0,
+                                      # 紙本批改的累計獨立呈現，不混進做題數與正確率
+                                      'paperCount': 0, 'paperAverage': None, 'paperLastAt': None})
         self.assertEqual(state['ai'], {'configured': False, 'model': '', 'vision': '', 'draw': '', 'drawCustom': False, 'mode': 'off', 'source': 'none', 'thinking': False})
         for q in state['questions']:
             self.assertNotIn('answer', q)
@@ -4097,6 +4099,18 @@ class UnitNotationTests(unittest.TestCase):
                 self.assertTrue(server.rule_verdict(q, text, None), text)
         self.assertFalse(server.rule_verdict(q, '36 cm', None), '面積寫成 cm 是不同量綱，要判錯')
         self.assertFalse(server.rule_verdict(q, '36', None), '題目要單位時漏寫單位不能算對')
+
+
+class StyleTests(unittest.TestCase):
+    """配色對比度：兩套主題的每一組前景／背景配對都要達到 WCAG AA。"""
+
+    def test_colour_contrast_meets_wcag(self):
+        import check_contrast
+        rows, _ = check_contrast.audit()
+        self.assertTrue(rows, '應該解析得出配色配對')
+        bad = [f"{r['theme']}：{r['fg']} on {r['bg']} = {r['ratio']}"
+               for r in rows if r['ratio'] < check_contrast.MIN_RATIO]
+        self.assertEqual(bad, [], '配色對比度不足：' + '；'.join(bad))
 
 
 if __name__ == '__main__':

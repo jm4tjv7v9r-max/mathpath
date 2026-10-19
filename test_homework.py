@@ -753,6 +753,24 @@ class HomeworkTests(unittest.TestCase):
         self.error(400, 'POST', f'/api/questions/{obj["questions"][0]["id"]}/rubric',
                    {'consentExternal': True}, self.teacher)
 
+    def test_paper_scores_show_in_journey_but_not_in_counts(self):
+        """紙本批改的分數要進學習足跡，但不能混進做題數／正確率，也不進排行榜。"""
+        with self.app.db() as db:
+            db.execute('INSERT INTO paper_grades(teacher_id,student_id,title,pages,total_questions,'
+                       'correct_count,score,detail,created_at) VALUES(?,?,?,?,?,?,?,?,?)',
+                       (2, 1, '第三次功課', 2, 5, 4, 80, '[]', '2026-10-18T09:00:00Z'))
+        state = self.call('GET', '/api/state', user=self.student)
+        stats = state['stats']
+        self.assertEqual(stats['paperCount'], 1)
+        self.assertEqual(stats['paperAverage'], 80.0)
+        self.assertEqual(stats['paperLastAt'], '2026-10-18T09:00:00Z')
+        self.assertEqual(stats['completed'], 0, '紙本不併進做題數')
+        self.assertEqual(stats['accuracy'], 0, '紙本不併進正確率')
+        # 排行榜只看線上作答，紙本分數不影響排名
+        board = self.call('GET', '/api/leaderboard', user=self.student)
+        self.assertNotIn(self.student['name'], json.dumps(board, ensure_ascii=False),
+                         '紙本分數不進排行榜（只有線上作答才算）')
+
     def test_question_stats_show_which_question_to_reteach(self):
         """逐題表現要能回答「哪一題要重教」：得分率、待批、標示不會要分開算。"""
         aid = self.assignment((1, 2))
