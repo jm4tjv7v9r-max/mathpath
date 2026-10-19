@@ -1424,7 +1424,10 @@ def question_facts(app, payload):
     """只讀題目文字、列出題目已給定的數據；失敗回 None（這是加分項，不該擋住生成）。"""
     try:
         result = app.ai.call(FIGURE_QUESTION_INSTRUCTION, payload, temperature=0)
-    except APIError:
+    except APIError as exc:
+        # 額度用完要讓老師看到原因，不能悄悄當成「讀不到」而回一個空圖形。
+        if exc.status == 429:
+            raise
         return None
     reading = _reading(result)
     if reading is None or not (reading['shape'] or reading['values'] or reading['marks']):
@@ -2361,6 +2364,29 @@ def ai_max_tokens():
     return value if 256 <= value <= 32000 else None
 
 
+def ai_per_minute():
+    """每人每分鐘的 AI 呼叫上限；MATH_AI_PER_MINUTE 設定，0（預設）表示不限制。
+
+    預設關閉是刻意的：本機測試與小規模自架不該被自己的保險絲擋住，
+    正式部署在 render.yaml 明確打開（一班同時交作業、紙本一次十頁，
+    沒有上限就可能一次打爆供應商或燒掉預算）。
+    """
+    try:
+        value = int(os.environ.get('MATH_AI_PER_MINUTE', '') or 0)
+    except ValueError:
+        return 0
+    return min(600, max(0, value))
+
+
+def ai_per_day():
+    """每人每日的 AI 呼叫上限；MATH_AI_PER_DAY 設定，0（預設）表示不限制。"""
+    try:
+        value = int(os.environ.get('MATH_AI_PER_DAY', '') or 0)
+    except ValueError:
+        return 0
+    return min(100000, max(0, value))
+
+
 def ai_concurrency():
     """同時進行的 AI 請求上限；MATH_AI_CONCURRENCY 可調整（預設 16）。
 
@@ -2619,6 +2645,64 @@ def tiny_png_data_url():
     return 'data:image/png;base64,' + base64.b64encode(raw).decode()
 
 
+# 「這次請求的 AI 呼叫算在誰頭上」：放在模組層的 thread-local，
+# 不掛在 AIClient 上——測試會用只有 call() 的替身換掉 app.ai，
+# 請求入口若去碰 self.ai.begin 就會炸。
+_AI_REQUEST = threading.local()
+
+
+def begin_ai_request(key):
+    _AI_REQUEST.key = key
+
+
+def current_ai_key():
+    return getattr(_AI_REQUEST, 'key', 'unknown')
+
+
+class AIQuota:
+    """每人（未登入則每個 IP）的 AI 呼叫計數，超過上限回 429。
+
+    只是「防手滑」的保險絲：計數在記憶體裡，程序重啟就歸零，多 worker 也不共用，
+    所以它不是帳單工具，也不該拿來對帳。真正要精算費用請看供應商後台。
+    """
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.entries = {}
+
+    @staticmethod
+    def key_for(user, ip):
+        """登入者按帳號計；訪客（登入頁、同意前的呼叫）按 IP 計。"""
+        return f'user:{user["id"]}' if user else f'ip:{ip or "?"}'
+
+    def charge(self, key):
+        per_minute, per_day = ai_per_minute(), ai_per_day()
+        if not per_minute and not per_day:
+            return
+        now = time.monotonic()
+        today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+        with self.lock:
+            entry = self.entries.get(key)
+            if not entry or entry['day'] != today:
+                # 跨日就重新算；也順手把昨天留下來的鍵清掉，避免記憶體慢慢長大。
+                entry = {'day': today, 'count': 0, 'recent': []}
+                self.entries[key] = entry
+            entry['recent'] = [stamp for stamp in entry['recent'] if now - stamp < 60]
+            if per_minute and len(entry['recent']) >= per_minute:
+                fail(429, f'AI 呼叫過於頻密（每人每分鐘上限 {per_minute} 次），請等一分鐘再試。')
+            if per_day and entry['count'] >= per_day:
+                fail(429, f'今天的 AI 額度已用完（每人每日 {per_day} 次）；明天再試，或請教師協助。')
+            entry['recent'].append(now)
+            entry['count'] += 1
+
+    def usage(self, key):
+        """目前用量（給健康檢查與除錯用；不影響計數）。"""
+        with self.lock:
+            entry = self.entries.get(key) or {}
+            return {'minute': len(entry.get('recent') or []), 'day': entry.get('count', 0),
+                    'perMinute': ai_per_minute(), 'perDay': ai_per_day()}
+
+
 class AIClient:
     """OpenAI 相容端點。設定來自環境變數，或管理員在介面上儲存的設定（後者優先）。"""
 
@@ -2628,7 +2712,16 @@ class AIClient:
         self.slots = threading.BoundedSemaphore(ai_concurrency())
         self.truncated = False
         self.draw = ''
+        self.quota = AIQuota()
         self.configure(env_ai_config())
+
+    def begin(self, key):
+        """由請求入口標記「這次呼叫算在誰頭上」。"""
+        begin_ai_request(key)
+
+    @property
+    def current_key(self):
+        return current_ai_key()
 
     def configure(self, values):
         base, model, key, vision, draw, mode, endpoint, thinking = validate_ai_config(values)
@@ -2671,6 +2764,9 @@ class AIClient:
         temperature 預設 0（批改要可重現）；生成變式題時會調高，讓同一道參考題每次產生不同題目。
         timeout 是這一次呼叫的逾時秒數；不給就用 ai_timeout()。呼叫端要控制總時間時會傳進來。
         """
+        # 每一次真的打模型都算一次：紙本批改是一頁一次、一鍵全批是一題一次，
+        # 所以配額要記在這裡，而不是記「按了幾個按鈕」。
+        self.quota.charge(self.current_key)
         try:
             return self._call_once(instruction, payload, image, model, temperature, timeout)
         except APIError as exc:
@@ -3431,7 +3527,10 @@ def paper_key_page(app, image, page_no, total_pages, title):
     try:
         result = app.ai.call(instruction, {'title': title, 'page': page_no},
                              image=image, model=app.ai.vision)
-    except APIError:
+    except APIError as exc:
+        # 額度用完就往上報；否則會回一張空白答案卷，教師還以為題目沒拍到。
+        if exc.status == 429:
+            raise
         return []
     items = result.get('questions') if isinstance(result, dict) else None
     if not isinstance(items, list):
@@ -3514,7 +3613,10 @@ def paper_grade_page(app, image, page_no, total_pages, title, key=None):
                         '再用該題的標準答案判斷。reference 沒有的題目才由你自行判斷。')
     try:
         result = app.ai.call(instruction, payload, image=image, model=app.ai.vision)
-    except APIError:
+    except APIError as exc:
+        # 額度用完就往上報；否則會回一張空白答案卷，教師還以為題目沒拍到。
+        if exc.status == 429:
+            raise
         return []
     items = result.get('questions') if isinstance(result, dict) else None
     warning = result.get('pageWarning') if isinstance(result, dict) else None
@@ -3744,7 +3846,7 @@ class Application:
                 CREATE TABLE IF NOT EXISTS users (
                     id INTEGER PRIMARY KEY, username TEXT UNIQUE NOT NULL, name TEXT NOT NULL,
                     role TEXT NOT NULL CHECK(role IN ('student','teacher')), password TEXT NOT NULL,
-                    demo INTEGER NOT NULL DEFAULT 0);
+                    demo INTEGER NOT NULL DEFAULT 0, disabled INTEGER NOT NULL DEFAULT 0);
                 CREATE TABLE IF NOT EXISTS paper_keys (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     teacher_id INTEGER NOT NULL REFERENCES users(id),
@@ -3795,10 +3897,16 @@ class Application:
             # 「建議覆核」旗標：AI 建議分與規則核對衝突時記下原因，教師覆核後清除。
             if 'review_flags' not in attempt_columns:
                 db.execute("ALTER TABLE attempts ADD COLUMN review_flags TEXT NOT NULL DEFAULT '[]'")
+            # 批閱時間：舊資料庫補欄；補上之前 reviewed_at 一律為 NULL，前端不會誤標「新批閱」。
+            if 'reviewed_at' not in attempt_columns:
+                db.execute('ALTER TABLE attempts ADD COLUMN reviewed_at TEXT')
             # 學生帳號的班內號：增量加欄，舊帳戶為 NULL。沒有班內號時一切照舊運作。
             user_columns = {r['name'] for r in db.execute('PRAGMA table_info(users)')}
             if 'seat' not in user_columns:
                 db.execute('ALTER TABLE users ADD COLUMN seat TEXT')
+            # 停用帳號：轉班／離職用停用取代刪除，作答與分數都留著，之後可再啟用。
+            if 'disabled' not in user_columns:
+                db.execute('ALTER TABLE users ADD COLUMN disabled INTEGER NOT NULL DEFAULT 0')
             # 帳號的建立者：一般教師只能修改「自己建立的學生」，管理員不受限。
             # 升級前就存在的帳號為 NULL——代表沒有歸屬，只有管理員能改（保守，不會讓新教師誤改別人的學生）。
             if 'created_by' not in user_columns:
@@ -4241,7 +4349,7 @@ class Application:
         hashed = hashlib.sha256(token.encode()).hexdigest()
         with self.db() as db:
             user = db.execute('SELECT u.* FROM users u JOIN sessions s ON s.user_id=u.id '
-                              'WHERE s.token_hash=? AND s.expires>?', (hashed, time.time())).fetchone()
+                              'WHERE s.token_hash=? AND s.expires>? AND u.disabled=0', (hashed, time.time())).fetchone()
         return user, hashed if user else None
 
     def rate_login(self, ip, username):
@@ -4280,6 +4388,9 @@ class Application:
                   'feedback': row['feedback'], 'submittedAt': row['submitted_at'], 'answerText': row['answer_text'],
                   'gradingMethod': row['method'], 'steps': json.loads(row['ai_steps']),
                   'teacherReviewed': bool(row['teacher_reviewed']),
+                  # 批閱時間：學生端靠它分辨「老師剛批的」與「我上次看過的」。
+                  # 舊資料庫可能沒有這一欄，缺欄時回 None（前端就當作沒有新批閱）。
+                  'reviewedAt': row['reviewed_at'] if 'reviewed_at' in row.keys() else None,
                   'assignmentId': row['assignment_id'], 'mockId': row['mock_id'] if 'mock_id' in row.keys() else None, 'aiScore': row['ai_score'],
                   'ruleScore': row['rule_score'], 'confirmedScore': row['teacher_confirmed_score'],
                   'skipped': bool(row['skipped']) if 'skipped' in row.keys() else False,
@@ -4307,7 +4418,7 @@ class Application:
             result.update({'score': None, 'status': 'pending', 'feedback': '',
                            'gradingMethod': 'awaiting-review', 'steps': [], 'suggestion': None,
                            'aiScore': None, 'ruleScore': None, 'confirmedScore': None,
-                           'awaitingReview': True})
+                           'reviewedAt': None, 'awaitingReview': True})
             result.pop('aiAnnotation', None)
             result.pop('verdict', None)
         return result
@@ -4392,6 +4503,8 @@ class Application:
 
     def dispatch(self, method, path, body, user, token_hash, ip, query=''):
         headers = {}
+        # 配額按「誰在呼叫」計：登入者用帳號，訪客用 IP（登入頁與同意前的呼叫）。
+        begin_ai_request(AIQuota.key_for(user, ip))
         # /api/health 即使 DB 還沒好也要能回應，讓 Render 健康檢查不會 timeout。
         if method == 'POST' and path == '/api/paper-keys':
             # 第一步：教師上傳空白題目，AI 辨識題目並生成標準答案，等教師確認。
@@ -4665,6 +4778,9 @@ class Application:
                 ok = password_matches(pw, row['password'] if row else self.dummy_hash)
                 if not row or not ok:
                     fail(401, '帳戶名稱或密碼錯誤。')
+                # 停用後仍然驗密碼，只是不發 session——避免「換個密碼就能登入」的誤會。
+                if row['disabled']:
+                    fail(403, '這個帳號已停用，請聯絡教師或管理員。')
                 token = secrets.token_urlsafe(32)
                 if token_hash:
                     db.execute('DELETE FROM sessions WHERE token_hash=?', (token_hash,))
@@ -4718,8 +4834,9 @@ class Application:
                 # 但只有管理員與建立者能改——createdBy 讓前端決定要不要顯示「編輯」。
                 with self.db() as db:
                     users = [{'id': r['id'], 'username': r['username'], 'name': r['name'], 'role': r['role'],
-                              'seat': r['seat'], 'grade': r['grade'], 'createdBy': r['created_by']}
-                             for r in db.execute('SELECT id,username,name,role,seat,grade,created_by '
+                              'seat': r['seat'], 'grade': r['grade'], 'createdBy': r['created_by'],
+                              'disabled': bool(r['disabled'])}
+                             for r in db.execute('SELECT id,username,name,role,seat,grade,created_by,disabled '
                                                  'FROM users ORDER BY id')]
                     owner = self.owner_id(db)
                 return {'users': users, 'ownerId': owner}, headers
@@ -4744,7 +4861,7 @@ class Application:
                                      'VALUES(?,?,?,?,?,?,?,?)',
                                      (username, name, 'student', encoded, 0, seat, grade, user['id']))
                     created = {'id': cur.lastrowid, 'username': username, 'name': name, 'role': 'student',
-                               'seat': seat, 'grade': grade, 'createdBy': user['id']}
+                               'seat': seat, 'grade': grade, 'createdBy': user['id'], 'disabled': False}
             except sqlite3.IntegrityError as exc:
                 if exc.sqlite_errorcode == sqlite3.SQLITE_CONSTRAINT_UNIQUE:
                     fail(409, '帳戶名稱已存在。')
@@ -4825,6 +4942,17 @@ class Application:
             with self.db() as db:
                 db.execute('BEGIN IMMEDIATE')
                 return self.dataadmin.update_user(db, int(update_user[1]), body, actor=user), headers
+        disable_user = re.fullmatch(r'/api/users/([1-9]\d{0,17})/disabled', path)
+        if method == 'POST' and disable_user:
+            # 停用／啟用：轉班、離職、長期請假用它，比刪除溫和——作答與分數都留著。
+            # 細部權限在 set_user_disabled 內判（教師只有管理員能停用；學生由匯入老師或管理員）。
+            self.teacher(user)
+            fields(body, ('disabled',), ('disabled',))
+            if type(body['disabled']) is not bool:
+                fail(400, 'disabled 必須是布林值。')
+            with self.db() as db:
+                db.execute('BEGIN IMMEDIATE')
+                return self.dataadmin.set_user_disabled(db, int(disable_user[1]), body['disabled'], user), headers
         delete_user = re.fullmatch(r'/api/users/([1-9]\d{0,17})/delete', path)
         if method == 'POST' and delete_user:
             # 刪除帳號：學生＝匯入老師或管理員；教師＝只有管理員（細部在 delete_user 內判）。

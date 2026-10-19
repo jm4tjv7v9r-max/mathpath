@@ -433,6 +433,23 @@ button.danger:disabled{opacity:.6}
    這是請教師優先看一題的訊號，不是自動改分。用暖色讓它一眼可見，
    但不搶過分數與作答內容的注意力；教師覆核後旗標會清除。 */
 .badge.review-flag{background:#fdf1dc;color:#a3762b;border:1px solid #f0dcb6;font-weight:500}
+/* 「新批閱」：教師批完但學生還沒看過。用主色系以外的暖色，避免和「建議覆核」混淆。 */
+.badge.new-review{background:#e8f5ef;color:#14614f;border:1px solid #bfe0d2;font-weight:600}
+html[data-theme=night] .badge.new-review{background:#1d3a33;color:#7de0bd;border-color:#2c5248}
+/* 截止前提醒：24 小時內未交；剩不到 2 小時轉成警示色。 */
+.badge.due-soon{background:#fdeee0;color:#8a4b12;border:1px solid #f0d3b4;font-weight:600;display:inline-flex;align-items:center;gap:4px}
+.badge.due-soon.urgent{background:#fdeaea;color:#a33b3b;border-color:#f0c4c4}
+html[data-theme=night] .badge.due-soon{background:#3a2a1a;color:#f0b979;border-color:#4a3722}
+html[data-theme=night] .badge.due-soon.urgent{background:#3b2020;color:#f19b9b;border-color:#5a2c2c}
+/* 紙本批改紀錄：按功課分組，摘要一行、要看名單再展開 */
+.paper-history-group{border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin-bottom:8px;background:var(--surface-soft)}
+.paper-history-group>summary{display:flex;align-items:center;gap:10px;flex-wrap:wrap;cursor:pointer}
+.paper-history-group>summary strong{color:var(--ink)}
+.paper-history-body{margin-top:10px}
+.badge.paper-missing{background:#fdeee0;color:#8a4b12;border:1px solid #f0d3b4;font-weight:600}
+.badge.paper-done{background:#e8f5ef;color:#14614f;border:1px solid #bfe0d2;font-weight:600}
+html[data-theme=night] .badge.paper-missing{background:#3a2a1a;color:#f0b979;border-color:#4a3722}
+html[data-theme=night] .badge.paper-done{background:#1d3a33;color:#7de0bd;border-color:#2c5248}
 .review-flag-box{display:flex;gap:9px;align-items:flex-start;background:#fdf8ec;border-color:#efe2c8;color:#8a6f3a}
 .review-flag-box strong{display:block;margin-bottom:2px}
 .review-flag-list{margin:0;padding-left:18px;font-size:calc(14px*var(--fs));line-height:1.75}
@@ -589,6 +606,10 @@ button.step.done:hover span{background:var(--mint);color:var(--green)}
   font-size:calc(12px*var(--fs));padding:1px 8px;margin-right:7px;vertical-align:middle;font-weight:600}
 /* 管理員（學校最早建立的教師帳號）：用琥珀色與一般教師區分 */
 .role-badge.admin{background:#faeeda;color:#854f0b}
+/* 已停用的帳號：灰底灰字，一眼看得出這個人現在登不進來 */
+.role-badge.off{background:#eceff1;color:#5b6b70}
+.roster-row.is-disabled .roster-who{opacity:.72}
+html[data-theme=night] .role-badge.off{background:#2a3437;color:#a9b7b9}
 
 /* ── 版面精簡（2026-10-17）：移除裝飾、壓低卡片高度，讓一屏看到更多內容 ── */
 .metric-spark{display:none}

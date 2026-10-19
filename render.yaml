@@ -81,6 +81,15 @@ services:
       # DeepSeek flash 的併發上限是 2500，所以 16 仍遠低於限制。
       - key: MATH_AI_CONCURRENCY
         sync: false            # 預設 16
+      # --- AI 用量保險絲（預設關閉，這裡刻意打開）---
+      # 每次真的打模型算一次：紙本批改是一頁一次、一鍵全批是一題一次。
+      # 30 人一班同時交作業約 150 次呼叫，所以每人每分鐘 30 次不會誤擋正常使用，
+      # 但足以擋住「有人一直按重新整理」或前端迴圈把帳單打爆。
+      - key: MATH_AI_PER_MINUTE
+        value: "30"
+      # 每人每日上限。學生一天做 20 題 × 2 次（作答＋再練）＝ 40 次，留足餘裕。
+      - key: MATH_AI_PER_DAY
+        value: "600"
       # 等待 SQLite 寫入鎖的秒數。學生集中提交時寫入會排隊，太短會回「database is locked」。
       - key: MATH_DB_TIMEOUT
         sync: false            # 預設 30

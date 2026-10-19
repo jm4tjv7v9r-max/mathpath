@@ -2632,6 +2632,129 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   assert.equal(await page.evaluate(()=>localStorage.getItem('mathpath_theme')),'day','要能切回晨光');
   console.log('PASS: 版面配色可切換（晨光／墨夜）並記在這台裝置');
 
+  // 「新批閱」：教師批完、學生還沒看過就要標出來；點開看過就消失；教師改分會再標一次。
+  // 注意：前面有多個 /api/state 覆寫，這裡要自己再註冊一次（後註冊的路由優先）。
+  const reviewedAttempt={...graded(3,1,'一元二次方程',5,6),teacherReviewed:true,reviewedAt:'2026-10-19T02:00:00Z',
+    gradingMethod:'teacher-reviewed',confirmedScore:5,feedback:'教師已覆核：步驟清楚。'};
+  const studentStateWith=attempts=>route=>route.fulfill({json:{
+    user:{id:1,name:'介面測試學生',role:'student'},
+    questions:[{...q,answer:undefined,steps:undefined}], attempts,
+    stats:{completed:1,accuracy:83,score:5,maxScore:6,streak:1,minutes:10}, ai, topics:['一元二次方程','幾何']}});
+  await page.route('**/api/state', studentStateWith([reviewedAttempt]));
+  await page.locator('#account').click();await page.locator('#logout-btn').click();
+  await page.waitForSelector('#homework-login');
+  await login('student');
+  // 等「我的錯題本」真的畫出來（上一頁也有 .record，只等 .record 會抓到舊 DOM）。
+  const waitRecords=()=>page.waitForFunction(()=>{const m=document.querySelector('#main');
+    return m&&/我的錯題本/.test(m.textContent)&&m.querySelectorAll('.record').length>0;},{timeout:8000});
+  await page.locator('[data-page=mistakes]').first().click();
+  await waitRecords();
+  assert.equal(await page.locator('#main .badge.new-review').count(),1,'教師批完且學生未看過要標「新批閱」');
+  assert.match(await page.locator('#main .badge.new-review').first().innerText(),/新批閱/);
+  await page.locator('[data-review]').first().click();
+  await page.locator('#modal-root .modal').waitFor({timeout:8000});
+  assert.equal(await page.locator('#modal-root .badge.new-review').count(),1,'彈窗裡也要標示這是新批閱');
+  await page.locator('[data-action=close-modal]').click();
+  await page.reload({waitUntil:'networkidle'});
+  await page.locator('[data-page=mistakes]').first().click();
+  await waitRecords();
+  assert.equal(await page.locator('#main .badge.new-review').count(),0,'看過之後不應再標新批閱');
+  // 教師日後改了分數（reviewedAt 變了）→ 應該再標一次，學生才知道要重看。
+  await page.route('**/api/state', studentStateWith([{...reviewedAttempt,score:6,confirmedScore:6,reviewedAt:'2026-10-19T03:00:00Z'}]));
+  await page.reload({waitUntil:'networkidle'});
+  await page.locator('[data-page=mistakes]').first().click();
+  await waitRecords();
+  assert.equal(await page.locator('#main .badge.new-review').count(),1,'教師改分後要再標一次');
+  console.log('PASS: 「新批閱」標記（批閱後標出、看過消失、改分再標）');
+
+  // 截止前提醒：24 小時內未交才標「快截止」；剩不到 2 小時轉警示色；已提交不標。
+  // 時間用 floor 取整（寧可顯示得少，也不要讓學生以為還很久）。
+  const originalDue=assignment.dueAt;
+  // 前面有測試把 /api/homework 覆寫成「教師、沒有作業」，這裡要換回學生的兩份作業。
+  await page.route('**/api/homework', route => route.fulfill({json:{
+    classes:[{id:1,name:'中三甲班',studentCount:2,studentIds:[1,3]}],
+    assignments:[assignment,quizAssignment], ai}}));
+  const setDue=async(ms,status)=>{
+    assignment.dueAt=new Date(Date.now()+ms).toISOString();
+    assignment.myStatus=status;
+    await page.reload({waitUntil:'networkidle'});
+    await page.locator('[data-assignment]').first().waitFor({timeout:8000});
+  };
+  await setDue(3*3600*1000+60000,'not_started');
+  assert.equal(await page.locator('.badge.due-soon').count(),1,'24 小時內未交要提醒快截止');
+  assert.match(await page.locator('.badge.due-soon').first().innerText(),/剩 3 小時/);
+  assert.equal(await page.locator('.badge.due-soon.urgent').count(),0,'剩 3 小時還不算緊急');
+  await setDue(45*60*1000+1000,'in_progress');
+  assert.match(await page.locator('.badge.due-soon').first().innerText(),/剩 45 分鐘/,'不足一小時要講分鐘');
+  assert.equal(await page.locator('.badge.due-soon.urgent').count(),1,'剩不到 2 小時要轉警示色');
+  await setDue(30*3600*1000,'not_started');
+  assert.equal(await page.locator('.badge.due-soon').count(),0,'超過 24 小時不必提醒');
+  await setDue(3*3600*1000,'submitted');
+  assert.equal(await page.locator('.badge.due-soon').count(),0,'已提交的作業不提醒');
+  assignment.dueAt=originalDue;assignment.myStatus='not_started';
+  await page.reload({waitUntil:'networkidle'});
+  console.log('PASS: 截止前提醒（24 小時內標示、2 小時內轉警示、已提交不標）');
+
+  // 紙本批改紀錄：按功課名稱分組，看得出「批了誰、還缺誰、上次批到哪」。
+  await page.locator('#account').click();await page.locator('#logout-btn').click();
+  await page.waitForSelector('#homework-login');
+  await login('teacher');
+  // 前面的測試把 /api/state 換成學生身分，這裡要換回教師，否則側欄不會有「紙本批改」。
+  await page.route('**/api/state', route => route.fulfill({json:{
+    user:{id:2,name:'介面測試教師',role:'teacher',isOwner:true},
+    questions:[q], attempts:[], stats:{completed:0,accuracy:0,streak:0,minutes:0},
+    ai, topics:['一元二次方程','幾何']}}));
+  await page.reload({waitUntil:'networkidle'});
+  const paperRoster=[
+    {id:1,name:'介面測試學生',role:'student',seat:'1',grade:'中三'},
+    {id:3,name:'陳大文',role:'student',seat:'2',grade:'中三'},
+    {id:4,name:'李小明',role:'student',seat:'3',grade:'中三'}];
+  await page.route('**/api/users', route => route.fulfill({json:{users:paperRoster}}));
+  await page.route('**/api/paper-keys', route => route.fulfill({json:{keys:[]}}));
+  await page.route('**/api/homework', route => route.fulfill({json:{
+    classes:[{id:1,name:'中三甲班',studentCount:3,studentIds:[1,3,4]}],
+    assignments:[assignment,quizAssignment], ai}}));
+  await page.route('**/api/paper-grades', route => {
+    if(route.request().method()!=='GET')return route.fallback();
+    return route.fulfill({json:{grades:[
+      {id:2,studentId:1,studentName:'介面測試學生',title:'第三次功課',pages:2,totalQuestions:5,
+        correctCount:4,score:80,createdAt:'2026-10-18T09:00:00Z',questions:[]},
+      {id:1,studentId:3,studentName:'陳大文',title:'第二次功課',pages:1,totalQuestions:4,
+        correctCount:2,score:50,createdAt:'2026-10-17T09:00:00Z',questions:[]}]}});
+  });
+  await page.evaluate(()=>sessionStorage.removeItem('paperClass'));
+  await page.locator('[data-page=paper]').first().click();
+  await page.locator('#paper-history .paper-history-group').first().waitFor({timeout:8000});
+  assert.equal(await page.locator('#paper-history .paper-history-group').count(),2,'同一份功課要合成一組');
+  const firstGroup=page.locator('#paper-history .paper-history-group').first();
+  assert.match(await firstGroup.locator('summary').innerText(),/第三次功課/);
+  assert.match(await firstGroup.locator('summary').innerText(),/已批 1 人 · 平均 80\.0 分/,'要看得出批了幾人與平均');
+  assert.match(await firstGroup.locator('summary').innerText(),/上次批到 介面測試學生/,'要知道上次批到哪一位');
+  // 未展開的 details 取 innerText 只有摘要，所以這裡讀 textContent。
+  const historyText=await page.locator('#paper-history').evaluate(el=>el.textContent);
+  assert.match(historyText,/選上面的班級/,'沒選班級時說明怎麼看未批名單');
+  await page.locator('#paper-class').selectOption('1');
+  await page.waitForFunction(()=>/未批 2 人/.test(document.querySelector('#paper-history')?.textContent||''),{timeout:8000});
+  assert.match(await firstGroup.locator('summary').innerText(),/未批 2 人/,'選了班級就要算出還缺幾人');
+  await firstGroup.locator('summary').click();
+  assert.equal(await firstGroup.locator('tbody tr').count(),1,'展開後列出已批的學生');
+  assert.match(await firstGroup.locator('.paper-history-body').innerText(),/陳大文（座號 2）、李小明（座號 3）/,'要列出未批的是哪幾位');
+  console.log('PASS: 紙本批改紀錄（按功課分組、算未批人數與名單、看得出上次批到誰）');
+
+  // 帳號停用：管理員看得到「停用」，已停用的顯示「已停用」與「重新啟用」；
+  // 不能停用自己與管理員（按鈕不出現）。實際的登入攔阻由後端測試驗證。
+  const rosterHtml=await page.evaluate(()=>[
+    accountRow({id:3,name:'陳大文',role:'student',createdBy:2,disabled:false}),
+    accountRow({id:4,name:'李小明',role:'student',createdBy:2,disabled:true}),
+    accountRow({id:2,name:'介面測試教師',role:'teacher',createdBy:null,disabled:false})]);
+  assert.match(rosterHtml[0],/data-disable-user="3"[^>]*>停用</,'一般帳號要有「停用」');
+  assert.doesNotMatch(rosterHtml[0],/已停用/,'未停用的帳號不該顯示已停用');
+  assert.match(rosterHtml[1],/已停用/,'停用的帳號要標出來');
+  assert.match(rosterHtml[1],/data-disable-to="0"[^>]*>重新啟用</,'停用後要能重新啟用');
+  assert.match(rosterHtml[1],/is-disabled/,'整列要淡一點，一眼看得出');
+  assert.doesNotMatch(rosterHtml[2],/data-disable-user/,'不能停用自己（管理員）');
+  console.log('PASS: 帳號停用（停用／重新啟用按鈕、已停用標記、不能停用自己）');
+
   // 伺服器初始化失敗時，登入視窗要直接顯示原因，不能只說「正在初始化」
   await page.route('**/api/session', route => route.fulfill({status:503,json:{error:'伺服器初始化失敗：MATH_STUDENT_PASSWORD 必須是 10 至 256 個字元、且不可只有空白的密碼。'}}));
   await page.reload({waitUntil:'networkidle'});

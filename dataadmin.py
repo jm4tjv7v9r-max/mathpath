@@ -529,6 +529,33 @@ class DataAdmin:
         return {'user': dict(updated), 'changed': changed,
                 'passwordReset': bool(revoked), 'sessionsRevoked': revoked}
 
+    # ---------- 停用／啟用帳號 ----------
+    def set_user_disabled(self, db, uid, disabled, actor):
+        """停用或重新啟用一個帳號。
+
+        比刪除溫和：作答、分數、班級與作業全部留著，只是不能再登入；停用時現有 session 立即失效。
+        權限與刪除一致：教師帳號只有管理員能停用；學生由匯入老師或管理員停用。
+        """
+        row = db.execute('SELECT * FROM users WHERE id=?', (uid,)).fetchone()
+        if row is None:
+            self.fail(404, '找不到這個帳號。')
+        if uid == actor['id']:
+            self.fail(400, '不能停用自己的帳號。')
+        if uid == self.owner_id(db):
+            self.fail(400, '不能停用管理員帳號。')
+        if actor['id'] != self.owner_id(db):
+            if row['role'] == 'teacher':
+                self.fail(403, '只有管理員可以停用教師帳號。')
+            if row['created_by'] != actor['id']:
+                self.fail(403, '只有匯入這位學生的教師或管理員可以停用。')
+        db.execute('UPDATE users SET disabled=? WHERE id=?', (1 if disabled else 0, uid))
+        revoked = 0
+        if disabled:
+            # 停用要立刻生效：不能讓已經登入的裝置繼續用到 session 過期。
+            revoked = db.execute('DELETE FROM sessions WHERE user_id=?', (uid,)).rowcount
+        return {'user': {'id': uid, 'name': row['name'], 'role': row['role'], 'disabled': bool(disabled)},
+                'sessionsRevoked': revoked}
+
     # ---------- 刪除帳號 ----------
     def delete_user(self, db, uid, actor, confirm):
         """刪除一個帳號（僅管理員）。需要輸入 DELETE 確認，避免誤按。

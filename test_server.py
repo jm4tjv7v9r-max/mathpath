@@ -562,6 +562,8 @@ class APITests(unittest.TestCase):
         self.assertIsNone(attempt['score'])
         self.assertEqual(attempt['gradingMethod'], 'pending-teacher')
         self.assertIn('等待教師', attempt['feedback'])
+        # 批閱時間只在批閱後才有：學生要靠它分辨「老師剛批的」與「我上次看過的」。
+        self.assertIsNone(attempt['reviewedAt'])
         self.request('GET', attempt['image'], expect=401)
         for cookie in (self.student, self.teacher):
             _, content, headers = self.request('GET', attempt['image'], cookie=cookie, expect=200)
@@ -575,6 +577,10 @@ class APITests(unittest.TestCase):
         self.assertEqual(body['attempt']['status'], 'graded')
         self.assertTrue(body['attempt']['teacherReviewed'])
         self.assertEqual(body['attempt']['gradingMethod'], 'teacher-reviewed')
+        self.assertIsNotNone(body['attempt']['reviewedAt'])
+        # 學生重抓狀態時也要拿到同一個批閱時間（前端用它判斷有沒有新批閱）。
+        _, student_state, _ = self.request('GET', '/api/state', cookie=self.student, expect=200)
+        self.assertEqual(student_state['attempts'][0]['reviewedAt'], body['attempt']['reviewedAt'])
         with self.app.db() as db:
             row = db.execute('SELECT * FROM attempts').fetchone()
             self.assertEqual(row['reviewed_by'], 2)
@@ -691,6 +697,67 @@ class APITests(unittest.TestCase):
             self.assertFalse(server.env_ai_config()['thinking'])
         with patch.dict('os.environ', {'MATH_AI_THINKING': 'on'}, clear=True):
             self.assertTrue(server.env_ai_config()['thinking'])
+
+    def test_ai_quota_counts_every_model_call_per_user(self):
+        """配額要按「真的呼叫模型」計，而且是每個人各自算。
+
+        紙本批改是一頁一次、一鍵全批是一題一次，所以計數放在 AIClient.call 裡，
+        不是放在「按了幾個按鈕」。超過上限回 429，換一個人不受影響。
+        """
+        class Recorder(BaseHTTPRequestHandler):
+            def do_POST(self):
+                self.rfile.read(int(self.headers['Content-Length']))
+                body = json.dumps({'choices': [{'message': {'content': '{"ok":true}'}}]}).encode()
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Content-Length', str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            def log_message(self, *a):
+                pass
+
+        httpd = ThreadingHTTPServer(('127.0.0.1', 0), Recorder)
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        self.addCleanup(httpd.shutdown)
+        client = server.AIClient()
+        client.configure({'base_url': f'http://127.0.0.1:{httpd.server_address[1]}/v1',
+                          'model': 'm', 'api_key': 'k', 'vision_model': '', 'thinking': False})
+        ping = lambda: client.call('只回傳 {"ok":true}', {'probe': 'text'})
+
+        with patch.dict('os.environ', {'MATH_AI_PER_MINUTE': '2', 'MATH_AI_PER_DAY': '0'}, clear=False):
+            client.begin('user:1')
+            ping(); ping()
+            with self.assertRaises(server.APIError) as ctx:
+                ping()
+            self.assertEqual(ctx.exception.status, 429)
+            self.assertIn('每分鐘', ctx.exception.message)
+            # 另一個人的額度是分開的
+            client.begin('user:2')
+            ping()
+            # 未登入（訪客）按 IP 計，不會和帳號混在一起
+            client.begin('ip:127.0.0.1')
+            ping(); ping()
+            with self.assertRaises(server.APIError):
+                ping()
+
+        with patch.dict('os.environ', {'MATH_AI_PER_MINUTE': '0', 'MATH_AI_PER_DAY': '3'}, clear=False):
+            client.begin('user:3')
+            for _ in range(3):
+                ping()
+            with self.assertRaises(server.APIError) as ctx:
+                ping()
+            self.assertEqual(ctx.exception.status, 429)
+            self.assertIn('每日', ctx.exception.message)
+
+        # 兩個都設 0（預設）＝完全不限制，本機測試與小規模自架不會被自己的保險絲擋住
+        with patch.dict('os.environ', {'MATH_AI_PER_MINUTE': '0', 'MATH_AI_PER_DAY': '0'}, clear=False):
+            client.begin('user:4')
+            for _ in range(5):
+                ping()
+
+        # 計數的鍵：登入者按帳號、訪客按 IP（同一台電腦的兩個帳號不會互相扣額度）
+        self.assertEqual(server.AIQuota.key_for({'id': 7}, '1.2.3.4'), 'user:7')
+        self.assertEqual(server.AIQuota.key_for(None, '1.2.3.4'), 'ip:1.2.3.4')
 
     def test_ai_config_endpoint_management(self):
         path = '/api/ai-config'
@@ -836,14 +903,15 @@ class APITests(unittest.TestCase):
         created = result['user']
         # createdBy 記錄是誰建立的（內建 teacher 是 id=2），用來判斷一般教師能改哪些帳號。
         self.assertEqual(created, {'id': 3, 'username': body['username'], 'name': body['name'],
-                                   'role': 'student', 'seat': None, 'grade': None, 'createdBy': 2})
+                                   'role': 'student', 'seat': None, 'grade': None, 'createdBy': 2,
+                                   'disabled': False})
         self.request('POST', '/api/users', body, cookie=self.teacher, expect=409)
         self.request('POST', '/api/users', dict(body, username='student'), cookie=self.teacher, expect=409)
         _, listing, _ = self.request('GET', '/api/users', cookie=self.teacher, expect=200)
         self.assertEqual(set(listing), {'users', 'ownerId'})
         self.assertEqual(listing['users'][-1], created)
         for user in listing['users']:
-            self.assertEqual(set(user), {'id', 'username', 'name', 'role', 'seat', 'grade', 'createdBy'})
+            self.assertEqual(set(user), {'id', 'username', 'name', 'role', 'seat', 'grade', 'createdBy', 'disabled'})
         self.assertEqual(listing['ownerId'], 2, 'ownerId 是最早建立的教師（內建 teacher）')
         with self.app.db() as db:
             row = db.execute('SELECT * FROM users WHERE id=?', (created['id'],)).fetchone()
@@ -3982,6 +4050,41 @@ class DataAdminTests(unittest.TestCase):
         self.request('POST', '/api/users/bulk', {'students': [
             {'username': 'y8a01', 'password': 'NextYear1234', 'seat': '1'}]},
             cookie=self.teacher, expect=200)
+
+    def test_disable_account_blocks_login_and_keeps_data(self):
+        """停用要立刻生效：不能再登入、現有 session 失效，但作答與分數都留著，可再啟用。"""
+        self.request('POST', '/api/users/bulk', {'students': [
+            {'username': 'dis001', 'password': 'DisablePass12', 'seat': '1'}]},
+            cookie=self.teacher, expect=200)
+        with self.app.db() as db:
+            uid = db.execute("SELECT id FROM users WHERE username='dis001'").fetchone()['id']
+        # 停用前先登入一次，拿到一個有效 session
+        cookie = self.login('dis001', 'DisablePass12')
+        _, state, _ = self.request('GET', '/api/state', cookie=cookie, expect=200)
+        self.assertEqual(state['user']['id'], uid)
+        # 教師停用自己匯入的學生：現有 session 立即失效
+        _, out, _ = self.request('POST', f'/api/users/{uid}/disabled', {'disabled': True},
+                                 cookie=self.teacher, expect=200)
+        self.assertTrue(out['user']['disabled'])
+        self.assertEqual(out['sessionsRevoked'], 1, '停用要順便把已登入的 session 踢掉')
+        # 舊 session 立即失效（/api/state 需要登入，停用後就回 401）
+        status, _, _ = self.request('GET', '/api/state', cookie=cookie)
+        self.assertEqual(status, 401, '被停用的帳號不能再用舊 session')
+        # 也不能重新登入；但作答與分數沒有被刪
+        self.request('POST', '/api/login', {'username': 'dis001', 'password': 'DisablePass12'},
+                     expect=403)
+        _, listing, _ = self.request('GET', '/api/users', cookie=self.teacher, expect=200)
+        row = next(u for u in listing['users'] if u['id'] == uid)
+        self.assertTrue(row['disabled'], '名單要標出已停用')
+        # 重新啟用後可以再登入
+        self.request('POST', f'/api/users/{uid}/disabled', {'disabled': False},
+                     cookie=self.teacher, expect=200)
+        self.request('POST', '/api/login', {'username': 'dis001', 'password': 'DisablePass12'},
+                     expect=200)
+        # 不能停用自己，也不能停用管理員
+        owner = listing['ownerId']
+        self.request('POST', f'/api/users/{owner}/disabled', {'disabled': True},
+                     cookie=self.teacher, expect=400)
 
 
 if __name__ == '__main__':
