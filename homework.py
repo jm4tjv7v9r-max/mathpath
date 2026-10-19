@@ -420,7 +420,35 @@ class Homework:
                    'averageScore': sum(complete) / len(complete) if complete else None,
                    'confirmedAverage': sum(confirmed) / len(confirmed) if confirmed else None}
         return {'students': students, 'summary': summary,
-                'topicStats': self.topic_stats(questions, rows, len(recipients))}
+                'topicStats': self.topic_stats(questions, rows, len(recipients)),
+                'questionStats': self.question_stats(questions, rows, len(recipients))}
+
+    def question_stats(self, questions, rows, student_count):
+        """逐題表現：得分率、待批、未作答。
+
+        知識點層級看不出「哪一題要重教」——同一知識點裡可能有一題全班都錯、
+        另一題大家都對，平均起來就看不見了。
+        """
+        by_question = {}
+        for r in rows:
+            by_question.setdefault(r['question_id'], []).append(r)
+        stats = []
+        for index, q in enumerate(questions, 1):
+            own = by_question.get(q['id'], [])
+            graded = [r for r in own if r['status'] == 'graded' and r['score'] is not None]
+            skipped = sum(1 for r in own if r['skipped'])
+            # 待批 = 有作答但還沒評分（不含標示「不會」的）。
+            pending = len(own) - len(graded) - skipped
+            average = round(sum(r['score'] for r in graded) / len(graded), 1) if graded else None
+            rate = (round(100 * average / q['points'], 1)
+                    if average is not None and q['points'] else None)
+            stats.append({'id': q['id'], 'index': index, 'title': q['title'],
+                          'topic': q['topic'], 'points': q['points'],
+                          'answered': len(own), 'graded': len(graded), 'pending': pending,
+                          'skipped': skipped,
+                          'unanswered': max(0, student_count - len(own)),
+                          'average': average, 'rate': rate})
+        return stats
 
     def assignment_public(self, db, row, user, detail=False):
         questions = self.questions(db, row['id'])

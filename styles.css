@@ -455,6 +455,9 @@ html[data-theme=night] .badge.paper-done{background:#1d3a33;color:#7de0bd;border
 .review-history-box>summary{cursor:pointer;font-size:calc(13px*var(--fs));color:var(--muted);font-weight:600}
 .review-history-box ul{list-style:none;margin:8px 0 0;padding:0;display:grid;gap:6px}
 .review-history-box li{font-size:calc(13px*var(--fs));color:var(--ink);line-height:1.6}
+/* 逐題表現：要重教的那一列淡橙底，一眼掃到 */
+tr.question-weak td{background:#fdf6ec}
+html[data-theme=night] tr.question-weak td{background:#33291c}
 .review-flag-box{display:flex;gap:9px;align-items:flex-start;background:#fdf8ec;border-color:#efe2c8;color:#8a6f3a}
 .review-flag-box strong{display:block;margin-bottom:2px}
 .review-flag-list{margin:0;padding-left:18px;font-size:calc(14px*var(--fs));line-height:1.75}

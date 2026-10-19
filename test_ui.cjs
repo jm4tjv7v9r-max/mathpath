@@ -1557,7 +1557,12 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
     assignment:{...assignment,aiGrading},
     students:[{...student,status:'submitted',submittedAt:stamp,answeredCount:1,pendingCount:1,score:null,scoredPoints:0,confirmedScore:null,confirmedCount:0}],
     summary:{studentCount:1,submittedCount:1,correctionCount:0,fullyGradedCount:0,pendingReviewCount:1,averageScore:null,confirmedAverage:null},
-    topicStats:[]}});
+    topicStats:[],
+    questionStats:[
+      {id:1,index:1,title:'因式分解解二次方程',topic:'一元二次方程',points:6,answered:2,graded:2,
+       pending:0,skipped:0,unanswered:1,average:2,rate:33.3},
+      {id:2,index:2,title:'求斜邊長',topic:'幾何',points:5,answered:1,graded:1,
+       pending:0,skipped:0,unanswered:1,average:5,rate:100}]}});
   // 一鍵 AI 全部批閱（只有教師啟用 AI 評分的作業才有此按鈕）
   await page.route('**/api/assignments/1', route => route.fulfill({json:{
     assignment:{...assignment,aiGrading:true}, questions:[assignmentQuestion], attempts:[attemptFixture()],
@@ -1593,7 +1598,12 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   const queueResults={json:{assignment:{...assignment,aiGrading:true,questionCount:3,totalPoints:18},
     students:[{...student,status:'submitted',submittedAt:stamp,answeredCount:3,pendingCount:3,score:null,scoredPoints:0,confirmedScore:null,confirmedCount:0,reviewFlagCount:1}],
     summary:{studentCount:1,submittedCount:1,correctionCount:0,fullyGradedCount:0,pendingReviewCount:3,reviewFlagCount:1,averageScore:null,confirmedAverage:null},
-    topicStats:[]}};
+    topicStats:[],
+    questionStats:[
+      {id:1,index:1,title:'第1題：因式分解',topic:'一元二次方程',points:6,answered:2,graded:2,
+       pending:0,skipped:0,unanswered:0,average:2,rate:33.3},
+      {id:2,index:2,title:'第2題：因式分解',topic:'一元二次方程',points:6,answered:1,graded:1,
+       pending:0,skipped:0,unanswered:0,average:6,rate:100}]}};
   await page.route('**/api/assignments/1', route => route.fulfill({json:{
     assignment:{...assignment,aiGrading:true,questionCount:3,totalPoints:18}, questions:queueQuestions,
     attempts:queueAttempts,
@@ -1651,6 +1661,13 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   assert.match(await page.locator('#main').innerText(),/建議覆核題目/,'成績頁要有建議覆核指標');
   assert.match(await page.locator('#main').innerText(),/建議覆核 1 題/,'學生列要標出建議覆核題數');
   assert.equal(await page.locator('#results-filter option[value=flagged]').count(),1,'要能只看有建議覆核的學生');
+  // 逐題表現：由得分率低到高，低於 50% 且已批 2 人以上標「要重教」
+  const qStats=page.locator('#main section.panel', {hasText:'逐題表現'});
+  await qStats.waitFor({timeout:8000});
+  const qRows=await qStats.locator('tbody tr').allInnerTexts();
+  assert.match(qRows[0],/第 1 題/,'得分率最低的排最前');
+  assert.match(qRows[0],/33\.3%/);
+  assert.match(qRows[0],/要重教/,'低分且已批 2 人以上要標出來');
   console.log('PASS: 教師批閱佇列（存檔即換下一題、最後一題收尾、可採用 AI 建議、顯示建議覆核）');
 
   // 評分要點勾選計分：勾選即自動加總填入分數欄（仍可手動微調），全選／清除可用。

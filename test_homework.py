@@ -753,6 +753,32 @@ class HomeworkTests(unittest.TestCase):
         self.error(400, 'POST', f'/api/questions/{obj["questions"][0]["id"]}/rubric',
                    {'consentExternal': True}, self.teacher)
 
+    def test_question_stats_show_which_question_to_reteach(self):
+        """逐題表現要能回答「哪一題要重教」：得分率、待批、標示不會要分開算。"""
+        aid = self.assignment((1, 2))
+        self.attempt(aid, 1, answer='x=2或3')      # 對
+        self.attempt(aid, 2, answer='x=9')         # 錯
+        self.finalize(aid)
+        data = self.results(aid)
+        stats = {q['id']: q for q in data['questionStats']}
+        self.assertEqual(stats[1]['index'], 1, '要按作業裡的題號排序')
+        self.assertEqual(stats[1]['graded'], 1)
+        self.assertEqual(stats[1]['rate'], 100.0)
+        self.assertEqual(stats[2]['index'], 2)
+        self.assertEqual(stats[2]['graded'], 1)
+        self.assertEqual(stats[2]['rate'], 0.0, '答錯的題目得分率是 0，不是待批')
+        self.assertEqual(stats[2]['pending'], 0)
+        # 標示「不會」的題目：算 skipped，不算待批、也不算 0 分
+        aid2 = self.assignment((1, 2))
+        self.attempt(aid2, 1, answer='x=2或3')
+        self.attempt(aid2, 2, answer='', skipped=True)
+        self.finalize(aid2)
+        stats2 = {q['id']: q for q in self.results(aid2)['questionStats']}
+        self.assertEqual(stats2[2]['skipped'], 1)
+        self.assertEqual(stats2[2]['pending'], 0)
+        self.assertEqual(stats2[2]['graded'], 0)
+        self.assertIsNone(stats2[2]['rate'], '沒人批閱的題目不該給 0%')
+
     def test_review_history_records_every_confirmation(self):
         """分數異動要留痕：誰在何時把幾分改成幾分（同分確認也記）。"""
         self.configure_ai()
