@@ -2972,6 +2972,9 @@ def canonical_answer(value):
     s = unicodedata.normalize('NFKC', value.replace('²', '^2').replace('³', '^3')).lower().strip()
     s = s.replace('−', '-').replace('–', '-')
     s = s.replace('公分', 'cm').replace('厘米', 'cm').replace('度', '°')
+    # 學生常把平方寫成 cm2／m3（而不是 cm²）；只在結尾的單位位置補上 ^，
+    # 避免誤傷 x2 這類代數寫法。少了這一步，「36cm2」會被判成答錯。
+    s = re.sub(r'(cm|mm|km|dm|kg|mg|ml|m|g|l|s|h)([23])$', r'\1^\2', s)
     s = re.sub(r'\bor\b', '或', s)
     if re.search(r'\d\s+\d|[a-z]\s+[a-z]', s):
         return None
@@ -4192,6 +4195,18 @@ class Application:
             adjusted = False
         else:
             score, feedback, steps, adjusted = self.ai_holistic_grade(q, answer, image, practice, rule)
+        # 客觀題（選擇題／填空題）沒有過程分：規則層既然能判最終答案，就由它定分。
+        # 實測（bench/grading_cases g10）：模型會把「36 cm」當成「36 cm²」給 4/5，
+        # 但同一題寫「36cm2」又可能被判 0——交給模型只多一個出錯來源。
+        # 規則層判不了（None）時仍照舊用 AI 的分數。
+        if rule is not None and q.get('qtype') in ('選擇題', '填空題'):
+            final = q['points'] if rule else 0
+            if score != final:
+                feedback += ('\n（選擇題／填空題沒有過程分：系統按最終答案核對定分——'
+                             + ('與參考答案等價' if rule else '與參考答案不符')
+                             + f'，得 {final:g}/{q["points"]:g} 分。）')
+                steps = []
+            score = final
         flags = grade_cross_check(q, answer, score, q['points'], rule)
         if adjusted:
             # 配分換算是系統動作、不是評分可疑，寫進評語就好，不列入「建議覆核」旗標。

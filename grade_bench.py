@@ -142,8 +142,11 @@ def run_ai_bench():
                 qid = import_question(app, teacher, case['question'])
                 calls.clear()
                 try:
+                    # 基準測試是維護者在自己的機器上跑自己的題目，等同已同意外部傳送；
+                    # 同意機制是後來才加的，這裡要明確帶上，否則一律 403 跑不動。
                     attempt = app.dispatch('POST', '/api/attempts',
-                                           {'questionId': qid, 'answerText': case['answerText']},
+                                           {'questionId': qid, 'answerText': case['answerText'],
+                                            'consentExternal': True},
                                            student, None, '127.0.0.1', None)[0]['attempt']
                     score = attempt['score']
                     method = attempt['gradingMethod']
@@ -166,7 +169,7 @@ def run_ai_bench():
                 qid = import_question(app, teacher, case['question'])
                 calls.clear()
                 attempt = app.dispatch('POST', '/api/attempts',
-                                       {'questionId': qid, 'skipped': True},
+                                       {'questionId': qid, 'skipped': True, 'consentExternal': True},
                                        student, None, '127.0.0.1', None)[0]['attempt']
                 system_rows.append({'id': case['id'], 'note': case['note'],
                                     'method': attempt['gradingMethod'], 'score': attempt['score'],

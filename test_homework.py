@@ -686,6 +686,34 @@ class HomeworkTests(unittest.TestCase):
             raw = db.execute('SELECT review_flags FROM attempts WHERE id=?', (practice['id'],)).fetchone()[0]
         self.assertEqual(raw, '[]', '自主練習不產生建議覆核旗標')
 
+    def test_objective_question_score_comes_from_rule_check(self):
+        """選擇題／填空題沒有過程分：規則層判得了最終答案時，就由它定分。
+
+        實測（bench g10）：模型會把「36 cm」當成「36 cm²」給 4/5；
+        反過來「36cm2」這種寫法又可能被判 0。兩邊都不該由模型決定。
+        """
+        self.configure_ai()
+        q = {'id': 99, 'title': '正方形面積', 'content': '邊長 6 cm，求面積。',
+             'answer': '$36\\text{ cm}^2$', 'points': 5, 'qtype': '填空題', 'steps': [], 'rubric': []}
+        ai_says = {'score': 4, 'feedback': '數值正確。',
+                   'steps': [{'label': '整體', 'earned': 4, 'max': 5, 'comment': ''}]}
+        with patch.object(self.app.ai, 'call', return_value=ai_says):
+            score, feedback, steps, flags = self.app.grade_with_ai(q, '36 cm', None, practice=True)
+        self.assertEqual(score, 0, '單位量綱錯就是答錯，不能採用模型的 4 分')
+        self.assertIn('最終答案核對', feedback, '要說明分數是系統按最終答案定的')
+        self.assertEqual(steps, [], '客觀題沒有過程分，不要留下與總分矛盾的步驟')
+        self.assertEqual(flags, [])
+        # 寫法不同但量綱正確（36cm2）→ 由規則層判對，模型給低分也不採用
+        low = {'score': 3, 'feedback': '只給部分分。', 'steps': [{'label': '整體', 'earned': 3, 'max': 5, 'comment': ''}]}
+        with patch.object(self.app.ai, 'call', return_value=low):
+            score, _, _, _ = self.app.grade_with_ai(q, '36cm2', None, practice=True)
+        self.assertEqual(score, 5, '量綱相同、寫法不同就算對，不因模型保守而扣分')
+        # 解答題仍以模型判斷為準（過程分只有人能判斷）
+        q['qtype'] = '解答題'
+        with patch.object(self.app.ai, 'call', return_value=low):
+            score, _, _, _ = self.app.grade_with_ai(q, '36 cm', None, practice=True)
+        self.assertEqual(score, 3, '解答題不套用客觀題規則，模型分數保留')
+
     def test_ai_grading_prompt_states_policy_and_rule_hint(self):
         """批改提示要寫明評分政策，並把可重現的規則核對結果當提示（不是當答案）。"""
         self.configure_ai()

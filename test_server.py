@@ -4087,5 +4087,17 @@ class DataAdminTests(unittest.TestCase):
                      cookie=self.teacher, expect=400)
 
 
+class UnitNotationTests(unittest.TestCase):
+    """單位寫法：cm2 與 cm² 是同一量綱，cm 與 cm² 不是。"""
+
+    def test_exponent_without_caret_is_the_same_unit(self):
+        q = {'answer': '$36\\text{ cm}^2$'}
+        for text in ('36cm2', '36 cm2', '36 cm²', '36cm^2', '36CM2'):
+            with self.subTest(text=text):
+                self.assertTrue(server.rule_verdict(q, text, None), text)
+        self.assertFalse(server.rule_verdict(q, '36 cm', None), '面積寫成 cm 是不同量綱，要判錯')
+        self.assertFalse(server.rule_verdict(q, '36', None), '題目要單位時漏寫單位不能算對')
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)
