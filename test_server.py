@@ -700,6 +700,48 @@ class APITests(unittest.TestCase):
         with patch.dict('os.environ', {'MATH_AI_THINKING': 'on'}, clear=True):
             self.assertTrue(server.env_ai_config()['thinking'])
 
+    def test_ai_metrics_track_failures_and_latency(self):
+        """健康檢查要看得出 AI 失敗率與平均耗時，不能只有一行 [ai] 日誌。"""
+        class Echo(BaseHTTPRequestHandler):
+            status = 200
+            def do_POST(self):
+                self.rfile.read(int(self.headers['Content-Length']))
+                body = json.dumps({'choices': [{'message': {'content': '{"ok":true}'}}]}).encode()
+                self.send_response(Echo.status)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Content-Length', str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            def log_message(self, *a):
+                pass
+
+        httpd = ThreadingHTTPServer(('127.0.0.1', 0), Echo)
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        self.addCleanup(httpd.shutdown)
+        client = server.AIClient()
+        client.configure({'base_url': f'http://127.0.0.1:{httpd.server_address[1]}/v1',
+                          'model': 'm', 'api_key': 'k', 'vision_model': '', 'thinking': False})
+        client.call('只回傳 {"ok":true}', {'probe': 1})
+        snap = client.metrics.snapshot()
+        self.assertEqual(snap['aiCalls'], 1)
+        self.assertEqual(snap['aiFailures'], 0)
+        self.assertEqual(snap['aiFailureRate'], 0.0)
+        self.assertGreaterEqual(snap['aiAvgMs'], 0)
+        # 端點回 500：失敗要計數，最後錯誤要留得下來（重試後才失敗）
+        Echo.status = 500
+        with self.assertRaises(server.APIError):
+            client.call('只回傳 {"ok":true}', {'probe': 1})
+        snap = client.metrics.snapshot()
+        self.assertEqual(snap['aiCalls'], 2)
+        self.assertEqual(snap['aiFailures'], 1)
+        self.assertEqual(snap['aiFailureRate'], 50.0)
+        self.assertIn('HTTP 500', snap['lastAiError'])
+        # 健康檢查要帶上這些數字
+        _, health, _ = self.request('GET', '/api/health', expect=200)
+        self.assertIn('metrics', health)
+        self.assertIn('aiFailureRate', health['metrics'])
+        self.assertIn('aiAvgMs', health['metrics'])
+
     def test_ai_quota_counts_every_model_call_per_user(self):
         """配額要按「真的呼叫模型」計，而且是每個人各自算。
 

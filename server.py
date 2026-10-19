@@ -2699,6 +2699,47 @@ def current_ai_key():
     return getattr(_AI_REQUEST, 'key', 'unknown')
 
 
+class Metrics:
+    """執行期計數（只在記憶體，重啟歸零）。
+
+    不是正式監控系統，但足以回答「現在 AI 是不是在壞、慢不慢」——
+    以前只能翻 Render Logs 一行一行看，看不出失敗率。
+    """
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.started_at = utc_now()
+        self.ai_calls = 0
+        self.ai_failures = 0
+        self.ai_ms = 0.0
+        self.last_error = ''
+        self.last_error_at = ''
+
+    def ai_started(self):
+        with self.lock:
+            self.ai_calls += 1
+
+    def ai_finished(self, milliseconds):
+        with self.lock:
+            self.ai_ms += milliseconds
+
+    def ai_failed(self, message):
+        with self.lock:
+            self.ai_failures += 1
+            self.last_error = str(message or '')[:300]
+            self.last_error_at = utc_now()
+
+    def snapshot(self):
+        with self.lock:
+            calls, failures, total_ms = self.ai_calls, self.ai_failures, self.ai_ms
+            return {'startedAt': self.started_at,
+                    'aiCalls': calls, 'aiFailures': failures,
+                    'aiFailureRate': round(100 * failures / calls, 1) if calls else 0.0,
+                    'aiAvgMs': int(total_ms / calls) if calls else 0,
+                    'lastAiError': self.last_error or None,
+                    'lastAiErrorAt': self.last_error_at or None}
+
+
 class AIQuota:
     """每人（未登入則每個 IP）的 AI 呼叫計數，超過上限回 429。
 
@@ -2753,6 +2794,7 @@ class AIClient:
         self.truncated = False
         self.draw = ''
         self.quota = AIQuota()
+        self.metrics = Metrics()
         self.configure(env_ai_config())
 
     def begin(self, key):
@@ -2807,15 +2849,24 @@ class AIClient:
         # 每一次真的打模型都算一次：紙本批改是一頁一次、一鍵全批是一題一次，
         # 所以配額要記在這裡，而不是記「按了幾個按鈕」。
         self.quota.charge(self.current_key)
+        # 計數與耗時：健康檢查要看得出「現在 AI 是不是在壞、慢不慢」。
+        self.metrics.ai_started()
+        started = time.monotonic()
         try:
-            return self._call_once(instruction, payload, image, model, temperature, timeout)
+            try:
+                return self._call_once(instruction, payload, image, model, temperature, timeout)
+            except APIError as exc:
+                if '不是有效 JSON' not in exc.message:
+                    raise
+                ai_log('JSON 解析失敗，改用嚴格指示重試一次')
+                return self._call_once(
+                    instruction + ' 只輸出單一 JSON 物件：第一個字元就是 {，不要任何說明文字、不要 markdown 圍欄。',
+                    payload, image, model, temperature, timeout)
         except APIError as exc:
-            if '不是有效 JSON' not in exc.message:
-                raise
-            ai_log('JSON 解析失敗，改用嚴格指示重試一次')
-            return self._call_once(
-                instruction + ' 只輸出單一 JSON 物件：第一個字元就是 {，不要任何說明文字、不要 markdown 圍欄。',
-                payload, image, model, temperature, timeout)
+            self.metrics.ai_failed(exc.message)
+            raise
+        finally:
+            self.metrics.ai_finished((time.monotonic() - started) * 1000)
 
     def _call_once(self, instruction, payload, image=None, model=None, temperature=None, timeout=None):
         if not self.configured:
@@ -4702,7 +4753,8 @@ class Application:
             # 已經換過密碼就不該再公開舊的演示密碼（會誤導學生、也是安全問題）。
             demo_left = db.execute('SELECT count(*) FROM users WHERE demo=1').fetchone()[0]
         return {'status': 'ok', 'storage': self.storage.public(), 'ai': self.ai.public(),
-                'questions': questions, 'demoAccounts': bool(demo_left)}, headers
+                'questions': questions, 'demoAccounts': bool(demo_left),
+                'metrics': self.ai.metrics.snapshot()}, headers
 
     def dispatch(self, method, path, body, user, token_hash, ip, query=''):
         headers = {}

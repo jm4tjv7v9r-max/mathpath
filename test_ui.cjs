@@ -904,16 +904,26 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   assert.equal(await page.locator('#admin-vacuum').count(),0,'一般教師不應看到壓實資料庫');
   assert.equal(await page.locator('[data-admin-download]').count(),0,'一般教師不應看到備份下載');
   assert.match(await page.locator('#main').innerText(),/只限\s*管理員帳號/,'資料管理區要說明權限');
+  await page.route('**/api/health', route => route.fulfill({json:{status:'ok',
+    metrics:{startedAt:'2026-10-19T09:00:00Z',aiCalls:12,aiFailures:1,aiFailureRate:8.3,
+             aiAvgMs:850,lastAiError:'模型逾時',lastAiErrorAt:'2026-10-19T10:00:00Z'}}}));
   await page.evaluate(()=>{S.user.isOwner=true;settingsPage();});
   console.log('PASS: 一般教師不能新增教師、也看不到資料管理');
 
   // ── 設定與隱私：資料管理（教師專用）──
   await page.waitForFunction(()=>{const el=document.querySelector('#admin-stats');return el&&/3000 題/.test(el.innerText);});
+  // 健康檢查是非同步補上的，要等它到位再讀文字（不然只會拿到舊的統計卡）
+  await page.waitForFunction(()=>/AI 呼叫/.test(document.querySelector('#admin-stats')?.innerText||''),{timeout:8000});
   const adminText=await page.locator('#admin-stats').innerText();
   assert.match(adminText,/題庫題目/);assert.match(adminText,/3000 題/);
   assert.match(adminText,/作答紀錄/);assert.match(adminText,/2500 筆/);
   assert.match(adminText,/15\.0 MB/,'資料庫大小應以可讀單位呈現');
   assert.match(adminText,/跨學年保留/);
+  // AI 健康狀況：失敗率與平均耗時要看得到，不必翻 Render Logs
+  assert.match(adminText,/AI 呼叫/,'資料管理要顯示 AI 呼叫狀況');
+  assert.match(adminText,/失敗 1 次（8\.3%）/,'要看得出失敗次數與比例');
+  assert.match(adminText,/平均 850 ms/,'要看得出平均耗時');
+  assert.match(adminText,/模型逾時/,'要看得到最後一次錯誤');
   const downloads=await page.locator('[data-admin-download]').evaluateAll(els=>els.map(e=>e.dataset.adminDownload));
   assert.deepEqual(downloads,['/api/admin/backup/db','/api/admin/archive/questions',
     '/api/admin/archive/students','/api/admin/archive/students?images=0'],'應有四個下載入口');

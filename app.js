@@ -3675,10 +3675,27 @@ function dataAdminHtml(){
     <button class="danger" id="admin-reset">${icon('trash')}執行學年重置</button>
   </div></section>`;
 }
+// AI 呼叫的健康狀況：失敗率與平均耗時，讓管理員不必翻 Render Logs。
+function aiHealthCard(m){
+  if(!m)return '';
+  const badge=m.aiFailures
+    ? `<span class="badge paper-missing">失敗 ${m.aiFailures} 次（${m.aiFailureRate}%）</span>`
+    : '<span class="badge paper-done">沒有失敗</span>';
+  const last=m.lastAiError
+    ? ` · 最後錯誤：${esc(m.lastAiError)}（${esc(String(m.lastAiErrorAt||'').replace('T',' ').slice(0,16))}）`
+    : '';
+  return `<div style="border-top:1px solid var(--border);margin-top:14px;padding-top:14px">
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px">
+      <strong style="font-size:calc(15px*var(--fs))">AI 呼叫</strong>${badge}</div>
+    <p class="small-text" style="margin:0">共 ${m.aiCalls} 次 · 平均 ${m.aiAvgMs} ms${last}</p>
+    <p class="small-text" style="margin:6px 0 0">從伺服器啟動起算，重啟歸零——用來看「現在是不是在壞」，不是帳單。</p></div>`;
+}
 async function loadAdminStats(notify){
   if(S.user?.role!=='teacher'||!S.user.isOwner)return;
   try{ADMIN_STATS=await api('/api/admin/storage');
-    const box=$('#admin-stats');if(box)box.innerHTML=adminStatsCards(ADMIN_STATS);
+    // 健康檢查是加分項：舊版伺服器沒有 metrics 時就只是不顯示那張卡。
+    const health=await api('/api/health').catch(()=>null);
+    const box=$('#admin-stats');if(box)box.innerHTML=adminStatsCards(ADMIN_STATS)+aiHealthCard(health&&health.metrics);
     const count=$('#admin-question-count');if(count)count.textContent=ADMIN_STATS.counts.questions;
     const zone=$('#admin-backup-zone');if(zone){zone.innerHTML=backupZoneHtml(ADMIN_STATS.backup);bindBackupZone();}
     if(notify)toast('已更新用量。');}
