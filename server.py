@@ -3936,6 +3936,15 @@ class Application:
                     feedback TEXT NOT NULL DEFAULT '',
                     teacher_id INTEGER, created_at TEXT NOT NULL);
                 CREATE INDEX IF NOT EXISTS grading_samples_topic ON grading_samples(topic, qtype, id);
+                -- 分數異動稽核：每次教師覆核（含同分確認）都留一筆，回答「誰在何時把幾分改成幾分」。
+                CREATE TABLE IF NOT EXISTS attempt_reviews (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    attempt_id INTEGER NOT NULL,
+                    teacher_id INTEGER, teacher_name TEXT NOT NULL DEFAULT '',
+                    old_score REAL, new_score REAL, max_score REAL,
+                    feedback TEXT NOT NULL DEFAULT '', method TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL);
+                CREATE INDEX IF NOT EXISTS attempt_reviews_attempt ON attempt_reviews(attempt_id, id);
             ''')
             # 題目圖形：固定 SQL 增量加欄，不重建舊表、不刪除既有題目資料。
             question_columns = {r['name'] for r in db.execute('PRAGMA table_info(questions)')}
@@ -4347,6 +4356,22 @@ class Application:
             raw, mime = row['image'], row['image_mime']
         return 'data:' + mime + ';base64,' + base64.b64encode(raw).decode()
 
+    def record_review(self, db, row, user, score, note, method):
+        """寫一筆分數異動紀錄（誰、何時、從多少到多少、理由）。
+
+        只是歷史紀錄：寫入失敗只寫日誌，不能讓批閱失敗。
+        teacher_name 一併存快照，日後帳號被刪也查得到當時是誰批的。
+        """
+        try:
+            db.execute('INSERT INTO attempt_reviews(attempt_id,teacher_id,teacher_name,'
+                       'old_score,new_score,max_score,feedback,method,created_at) '
+                       'VALUES(?,?,?,?,?,?,?,?,?)',
+                       (row['id'], user['id'], (user['name'] if 'name' in user.keys() else ''),
+                        row['score'], score,
+                        row['max_score'], note[:1000], method, utc_now()))
+        except sqlite3.Error as exc:
+            ai_log(f'分數異動紀錄寫入失敗：{exc}')
+
     def confirm_attempt(self, db, row, user, score, feedback='', method='teacher-reviewed',
                         prefix='教師已覆核', ai_score=None, ai_steps=None):
         """教師確認一題分數：單題覆核與一鍵 AI 批閱共用。
@@ -4356,6 +4381,9 @@ class Application:
         q = self.homework.question_for_attempt(db, row)
         feedback = (feedback or '').strip()
         note = f'{prefix}：{feedback}' if feedback else f'{prefix}（未填寫評語）。'
+        # 稽核：記下「這次覆核把分數從多少改成多少」。連同分確認也記——
+        # 有爭議時要回答的是「誰在何時確認過」，不只是「誰改過」。
+        self.record_review(db, row, user, score, note, method)
         suggestion = self.homework.rule_suggestion(db, q, {
             'score': score, 'max_score': row['max_score'], 'status': 'graded',
             'feedback': note, 'method': method})
@@ -5873,6 +5901,24 @@ class Application:
                     assignment = self.homework.get_assignment(db, row['assignment_id'], user)
                     result['report'] = self.homework.report(db, assignment, row['user_id'])
             return result, headers
+        history_path = re.fullmatch(r'/api/attempts/([1-9]\d{0,17})/history', path)
+        if method == 'GET' and history_path:
+            # 分數異動紀錄：有爭議時要能回答「誰在何時把幾分改成幾分」。
+            self.teacher(user)
+            attempt_id = int(history_path[1])
+            with self.db() as db:
+                row = db.execute('SELECT * FROM attempts WHERE id=?', (attempt_id,)).fetchone()
+                if row is None:
+                    fail(404, '找不到作答紀錄。')
+                if not self.homework.can_access_attempt(db, row, user):
+                    fail(403, '只有作業所屬教師可以查看批閱紀錄。')
+                rows = db.execute('SELECT * FROM attempt_reviews WHERE attempt_id=? ORDER BY id',
+                                  (attempt_id,)).fetchall()
+            return {'reviews': [{'id': r['id'], 'teacherId': r['teacher_id'],
+                                 'teacherName': r['teacher_name'], 'oldScore': r['old_score'],
+                                 'newScore': r['new_score'], 'maxScore': r['max_score'],
+                                 'feedback': r['feedback'], 'method': r['method'],
+                                 'createdAt': r['created_at']} for r in rows]}, headers
         fail(404, '找不到此 API 或不支援此操作。')
 
     def cookie(self, token, logout=False, seconds=SESSION_SECONDS):

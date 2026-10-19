@@ -753,6 +753,31 @@ class HomeworkTests(unittest.TestCase):
         self.error(400, 'POST', f'/api/questions/{obj["questions"][0]["id"]}/rubric',
                    {'consentExternal': True}, self.teacher)
 
+    def test_review_history_records_every_confirmation(self):
+        """分數異動要留痕：誰在何時把幾分改成幾分（同分確認也記）。"""
+        self.configure_ai()
+        aid = self.ai_assignment((1,))
+        ai_says = {'score': 4, 'feedback': 'AI 建議 4 分。',
+                   'steps': [{'label': '整體', 'earned': 4, 'max': 6, 'comment': ''}]}
+        advice = {'strength': 's', 'focus': 'f', 'nextStep': 'n', 'recommendedIds': []}
+
+        def fake(instruction, payload, image=None, model=None, temperature=None):
+            return ai_says if '評分政策' in instruction else advice
+
+        with patch.object(self.app.ai, 'call', side_effect=fake):
+            attempt = self.attempt(aid, 1, answer='x=2或3')
+        self.review(attempt, score=3)
+        self.review(attempt, score=5)
+        out = self.call('GET', f'/api/attempts/{attempt["id"]}/history', user=self.teacher)
+        rows = out['reviews']
+        self.assertEqual(len(rows), 2, '兩次覆核都要留紀錄')
+        self.assertEqual((rows[0]['oldScore'], rows[0]['newScore']), (4, 3), '第一次：AI 4 分 → 教師 3 分')
+        self.assertEqual((rows[1]['oldScore'], rows[1]['newScore']), (3, 5), '第二次：3 分 → 5 分')
+        self.assertEqual(rows[0]['teacherName'], self.teacher['name'], '要留下批閱者姓名快照')
+        self.assertIn('教師已覆核', rows[0]['feedback'])
+        # 其他教師不能看別人的批閱紀錄
+        self.error(403, 'GET', f'/api/attempts/{attempt["id"]}/history', user=self.teacher2)
+
     def test_second_pass_switch_can_adjust_and_never_loses_first_score(self):
         """第二輪自我核對是開關：開了才多問一次，改分要說理由，失敗要保留第一次的分數。
 

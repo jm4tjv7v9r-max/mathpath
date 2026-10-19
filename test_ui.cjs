@@ -1665,6 +1665,11 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
     assignment:{...assignment,aiGrading:false}, questions:[rubricQuestion], attempts:[rubricAttempt],
     mySubmission:{status:'submitted',submittedAt:stamp,resubmittedAt:null,submitCount:1,late:false,correction:null},
     report:{score:null,maxScore:6,totalScoredPoints:0,pendingCount:1,confirmedScore:null,confirmedCount:0,topicStats:[],suggestion:advice}}}));
+  await page.route('**/api/attempts/*/history', route => route.fulfill({json:{reviews:[
+    {id:1,teacherId:2,teacherName:'介面測試教師',oldScore:4,newScore:3,maxScore:6,
+     feedback:'教師已覆核：只寫了因式分解。',method:'teacher-reviewed',createdAt:'2026-10-18T09:00:00Z'},
+    {id:2,teacherId:2,teacherName:'介面測試教師',oldScore:3,newScore:5,maxScore:6,
+     feedback:'教師已覆核：補上兩個根。',method:'teacher-reviewed',createdAt:'2026-10-19T10:00:00Z'}]}}));
   await page.locator('[data-page=homework]').first().click();
   await page.locator('[data-results]').first().click();
   await page.locator('[data-student-result]').first().click();
@@ -1678,6 +1683,13 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   assert.equal(await page.locator('#review-score').inputValue(),'4.2','兩項要加總成 70% × 6 分');
   assert.match(await page.locator('#rubric-total-hint').innerText(),/已勾 2\/3 項 · 合計 4\.2 分/,'要顯示已勾幾項與合計分數');
   assert.ok(await page.locator('#review-rubric .katex').count()>0,'評分要點裡的數學式要排版');
+  // 分數異動紀錄：誰在何時把幾分改成幾分
+  await page.locator('#review-history details').waitFor({timeout:8000});
+  assert.match(await page.locator('#review-history summary').innerText(),/分數異動紀錄（2 次）/);
+  const reviewHistoryText=await page.locator('#review-history').evaluate(el=>el.textContent);
+  assert.match(reviewHistoryText,/4 → 3/,'要看得出舊分與新分');
+  assert.match(reviewHistoryText,/3 → 5/);
+  assert.match(reviewHistoryText,/介面測試教師/,'要記下是誰改的');
   await page.locator('#rubric-all').click();
   assert.equal(await page.locator('#review-score').inputValue(),'6','全選要剛好滿分');
   await page.locator('#rubric-none').click();
