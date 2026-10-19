@@ -686,6 +686,39 @@ class HomeworkTests(unittest.TestCase):
             raw = db.execute('SELECT review_flags FROM attempts WHERE id=?', (practice['id'],)).fetchone()[0]
         self.assertEqual(raw, '[]', '自主練習不產生建議覆核旗標')
 
+    def test_teacher_override_becomes_calibration_hint(self):
+        """教師改分要留成「本校慣例」，下次同知識點／題型的批改提示會帶上它。
+
+        這是唯一能讓模型對齊學校標準的做法：規則寫不出「這裡我們只給一半」。
+        """
+        self.configure_ai()
+        aid = self.ai_assignment((1,))
+        ai_says = {'score': 5, 'feedback': 'AI 建議 5 分。',
+                   'steps': [{'label': '整體', 'earned': 5, 'max': 6, 'comment': ''}]}
+        with patch.object(self.app.ai, 'call', return_value=ai_says):
+            attempt = self.attempt(aid, 1, answer='x=2或3')
+        self.call('POST', f'/api/attempts/{attempt["id"]}/review',
+                  {'score': 3, 'feedback': '只寫了因式分解，沒有解出兩個根。'}, self.teacher)
+        with self.app.db() as db:
+            rows = [dict(r) for r in db.execute('SELECT * FROM grading_samples')]
+        self.assertEqual(len(rows), 1, '教師改分要留一筆樣本')
+        self.assertEqual((rows[0]['ai_score'], rows[0]['teacher_score']), (5, 3))
+        self.assertIn('只寫了因式分解', rows[0]['feedback'])
+        # 下一次同題批改：提示要帶上這條慣例
+        with patch.object(self.app.ai, 'call', return_value=ai_says) as ai:
+            self.attempt(aid, 1, answer='x=2或3')
+        instruction = ai.call_args_list[0][0][0]
+        self.assertIn('本校過往覆核慣例', instruction)
+        self.assertIn('只寫了因式分解', instruction, '要帶上教師當時寫的理由')
+        # 原封不動採用 AI 建議 → 不新增樣本（沒有新資訊）
+        with patch.object(self.app.ai, 'call', return_value=ai_says):
+            second = self.attempt(aid, 1, answer='x=2或3')
+        self.call('POST', f'/api/attempts/{second["id"]}/review',
+                  {'score': 5, 'feedback': ''}, self.teacher)
+        with self.app.db() as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM grading_samples').fetchone()[0], 1,
+                             '沒改分就不該記樣本')
+
     def test_objective_question_score_comes_from_rule_check(self):
         """選擇題／填空題沒有過程分：規則層判得了最終答案時，就由它定分。
 

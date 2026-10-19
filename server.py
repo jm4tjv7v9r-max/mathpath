@@ -3885,6 +3885,17 @@ class Application:
                     review_flags TEXT NOT NULL DEFAULT '[]');
                 CREATE INDEX IF NOT EXISTS attempts_user ON attempts(user_id, submitted_at);
                 CREATE INDEX IF NOT EXISTS sessions_expiry ON sessions(expires);
+                -- 教師覆核回流：教師把 AI 的分數改掉時留一筆，之後同知識點／題型
+                -- 的批改會拿它當「本校慣例」提示模型。只存改了分的案例。
+                CREATE TABLE IF NOT EXISTS grading_samples (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    question_id INTEGER,
+                    topic TEXT NOT NULL DEFAULT '', qtype TEXT NOT NULL DEFAULT '',
+                    answer_text TEXT NOT NULL DEFAULT '',
+                    ai_score REAL, teacher_score REAL, max_score REAL,
+                    feedback TEXT NOT NULL DEFAULT '',
+                    teacher_id INTEGER, created_at TEXT NOT NULL);
+                CREATE INDEX IF NOT EXISTS grading_samples_topic ON grading_samples(topic, qtype, id);
             ''')
             # 題目圖形：固定 SQL 增量加欄，不重建舊表、不刪除既有題目資料。
             question_columns = {r['name'] for r in db.execute('PRAGMA table_info(questions)')}
@@ -4139,7 +4150,7 @@ class Application:
             '返回 {feedback:str,items:[{percent:number,comment:str}]}。'
             'items 必須與輸入的 rubric 陣列一一對應（順序與數量完全相同，不可增加或減少）。'
             'percent 是該評分標準學生達成的百分比（0 至 100 的數字）；comment 是該項一至兩句評語。'
-            'feedback 用二至四句說明整體表現與下一步改進方向。' + tail,
+            'feedback 用二至四句說明整體表現與下一步改進方向。' + tail + self.calibration_notes(q),
             {'question': q, 'rubric': planned, 'answerText': answer, 'ruleCheck': rule_hint(rule)},
             image=image, model=(self.ai.vision or self.ai.model) if image else None)
         try:
@@ -4226,7 +4237,7 @@ class Application:
             '請依題目與參考答案評估實際作答。'
             '返回 {score:number,feedback:str,steps:[{label:str,earned:number,max:number,comment:str}]}。'
             'score 介乎 0 至 points；steps 是解題步驟，各步 max 加總等於 points、earned 加總等於 score。'
-            '輸出前請再檢查一次這兩項加總。' + tail,
+            '輸出前請再檢查一次這兩項加總。' + tail + self.calibration_notes(q),
             {'question': q, 'answerText': answer, 'ruleCheck': rule_hint(rule)}, image=image,
             model=(self.ai.vision or self.ai.model) if image else None)
         try:
@@ -4283,7 +4294,55 @@ class Application:
             values.append(json.dumps(ai_steps, ensure_ascii=False))
         values.append(row['id'])
         db.execute(f'UPDATE attempts SET {",".join(updates)} WHERE id=?', values)
+        # 教師把 AI 的分數改掉 → 留一筆「本校慣例」，之後同知識點／題型的批改會拿它當提示。
+        # 只有「真的改了分」才算：原封不動採用 AI 建議不帶任何新資訊。
+        ai_before = ai_score if ai_score is not None else (
+            row['ai_score'] if 'ai_score' in row.keys() else None)
+        if ai_before is not None and abs(float(score) - float(ai_before)) > 1e-9:
+            self.save_grading_sample(db, q, row, ai_before, score, note, user)
         return suggestion
+
+    def save_grading_sample(self, db, q, row, ai_score, teacher_score, feedback, user):
+        """記一筆教師改分的案例，只保留最近 500 筆（避免資料庫無限長大）。"""
+        try:
+            db.execute('INSERT INTO grading_samples(question_id,topic,qtype,answer_text,ai_score,'
+                       'teacher_score,max_score,feedback,teacher_id,created_at) '
+                       'VALUES(?,?,?,?,?,?,?,?,?,?)',
+                       (q['id'], (q.get('topic') or '')[:40], (q.get('qtype') or '')[:20],
+                        (row['answer_text'] or '')[:2000], ai_score, teacher_score,
+                        row['max_score'], (feedback or '')[:500], user['id'], utc_now()))
+            db.execute('DELETE FROM grading_samples WHERE id NOT IN '
+                       '(SELECT id FROM grading_samples ORDER BY id DESC LIMIT 500)')
+        except sqlite3.Error as exc:      # 樣本只是加分項，絕不能讓批閱失敗
+            ai_log(f'覆核樣本寫入失敗：{exc}')
+
+    def calibration_notes(self, q, limit=3):
+        """本校覆核慣例：同知識點／題型、教師改過分的案例，當 few-shot 提示。
+
+        這是唯一能讓模型對齊「我們學校怎麼給分」的做法——規則寫得再細，
+        也寫不出「這裡我們只給一半」這種判斷。
+        """
+        topic = (q.get('topic') or '').strip()
+        qtype = (q.get('qtype') or '').strip()
+        if not topic or not qtype:
+            return ''
+        try:
+            with self.db() as db:
+                rows = db.execute('SELECT answer_text,ai_score,teacher_score,max_score,feedback '
+                                  'FROM grading_samples WHERE topic=? AND qtype=? '
+                                  'ORDER BY id DESC LIMIT ?', (topic, qtype, limit)).fetchall()
+        except sqlite3.Error:
+            return ''
+        if not rows:
+            return ''
+        lines = []
+        for r in rows:
+            answer = (r['answer_text'] or '').strip().replace('\n', ' ')[:160]
+            reason = (r['feedback'] or '').strip().replace('\n', ' ')[:120]
+            lines.append(f'· 學生作答「{answer}」→ AI 給 {r["ai_score"]:g}/{r["max_score"]:g} 分，'
+                         f'本校教師改為 {r["teacher_score"]:g} 分（理由：{reason or "未填寫"}）')
+        return ('\n\n本校過往覆核慣例（同一知識點與題型；請對齊這些判斷，'
+                '但若本題情況明顯不同，仍以本題的題目與參考答案為準）：\n' + '\n'.join(lines))
 
     def insert_question(self, db, q, figure=None, figure_mime=None):
         figure_key = None

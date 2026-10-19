@@ -3,3 +3,10 @@ data/
 __pycache__/
 *.pyc
 .DS_Store
+
+# 沙箱禁止刪檔時，Python 的 tempfile 會退回工作目錄，留下 8 字元的隨機暫存檔。
+# 這些不是專案檔案，別讓它們出現在 git status 裡。
+/[a-z0-9_][a-z0-9_][a-z0-9_][a-z0-9_][a-z0-9_][a-z0-9_][a-z0-9_][a-z0-9_]
+
+# 基準測試的每次輸出（要留的結論請寫進文件，不要堆在 repo）
+bench/results-*.md
