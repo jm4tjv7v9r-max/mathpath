@@ -3571,9 +3571,13 @@ def paper_key_page(app, image, page_no, total_pages, title):
         result = app.ai.call(instruction, {'title': title, 'page': page_no},
                              image=image, model=app.ai.vision)
     except APIError as exc:
-        # 額度用完就往上報；否則會回一張空白答案卷，教師還以為題目沒拍到。
+        # 額度用完就往上報；其餘失敗要標記成「這一頁失敗」，
+        # 不能靜靜回空清單——教師會以為題目沒拍到，卻其實是模型逾時。
         if exc.status == 429:
             raise
+        # 答案卷這條路徑的回傳是「題目清單」，不是單頁結果物件；
+        # 失敗就回空清單，教師看到題數變少可以重新生成。
+        ai_log(f'答案卷第 {page_no} 頁辨識失敗：{exc.message}')
         return []
     items = result.get('questions') if isinstance(result, dict) else None
     if not isinstance(items, list):
@@ -3657,10 +3661,12 @@ def paper_grade_page(app, image, page_no, total_pages, title, key=None):
     try:
         result = app.ai.call(instruction, payload, image=image, model=app.ai.vision)
     except APIError as exc:
-        # 額度用完就往上報；否則會回一張空白答案卷，教師還以為題目沒拍到。
+        # 額度用完就往上報；其餘失敗要標記成「這一頁失敗」，
+        # 不能靜靜回空清單——教師會以為題目沒拍到，卻其實是模型逾時。
         if exc.status == 429:
             raise
-        return []
+        ai_log(f'紙本批改第 {page_no} 頁失敗：{exc.message}')
+        return {'questions': [], 'warning': '', 'failed': True, 'error': exc.message}
     items = result.get('questions') if isinstance(result, dict) else None
     warning = result.get('pageWarning') if isinstance(result, dict) else None
     warning = str(warning).strip()[:300] if warning else None
@@ -3762,17 +3768,19 @@ def paper_score(questions):
 
 def paper_grade_all(app, pages, title, deadline, key=None):
     """逐頁辨識後彙總。"""
-    graded, warnings = [], []
+    graded, warnings, failures = [], [], []
     for index, image in enumerate(pages, 1):
         if time.monotonic() > deadline:
             fail(504, f'還有 {len(pages) - index + 1} 頁未辨識；請減少頁數或分批上傳。')
         page = paper_grade_page(app, image, index, len(pages), title, key)
         graded.extend(page['questions'])
+        if page.get('failed'):
+            failures.append({'page': index, 'error': page.get('error') or '這一頁無法辨識'})
         if page['warning']:
             warnings.append({'page': index, 'text': page['warning']})
     judged = [x for x in graded if x['correct'] is not None]
     summary = paper_score(graded)
-    return {'questions': graded, 'pageWarnings': warnings,
+    return {'questions': graded, 'pageWarnings': warnings, 'failedPages': failures,
             'totalQuestions': len(judged),
             'correctCount': sum(1 for x in judged if x['correct']),
             'unreadable': len(graded) - len(judged), 'pending': summary['pending'],
@@ -4850,6 +4858,7 @@ class Application:
                               'correctCount': result['correctCount'],
                               'unreadable': result['unreadable'], 'pending': result['pending'],
                               'pageWarnings': result['pageWarnings'],
+                              'failedPages': result.get('failedPages', []),
                               'earned': result['earned'], 'possible': result['possible'],
                               'score': result['score'], 'questions': result['questions']}}, headers
         notes_path = re.fullmatch(r'/api/paper-grades/([1-9]\d{0,17})/notes', path)

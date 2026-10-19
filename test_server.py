@@ -3691,6 +3691,40 @@ class DataAdminTests(unittest.TestCase):
                          '只回有問題的頁，第二頁沒有警告就不列')
         self.assertAlmostEqual(g['score'], 100.0, places=1)
 
+    def test_paper_grade_reports_failed_pages(self):
+        """單頁失敗要回報是哪一頁，不能靜靜變成空白（教師會以為沒拍到）。"""
+        _, out, _ = self.request('POST', '/api/users',
+                                 {'username': 'pg6', 'name': '失敗頁學生', 'password': 'PaperPass12'},
+                                 cookie=self.teacher, expect=200)
+        sid = out['user']['id']
+
+        class FlakyAI:
+            mode = 'external'; vision = 'vision-model'; draw = None; configured = True
+            def __init__(self, replies): self.replies = list(replies)
+            def consent(self, value): return True
+            def call(self, instruction, payload, **kw):
+                if payload.get('page') == 2:
+                    raise server.APIError(502, '模型逾時')
+                return self.replies.pop(0)
+
+        original = self.app.ai
+        self.app.ai = FlakyAI([{'questions': [
+            {'number': '1', 'question': 'A', 'studentAnswer': 'x', 'correct': True,
+             'level': 'excellent', 'credit': 1.0, 'reason': '', 'note': '',
+             'points': 5, 'box': None, 'noteBox': None}]}])
+        try:
+            _, out, _ = self.request('POST', '/api/paper-grades', {
+                'studentId': sid, 'title': '失敗頁功課',
+                'pages': [png_url(), png_url()], 'consentExternal': True},
+                cookie=self.teacher, expect=200)
+        finally:
+            self.app.ai = original
+        g = out['grade']
+        self.assertEqual([f['page'] for f in g['failedPages']], [2], '要指出是哪一頁失敗')
+        self.assertIn('模型逾時', g['failedPages'][0]['error'])
+        self.assertEqual(len(g['questions']), 1, '其他頁照樣批改，不能整份作廢')
+        self.assertAlmostEqual(g['score'], 100.0, places=1)
+
     def test_paper_key_flow(self):
         """答案卷：上傳題目 → AI 生成答案 → 教師確認 → 批改時以答案卷為準。"""
         _, out, _ = self.request('POST', '/api/users',

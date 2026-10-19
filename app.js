@@ -3238,6 +3238,7 @@ function paperResultHtml(g){
   }).join('');
   return `<section class="panel panel-pad" style="margin-top:16px">
     <p class="small-text">${esc(g.studentName||'')} · ${esc(g.title)} · ${g.pages} 頁 · 可判斷 ${g.totalQuestions} 題、答對 ${g.correctCount} 題${g.pending?` · <strong class="paper-pending">${g.pending} 題待教師判定</strong>`:''}</p>
+    ${(g.failedPages||[]).length?`<div class="paper-page-warnings"><div class="paper-warn-line"><strong>⚠️ 第 ${g.failedPages.map(f=>f.page).join('、')} 頁沒有批改到</strong>模型在這一頁失敗（${esc(g.failedPages[0].error||'無法辨識')}）。這些頁的題目沒有計分，請重新上傳這幾頁，或請教師手動補分。</div></div>`:''}
     ${(g.pageWarnings||[]).length?`<div class="paper-page-warnings">${g.pageWarnings.map(w=>`<div class="paper-warn-line"><strong>⚠️ 第 ${w.page} 頁可能跨頁</strong>${esc(w.text)}</div>`).join('')}</div>`:''}
     ${pagesHtml?`<div class="paper-pages">${pagesHtml}</div>`:''}
     <table class="board-table" style="margin-top:10px"><thead><tr><th>題號</th><th>題目</th><th>學生答案</th><th>配分</th><th>判定</th><th>批註</th></tr></thead><tbody>${rows}</tbody></table>
