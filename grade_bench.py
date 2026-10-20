@@ -287,13 +287,13 @@ def print_ai_report(report):
           '上方「模型呼叫」只計算批改那一次。')
 
 
-def write_ai_report(report, rule_report):
+def write_ai_report(report, rule_report, source='bench/grading_cases.json'):
     stamp = datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')
     stats = summarize(report['rows'])
     lines = [f'# AI 批改準確度基準測試（{stamp} UTC）', '',
              f'- 模型：`{report["model"]}`（{report["mode"]}）'
              + (f'，視覺模型 `{report["vision"]}`' if report.get('vision') else ''),
-             f'- 案例來源：`bench/grading_cases.json`（expect 為教師認定分數）', '']
+             f'- 案例來源：`{source}`（expect 為教師認定分數）', '']
     if stats['graded']:
         lines += ['## 結果', '',
                   f'| 指標 | 數值 |', '|---|---|',
@@ -411,7 +411,7 @@ def main():
     if report is None:
         return 2
     print_ai_report(report)
-    path = write_ai_report(report, rule_report)
+    path = write_ai_report(report, rule_report, source=args.cases or 'bench/grading_cases.json')
     print()
     print(f'完整報告已寫入：{path.relative_to(ROOT)}')
     return 0
