@@ -3602,6 +3602,24 @@ async function paperLayoutPage(){
       </div>
       <div id="paper-result" style="margin-top:12px"></div>
     </section>
+    <section class="panel panel-pad" style="margin-top:16px">
+      <h2 style="margin-bottom:6px">③ 或直接要 LaTeX（Overleaf）</h2>
+      <p class="field-hint">同一份 Word，直接輸出 .tex：公式原樣、題號連續、選項 A/B/C/D。用 XeLaTeX 編譯。</p>
+      <div class="layout-row">
+        <label class="small-text">配分位置
+          <select id="tex-marks" style="margin-left:6px;padding:6px 8px;border:1px solid var(--border);border-radius:8px;background:var(--paper);color:var(--ink)">
+            <option value="trailing">靠右</option>
+            <option value="leading">題號後</option>
+          </select></label>
+        <button class="secondary" id="tex-apply">下載 LaTeX（.tex）</button>
+      </div>
+      <details style="margin-top:10px">
+        <summary class="small-text">自訂 preamble（可貼你 Overleaf 的導言區）</summary>
+        <textarea id="tex-preamble" rows="8" spellcheck="false" style="width:100%;margin-top:8px;font-family:ui-monospace,Menlo,monospace;font-size:12px;line-height:1.5;padding:10px;border:1px solid var(--border);border-radius:8px;background:var(--paper);color:var(--ink)"></textarea>
+        <p class="field-hint" style="margin-top:6px">留空就用預設（ctexart + A4 + 1.27cm 邊界）。不要包含 \begin{document}。</p>
+      </details>
+      <div id="tex-result" style="margin-top:12px"></div>
+    </section>
   </div>`;
   const pick=()=>Number($('input[name=layout-tpl]:checked')?.value||0);
   $$('input[name=layout-tpl]').forEach(r=>r.onchange=()=>{
@@ -3638,6 +3656,30 @@ async function paperLayoutPage(){
         <div><strong>排好了</strong><span class="small-text">${st.sections||0} 個分部 · ${st.questions||0} 題 · ${st.formulas||0} 條公式${st.tables?` · ⚠️ 範本有 ${st.tables} 個表格未帶入`:''}</span></div>
         <button class="primary" id="dl-paper">下載 ${esc(res.filename)}</button></div>`;
       $('#dl-paper').onclick=()=>{const a=document.createElement('a');a.href=res.docx;a.download=res.filename;a.click();};
+      btn.disabled=false;btn.textContent=old;
+    }catch(e){toast(e.message);btn.disabled=false;btn.textContent=old;}
+  };
+  // ③ LaTeX：preamble 與配分位置記在這台裝置，下次不用重貼。
+  const pre=$('#tex-preamble'), marks=$('#tex-marks');
+  pre.value=localStorage.getItem('mathpath_tex_preamble')||'';
+  pre.oninput=()=>localStorage.setItem('mathpath_tex_preamble',pre.value);
+  marks.value=localStorage.getItem('mathpath_tex_marks')||'trailing';
+  marks.onchange=()=>localStorage.setItem('mathpath_tex_marks',marks.value);
+  $('#tex-apply').onclick=async()=>{
+    const file=$('#paper-file').files[0];
+    if(!file)return toast('請先在上方「新卷」選一份 .docx。');
+    const btn=$('#tex-apply');const old=btn.textContent;btn.disabled=true;btn.textContent='產生中…';
+    try{
+      const data=await fileData(file,[DOCX_MIME],8);
+      const body={file:data,marksPosition:marks.value};
+      if(pre.value.trim())body.preamble=pre.value;
+      const res=await api('/api/papers/to-tex',body);
+      const blob=new Blob([res.tex],{type:'text/x-tex;charset=utf-8'});
+      const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=res.filename;a.click();
+      setTimeout(()=>URL.revokeObjectURL(a.href),2000);
+      const st=res.stats||{};
+      $('#tex-result').innerHTML=`<div class="layout-result"><div><strong>TeX 已下載</strong>
+        <span class="small-text">${st.sections||0} 個分部 · ${st.questions||0} 題 · ${st.formulas||0} 條公式 · ${esc(res.filename)}</span></div></div>`;
       btn.disabled=false;btn.textContent=old;
     }catch(e){toast(e.message);btn.disabled=false;btn.textContent=old;}
   };

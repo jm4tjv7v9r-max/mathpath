@@ -32,6 +32,20 @@ SECTION_RE = re.compile(r'^\s*(甲部|乙部|丙部|丁部|第[一二三四]部�
 QUESTION_RE = re.compile(r'^\s*(\d{1,3})\s*[.、)．]')
 OPTION_RE = re.compile(r'[(（]?([A-Da-d])\s*[.、)．]')
 MARKS_RE = re.compile(r'[（(]\s*(\d+(?:\.\d+)?)\s*分\s*[)）]')
+# 一行裡有多個選項（「A. … B. …」）時，要拆成獨立選項
+OPTION_SPLIT_RE = re.compile(r'(?=\s*[(（]?[A-Da-d]\s*[.、)．])')
+
+
+def split_options(text: str) -> list[str]:
+    parts = [p.strip() for p in OPTION_SPLIT_RE.split(text) if p.strip()]
+    return parts if len(parts) > 1 else [text.strip()]
+# 一行裡有多個選項（「A. … B. …」）時，要拆成獨立選項
+OPTION_SPLIT_RE = re.compile(r'(?=\s*[(（]?[A-Da-d]\s*[.、)．])')
+
+
+def split_options(text: str) -> list[str]:
+    parts = [p.strip() for p in OPTION_SPLIT_RE.split(text) if p.strip()]
+    return parts if len(parts) > 1 else [text.strip()]
 
 
 def has_bottom_border(p) -> bool:
@@ -217,7 +231,7 @@ def parse_content(path: str) -> tuple[list[str], list[Section]]:
             stem = QUESTION_RE.sub('', stem, count=1).strip()
             current.questions.append(Question(stem=stem, marks=marks))
         elif role == 'option' and current and current.questions:
-            current.questions[-1].options.append(text)
+            current.questions[-1].options.extend(split_options(text))
         elif current and current.questions:
             current.questions[-1].stem += text
         else:
@@ -467,7 +481,7 @@ def parse_content_bytes(data: bytes) -> tuple[list[str], list[Section]]:
             stem = QUESTION_RE.sub('', stem, count=1).strip()
             current.questions.append(Question(stem=stem, marks=marks))
         elif role == 'option' and current and current.questions:
-            current.questions[-1].options.append(text)
+            current.questions[-1].options.extend(split_options(text))
         elif current and current.questions:
             current.questions[-1].stem += text
         else:

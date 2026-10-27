@@ -127,5 +127,33 @@ class PaperTemplateTests(unittest.TestCase):
         self.assertNotIn(template['id'], [t['id'] for t in listed['templates']])
 
 
+    def test_to_tex_keeps_math_and_structure(self):
+        out = self.call('POST', '/api/papers/to-tex', {'file': data_url(content_docx())})
+        tex = out['tex']
+        self.assertIn(r'\documentclass', tex)
+        self.assertIn(r'\begin{enumerate}', tex)
+        self.assertIn('$x^{2}-5x+6=0$', tex, '公式要原樣輸出，不能再轉義')
+        self.assertIn(r'\frac{1}{2}+\frac{1}{3}', tex)
+        self.assertEqual(out['stats']['questions'], 2)
+        self.assertTrue(out['filename'].endswith('.tex'))
+
+    def test_to_tex_uses_custom_preamble(self):
+        preamble = '\\documentclass{article}\n\\usepackage{amsmath}'
+        out = self.call('POST', '/api/papers/to-tex',
+                        {'file': data_url(content_docx()), 'preamble': preamble})
+        self.assertTrue(out['tex'].startswith(preamble), out['tex'][:60])
+
+    def test_to_tex_rejects_document_begin_in_preamble(self):
+        self.call('POST', '/api/papers/to-tex',
+                  {'file': data_url(content_docx()),
+                   'preamble': '\\documentclass{article}\n\\begin{document}'}, expect=400)
+
+    def test_student_cannot_export_tex(self):
+        if not self.student:
+            self.skipTest('沒有學生帳號')
+        self.call('POST', '/api/papers/to-tex',
+                  {'file': data_url(content_docx())}, user=self.student, expect=403)
+
+
 if __name__ == '__main__':
     unittest.main()

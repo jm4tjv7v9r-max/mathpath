@@ -15,6 +15,7 @@ from http.cookies import CookieError, SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import io
 import latex
+import latex_export
 import paper_format
 import ipaddress
 import json
@@ -5005,6 +5006,35 @@ class Application:
                               'totalQuestions': len([q for q in questions if q['correct'] is not None]),
                               'correctCount': sum(1 for q in questions if q['correct'] is True),
                               'questions': questions}}, headers
+        # ---------- 卷面排版：直接輸出 LaTeX（Overleaf 用） ----------
+        if method == 'POST' and path == '/api/papers/to-tex':
+            self.teacher(user)
+            fields(body, ('file', 'preamble', 'marksPosition'), ('file',))
+            data = decode_docx(body['file'])
+            preamble = body.get('preamble')
+            if preamble:
+                preamble = text(preamble, 'Preamble', 20000)
+                if '\\begin{document}' in preamble:
+                    fail(400, 'Preamble 不要包含 \\begin{document}，系統會自動加上。')
+            else:
+                preamble = None
+            position = body.get('marksPosition') or 'trailing'
+            if position not in ('leading', 'trailing'):
+                fail(400, '配分位置只接受 leading 或 trailing。')
+            try:
+                head, sections = paper_format.parse_content_bytes(data)
+            except Exception:
+                fail(422, '讀不到這份 Word 的內容，請確認檔案沒有損壞。')
+            if not sections:
+                fail(422, '這份 Word 裡找不到題目（題號要長得像「1. …」）。')
+            title = head[0] if head else None
+            tex = latex_export.to_tex(title, sections, position, preamble)
+            filename = (title or '試卷').replace('/', '／')[:60] + '.tex'
+            return {'tex': tex, 'filename': filename,
+                    'stats': {'sections': len(sections),
+                              'questions': sum(len(s.questions) for s in sections),
+                              'formulas': paper_format.count_formulas(sections)}}, headers
+
         # ---------- 卷面排版：記住範本版式，把新卷套成同樣版面 ----------
         if path == '/api/paper-templates' and method in ('GET', 'POST'):
             self.teacher(user)
