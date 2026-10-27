@@ -842,3 +842,17 @@ html[data-theme=night] .topbar-link{color:#dbe6e6}
 .rubric-check-pts{flex:0 0 auto;color:var(--green);font-weight:600;white-space:nowrap}
 .rubric-check-total{margin:0;font-size:calc(13px*var(--fs));color:var(--muted)}
 .rubric-check-total #rubric-total-hint{font-weight:600;color:var(--green)}
+
+/* 卷面排版（範本 → 新卷） */
+.layout-row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:10px}
+.layout-row #tpl-name{flex:1;min-width:220px;padding:9px 11px;border:1px solid var(--border);
+  border-radius:8px;background:var(--paper);color:var(--ink);font:inherit}
+.layout-list{display:grid;gap:8px;margin-top:14px}
+.layout-tpl{display:flex;gap:10px;align-items:center;padding:10px 12px;border:1px solid var(--border);
+  border-radius:10px;background:var(--surface-soft);cursor:pointer}
+.layout-tpl.active{border-color:var(--green);background:var(--surface-green)}
+.layout-tpl-main{display:flex;flex-direction:column;gap:2px;flex:1}
+.layout-result{display:flex;gap:12px;align-items:center;justify-content:space-between;
+  flex-wrap:wrap;padding:12px 14px;border:1px solid var(--border);border-radius:10px;
+  background:var(--surface-green)}
+.layout-result>div{display:flex;flex-direction:column;gap:2px}

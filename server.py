@@ -15,6 +15,7 @@ from http.cookies import CookieError, SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import io
 import latex
+import paper_format
 import ipaddress
 import json
 import math
@@ -2237,6 +2238,25 @@ def utc_now():
     return datetime.now(timezone.utc).isoformat(timespec='seconds').replace('+00:00', 'Z')
 
 
+DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+# 一份 Word 卷通常 30–200 KB；留到 8 MB 是給大量圖片的卷。
+MAX_DOCX = 8 * 1024 * 1024
+
+
+def paper_template_public(row):
+    return {'id': row['id'], 'name': row['name'], 'ownerId': row['owner_id'],
+            'createdAt': row['created_at'],
+            'spec': json.loads(row['spec'] or '{}')}
+
+
+def decode_docx(value):
+    """收 .docx 的 dataURL；順手確認它真的是 ZIP（docx 的開頭）。"""
+    data, _ = decode_data_url(value, (DOCX_MIME,), limit=MAX_DOCX)
+    if not data.startswith(b'PK\x03\x04'):
+        fail(400, '這不是 .docx 檔（請用 Word 另存新檔成 .docx）。')
+    return data
+
+
 def decode_data_url(value, allowed, limit=MAX_FILE):
     if not isinstance(value, str) or len(value) > 4 * ((limit + 2) // 3) + 100:
         fail(413, '檔案不得超過 %d MB。' % (limit // (1024 * 1024)))
@@ -3969,6 +3989,13 @@ class Application:
                     score REAL NOT NULL,
                     detail TEXT NOT NULL DEFAULT '[]',
                     created_at TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS paper_templates (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    owner_id INTEGER NOT NULL REFERENCES users(id),
+                    name TEXT NOT NULL,
+                    data BLOB NOT NULL,
+                    spec TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS sessions (
                     token_hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id),
                     expires REAL NOT NULL);
@@ -4978,6 +5005,73 @@ class Application:
                               'totalQuestions': len([q for q in questions if q['correct'] is not None]),
                               'correctCount': sum(1 for q in questions if q['correct'] is True),
                               'questions': questions}}, headers
+        # ---------- 卷面排版：記住範本版式，把新卷套成同樣版面 ----------
+        if path == '/api/paper-templates' and method in ('GET', 'POST'):
+            self.teacher(user)
+            if method == 'GET':
+                with self.db() as db:
+                    if self.is_owner(user, db):
+                        rows = db.execute('SELECT id,owner_id,name,spec,created_at FROM paper_templates '
+                                          'ORDER BY id DESC LIMIT 100').fetchall()
+                    else:
+                        rows = db.execute('SELECT id,owner_id,name,spec,created_at FROM paper_templates '
+                                          'WHERE owner_id=? ORDER BY id DESC LIMIT 100',
+                                          (user['id'],)).fetchall()
+                return {'templates': [paper_template_public(r) for r in rows]}, headers
+
+            fields(body, ('name', 'file'), ('name', 'file'))
+            name = text(body['name'], '範本名稱', 80)
+            data = decode_docx(body['file'])
+            try:
+                spec = paper_format.analyze_bytes(data)
+            except Exception:
+                fail(400, '讀不到這份 Word 的版面，請確認檔案沒有損壞。')
+            with self.db() as db:
+                cur = db.execute('INSERT INTO paper_templates(owner_id,name,data,spec,created_at) '
+                                 'VALUES(?,?,?,?,?)',
+                                 (user['id'], name, data,
+                                  json.dumps(spec, ensure_ascii=False), utc_now()))
+                row = db.execute('SELECT id,owner_id,name,spec,created_at FROM paper_templates '
+                                 'WHERE id=?', (cur.lastrowid,)).fetchone()
+            return {'template': paper_template_public(row)}, headers
+
+        match = re.fullmatch(r'/api/paper-templates/([1-9]\d{0,17})', path)
+        if match and method == 'DELETE':
+            self.teacher(user)
+            with self.db() as db:
+                row = db.execute('SELECT * FROM paper_templates WHERE id=?',
+                                 (int(match.group(1)),)).fetchone()
+                if not row:
+                    fail(404, '找不到這個範本。')
+                if row['owner_id'] != user['id'] and not self.is_owner(user, db):
+                    fail(403, '只有建立者或管理員可以刪除範本。')
+                db.execute('DELETE FROM paper_templates WHERE id=?', (row['id'],))
+            return {'ok': True}, headers
+
+        match = re.fullmatch(r'/api/paper-templates/([1-9]\d{0,17})/apply', path)
+        if match and method == 'POST':
+            self.teacher(user)
+            fields(body, ('file',), ('file',))
+            with self.db() as db:
+                row = db.execute('SELECT * FROM paper_templates WHERE id=?',
+                                 (int(match.group(1)),)).fetchone()
+                allowed_owner = bool(row) and (row['owner_id'] == user['id'] or self.is_owner(user, db))
+            if not row:
+                fail(404, '找不到這個範本。')
+            if not allowed_owner:
+                fail(403, '只有建立者或管理員可以使用這個範本。')
+            data = decode_docx(body['file'])
+            try:
+                output, report = paper_format.render_bytes(row['data'], data)
+            except SystemExit as exc:
+                fail(400, str(exc) or '範本裡找不到題目段落（長得像「1. …」）。')
+            except Exception as exc:
+                ai_log(f'卷面排版失敗：{exc}')
+                fail(422, '排版失敗：這份 Word 的結構讀不出來（可能是表格或文字方塊排版）。')
+            filename = (report.get('title') or '排版結果').replace('/', '／')[:60] + '.docx'
+            return {'docx': 'data:' + DOCX_MIME + ';base64,' + base64.b64encode(output).decode(),
+                    'filename': filename, 'stats': report}, headers
+
         if method == 'GET' and path == '/api/paper-grades':
             # 紙本批改紀錄：教師看自己建的；管理員看全部。
             self.teacher(user)
