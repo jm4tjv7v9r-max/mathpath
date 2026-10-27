@@ -21,7 +21,6 @@ from pathlib import Path
 
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_TAB_ALIGNMENT
-from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.text.paragraph import Paragraph
 
@@ -32,13 +31,6 @@ SECTION_RE = re.compile(r'^\s*(甲部|乙部|丙部|丁部|第[一二三四]部�
 QUESTION_RE = re.compile(r'^\s*(\d{1,3})\s*[.、)．]')
 OPTION_RE = re.compile(r'[(（]?([A-Da-d])\s*[.、)．]')
 MARKS_RE = re.compile(r'[（(]\s*(\d+(?:\.\d+)?)\s*分\s*[)）]')
-# 一行裡有多個選項（「A. … B. …」）時，要拆成獨立選項
-OPTION_SPLIT_RE = re.compile(r'(?=\s*[(（]?[A-Da-d]\s*[.、)．])')
-
-
-def split_options(text: str) -> list[str]:
-    parts = [p.strip() for p in OPTION_SPLIT_RE.split(text) if p.strip()]
-    return parts if len(parts) > 1 else [text.strip()]
 # 一行裡有多個選項（「A. … B. …」）時，要拆成獨立選項
 OPTION_SPLIT_RE = re.compile(r'(?=\s*[(（]?[A-Da-d]\s*[.、)．])')
 
@@ -141,7 +133,7 @@ def _analyze_doc(doc, source_name: str) -> dict:
                 break
 
     question_text = prototypes.get('question', {}).get('text', '')
-    option_text = prototypes.get('option', {}).get('text', '')
+    option_para = next((p for p in doc.paragraphs if classify(p.text, p) == 'option'), None)
 
     lines_by_index: list[int | None] = []
     for b in blocks:
@@ -161,7 +153,7 @@ def _analyze_doc(doc, source_name: str) -> dict:
         'header': [p.text for p in sec.header.paragraphs if p.text.strip()],
         'footer': [p.text for p in sec.footer.paragraphs if p.text.strip()],
         'marksPosition': marks_position(question_text),
-        'optionsPerLine': max(1, len(OPTION_RE.findall(option_text))),
+        'optionsPerLine': option_columns(option_para) if option_para is not None else 1,
         'prototypes': prototypes,
         'answerLinesBySection': lines_by_index,
         'counts': {r: sum(1 for b in blocks if b.role == r) for r in
@@ -240,19 +232,36 @@ def parse_content(path: str) -> tuple[list[str], list[Section]]:
 
 
 # ── 套版 ──────────────────────────────────────────────────────────────
-def _text_runs(p):
-    """不含 tab 的文字 run（設 text='' 會連 <w:tab/> 一起刪掉）。"""
-    return [r for r in p.runs if r.text.replace('\t', '').strip() != '']
+def _wipe(p):
+    """清空段落內容，只留 pPr。
+
+    以前的寫法是「只換文字 run」，可是範本的選項段落裡常常還夾著方程式
+    （m:oMath）、tab、空白 run——那些不是文字 run，換不掉，結果每一行選項
+    後面都拖著範本的範例公式。整段清掉重寫才不會有殘留。
+
+    回傳第一個文字 run 的 rPr：新寫進去的文字要沿用它的字體與字級。
+    """
+    p_el = p._p
+    rpr = None
+    for r in p_el.findall(qn('w:r')):
+        rpr_el = r.find(qn('w:rPr'))
+        if rpr_el is None:
+            continue
+        text = ''.join(t.text or '' for t in r.findall(qn('w:t')))
+        if text.strip():
+            rpr = copy.deepcopy(rpr_el)
+            break
+    for child in list(p_el):
+        if child.tag != qn('w:pPr'):
+            p_el.remove(child)
+    return rpr
 
 
-def _fill_slots(p, texts: list[str]):
-    """把 texts 依序填進段落既有的文字 run，保留 tab／框線／字體。"""
-    slots = _text_runs(p)
-    for r, t in zip(slots, texts):
-        r.text = t
-    for r in slots[len(texts):]:
-        if r.text.strip():
-            r.text = ''
+def _run(p, text, rpr=None):
+    run = p.add_run(text)
+    if rpr is not None:
+        run._r.insert(0, copy.deepcopy(rpr))
+    return run
 
 
 MATH_RE = re.compile(r'\$([^$]+)\$')
@@ -271,39 +280,51 @@ def split_math(text: str):
     return parts or [('text', text)]
 
 
-def _fill_rich(slot_run, text: str):
-    """在一個 run 的位置上，把文字與 $公式$ 混排成 run + m:oMath。"""
-    anchor = slot_run._r
-    first = True
-    for kind, value in split_math(text):
-        if kind == 'text':
-            if first:
-                slot_run.text = value
-            else:
-                run_el = copy.deepcopy(slot_run._r)
-                for t in run_el.findall(qn('w:t')):
-                    run_el.remove(t)
-                t = OxmlElement('w:t')
-                t.text = value
-                t.set(qn('xml:space'), 'preserve')
-                run_el.append(t)
-                anchor.addnext(run_el)
-                anchor = run_el
-        else:
-            om = omml.latex_to_omml(value)
-            anchor.addnext(om)
-            anchor = om
-        first = False
+def _write(p, cells: list[str], rpr=None):
+    """把 cells 依序寫進（已清空的）段落：cell 之間補一個 tab，靠 pPr 的定位點分欄。"""
+    for index, cell in enumerate(cells):
+        if index:
+            _run(p, '\t', rpr)
+        for kind, value in split_math(cell or ''):
+            if kind == 'math':
+                p._p.append(omml.latex_to_omml(value))
+            elif value:
+                _run(p, value, rpr)
 
 
-def _fill_slots_rich(p, texts: list[str]):
-    """_fill_slots 的加強版：支援 $...$ 公式，其餘行為相同。"""
-    slots = _text_runs(p)
-    for r, t in zip(slots, texts):
-        _fill_rich(r, t)
-    for r in slots[len(texts):]:
-        if r.text.strip():
-            r.text = ''
+def _fill(p, cells: list[str]):
+    """清空後重寫，一次做完（範本殘留的公式／tab 不會漏出來）。"""
+    _write(p, cells, _wipe(p))
+
+
+def _tab_stops(p):
+    """段落自己設的定位點；沒有就看它用的樣式。"""
+    stops = list(p.paragraph_format.tab_stops)
+    if stops:
+        return stops
+    try:
+        return list(p.style.paragraph_format.tab_stops)
+    except (AttributeError, KeyError):
+        return []
+
+
+def option_columns(p) -> int:
+    """範本的選項一行排幾個：先看定位點，沒有定位點就數 A/B/C/D。"""
+    stops = _tab_stops(p)
+    if stops:
+        return max(1, min(4, len(stops) + 1))
+    return max(1, min(4, len(OPTION_RE.findall(p.text))))
+
+
+def _text_width(doc, p):
+    """段落可用的文字寬度（給「配分靠右」補定位點用）。"""
+    sec = doc.sections[0]
+    width = sec.page_width - sec.left_margin - sec.right_margin
+    if p.paragraph_format.left_indent is not None:
+        width -= p.paragraph_format.left_indent
+    if p.paragraph_format.right_indent is not None:
+        width -= p.paragraph_format.right_indent
+    return width
 
 
 def _clone(doc, prototype_el, before):
@@ -361,8 +382,11 @@ def _render_into(tpl, sections: list[Section], title: str | None = None,
 
     q_proto = proto['question']
     pos = marks_position(q_proto.text)
-    q_slots = len(_text_runs(q_proto))
     marks_proto = q_proto.text.split('\t')[-1] if pos == 'trailing' else ''
+    # 範本的「配分靠右」若只靠預設 tab，位置會飄；補一個貼右邊界的定位點。
+    marks_tab = None
+    if pos == 'trailing' and not _tab_stops(q_proto):
+        marks_tab = _text_width(tpl, q_proto)
 
     # 卷頭：第一個分部之前的所有段落（標題、副標、資料行、橫線）
     first_section = next((i for i, b in enumerate(blocks) if b.role == 'section'), len(blocks))
@@ -387,7 +411,7 @@ def _render_into(tpl, sections: list[Section], title: str | None = None,
     if title:
         for p in cloned_head:
             if classify(p.text, p) == 'other' and p.runs:
-                _fill_slots_rich(p, [title])
+                _fill(p, [title])
                 break
 
     number = 1
@@ -396,26 +420,28 @@ def _render_into(tpl, sections: list[Section], title: str | None = None,
         if s.title and 'section' in proto:
             np = _clone(tpl, proto['section']._p, sectpr)
             tpl_title = template_headings[index] if index < len(template_headings) else ''
-            _fill_slots_rich(np, [_heading_text(tpl_title, s.title, s.questions)])
+            _fill(np, [_heading_text(tpl_title, s.title, s.questions)])
         lines = lines_by_index[index] if index < len(lines_by_index) and lines_by_index[index] \
             else default_lines
 
         for q in s.questions:
             np = _clone(tpl, q_proto._p, sectpr)
             if pos == 'trailing':
-                _fill_slots_rich(np, [f'{number}.　{q.stem}', _marks_text(marks_proto, q.marks)])
+                _fill(np, [f'{number}.　{q.stem}', _marks_text(marks_proto, q.marks)])
+                if marks_tab is not None:
+                    np.paragraph_format.tab_stops.add_tab_stop(marks_tab, WD_TAB_ALIGNMENT.RIGHT)
             elif q.marks is not None:
-                _fill_slots_rich(np, [f'{number}.{_marks_text("（0 分）", q.marks)}　{q.stem}'])
+                _fill(np, [f'{number}.{_marks_text("（0 分）", q.marks)}　{q.stem}'])
             else:
-                _fill_slots_rich(np, [f'{number}.　{q.stem}'])
+                _fill(np, [f'{number}.　{q.stem}'])
             number += 1
 
             for extra in q.lines:
                 ep = _clone(tpl, q_proto._p, sectpr)
-                _fill_slots_rich(ep, [extra] + ([''] if q_slots >= 2 else []))
+                _fill(ep, [extra])
 
             if q.options and 'option' in proto:
-                per_line = max(1, len(OPTION_RE.findall(proto['option'].text)))
+                per_line = option_columns(proto['option'])
                 if per_line >= 2:
                     # 兩個選項太長時硬排同一行會擠在一起（tab 被推過定位點就失效），
                     # 這種情況改成一行一個，寧可多佔行也不要疊字。
@@ -428,17 +454,17 @@ def _render_into(tpl, sections: list[Section], title: str | None = None,
                         pair = q.options[i:i + 2]
                         if len(pair) == 2 and not too_long(pair):
                             op = _clone(tpl, proto['option']._p, sectpr)
-                            _fill_slots_rich(op, pair)
+                            _fill(op, pair)
                             i += 2
                         else:
                             for single in pair:
                                 op = _clone(tpl, proto['option']._p, sectpr)
-                                _fill_slots_rich(op, [single, ''] if per_line >= 2 else [single])
+                                _fill(op, [single])
                             i += len(pair)
                 else:
                     for opt in q.options:
                         op = _clone(tpl, proto['option']._p, sectpr)
-                        _fill_slots_rich(op, [opt])
+                        _fill(op, [opt])
 
             if 'answer_line' in proto and lines and not q.options:
                 for _ in range(lines):
@@ -446,7 +472,7 @@ def _render_into(tpl, sections: list[Section], title: str | None = None,
 
     if closing and 'other' in proto:
         cp = _clone(tpl, proto['other']._p, sectpr)
-        _fill_slots_rich(cp, [closing])
+        _fill(cp, [closing])
 
     if tpl.tables:
         print(f'⚠️ 範本有 {len(tpl.tables)} 個表格，內容未帶入輸出', file=sys.stderr)

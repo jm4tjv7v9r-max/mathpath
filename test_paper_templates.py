@@ -59,6 +59,41 @@ def content_docx():
     return buf.getvalue()
 
 
+# 真實卷常見的寫法：選項那一行夾著方程式，還用 tab 分欄。
+# 這些是範本自己的「範例內容」，套版後必須一個字都不留。
+LEFTOVER_FORMULAS = ['x^{2}-2x+1=0', r'x-2y=\frac{1}{3}', '3xy+6=5xy', r'\frac{1}{x}+4=x^{2}']
+
+
+def make_docx_with_math_option():
+    doc = Document()
+    doc.add_paragraph('某某中學 數學測驗')
+    doc.add_paragraph('一、選擇題：（每題 4 分）')
+    q = doc.add_paragraph()
+    q.add_run('1.　下列哪一個是質數？')
+    q._p.append(omml.latex_to_omml('x^{2}-5x+6=0'))
+    q.add_run('（　　）')
+    p = doc.add_paragraph()
+    p.add_run('A. ')
+    for tex in LEFTOVER_FORMULAS:
+        p._p.append(omml.latex_to_omml(tex))
+        p.add_run('\t')
+    buf = io.BytesIO()
+    doc.save(buf)
+    return buf.getvalue()
+
+
+def content_with_options():
+    doc = Document()
+    doc.add_paragraph('中三數學 小測')
+    doc.add_paragraph('一、選擇題')
+    doc.add_paragraph('1.　下列哪一個是質數？')
+    for option in ('A.　4', 'B.　6', 'C.　9', 'D.　11'):
+        doc.add_paragraph(option)
+    buf = io.BytesIO()
+    doc.save(buf)
+    return buf.getvalue()
+
+
 class PaperTemplateTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -111,6 +146,27 @@ class PaperTemplateTests(unittest.TestCase):
         equations = sum(1 for p in doc.paragraphs for c in p._p if c.tag.endswith('}oMath'))
         self.assertEqual(equations, 2, '公式要原樣帶進輸出')
         self.assertEqual(doc.paragraphs[0].text, '中三數學 小測', '卷名要換成新卷的')
+
+    def test_template_example_formulas_do_not_leak_into_output(self):
+        """範本的選項行夾著範例公式時，套版後不能拖在每一行後面。"""
+        template = self.call('POST', '/api/paper-templates',
+                             {'name': '有公式的範本',
+                              'file': data_url(make_docx_with_math_option())})['template']
+        out = self.call('POST', f"/api/paper-templates/{template['id']}/apply",
+                        {'file': data_url(content_with_options())})
+        raw = base64.b64decode(out['docx'].split(',', 1)[1])
+        doc = Document(io.BytesIO(raw))
+
+        for p in doc.paragraphs:
+            self.assertNotIn('3xy', p._p.xml, f'範本的範例公式漏出來了：{p.text}')
+            self.assertNotIn('x-2y', p._p.xml, f'範本的範例公式漏出來了：{p.text}')
+
+        options = [p for p in doc.paragraphs
+                   if p.text.strip()[:2] in ('A.', 'B.', 'C.', 'D.')]
+        self.assertEqual(len(options), 4)
+        for p in options:
+            self.assertEqual(sum(1 for c in p._p if c.tag.endswith('}oMath')), 0,
+                             f'選項行不該帶著範本的方程式：{p.text}')
 
     def test_rejects_non_docx(self):
         self.call('POST', '/api/paper-templates',
