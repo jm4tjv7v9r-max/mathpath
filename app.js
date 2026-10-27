@@ -3563,6 +3563,7 @@ function paperJourneyHtml(st){
 }
 // 卷面排版：記住範本的版式，把新卷套成同樣版面（公式以 Word 方程式保留）。
 const DOCX_MIME='application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+const PDF_MIME='application/pdf';
 function layoutTemplateHtml(list,current){
   if(!list.length)return '<p class="small-text">還沒有範本。上傳一份排版正確的 Word 開始。</p>';
   return list.map(t=>{const spec=t.spec||{};
@@ -3585,19 +3586,23 @@ async function paperLayoutPage(){
     ${heading('PAPER LAYOUT','卷面排版','給一份範本記住版式；之後每份新卷都照它排。')}
     <section class="panel panel-pad" style="margin-bottom:16px">
       <h2 style="margin-bottom:6px">① 範本</h2>
-      <p class="field-hint">上傳一份「排版正確」的 Word（.docx）。系統會記住頁面、字級、題號、配分位置與選項欄數。</p>
+      <p class="field-hint">上傳一份「排版正確」的卷：Word（.docx）直接讀結構；PDF 會用 AI 看版面（頁邊、字級、題號、配分位置、選項欄數）。</p>
       <div class="layout-row">
         <input id="tpl-name" placeholder="範本名稱，例如：培華高一測驗">
-        <input id="tpl-file" type="file" accept=".docx">
+        <input id="tpl-file" type="file" accept=".docx,.pdf">
         <button class="primary" id="tpl-save">儲存為範本</button>
       </div>
+      <label class="small-text" style="display:flex;gap:8px;align-items:center;margin-top:12px">
+        <input id="pdf-consent" type="checkbox" checked>
+        PDF 需要把頁面影像送給外部 AI 分析（Word 不需要）
+      </label>
       <div id="tpl-list" class="layout-list">${layoutTemplateHtml(list,current)}</div>
     </section>
     <section class="panel panel-pad">
       <h2 style="margin-bottom:6px">② 新卷</h2>
-      <p class="field-hint">上傳內容正確、排版未整理的 Word。公式（Word 方程式）會原樣保留，不會變成文字。</p>
+      <p class="field-hint">上傳內容正確、排版未整理的卷（.docx 或 .pdf）。Word 的方程式會原樣保留；PDF 會先由 AI 轉寫成題目。</p>
       <div class="layout-row">
-        <input id="paper-file" type="file" accept=".docx">
+        <input id="paper-file" type="file" accept=".docx,.pdf">
         <button class="primary" id="paper-apply">排版並下載</button>
       </div>
       <div id="paper-result" style="margin-top:12px"></div>
@@ -3637,8 +3642,10 @@ async function paperLayoutPage(){
     const name=($('#tpl-name').value||'').trim()||(file.name||'').replace(/\.docx$/i,'')||'未命名範本';
     const btn=$('#tpl-save');const old=btn.textContent;btn.disabled=true;btn.textContent='儲存中…';
     try{
-      const data=await fileData(file,[DOCX_MIME],8);
-      const res=await api('/api/paper-templates',{name,file:data});
+      const isPdf=/pdf$/i.test(file.name||'')||file.type===PDF_MIME;
+      if(isPdf&&!$('#pdf-consent').checked)throw new Error('PDF 需要先勾選「送給外部 AI 分析」。');
+      const data=await fileData(file,[DOCX_MIME,PDF_MIME],12);
+      const res=await api('/api/paper-templates',{name,file:data,consentExternal:isPdf});
       sessionStorage.setItem('layoutTemplate',res.template.id);
       toast('範本已儲存');paperLayoutPage();
     }catch(e){toast(e.message);btn.disabled=false;btn.textContent=old;}
@@ -3649,8 +3656,10 @@ async function paperLayoutPage(){
     if(!file)return toast('請先選擇新卷（.docx）。');
     const btn=$('#paper-apply');const old=btn.textContent;btn.disabled=true;btn.textContent='排版中…';
     try{
-      const data=await fileData(file,[DOCX_MIME],8);
-      const res=await api(`/api/paper-templates/${tid}/apply`,{file:data});
+      const isPdf=/pdf$/i.test(file.name||'')||file.type===PDF_MIME;
+      if(isPdf&&!$('#pdf-consent').checked)throw new Error('PDF 需要先勾選「送給外部 AI 分析」。');
+      const data=await fileData(file,[DOCX_MIME,PDF_MIME],12);
+      const res=await api(`/api/paper-templates/${tid}/apply`,{file:data,consentExternal:isPdf});
       const st=res.stats||{};
       $('#paper-result').innerHTML=`<div class="layout-result">
         <div><strong>排好了</strong><span class="small-text">${st.sections||0} 個分部 · ${st.questions||0} 題 · ${st.formulas||0} 條公式${st.tables?` · ⚠️ 範本有 ${st.tables} 個表格未帶入`:''}</span></div>
@@ -3670,8 +3679,10 @@ async function paperLayoutPage(){
     if(!file)return toast('請先在上方「新卷」選一份 .docx。');
     const btn=$('#tex-apply');const old=btn.textContent;btn.disabled=true;btn.textContent='產生中…';
     try{
-      const data=await fileData(file,[DOCX_MIME],8);
-      const body={file:data,marksPosition:marks.value};
+      const isPdf=/pdf$/i.test(file.name||'')||file.type===PDF_MIME;
+      if(isPdf&&!$('#pdf-consent').checked)throw new Error('PDF 需要先勾選「送給外部 AI 分析」。');
+      const data=await fileData(file,[DOCX_MIME,PDF_MIME],12);
+      const body={file:data,marksPosition:marks.value,consentExternal:isPdf};
       if(pre.value.trim())body.preamble=pre.value;
       const res=await api('/api/papers/to-tex',body);
       const blob=new Blob([res.tex],{type:'text/x-tex;charset=utf-8'});

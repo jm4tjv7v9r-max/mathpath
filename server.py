@@ -17,6 +17,7 @@ import io
 import latex
 import latex_export
 import paper_format
+import pdf_layout
 import ipaddress
 import json
 import math
@@ -377,7 +378,7 @@ def validate_text_total(value, key='', depth=0):
         # 這些欄位放的是 base64 圖檔／PDF，不該算進「文字總長」——否則一張圖就會
         # 撞破 80,000 字的上限（紙本批改的 pages 是陣列，元素本身沒有 key，所以
         # 由下面的 list 分支把父層 key 傳下來）。
-        if key in ('image', 'dataUrl', 'figure', 'pages'):
+        if key in ('image', 'dataUrl', 'figure', 'pages', 'file'):
             return 0
         if '\x00' in value or re.search(r'[\ud800-\udfff]', value):
             fail(400, '文字不可包含空字元或無效 Unicode。')
@@ -2256,6 +2257,41 @@ def decode_docx(value):
     if not data.startswith(b'PK\x03\x04'):
         fail(400, '這不是 .docx 檔（請用 Word 另存新檔成 .docx）。')
     return data
+
+
+PDF_MIME = 'application/pdf'
+MAX_PDF = 12 * 1024 * 1024
+
+
+def decode_paper(value):
+    """收 .docx 或 .pdf，回（類型, bytes）。"""
+    if isinstance(value, str) and value.startswith('data:' + PDF_MIME):
+        data, _ = decode_data_url(value, (PDF_MIME,), limit=MAX_PDF)
+        if not data.startswith(b'%PDF'):
+            fail(400, '這不是有效的 PDF 檔。')
+        return 'pdf', data
+    return 'docx', decode_docx(value)
+
+
+def sections_from_pdf_data(raw_sections):
+    """AI 轉寫的 dict → paper_format 的 Section/Question。
+
+    配分寫在分部標題（「每題 4 分」）時，題目本身不該再掛配分——
+    模型常常順手補上，會讓版面多出「1.（4 分）」這種不存在的東西。
+    """
+    sections = []
+    for section in raw_sections:
+        title = section.get('title') or ''
+        marks_in_heading = bool(re.search(r'每題\s*\d+\s*分', title))
+        questions = [paper_format.Question(
+                        stem=q['stem'],
+                        marks=None if marks_in_heading else q.get('marks'),
+                        options=q.get('options') or [],
+                        lines=q.get('lines') or [])
+                     for q in section.get('questions') or []]
+        if questions:
+            sections.append(paper_format.Section(title=section.get('title'), questions=questions))
+    return sections
 
 
 def decode_data_url(value, allowed, limit=MAX_FILE):
@@ -5009,8 +5045,8 @@ class Application:
         # ---------- 卷面排版：直接輸出 LaTeX（Overleaf 用） ----------
         if method == 'POST' and path == '/api/papers/to-tex':
             self.teacher(user)
-            fields(body, ('file', 'preamble', 'marksPosition'), ('file',))
-            data = decode_docx(body['file'])
+            fields(body, ('file', 'preamble', 'marksPosition', 'consentExternal'), ('file',))
+            kind, data = decode_paper(body['file'])
             preamble = body.get('preamble')
             if preamble:
                 preamble = text(preamble, 'Preamble', 20000)
@@ -5021,10 +5057,21 @@ class Application:
             position = body.get('marksPosition') or 'trailing'
             if position not in ('leading', 'trailing'):
                 fail(400, '配分位置只接受 leading 或 trailing。')
-            try:
-                head, sections = paper_format.parse_content_bytes(data)
-            except Exception:
-                fail(422, '讀不到這份 Word 的內容，請確認檔案沒有損壞。')
+            if kind == 'pdf':
+                self.ai.consent(body.get('consentExternal'))
+                pages = pdf_page_images(data, max_pages=10)
+                if not pages:
+                    fail(422, 'PDF 沒有可讀的頁面。')
+                title, raw_sections = pdf_layout.extract_content(self.ai, pages)
+                sections = sections_from_pdf_data(raw_sections)
+                head = [title] if title else []
+                if not sections:
+                    fail(422, 'AI 在這份 PDF 裡讀不到題目。')
+            else:
+                try:
+                    head, sections = paper_format.parse_content_bytes(data)
+                except Exception:
+                    fail(422, '讀不到這份 Word 的內容，請確認檔案沒有損壞。')
             if not sections:
                 fail(422, '這份 Word 裡找不到題目（題號要長得像「1. …」）。')
             title = head[0] if head else None
@@ -5049,13 +5096,25 @@ class Application:
                                           (user['id'],)).fetchall()
                 return {'templates': [paper_template_public(r) for r in rows]}, headers
 
-            fields(body, ('name', 'file'), ('name', 'file'))
+            fields(body, ('name', 'file', 'consentExternal'), ('name', 'file'))
             name = text(body['name'], '範本名稱', 80)
-            data = decode_docx(body['file'])
-            try:
+            kind, data = decode_paper(body['file'])
+            if kind == 'pdf':
+                # PDF 沒有結構：先用視覺模型讀版面，再生成一個 Word 範本當容器。
+                self.ai.consent(body.get('consentExternal'))
+                pages = pdf_page_images(data, max_pages=3)
+                if not pages:
+                    fail(422, 'PDF 沒有可讀的頁面。')
+                spec = pdf_layout.analyze_layout(self.ai, pages[0])
+                data = pdf_layout.build_template(spec)
                 spec = paper_format.analyze_bytes(data)
-            except Exception:
-                fail(400, '讀不到這份 Word 的版面，請確認檔案沒有損壞。')
+                spec['aiLayout'] = True
+                spec['source'] = 'pdf'
+            else:
+                try:
+                    spec = paper_format.analyze_bytes(data)
+                except Exception:
+                    fail(400, '讀不到這份 Word 的版面，請確認檔案沒有損壞。')
             with self.db() as db:
                 cur = db.execute('INSERT INTO paper_templates(owner_id,name,data,spec,created_at) '
                                  'VALUES(?,?,?,?,?)',
@@ -5081,7 +5140,7 @@ class Application:
         match = re.fullmatch(r'/api/paper-templates/([1-9]\d{0,17})/apply', path)
         if match and method == 'POST':
             self.teacher(user)
-            fields(body, ('file',), ('file',))
+            fields(body, ('file', 'consentExternal'), ('file',))
             with self.db() as db:
                 row = db.execute('SELECT * FROM paper_templates WHERE id=?',
                                  (int(match.group(1)),)).fetchone()
@@ -5090,9 +5149,21 @@ class Application:
                 fail(404, '找不到這個範本。')
             if not allowed_owner:
                 fail(403, '只有建立者或管理員可以使用這個範本。')
-            data = decode_docx(body['file'])
+            kind, data = decode_paper(body['file'])
             try:
-                output, report = paper_format.render_bytes(row['data'], data)
+                if kind == 'pdf':
+                    # 新卷是 PDF：逐頁轉寫成題目，再套範本。
+                    self.ai.consent(body.get('consentExternal'))
+                    pages = pdf_page_images(data, max_pages=10)
+                    if not pages:
+                        fail(422, 'PDF 沒有可讀的頁面。')
+                    title, raw_sections = pdf_layout.extract_content(self.ai, pages)
+                    sections = sections_from_pdf_data(raw_sections)
+                    if not sections:
+                        fail(422, 'AI 在這份 PDF 裡讀不到題目（可能是掃描品質或版面太複雜）。')
+                    output, report = paper_format.render_with_sections(row['data'], sections, title)
+                else:
+                    output, report = paper_format.render_bytes(row['data'], data)
             except SystemExit as exc:
                 fail(400, str(exc) or '範本裡找不到題目段落（長得像「1. …」）。')
             except Exception as exc:

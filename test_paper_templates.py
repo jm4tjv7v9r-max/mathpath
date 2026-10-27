@@ -8,6 +8,7 @@ import io
 import json
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from docx import Document
 from docx.shared import Pt
@@ -153,6 +154,123 @@ class PaperTemplateTests(unittest.TestCase):
             self.skipTest('沒有學生帳號')
         self.call('POST', '/api/papers/to-tex',
                   {'file': data_url(content_docx())}, user=self.student, expect=403)
+
+
+PDF_LAYOUT = {
+    'page': {'widthCm': 21, 'heightCm': 29.7,
+             'marginsCm': {'top': 1.3, 'bottom': 1.3, 'left': 1.3, 'right': 1.3}},
+    'headerLines': ['某某中學'],
+    'title': {'sizePt': 17, 'bold': True},
+    'subtitleLines': ['(禁止使用計算機)'],
+    'infoLine': '高一＿＿班　姓名：＿＿＿＿',
+    'section': {'sizePt': 12, 'bold': True, 'align': 'left'},
+    'question': {'sizePt': 12, 'indentCm': 0},
+    'options': {'perLine': 2, 'indentCm': 0.6, 'columnCm': 9.3},
+    'marksPosition': 'leading',
+    'answerLines': 0,
+    'footerLines': [],
+}
+
+PDF_CONTENT = {
+    'title': 'PDF 轉寫測試卷',
+    'sections': [{
+        'title': '一、計算題',
+        'questions': [
+            {'stem': '解方程 $x^{2}-5x+6=0$。', 'marks': 6, 'options': [], 'lines': []},
+            {'stem': '計算 $\\frac{1}{2}+\\frac{1}{3}$。', 'marks': 4,
+             'options': ['A. $\\frac{5}{6}$', 'B. $\\frac{1}{6}$'], 'lines': []},
+        ],
+    }],
+}
+
+FAKE_PDF = b'%PDF-1.4\n% fake pdf for tests\n'
+
+
+class PdfImportTests(unittest.TestCase):
+    """PDF 沒有結構，靠 AI 讀版面與內容；這裡用假模型驗證管線與權限。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.app = server.Application(self.tmp.name, server.ROOT)
+        self.app.initialize()
+        with self.app.db() as db:
+            teacher = db.execute("SELECT * FROM users WHERE role='teacher' ORDER BY id LIMIT 1").fetchone()
+        self.teacher = dict(teacher) if teacher else None
+        if not self.teacher:
+            self.skipTest('沒有教師帳號')
+
+        def fake_call(instruction, payload, image=None, model=None, temperature=None, timeout=None):
+            if '排版分析器' in instruction:
+                return json.dumps(PDF_LAYOUT, ensure_ascii=False)
+            if '轉寫器' in instruction:
+                return json.dumps(PDF_CONTENT, ensure_ascii=False)
+            return '{}'
+
+        self.app.ai.call = fake_call
+        # 同意機制只在「外部模型」模式下生效；測試要模擬外部，否則驗不到 403。
+        self.app.ai.mode = 'external'
+        self.patch = patch.object(server, 'pdf_page_images',
+                                  return_value=['data:image/png;base64,AAAA'])
+        self.patch.start()
+
+    def tearDown(self):
+        self.patch.stop()
+        self.tmp.cleanup()
+
+    def call(self, method, path, body=None, expect=200):
+        try:
+            payload, _ = self.app.dispatch(method, path, body or {}, self.teacher, None, '127.0.0.1')
+        except server.APIError as exc:
+            self.assertEqual(exc.status, expect, exc.message)
+            return {'error': exc.message}
+        self.assertEqual(expect, 200)
+        return payload
+
+    @staticmethod
+    def pdf_url():
+        return ('data:application/pdf;base64,'
+                + base64.b64encode(FAKE_PDF).decode())
+
+    def test_pdf_template_uses_ai_layout(self):
+        out = self.call('POST', '/api/paper-templates',
+                        {'name': 'PDF 範本', 'file': self.pdf_url(), 'consentExternal': True})
+        spec = out['template']['spec']
+        self.assertTrue(spec.get('aiLayout'))
+        self.assertEqual(spec['source'], 'pdf')
+        self.assertEqual(spec['marksPosition'], 'leading')
+        self.assertEqual(spec['optionsPerLine'], 2)
+
+    def test_pdf_template_needs_consent(self):
+        self.call('POST', '/api/paper-templates',
+                  {'name': 'PDF 範本', 'file': self.pdf_url()}, expect=403)
+
+    def test_pdf_content_is_rendered(self):
+        template = self.call('POST', '/api/paper-templates',
+                             {'name': 'PDF 範本', 'file': self.pdf_url(),
+                              'consentExternal': True})['template']
+        out = self.call('POST', f"/api/paper-templates/{template['id']}/apply",
+                        {'file': self.pdf_url(), 'consentExternal': True})
+        self.assertEqual(out['stats']['questions'], 2)
+        self.assertEqual(out['stats']['formulas'], 4)  # 第1題1條＋第2題題幹1條＋選項2條
+        raw = base64.b64decode(out['docx'].split(',', 1)[1])
+        doc = Document(io.BytesIO(raw))
+        self.assertEqual(doc.paragraphs[0].text, 'PDF 轉寫測試卷')
+        equations = sum(1 for p in doc.paragraphs for c in p._p if c.tag.endswith('}oMath'))
+        self.assertEqual(equations, 4)
+
+    def test_large_file_is_not_counted_as_text(self):
+        """base64 的 PDF 很大，不該撞到「文字合計 80,000 字」的上限。"""
+        big = b'%PDF-1.4\n%' + b'x' * 300_000
+        out = self.call('POST', '/api/papers/to-tex',
+                        {'file': 'data:application/pdf;base64,' + base64.b64encode(big).decode(),
+                         'consentExternal': True})
+        self.assertEqual(out['stats']['questions'], 2)
+
+    def test_pdf_to_tex(self):
+        out = self.call('POST', '/api/papers/to-tex',
+                        {'file': self.pdf_url(), 'consentExternal': True})
+        self.assertIn(r'\section*{一、計算題}', out['tex'])
+        self.assertIn('$x^{2}-5x+6=0$', out['tex'])
 
 
 if __name__ == '__main__':

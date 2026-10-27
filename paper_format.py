@@ -417,10 +417,24 @@ def _render_into(tpl, sections: list[Section], title: str | None = None,
             if q.options and 'option' in proto:
                 per_line = max(1, len(OPTION_RE.findall(proto['option'].text)))
                 if per_line >= 2:
-                    for i in range(0, len(q.options), 2):
-                        op = _clone(tpl, proto['option']._p, sectpr)
+                    # 兩個選項太長時硬排同一行會擠在一起（tab 被推過定位點就失效），
+                    # 這種情況改成一行一個，寧可多佔行也不要疊字。
+                    def too_long(pair):
+                        plain = [MATH_RE.sub(lambda m: 'x' * len(m.group(1)), o) for o in pair]
+                        return sum(len(o) for o in plain) > 36
+
+                    i = 0
+                    while i < len(q.options):
                         pair = q.options[i:i + 2]
-                        _fill_slots_rich(op, pair + [''] * (2 - len(pair)))
+                        if len(pair) == 2 and not too_long(pair):
+                            op = _clone(tpl, proto['option']._p, sectpr)
+                            _fill_slots_rich(op, pair)
+                            i += 2
+                        else:
+                            for single in pair:
+                                op = _clone(tpl, proto['option']._p, sectpr)
+                                _fill_slots_rich(op, [single, ''] if per_line >= 2 else [single])
+                            i += len(pair)
                 else:
                     for opt in q.options:
                         op = _clone(tpl, proto['option']._p, sectpr)
@@ -487,6 +501,16 @@ def parse_content_bytes(data: bytes) -> tuple[list[str], list[Section]]:
         else:
             preamble.append(text)
     return preamble, [s for s in sections if s.questions]
+
+
+def render_with_sections(template_bytes: bytes, sections: list[Section],
+                         title: str | None = None) -> tuple[bytes, dict]:
+    """已經有 Section 物件時用這個（例如 PDF 由 AI 轉寫出來的內容）。"""
+    tpl = Document(io.BytesIO(template_bytes))
+    report = _render_into(tpl, sections, title)
+    buf = io.BytesIO()
+    tpl.save(buf)
+    return buf.getvalue(), report
 
 
 def render_bytes(template_bytes: bytes, content_bytes: bytes) -> tuple[bytes, dict]:
