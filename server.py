@@ -5075,7 +5075,9 @@ class Application:
             if not sections:
                 fail(422, '這份 Word 裡找不到題目（題號要長得像「1. …」）。')
             title = head[0] if head else None
-            tex = latex_export.to_tex(title, sections, position, preamble)
+            subtitle = [line for line in head[1:] if str(line).strip()]
+            tex = latex_export.to_tex(title, sections, position, preamble,
+                                      subtitle_lines=subtitle)
             filename = (title or '試卷').replace('/', '／')[:60] + '.tex'
             return {'tex': tex, 'filename': filename,
                     'stats': {'sections': len(sections),

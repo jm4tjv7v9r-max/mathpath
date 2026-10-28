@@ -21,6 +21,8 @@ DEFAULT_PREAMBLE = r"""% !TEX program = xelatex
 \usepackage{enumitem}
 \setlength{\parindent}{0pt}
 \pagestyle{plain}
+% 大題標題靠左（ctex 預設置中，跟原卷不一致）
+\ctexset{section/format=\Large\bfseries\raggedright}
 """
 
 ESCAPES = {
@@ -175,10 +177,15 @@ def option_lines(options: list[str], per_line: int = 4) -> list[str]:
 
 
 def to_tex(title: str | None, sections, marks_position: str = 'none',
-           preamble: str | None = None, options_per_line: int = 4) -> str:
+           preamble: str | None = None, options_per_line: int = 4,
+           subtitle_lines: list[str] | None = None) -> str:
     lines = [(preamble or DEFAULT_PREAMBLE).rstrip(), '', r'\begin{document}', '']
     if title:
         lines += [r'\begin{center}', r'{\Large\bfseries ' + tex_of(title) + '}', r'\end{center}', '']
+    # 副標題、姓名班別那幾行靠左，不跟卷名一起置中
+    for line in subtitle_lines or []:
+        if str(line).strip():
+            lines += [r'{\small ' + tex_of(str(line)) + '}', '']
 
     number = 0
     for section in sections:
@@ -210,6 +217,6 @@ def to_tex(title: str | None, sections, marks_position: str = 'none',
 
 
 def to_tex_bytes(title, sections, marks_position='none', preamble=None,
-                 options_per_line: int = 4) -> bytes:
+                 options_per_line: int = 4, subtitle_lines=None) -> bytes:
     return to_tex(title, sections, marks_position, preamble,
-                  options_per_line).encode('utf-8')
+                  options_per_line, subtitle_lines).encode('utf-8')

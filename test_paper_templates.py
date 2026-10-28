@@ -17,6 +17,7 @@ import latex_export
 import omml
 import paper_format
 import server
+from docx.enum.text import WD_ALIGN_PARAGRAPH
 
 DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
 
@@ -49,6 +50,7 @@ TEMPLATE = [
 def content_docx():
     doc = Document()
     doc.add_paragraph('中三數學 小測')
+    doc.add_paragraph('(本題目卷共兩頁，禁止使用計算機)')
     p = doc.add_paragraph('一、計算題')
     q = doc.add_paragraph('1.　解方程 ')
     q._p.append(omml.latex_to_omml('x^{2}-5x+6=0'))
@@ -91,6 +93,21 @@ def content_with_options():
     doc.add_paragraph('1.　下列哪一個是質數？')
     for option in ('A.　4', 'B.　6', 'C.　9', 'D.　11'):
         doc.add_paragraph(option)
+    buf = io.BytesIO()
+    doc.save(buf)
+    return buf.getvalue()
+
+
+def make_docx_with_centered_subtitle():
+    """範本把副標題置中——套版後要變成靠左。"""
+    doc = Document()
+    title = doc.add_paragraph('某某中學 數學測驗')
+    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    sub = doc.add_paragraph('(禁止使用計算機)')
+    sub.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    doc.add_paragraph('一、選擇題：(每題 4 分)')
+    doc.add_paragraph('1.　下列哪一個是質數？（　　）')
+    doc.add_paragraph('A.　4\tB.　6')
     buf = io.BytesIO()
     doc.save(buf)
     return buf.getvalue()
@@ -173,6 +190,20 @@ class PaperTemplateTests(unittest.TestCase):
         self.assertEqual(sum(1 for c in options[0]._p if c.tag.endswith('}oMath')), 0,
                          f'選項行不該帶著範本的方程式：{line}')
 
+    def test_subtitle_under_the_title_goes_left(self):
+        """卷名置中，但它下面的副標題要跟原卷一樣靠左。"""
+        template = self.call('POST', '/api/paper-templates',
+                             {'name': '副標題置中的範本',
+                              'file': data_url(make_docx_with_centered_subtitle())})['template']
+        out = self.call('POST', f"/api/paper-templates/{template['id']}/apply",
+                        {'file': data_url(content_with_options())})
+        doc = Document(io.BytesIO(base64.b64decode(out['docx'].split(',', 1)[1])))
+        subtitle = next(p for p in doc.paragraphs if '禁止使用計算機' in p.text)
+        self.assertEqual(subtitle.paragraph_format.alignment, WD_ALIGN_PARAGRAPH.LEFT)
+        title = next(p for p in doc.paragraphs if '小測' in p.text)
+        self.assertEqual(title.paragraph_format.alignment, WD_ALIGN_PARAGRAPH.CENTER,
+                         '卷名本身還是要置中')
+
     def test_rejects_non_docx(self):
         self.call('POST', '/api/paper-templates',
                   {'name': '壞檔', 'file': data_url(b'not a zip')}, expect=400)
@@ -196,6 +227,9 @@ class PaperTemplateTests(unittest.TestCase):
         self.assertIn(r'\begin{enumerate}', tex)
         self.assertIn('$x^{2}-5x+6=0$', tex, '公式要原樣輸出，不能再轉義')
         self.assertIn(r'\frac{1}{2}+\frac{1}{3}', tex)
+        self.assertIn('(本題目卷共兩頁，禁止使用計算機)', tex, '副標題不能掉')
+        self.assertNotIn('禁止使用計算機', tex.split(r'\end{center}')[0],
+                         '副標題要放在卷名下面、靠左')
         self.assertEqual(out['stats']['questions'], 2)
         self.assertTrue(out['filename'].endswith('.tex'))
 
@@ -376,6 +410,16 @@ class LatexExportTests(unittest.TestCase):
         tex = self.build(['A. $\\text{4x+3y-3=0 }$', 'B. $-1\\text{或}5$'])
         self.assertIn('$4x+3y-3=0$', tex)
         self.assertIn(r'\text{或}', tex, '中文要留在 \\text 裡')
+
+    def test_subtitle_sits_below_the_title_and_goes_left(self):
+        section = paper_format.Section(title='一、選擇題', questions=[
+            paper_format.Question(stem='求 $x$。', options=['A. $1$'])])
+        tex = latex_export.to_tex('卷名', [section],
+                                  subtitle_lines=['(禁止使用計算機)', '高一＿班　姓名：＿＿'])
+        above, below = tex.split(r'\end{center}', 1)
+        self.assertNotIn('禁止使用計算機', above, '副標題不該跟卷名一起置中')
+        self.assertIn('禁止使用計算機', below)
+        self.assertIn(r'{\small ', below)
 
     def test_fill_in_blanks_are_solid_rules(self):
         tex = self.build(['A. 1'], stem='斜率 $k=$____________。')

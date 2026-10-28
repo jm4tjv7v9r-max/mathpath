@@ -447,9 +447,13 @@ def _render_into(tpl, sections: list[Section], title: str | None = None,
 
     cloned_head = [_clone(tpl, paragraphs[i]._p, sectpr) for i in head_idx]
     if title:
-        for p in cloned_head:
+        for index, p in enumerate(cloned_head):
             if classify(p.text, p) == 'other' and p.runs:
                 _fill(p, [title])
+                # 卷名之後的副標題、姓名班別那幾行靠左（範本常常把它們置中）
+                for sub in cloned_head[index + 1:]:
+                    if sub.text.strip():
+                        sub.alignment = WD_ALIGN_PARAGRAPH.LEFT
                 break
 
     number = 1
