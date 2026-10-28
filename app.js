@@ -3789,13 +3789,13 @@ async function paperLayoutPage(){
       const mathAsText=$('#paper-math-text').checked;
       const res=await api(`/api/paper-templates/${tid}/apply`,{file:data,consentExternal:isPdf,mathAsText});
       const st=res.stats||{};
-      $('#paper-result').innerHTML=`<div class="layout-result">
-        <div><strong>排好了</strong><span class="small-text">${st.sections||0} 個分部 · ${st.questions||0} 題 · ${st.formulas||0} 條公式${st.tables?` · ⚠️ 範本有 ${st.tables} 個表格未帶入`:''}</span></div>
-        <button class="primary" id="dl-paper">下載 ${esc(res.filename)}</button></div>`;
-      $('#dl-paper').onclick=()=>{const a=document.createElement('a');a.href=res.docx;a.download=res.filename;a.click();};
       // 保存到「我的試卷」：年份／級別／學段先從卷名猜，老師改一下就能存
       const guess=guessPaperMeta(res.content?.title||res.filename);
-      $('#paper-result').innerHTML+=`<div class="panel" style="margin-top:12px;padding:12px">
+      // 一次寫完再綁事件：用 innerHTML += 會把上面剛綁好的下載按鈕換掉，點了沒反應
+      $('#paper-result').innerHTML=`<div class="layout-result">
+        <div><strong>排好了</strong><span class="small-text">${st.sections||0} 個分部 · ${st.questions||0} 題 · ${st.formulas||0} 條公式${st.tables?` · ⚠️ 範本有 ${st.tables} 個表格未帶入`:''}</span></div>
+        <button class="primary" id="dl-paper">下載 ${esc(res.filename)}</button></div>
+      <div class="panel" style="margin-top:12px;padding:12px">
         <p class="field-hint" style="margin:0 0 8px">保存到「我的試卷」：之後可以搜尋、按年份／級別／學段篩選，也能一鍵匯入題庫。</p>
         <div class="layout-row">
           <input id="save-paper-title" value="${esc(guess.title)}" placeholder="卷名">
@@ -3806,6 +3806,7 @@ async function paperLayoutPage(){
         </div>
         <div id="save-paper-result" class="small-text" style="margin-top:8px"></div>
       </div>`;
+      $('#dl-paper').onclick=()=>{const a=document.createElement('a');a.href=res.docx;a.download=res.filename;a.click();};
       $('#save-paper').onclick=async()=>{
         const btn=$('#save-paper');const old=btn.textContent;btn.disabled=true;btn.textContent='保存中…';
         try{

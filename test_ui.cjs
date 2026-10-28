@@ -2849,6 +2849,9 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
     importBody=route.request().postDataJSON();
     return route.fulfill({json:{count:12,questions:[]}});
   });
+  await page.route(/\/api\/papers\/\d+\/to-tex$/,route=>route.fulfill({json:{
+    tex:'\\documentclass{ctexart}\n\\begin{document}x\\end{document}',
+    filename:'培華高二大測一.tex'}}));
   const waitFor=async(fn,ms=8000)=>{const t0=Date.now();
     while(Date.now()-t0<ms){if(fn())return true;await new Promise(r=>setTimeout(r,80));}return false;};
   await page.locator('[data-page=papers]').first().click();
@@ -2862,6 +2865,10 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   await page.locator('#paper-q-go').click();
   assert.ok(await waitFor(()=>/q=%E5%A4%A7%E6%B8%AC/.test(paperQuery)),'搜尋字要帶進查詢：'+paperQuery);
   assert.equal(await page.locator('[data-paper-card]').count(),2,'篩選後清單要還在');
+  const [texFile]=await Promise.all([
+    page.waitForEvent('download',{timeout:6000}),
+    page.locator('[data-paper-tex="11"]').click()]);
+  assert.match(texFile.suggestedFilename(),/\.tex$/,'我的試卷要能下載 .tex');
   await page.locator('[data-paper-card]').first().locator('summary').click();
   const gradePick=await page.locator('[data-paper-grade="11"]').inputValue();
   assert.equal(gradePick,'中五','高二要對應題庫的中五');
@@ -2871,6 +2878,35 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   assert.equal(importBody.grade,'中五');
   assert.equal(importBody.level,2);
   console.log('PASS: 我的試卷（搜尋＋年份／級別／學段篩選、一鍵匯入題庫並帶入年級對應）');
+
+  // 排版完成後的「下載」要真的能按：曾經用 innerHTML += 追加保存表單，
+  // 把剛綁好事件的按鈕換成新的（沒有 onclick），點了完全沒反應。
+  const demoDocx='data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,'
+    +Buffer.from('PK\u0003\u0004demo').toString('base64');
+  await page.route('**/api/paper-templates',route=>route.fulfill({json:{templates:[
+    {id:7,name:'測試範本',createdAt:stamp,spec:{marksPosition:'leading',optionsPerLine:4}}]}}));
+  await page.route('**/api/paper-templates/7/apply',route=>route.fulfill({json:{
+    docx:demoDocx,filename:'培華中學2026年度第一段高二級數學科大測一.docx',
+    stats:{sections:1,questions:2,formulas:1},
+    content:{title:'培華中學2026年度第一段高二級數學科大測一',sections:[{title:'一、選擇題',
+      questions:[{stem:'斜率 $k=$？',marks:3,options:['A. $1$'],lines:[]}]}]}}}));
+  await page.evaluate(()=>paperLayoutPage());
+  await page.locator('#paper-file').waitFor({timeout:8000});
+  await page.locator('#paper-file').setInputFiles({name:'新卷.docx',
+    mimeType:'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    buffer:Buffer.from('PK\u0003\u0004demo')});
+  await page.locator('#paper-apply').click();
+  await page.locator('#dl-paper').waitFor({timeout:8000});
+  assert.ok(await page.evaluate(()=>typeof document.querySelector('#dl-paper').onclick==='function'),
+    '下載按鈕要綁到事件（不能被後面的 innerHTML 換掉）');
+  const [downloaded]=await Promise.all([
+    page.waitForEvent('download',{timeout:6000}),
+    page.locator('#dl-paper').click()]);
+  assert.match(downloaded.suggestedFilename(),/\.docx$/,'按了下載要真的產生檔案');
+  assert.equal(await page.locator('#save-paper-year').inputValue(),'2026','年份要從卷名猜出來');
+  assert.equal(await page.locator('#save-paper-grade').inputValue(),'高二','級別要從卷名猜出來');
+  assert.equal(await page.locator('#save-paper-term').inputValue(),'第一段','學段要從卷名猜出來');
+  console.log('PASS: 排版完成後可以下載 Word，保存表單自動帶出年份／級別／學段');
 
   // 帳號停用：管理員看得到「停用」，已停用的顯示「已停用」與「重新啟用」；
   // 不能停用自己與管理員（按鈕不出現）。實際的登入攔阻由後端測試驗證。
