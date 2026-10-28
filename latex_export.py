@@ -85,13 +85,29 @@ def escape_text(text: str) -> str:
 # 填空的底線：`\_\_\_\_` 連著寫，LaTeX 會在每個底線之間留空隙，看起來像斷掉的虛線。
 # 換成一條實線（長度照原本的底線數）。
 BLANK_RE = re.compile(r'[_＿]{3,}')
+# 連續空白（姓名班別那一行靠它對齊）：LaTeX 會把多個空格併成一個，這裡還原成固定寬度
+SPACE_RUN_RE = re.compile(r'[ \u3000]{2,}')
 
 
 def _blank_rule(m) -> str:
     return r'\rule[-0.6pt]{%.2fem}{0.6pt}' % (len(m.group(0)) * 0.5)
 
 
+def _space_run(m) -> str:
+    return r'\hspace{%.2fem}' % (len(m.group(0)) * 0.5)
+
+
 def text_of(text: str) -> str:
+    out, pos = [], 0
+    for m in SPACE_RUN_RE.finditer(text):
+        out.append(_inline(text[pos:m.start()]))
+        out.append(_space_run(m))
+        pos = m.end()
+    out.append(_inline(text[pos:]))
+    return ''.join(out)
+
+
+def _inline(text: str) -> str:
     out, pos = [], 0
     for m in BLANK_RE.finditer(text):
         out.append(escape_text(text[pos:m.start()]))
@@ -180,12 +196,14 @@ def to_tex(title: str | None, sections, marks_position: str = 'none',
            preamble: str | None = None, options_per_line: int = 4,
            subtitle_lines: list[str] | None = None) -> str:
     lines = [(preamble or DEFAULT_PREAMBLE).rstrip(), '', r'\begin{document}', '']
-    if title:
-        lines += [r'\begin{center}', r'{\Large\bfseries ' + tex_of(title) + '}', r'\end{center}', '']
-    # 副標題、姓名班別那幾行靠左，不跟卷名一起置中
-    for line in subtitle_lines or []:
-        if str(line).strip():
-            lines += [r'{\small ' + tex_of(str(line)) + '}', '']
+    # 卷頭整塊置中：卷名、副標題、姓名班別行
+    subs = [str(s) for s in (subtitle_lines or []) if str(s).strip()]
+    if title or subs:
+        block = []
+        if title:
+            block.append(r'{\Large\bfseries ' + tex_of(title) + '}')
+        block += [r'{\small ' + tex_of(s) + '}' for s in subs]
+        lines += [r'\begin{center}', ' \\\\ '.join(block), r'\end{center}', '']
 
     number = 0
     for section in sections:
