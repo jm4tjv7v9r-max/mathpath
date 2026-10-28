@@ -2827,6 +2827,51 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
     '按 ✕ 要把已選檔案清掉');
   console.log('PASS: 卷面排版只給老師（學生側欄沒入口、直接呼叫回題庫），新卷選了檔案可按 ✕ 刪除');
 
+  // 我的試卷：存好的卷可以搜尋、按年份／級別／學段篩選，一鍵匯入題庫
+  let paperQuery='',importBody=null;
+  const paperFixture=[
+    {id:11,title:'培華高二大測一',year:'2026',grade:'高二',term:'第一段',questionCount:12,
+      importedCount:0,importedAt:null,createdAt:stamp},
+    {id:12,title:'培華初三小測',year:'2025',grade:'初三',term:'第二段',questionCount:8,
+      importedCount:0,importedAt:null,createdAt:stamp}];
+  const paperFacets={years:['2026','2025'],grades:['高二','初三'],terms:['第一段','第二段']};
+  const papersList=route=>{
+    const url=new URL(route.request().url());
+    if(route.request().method()==='POST'){
+      return route.fulfill({json:{paper:{...paperFixture[0],id:13,questionCount:2}}});
+    }
+    paperQuery=url.search;
+    return route.fulfill({json:{papers:paperFixture,facets:paperFacets}});
+  };
+  await page.route(/\/api\/papers$/,papersList);
+  await page.route(/\/api\/papers\?/,papersList);
+  await page.route(/\/api\/papers\/\d+\/to-bank$/,route=>{
+    importBody=route.request().postDataJSON();
+    return route.fulfill({json:{count:12,questions:[]}});
+  });
+  const waitFor=async(fn,ms=8000)=>{const t0=Date.now();
+    while(Date.now()-t0<ms){if(fn())return true;await new Promise(r=>setTimeout(r,80));}return false;};
+  await page.locator('[data-page=papers]').first().click();
+  await page.locator('[data-paper-card]').first().waitFor({timeout:8000});
+  assert.equal(await page.locator('[data-paper-card]').count(),2,'兩份試卷都要列出來');
+  assert.match(await page.locator('#main').innerText(),/培華高二大測一/);
+  assert.match(await page.locator('#main').innerText(),/12 題/,'要顯示題數');
+  await page.locator('#paper-year').selectOption('2026');
+  assert.ok(await waitFor(()=>/year=2026/.test(paperQuery)),'選年份要帶進查詢：'+paperQuery);
+  await page.locator('#paper-q').fill('大測');
+  await page.locator('#paper-q-go').click();
+  assert.ok(await waitFor(()=>/q=%E5%A4%A7%E6%B8%AC/.test(paperQuery)),'搜尋字要帶進查詢：'+paperQuery);
+  assert.equal(await page.locator('[data-paper-card]').count(),2,'篩選後清單要還在');
+  await page.locator('[data-paper-card]').first().locator('summary').click();
+  const gradePick=await page.locator('[data-paper-grade="11"]').inputValue();
+  assert.equal(gradePick,'中五','高二要對應題庫的中五');
+  await page.locator('[data-paper-import="11"]').click();
+  await page.waitForFunction(()=>/已匯入 12 題/.test(document.body.textContent||''),{timeout:8000});
+  assert.equal(importBody.topic,'數與數系','預設分類是題庫第一個');
+  assert.equal(importBody.grade,'中五');
+  assert.equal(importBody.level,2);
+  console.log('PASS: 我的試卷（搜尋＋年份／級別／學段篩選、一鍵匯入題庫並帶入年級對應）');
+
   // 帳號停用：管理員看得到「停用」，已停用的顯示「已停用」與「重新啟用」；
   // 不能停用自己與管理員（按鈕不出現）。實際的登入攔阻由後端測試驗證。
   const rosterHtml=await page.evaluate(()=>[

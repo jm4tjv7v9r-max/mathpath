@@ -817,7 +817,7 @@ if(S.user?.role!=='teacher')nav=nav.filter(([id])=>id!=='import');
 if(S.user?.role==='teacher')nav=nav.filter(([id])=>id!=='growth');
 if(S.user?.role==='teacher'){nav=nav.filter(([id])=>id!=='practice');
   const mi=nav.findIndex(([id])=>id==='mistakes');
-  nav.splice(mi<0?nav.length:mi+1,0,['paper','紙本批改']);const li=nav.findIndex(([id])=>id==='paper');nav.splice(li<0?nav.length:li+1,0,['layout','卷面排版']);const at=nav.findIndex(([id])=>id==='mistakes');nav.splice(at<0?nav.length:at,0,['newq','新增題目']);nav.push(['ai','模型端點']);}$('#nav').innerHTML=nav.map(([id,label])=>`<button class="nav-item ${page===id?'active':''}" data-page="${id}">${icon(id)}<span>${label}</span>${id==='bank'?`<span class="count">${S.user?S.questions.length:'示例'}</span>`:id==='import'?'<span class="new">教師</span>':''}</button>`).join('');$('#settings-nav').innerHTML=icon('settings')+'<span>設定與隱私</span>';$('#settings-nav').classList.toggle('active',page==='settings');$('#font-scale').innerHTML=fontScaleControl();$('#theme-switch').innerHTML=themeControl();$('#account').innerHTML=`<span class="avatar">${S.user?(S.user.role==='teacher'?'師':'學'):'M'}</span><span class="account-info">${S.user?esc(S.user.name):'訪客預覽'}<small>${S.user?(S.user.role==='teacher'?'教師工作空間':'中三數學學習者'):'登入後開始學習'}</small></span>${icon(S.user?'chevron':'logout')}`;$('#avatar').textContent=S.user?(S.user.role==='teacher'?'師':'學'):'M';const labels={guide:'新手上路',homework:S.user?.role==='teacher'?'作業與成績':'我的作業',calendar:'日曆',board:'排行榜',mock:'模擬測驗',ai:'模型端點',bank:'數學題庫',practice:'自主練習',import:'試卷拆題',mistakes:S.user?.role==='teacher'?'作答批閱':'我的錯題本',paper:'紙本批改',layout:'卷面排版',growth:'學習足跡',newq:'新增題目',settings:'設定與隱私'};$('#crumb').textContent=labels[page] || '數學題庫';renderCalculator();}
+  nav.splice(mi<0?nav.length:mi+1,0,['paper','紙本批改']);const li=nav.findIndex(([id])=>id==='paper');nav.splice(li<0?nav.length:li+1,0,['layout','卷面排版']);const pi=nav.findIndex(([id])=>id==='layout');nav.splice(pi<0?nav.length:pi+1,0,['papers','我的試卷']);const at=nav.findIndex(([id])=>id==='mistakes');nav.splice(at<0?nav.length:at,0,['newq','新增題目']);nav.push(['ai','模型端點']);}$('#nav').innerHTML=nav.map(([id,label])=>`<button class="nav-item ${page===id?'active':''}" data-page="${id}">${icon(id)}<span>${label}</span>${id==='bank'?`<span class="count">${S.user?S.questions.length:'示例'}</span>`:id==='import'?'<span class="new">教師</span>':''}</button>`).join('');$('#settings-nav').innerHTML=icon('settings')+'<span>設定與隱私</span>';$('#settings-nav').classList.toggle('active',page==='settings');$('#font-scale').innerHTML=fontScaleControl();$('#theme-switch').innerHTML=themeControl();$('#account').innerHTML=`<span class="avatar">${S.user?(S.user.role==='teacher'?'師':'學'):'M'}</span><span class="account-info">${S.user?esc(S.user.name):'訪客預覽'}<small>${S.user?(S.user.role==='teacher'?'教師工作空間':'中三數學學習者'):'登入後開始學習'}</small></span>${icon(S.user?'chevron':'logout')}`;$('#avatar').textContent=S.user?(S.user.role==='teacher'?'師':'學'):'M';const labels={guide:'新手上路',homework:S.user?.role==='teacher'?'作業與成績':'我的作業',calendar:'日曆',board:'排行榜',mock:'模擬測驗',ai:'模型端點',bank:'數學題庫',practice:'自主練習',import:'試卷拆題',mistakes:S.user?.role==='teacher'?'作答批閱':'我的錯題本',paper:'紙本批改',layout:'卷面排版',papers:'我的試卷',growth:'學習足跡',newq:'新增題目',settings:'設定與隱私'};$('#crumb').textContent=labels[page] || '數學題庫';renderCalculator();}
 
 let calCursor=null,calSelected=null;
 const calPad=n=>String(n).padStart(2,'0');
@@ -3575,6 +3575,112 @@ function layoutTemplateHtml(list,current){
       <button type="button" class="text-button" data-del-tpl="${t.id}" style="color:#b8453b">刪除</button>
     </label>`;}).join('');
 }
+// 我的試卷：存好的卷可以搜尋、按年份／級別／學段篩選，一鍵把題目匯入題庫。
+let paperFilter={q:'',year:'',grade:'',term:''};
+const PAPER_GRADES=['中一','中二','中三','中四','中五','中六'];
+const PAPER_GRADE_ALIAS={初一:'中一',初二:'中二',初三:'中三',高一:'中四',高二:'中五',高三:'中六'};
+const bankGrade=g=>PAPER_GRADES.includes(g)?g:(PAPER_GRADE_ALIAS[g]||'中三');
+// 卷名裡通常就寫了年份／級別／學段，保存時先幫老師填好
+function guessPaperMeta(title){
+  const s=String(title||'');
+  return {title:s||'未命名試卷',
+    year:(s.match(/20\d{2}/)||[''])[0],
+    grade:(s.match(/高[一二三]|初[一二三]|中[一二三四五六]/)||[''])[0],
+    term:(s.match(/第[一二三四]段/)||[''])[0]};
+}
+function paperCardHtml(p){
+  const meta=[p.year,p.grade,p.term].filter(Boolean).join(' · ');
+  const imported=p.importedCount?` · 已匯入 ${p.importedCount} 題`:'';
+  return `<section class="panel panel-pad" style="margin-bottom:12px" data-paper-card="${p.id}">
+    <div class="layout-result" style="margin:0">
+      <div><strong>${esc(p.title)}</strong>
+        <span class="small-text">${esc(meta)}${meta?' · ':''}${p.questionCount} 題${esc(imported)}</span></div>
+      <div class="paper-card-actions">
+        <button class="secondary" data-paper-tex="${p.id}">下載 .tex</button>
+        <button class="text-button" data-paper-del="${p.id}" style="color:#b8453b">刪除</button>
+      </div>
+    </div>
+    <details class="paper-import" style="margin-top:10px">
+      <summary class="text-button">一鍵匯入題庫（${p.questionCount} 題）</summary>
+      <div class="layout-row" style="margin-top:8px">
+        <label class="small-text">分類<select data-paper-topic="${p.id}">${topics.map(t=>`<option>${esc(t)}</option>`).join('')}</select></label>
+        <label class="small-text">年級<select data-paper-grade="${p.id}">${PAPER_GRADES.map(g=>`<option ${g===bankGrade(p.grade)?'selected':''}>${g}</option>`).join('')}</select></label>
+        <label class="small-text">難度<select data-paper-level="${p.id}"><option value="1">易</option><option value="2" selected>中</option><option value="3">難</option></select></label>
+        <button class="primary" data-paper-import="${p.id}">確認匯入</button>
+      </div>
+      <p class="field-hint">答案留空，匯入後在題庫補（會標成「待核驗」）；題型按有無選項自動判斷。</p>
+    </details>
+  </section>`;
+}
+async function papersPage(){
+  if(S.user?.role!=='teacher')return bank();
+  beginView();page='papers';shell();
+  const target=viewTarget();
+  const qs=new URLSearchParams();
+  ['q','year','grade','term'].forEach(k=>{if(paperFilter[k])qs.set(k,paperFilter[k]);});
+  const head=heading('PAPER LIBRARY','我的試卷','存好的卷可以在這裡搜尋、按年份／級別／學段篩選，一鍵把題目匯入題庫。');
+  let data={papers:[],facets:{years:[],grades:[],terms:[]}};
+  try{data=await api('/api/papers'+(qs.toString()?'?'+qs.toString():''));}
+  catch(e){if(!viewMatches(target))return;
+    $('#main').innerHTML=`<div class="fade-in">${head}<section class="panel"><div class="inline-error">${esc(e.message)}</div></section></div>`;return;}
+  if(!viewMatches(target))return;
+  const f=data.facets||{};
+  const pick=(list,cur,label)=>`<option value="">${label}</option>`+
+    (list||[]).map(v=>`<option ${v===cur?'selected':''}>${esc(v)}</option>`).join('');
+  $('#main').innerHTML=`<div class="fade-in">${head}
+    <section class="panel panel-pad" style="margin-bottom:16px">
+      <div class="layout-row">
+        <input id="paper-q" placeholder="搜尋卷名或題目文字" value="${esc(paperFilter.q)}">
+        <select id="paper-year">${pick(f.years,paperFilter.year,'全部年份')}</select>
+        <select id="paper-grade">${pick(f.grades,paperFilter.grade,'全部級別')}</select>
+        <select id="paper-term">${pick(f.terms,paperFilter.term,'全部學段')}</select>
+        <button class="primary" id="paper-q-go">搜尋</button>
+        <button class="secondary" id="paper-q-clear">清除</button>
+      </div>
+      <p class="field-hint" style="margin-top:8px">共 ${data.papers.length} 份試卷</p>
+    </section>
+    ${data.papers.length?data.papers.map(paperCardHtml).join('')
+      :empty('還沒有試卷','在「卷面排版」排好一份卷之後，按「保存到我的試卷」就會出現在這裡。')}
+  </div>`;
+  const applyFilter=()=>{papersPage();};
+  const go=$('#paper-q-go');
+  if(go)go.onclick=()=>{paperFilter.q=($('#paper-q').value||'').trim();applyFilter();};
+  const box=$('#paper-q');
+  if(box)box.onkeydown=e=>{if(e.key==='Enter'){paperFilter.q=(box.value||'').trim();applyFilter();}};
+  [['#paper-year','year'],['#paper-grade','grade'],['#paper-term','term']].forEach(([sel,key])=>{
+    const el=$(sel);if(el)el.onchange=()=>{paperFilter[key]=el.value;applyFilter();};});
+  const clear=$('#paper-q-clear');
+  if(clear)clear.onclick=()=>{paperFilter={q:'',year:'',grade:'',term:''};applyFilter();};
+  $$('[data-paper-del]').forEach(b=>b.onclick=async()=>{
+    if(!confirm('刪除這份試卷？已匯入題庫的題目不受影響。'))return;
+    try{await fetch('/api/papers/'+b.dataset.paperDel,{method:'DELETE',credentials:'same-origin'})
+      .then(async r=>{const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.error||'刪除失敗');});
+      toast('已刪除');papersPage();
+    }catch(e){toast(e.message);}
+  });
+  $$('[data-paper-tex]').forEach(b=>b.onclick=async()=>{
+    const old=b.textContent;b.disabled=true;b.textContent='產生中…';
+    try{
+      const res=await api('/api/papers/'+b.dataset.paperTex+'/to-tex',{});
+      const blob=new Blob([res.tex],{type:'text/x-tex;charset=utf-8'});
+      const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=res.filename;a.click();
+    }catch(e){toast(e.message);}
+    b.disabled=false;b.textContent=old;
+  });
+  $$('[data-paper-import]').forEach(b=>b.onclick=async()=>{
+    const id=b.dataset.paperImport;
+    const body={topic:$(`[data-paper-topic="${id}"]`).value,
+                grade:$(`[data-paper-grade="${id}"]`).value,
+                level:Number($(`[data-paper-level="${id}"]`).value)};
+    const old=b.textContent;b.disabled=true;b.textContent='匯入中…';
+    try{
+      const res=await api('/api/papers/'+id+'/to-bank',body);
+      toast(`已匯入 ${res.count} 題到題庫`);
+      await refresh().catch(()=>{});   // 題庫清單與側欄題數跟著更新
+      papersPage();
+    }catch(e){toast(e.message);b.disabled=false;b.textContent=old;}
+  });
+}
 async function paperLayoutPage(){
   // 卷面排版是教師功能：學生連入口都不該看到，直接回題庫（側欄也不會出現）
   if(S.user?.role!=='teacher')return bank();
@@ -3687,6 +3793,37 @@ async function paperLayoutPage(){
         <div><strong>排好了</strong><span class="small-text">${st.sections||0} 個分部 · ${st.questions||0} 題 · ${st.formulas||0} 條公式${st.tables?` · ⚠️ 範本有 ${st.tables} 個表格未帶入`:''}</span></div>
         <button class="primary" id="dl-paper">下載 ${esc(res.filename)}</button></div>`;
       $('#dl-paper').onclick=()=>{const a=document.createElement('a');a.href=res.docx;a.download=res.filename;a.click();};
+      // 保存到「我的試卷」：年份／級別／學段先從卷名猜，老師改一下就能存
+      const guess=guessPaperMeta(res.content?.title||res.filename);
+      $('#paper-result').innerHTML+=`<div class="panel" style="margin-top:12px;padding:12px">
+        <p class="field-hint" style="margin:0 0 8px">保存到「我的試卷」：之後可以搜尋、按年份／級別／學段篩選，也能一鍵匯入題庫。</p>
+        <div class="layout-row">
+          <input id="save-paper-title" value="${esc(guess.title)}" placeholder="卷名">
+          <input id="save-paper-year" value="${esc(guess.year)}" placeholder="年份（2026）" style="max-width:130px">
+          <input id="save-paper-grade" value="${esc(guess.grade)}" placeholder="級別（高二）" style="max-width:130px">
+          <input id="save-paper-term" value="${esc(guess.term)}" placeholder="學段（第一段）" style="max-width:130px">
+          <button class="secondary" id="save-paper">保存到我的試卷</button>
+        </div>
+        <div id="save-paper-result" class="small-text" style="margin-top:8px"></div>
+      </div>`;
+      $('#save-paper').onclick=async()=>{
+        const btn=$('#save-paper');const old=btn.textContent;btn.disabled=true;btn.textContent='保存中…';
+        try{
+          const out=await api('/api/papers',{
+            title:($('#save-paper-title').value||'').trim()||guess.title,
+            year:($('#save-paper-year').value||'').trim(),
+            grade:($('#save-paper-grade').value||'').trim(),
+            term:($('#save-paper-term').value||'').trim(),
+            sections:res.content?.sections||[]});
+          btn.textContent='已保存';btn.disabled=true;
+          $('#save-paper-result').innerHTML=`已存進「我的試卷」：<button class="text-button" data-page="papers">去看看</button>`;
+          const go=$('#save-paper-result [data-page=papers]');
+          if(go)go.onclick=()=>papersPage();
+          toast(`已保存（${out.paper?.questionCount||0} 題）`);
+          return;
+        }catch(e){toast(e.message);}
+        btn.disabled=false;btn.textContent=old;
+      };
       btn.disabled=false;btn.textContent=old;
     }catch(e){toast(e.message);btn.disabled=false;btn.textContent=old;}
   };
@@ -4037,7 +4174,7 @@ $('#bulk-class-toggle').onchange=e=>{$('#bulk-class-field').hidden=!e.target.che
 $('#bulk-submit').onclick=async()=>{const {rows,errors}=bulkPreview();if(errors.length)return toast('請先修正名單格式錯誤。');if(!rows.length)return toast('請輸入至少一位學生。');if(rows.length>200)return toast('每批最多200位學生。');const makeClass=$('#bulk-class-toggle').checked,className=$('#bulk-class-name').value.trim();if(makeClass&&!className)return toast('請填寫班級名稱，或取消建立班級。');const b=$('#bulk-submit');b.disabled=true;b.textContent='正在建立…';try{const {users:created}=await api('/api/users/bulk',{students:rows.map(r=>({username:r.username,name:r.name,seat:r.seat,password:r.password}))});let classNote='';if(makeClass){try{const {class:room}=await api('/api/classes',{name:className,studentIds:created.map(u=>u.id)});classNote=`<div class="hint-box" style="margin-top:12px">已同時建立班級「${esc(room.name)}」，共 ${room.studentCount} 位學生，可直接佈置作業。</div>`;}catch(err){classNote=`<div class="inline-error" style="margin-top:12px">帳戶已建立，但班級未建立：${esc(err.message)}可在「作業與成績」重新建立班級。</div>`;}}const merged=rows.map((r,i)=>({username:r.username,password:r.password,name:(created[i]&&created[i].name)||r.name||r.username,seat:(created[i]&&created[i].seat)||r.seat||''}));const hasName=merged.some(r=>r.name!==r.username),hasSeat=merged.some(r=>r.seat);const cols=[['學號',r=>r.username]].concat(hasName?[['姓名',r=>r.name]]:[],hasSeat?[['班內號',r=>r.seat]]:[],[['密碼',r=>r.password]]);const text=[cols.map(c=>c[0]).join('\t'),...merged.map(r=>cols.map(c=>c[1](r)).join('\t'))].join('\n');$('#bulk-result').innerHTML=`<div class="import-warning">已建立 ${created.length} 個帳戶${merged.some(r=>r.name===r.username)?`（${merged.filter(r=>r.name===r.username).length} 個未填姓名，以學號顯示）`:""}。密碼只會顯示這一次，請立即複製並私下發給學生。</div>${classNote}<pre class="code-block">${esc(text)}</pre><button class="secondary wide" id="bulk-copy" style="margin-top:10px">${icon('file')}複製帳號密碼</button>`;$('#bulk-copy').onclick=async()=>{try{await navigator.clipboard.writeText(text);toast('已複製，請妥善保管。');}catch{toast('無法自動複製，請手動選取。');}};$('#bulk-students').value='';$('#bulk-class-toggle').checked=false;$('#bulk-class-field').hidden=true;$('#bulk-class-name').value='';bulkPreview();toast(`已建立 ${created.length} 個學生帳戶。`);}catch(err){$('#bulk-error').textContent=err.message;}finally{b.disabled=false;b.innerHTML=icon('upload')+'批次建立學生帳戶';}};}catch(e){toast(e.message);}}
 function deploymentHelp(){modal(`<p class="eyebrow">SERVER SETUP</p><h2>啟動與部署說明</h2><p class="modal-intro">資料保存在網站伺服器；實際位置由管理員確認。以下是可選部署方式，不代表目前網站的部署狀態。</p><h3>本機預覽</h3><p class="info-note">雙擊 start.command，或用 Python 3 啟動：</p><pre class="code-block">python3 server.py --host 127.0.0.1 --port 8765</pre><p class="info-note">瀏覽器開啟 http://127.0.0.1:8765。</p><h3>校內連線</h3><p class="info-note">由資訊人員將 --host 設為伺服器的校內 IP，並限制防火牆只允許校內來源；正式使用需反向代理 HTTPS。不要把演示帳戶直接用於全校。</p><h3>目前帳戶範圍</h3><p class="info-note">初始演示配置包含學生與教師帳戶；實際帳戶由管理員確認。教師可在「設定與隱私」建立獨立學生帳戶，避免共用作答紀錄。可在「作業與成績」建立班級並發布作業；校內單一登入及批量帳戶管理仍可再擴充。</p><div class="import-warning">資料保存在網站伺服器；實際位置由管理員確認。預設資料庫路徑為 data/mathpath.sqlite3；備份及保存年限應按學校規定安排。AI 必須另行配置，未配置時手写作答由教師批閱。</div>`);}
 function navigate(target){if(busy)return toast('目前操作正在進行，請等待完成。');preserveDraft();if(page==='practice'&&strokes.length&&target!=='practice'&&!lastResult&&!confirm('尚未提交的手寫內容未保存。確定離開？'))return;beginView();$('#sidebar').classList.remove('open');if(target!=='practice'){assignmentContext=null;mockContext=null;stopQuizClock();}page=target;switch(target){case'guide':guidePage();break;
-case'homework':homeworkPage();break;case'calendar':calendarPage();break;case'board':leaderboardPage();break;case'mock':mockPage();break;case'ai':aiConfigPage();break;case'bank':bank();break;case'practice':practice();break;case'import':importPage();break;case'newq':newQuestionPage();break;case'mistakes':recordsPage();break;case'paper':paperGradePage();break;case'layout':paperLayoutPage();break;case'growth':growthPage();break;case'settings':settingsPage();break;default:bank();}window.scrollTo({top:0,behavior:'instant'});}
+case'homework':homeworkPage();break;case'calendar':calendarPage();break;case'board':leaderboardPage();break;case'mock':mockPage();break;case'ai':aiConfigPage();break;case'bank':bank();break;case'practice':practice();break;case'import':importPage();break;case'newq':newQuestionPage();break;case'mistakes':recordsPage();break;case'paper':paperGradePage();break;case'layout':paperLayoutPage();break;case'papers':papersPage();break;case'growth':growthPage();break;case'settings':settingsPage();break;default:bank();}window.scrollTo({top:0,behavior:'instant'});}
 document.addEventListener('click',e=>{const b=e.target.closest('button');if(!b||b.disabled)return;if(b.dataset.fontScale){applyFontScale(b.dataset.fontScale);shell();toast(`字體已設為「${FONT_SCALES.find(([id])=>id===b.dataset.fontScale)[1]}」，只影響這台裝置。`);return;}
 if(b.dataset.themeId){applyTheme(b.dataset.themeId);shell();toast(`版面已設為「${THEMES.find(([id])=>id===b.dataset.themeId)[1]}」，只影響這台裝置。`);return;}
 if(b.id==='open-math-editor'){openMathEditor();return;}

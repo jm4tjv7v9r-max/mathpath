@@ -2251,6 +2251,101 @@ def paper_template_public(row):
             'spec': json.loads(row['spec'] or '{}')}
 
 
+# ── 我的試卷：存好的卷、搜尋篩選、一鍵匯入題庫 ────────────────────────
+# 試卷的「級別」用學校寫法（初一…高三），題庫用的是中一…中六；匯入時對應。
+GRADE_ALIASES = {'初一': '中一', '初二': '中二', '初三': '中三',
+                 '高一': '中四', '高二': '中五', '高三': '中六',
+                 '一年級': '中一', '二年級': '中二', '三年級': '中三',
+                 '小一': '中一', '小二': '中二', '小六': '中六'}
+
+
+def bank_grade(value: str) -> str:
+    """試卷的級別 → 題庫接受的年級；認不出來就用中三（本站的預設年級）。"""
+    raw = (value or '').strip()
+    if raw in GRADES:
+        return raw
+    return GRADE_ALIASES.get(raw, '中三')
+
+
+def paper_public(row, detail: bool = False) -> dict:
+    data = {'id': row['id'], 'title': row['title'], 'year': row['year'],
+            'grade': row['grade'], 'term': row['term'],
+            'questionCount': row['question_count'],
+            'importedAt': row['imported_at'] if 'imported_at' in row.keys() else None,
+            'importedCount': row['imported_count'] if 'imported_count' in row.keys() else 0,
+            'createdAt': row['created_at']}
+    if detail:
+        data['sections'] = json.loads(row['sections'] or '[]')
+    return data
+
+
+def paper_sections_valid(raw):
+    """存起來的卷只留「分部標題＋題幹／選項／配分」，不存任何可執行內容。"""
+    if not isinstance(raw, list) or not 1 <= len(raw) <= 30:
+        fail(400, '試卷必須包含 1 至 30 個分部。')
+    sections = []
+    for section in raw:
+        if not isinstance(section, dict):
+            fail(400, '分部必須是物件。')
+        title = text(section.get('title') or '', '分部標題', 200, empty=True)
+        questions = section.get('questions')
+        if not isinstance(questions, list) or not 1 <= len(questions) <= 100:
+            fail(400, '每個分部必須包含 1 至 100 題。')
+        items = []
+        for item in questions:
+            if not isinstance(item, dict):
+                fail(400, '題目必須是物件。')
+            stem = text(item.get('stem') or '', '題幹', MAX_TEXT)
+            marks = item.get('marks')
+            if marks is not None:
+                try:
+                    marks = int(round(float(marks)))
+                except (TypeError, ValueError):
+                    fail(400, '配分必須是數字。')
+                marks = number(marks, '配分', 0, 1000, True)
+            options = [text(o, '選項', 600, empty=True) for o in (item.get('options') or [])][:10]
+            lines = [text(l, '續行', 600, empty=True) for l in (item.get('lines') or [])][:10]
+            items.append({'stem': stem, 'marks': marks, 'options': options, 'lines': lines})
+        sections.append({'title': title or None, 'questions': items})
+    return sections
+
+
+def paper_question_type(stem: str, options: list[str]) -> str:
+    if len(options) >= 2:
+        return '選擇題'
+    if re.search(r'[_＿]{3,}', stem):
+        return '填空題'
+    return '解答題'
+
+
+def paper_bank_payload(item: dict, meta: dict) -> dict:
+    """一題試卷題目 → 題庫題目。答案留空，等老師在題庫補。"""
+    stem = (item.get('stem') or '').strip()
+    options = []
+    for index, option in enumerate(item.get('options') or []):
+        # 選項自帶「A. 」就拆掉，題庫自己編號
+        cleaned = re.sub(r'^\s*[(（]?[A-Da-d]\s*[.、)．]\s*', '', str(option)).strip()
+        if cleaned:
+            options.append(cleaned)
+    qtype = paper_question_type(stem, options)
+    if qtype != '選擇題':
+        options = []
+    marks = item.get('marks')
+    points = max(1, min(100, round(float(marks)))) if marks else 1
+    return {'title': (stem[:60] or '未命名題目'),
+            'content': stem,
+            'topic': meta['topic'],
+            'level': meta['level'],
+            'points': points,
+            'answer': '',
+            'qtype': qtype,
+            'options': options,
+            'grade': meta['grade'],
+            'source': meta['source'],
+            # 答案還空著，跟「全自動拆題」一樣標成待核驗，老師在題庫一眼找得到
+            'tags': ['試卷匯入', '待核驗']}
+
+
 def decode_docx(value):
     """收 .docx 的 dataURL；順手確認它真的是 ZIP（docx 的開頭）。"""
     data, _ = decode_data_url(value, (DOCX_MIME,), limit=MAX_DOCX)
@@ -4033,6 +4128,18 @@ class Application:
                     data BLOB NOT NULL,
                     spec TEXT NOT NULL DEFAULT '{}',
                     created_at TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS papers (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    owner_id INTEGER NOT NULL REFERENCES users(id),
+                    title TEXT NOT NULL,
+                    year TEXT NOT NULL DEFAULT '',
+                    grade TEXT NOT NULL DEFAULT '',
+                    term TEXT NOT NULL DEFAULT '',
+                    sections TEXT NOT NULL DEFAULT '[]',
+                    question_count INTEGER NOT NULL DEFAULT 0,
+                    imported_at TEXT,
+                    imported_count INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS sessions (
                     token_hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id),
                     expires REAL NOT NULL);
@@ -5167,6 +5274,10 @@ class Application:
                     output, report = paper_format.render_with_sections(
                         row['data'], sections, title, math_as_text=math_as_text)
                 else:
+                    try:
+                        _, sections = paper_format.parse_content_bytes(data)
+                    except Exception:
+                        fail(422, '讀不到這份 Word 的內容，請確認檔案沒有損壞。')
                     output, report = paper_format.render_bytes(
                         row['data'], data, math_as_text=math_as_text)
             except SystemExit as exc:
@@ -5176,7 +5287,129 @@ class Application:
                 fail(422, '排版失敗：這份 Word 的結構讀不出來（可能是表格或文字方塊排版）。')
             filename = (report.get('title') or '排版結果').replace('/', '／')[:60] + '.docx'
             return {'docx': 'data:' + DOCX_MIME + ';base64,' + base64.b64encode(output).decode(),
-                    'filename': filename, 'stats': report}, headers
+                    'filename': filename, 'stats': report,
+                    # 順便把題目內容帶回去，前端按「保存到我的試卷」就不用再上傳一次
+                    'content': {'title': report.get('title'),
+                                'sections': paper_format.sections_to_dict(sections)}}, headers
+
+        # ---------- 我的試卷：存起來、搜尋篩選、一鍵匯入題庫 ----------
+        if path == '/api/papers' and method in ('GET', 'POST'):
+            self.teacher(user)
+            if method == 'POST':
+                fields(body, ('title', 'year', 'grade', 'term', 'sections'),
+                       ('title', 'sections'))
+                title = text(body['title'], '卷名', 200)
+                year = text(body.get('year') or '', '年份', 20, empty=True)
+                grade = text(body.get('grade') or '', '級別', 20, empty=True)
+                term = text(body.get('term') or '', '學段', 20, empty=True)
+                sections = paper_sections_valid(body['sections'])
+                count = sum(len(s['questions']) for s in sections)
+                with self.db() as db:
+                    cur = db.execute(
+                        'INSERT INTO papers(owner_id,title,year,grade,term,sections,'
+                        'question_count,created_at) VALUES(?,?,?,?,?,?,?,?)',
+                        (user['id'], title, year, grade, term,
+                         json.dumps(sections, ensure_ascii=False), count, utc_now()))
+                    row = db.execute('SELECT * FROM papers WHERE id=?',
+                                     (cur.lastrowid,)).fetchone()
+                return {'paper': paper_public(row, detail=True)}, headers
+
+            params = dict(parse_qsl(query or ''))
+            keyword = (params.get('q') or '').strip()[:60]
+            picked = {k: (params.get(k) or '').strip()[:20] for k in ('year', 'grade', 'term')}
+            with self.db() as db:
+                owner_only = not self.is_owner(user, db)
+                scope = ['owner_id=?'] if owner_only else []
+                scope_args = [user['id']] if owner_only else []
+                conds, args = list(scope), list(scope_args)
+                if keyword:
+                    conds.append('(title LIKE ? OR sections LIKE ?)')
+                    args += ['%' + keyword + '%', '%' + keyword + '%']
+                for column, value in picked.items():
+                    if value:
+                        conds.append(f'{column}=?')
+                        args.append(value)
+                sql = 'SELECT * FROM papers'
+                if conds:
+                    sql += ' WHERE ' + ' AND '.join(conds)
+                rows = db.execute(sql + ' ORDER BY id DESC LIMIT 200', args).fetchall()
+
+                def distinct(column):
+                    where = ' AND '.join(scope + [f"{column}<>''"])
+                    return [r[0] for r in db.execute(
+                        f'SELECT DISTINCT {column} FROM papers WHERE {where} '
+                        f'ORDER BY {column} DESC', scope_args)]
+                facets = {'years': distinct('year'), 'grades': distinct('grade'),
+                          'terms': distinct('term')}
+            return {'papers': [paper_public(r) for r in rows], 'facets': facets}, headers
+
+        match = re.fullmatch(r'/api/papers/([1-9]\d{0,17})', path)
+        if match and method in ('GET', 'DELETE'):
+            self.teacher(user)
+            paper_id = int(match[1])
+            with self.db() as db:
+                row = db.execute('SELECT * FROM papers WHERE id=?', (paper_id,)).fetchone()
+                if row is None:
+                    fail(404, '找不到這份試卷。')
+                if row['owner_id'] != user['id'] and not self.is_owner(user, db):
+                    fail(403, '只有建立者或管理員可以處理這份試卷。')
+                if method == 'DELETE':
+                    db.execute('DELETE FROM papers WHERE id=?', (paper_id,))
+                    return {'ok': True}, headers
+            return {'paper': paper_public(row, detail=True)}, headers
+
+        match = re.fullmatch(r'/api/papers/([1-9]\d{0,17})/to-tex', path)
+        if match and method == 'POST':
+            self.teacher(user)
+            paper_id = int(match[1])
+            with self.db() as db:
+                row = db.execute('SELECT * FROM papers WHERE id=?', (paper_id,)).fetchone()
+                if row is None:
+                    fail(404, '找不到這份試卷。')
+                if row['owner_id'] != user['id'] and not self.is_owner(user, db):
+                    fail(403, '只有建立者或管理員可以匯出這份試卷。')
+            sections = paper_format.sections_from_dict(json.loads(row['sections'] or '[]'))
+            if not sections:
+                fail(422, '這份試卷沒有題目。')
+            tex = latex_export.to_tex(row['title'], sections, 'trailing')
+            filename = (row['title'] or '試卷').replace('/', '／')[:60] + '.tex'
+            return {'tex': tex, 'filename': filename}, headers
+
+        match = re.fullmatch(r'/api/papers/([1-9]\d{0,17})/to-bank', path)
+        if match and method == 'POST':
+            self.teacher(user)
+            fields(body, ('topic', 'grade', 'level'), ('topic',))
+            topic = text(body['topic'], '分類', 30)
+            if topic not in TOPICS:
+                fail(400, f'分類必須是題庫提供的知識分類之一：{TOPIC_HINT}。')
+            grade = text(body.get('grade') or '', '年級', 10, empty=True) or '中三'
+            if grade not in GRADES:
+                fail(400, f'年級必須是中一至中六之一：{GRADE_HINT}。')
+            level = number(body.get('level', 2), '難度', 1, 3, True)
+            paper_id = int(match[1])
+            with self.db() as db:
+                row = db.execute('SELECT * FROM papers WHERE id=?', (paper_id,)).fetchone()
+                if row is None:
+                    fail(404, '找不到這份試卷。')
+                if row['owner_id'] != user['id'] and not self.is_owner(user, db):
+                    fail(403, '只有建立者或管理員可以匯入這份試卷。')
+                meta = {'topic': topic, 'grade': grade, 'level': level,
+                        'source': ('試卷：' + row['title'])[:60]}
+                prepared = []
+                for section in json.loads(row['sections'] or '[]'):
+                    for item in section.get('questions') or []:
+                        if not (item.get('stem') or '').strip():
+                            continue
+                        prepared.append(question_valid(paper_bank_payload(item, meta)))
+                if not prepared:
+                    fail(422, '這份試卷沒有可以匯入的題目。')
+                if len(prepared) > 200:
+                    fail(400, '一次最多匯入 200 題。')
+                saved = [self.insert_question(db, q, None, None) for q in prepared]
+                db.execute('UPDATE papers SET imported_at=?, imported_count=? WHERE id=?',
+                           (utc_now(), len(saved), paper_id))
+            return {'count': len(saved),
+                    'questions': [self.question_public(q, user) for q in saved]}, headers
 
         if method == 'GET' and path == '/api/paper-grades':
             # 紙本批改紀錄：教師看自己建的；管理員看全部。

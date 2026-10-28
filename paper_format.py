@@ -410,6 +410,25 @@ def count_formulas(sections: list[Section]) -> int:
     return total
 
 
+def sections_to_dict(sections: list[Section]) -> list[dict]:
+    """存檔用：Section/Question 轉成純 dict（我的試卷、匯入題庫都吃這個）。"""
+    return [asdict(s) for s in sections]
+
+
+def sections_from_dict(data) -> list[Section]:
+    """存檔讀回來：純 dict → Section/Question（匯出 .tex 時用）。"""
+    out = []
+    for section in data or []:
+        questions = [Question(stem=q.get('stem') or '', marks=q.get('marks'),
+                              options=list(q.get('options') or []),
+                              lines=list(q.get('lines') or []))
+                     for q in section.get('questions') or []
+                     if (q.get('stem') or '').strip()]
+        if questions:
+            out.append(Section(title=section.get('title'), questions=questions))
+    return out
+
+
 def _render_into(tpl, sections: list[Section], title: str | None = None,
                  closing: str | None = None,
                  options_per_line: int = DEFAULT_OPTIONS_PER_LINE,

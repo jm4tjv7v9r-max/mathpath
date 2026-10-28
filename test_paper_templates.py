@@ -8,6 +8,7 @@ import io
 import json
 import tempfile
 import unittest
+from urllib.parse import urlencode
 from unittest.mock import patch
 
 from docx import Document
@@ -436,6 +437,146 @@ class LatexExportTests(unittest.TestCase):
         tex = self.build(['A. 1'], stem='斜率 $k=$____________。')
         self.assertIn(r'\rule', tex)
         self.assertNotIn(r'\_\_\_', tex)
+
+
+PAPER_SECTIONS = [{
+    'title': '一、單項選擇題：（@3分，共30分）',
+    'questions': [
+        {'stem': '若 $l_{1}$ 的傾斜角為 $30\\degree$，則 $l_{1}$ 的斜率為(　　)', 'marks': 3,
+         'options': ['A. $\\sqrt{3}$', 'B. $-\\sqrt{3}$',
+                     'C. $\\frac{\\sqrt{3}}{3}$', 'D. $-\\frac{\\sqrt{3}}{3}$'], 'lines': []},
+        {'stem': '直線的斜率 $k=$____________。', 'marks': 2, 'options': [], 'lines': []},
+    ],
+}]
+
+
+class PaperLibraryTests(unittest.TestCase):
+    """我的試卷：存起來、搜尋篩選、一鍵匯入題庫。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.app = server.Application(self.tmp.name, server.ROOT)
+        self.app.initialize()
+        with self.app.db() as db:
+            teacher = db.execute("SELECT * FROM users WHERE role='teacher' ORDER BY id LIMIT 1").fetchone()
+            student = db.execute("SELECT * FROM users WHERE role='student' ORDER BY id LIMIT 1").fetchone()
+        self.teacher = dict(teacher) if teacher else None
+        self.student = dict(student) if student else None
+        if not self.teacher:
+            self.skipTest('沒有教師帳號')
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def call(self, method, path, body=None, user=None, expect=200, query=''):
+        try:
+            payload, _ = self.app.dispatch(method, path, body or {}, user or self.teacher,
+                                           None, '127.0.0.1', query)
+        except server.APIError as exc:
+            self.assertEqual(exc.status, expect, exc.message)
+            return {'error': exc.message}
+        self.assertEqual(expect, 200)
+        return payload
+
+    def save(self, **override):
+        body = {'title': '培華高二大測一', 'year': '2026', 'grade': '高二',
+                'term': '第一段', 'sections': PAPER_SECTIONS}
+        body.update(override)
+        return self.call('POST', '/api/papers', body)['paper']
+
+    def test_save_and_list(self):
+        paper = self.save()
+        self.assertEqual(paper['questionCount'], 2)
+        self.assertEqual(paper['year'], '2026')
+        listed = self.call('GET', '/api/papers')
+        self.assertEqual([p['id'] for p in listed['papers']], [paper['id']])
+        self.assertEqual(listed['facets'], {'years': ['2026'], 'grades': ['高二'], 'terms': ['第一段']})
+
+    def test_search_and_filters(self):
+        first = self.save()
+        second = self.save(title='培華初三小測', year='2025', grade='初三', term='第二段',
+                           sections=[{'title': '二、填空題', 'questions': [
+                               {'stem': '計算 $1+1=$______。', 'marks': 2,
+                                'options': [], 'lines': []}]}])
+        by_year = self.call('GET', '/api/papers', query=urlencode({'year': '2026'}))
+        self.assertEqual([p['id'] for p in by_year['papers']], [first['id']])
+        by_grade = self.call('GET', '/api/papers', query=urlencode({'grade': '初三'}))
+        self.assertEqual([p['id'] for p in by_grade['papers']], [second['id']])
+        by_term = self.call('GET', '/api/papers', query=urlencode({'term': '第二段'}))
+        self.assertEqual([p['id'] for p in by_term['papers']], [second['id']])
+        # 搜尋也會比對題目文字（不只是卷名）
+        by_text = self.call('GET', '/api/papers', query=urlencode({'q': '傾斜角'}))
+        self.assertEqual([p['id'] for p in by_text['papers']], [first['id']])
+
+    def test_detail_and_delete(self):
+        paper = self.save()
+        detail = self.call('GET', f"/api/papers/{paper['id']}")['paper']
+        self.assertEqual(len(detail['sections'][0]['questions']), 2)
+        self.call('DELETE', f"/api/papers/{paper['id']}")
+        self.assertEqual(self.call('GET', '/api/papers')['papers'], [])
+
+    def test_students_cannot_use_the_library(self):
+        if not self.student:
+            self.skipTest('沒有學生帳號')
+        self.call('GET', '/api/papers', user=self.student, expect=403)
+        self.call('POST', '/api/papers', {'title': 'x', 'sections': PAPER_SECTIONS},
+                  user=self.student, expect=403)
+
+    def test_one_click_import_to_bank(self):
+        before = len(self.call('GET', '/api/state')['questions'])
+        paper = self.save()
+        out = self.call('POST', f"/api/papers/{paper['id']}/to-bank",
+                        {'topic': '坐標幾何', 'grade': '中五', 'level': 2})
+        self.assertEqual(out['count'], 2)
+        choice, blank = out['questions']
+        self.assertEqual(choice['qtype'], '選擇題')
+        self.assertEqual(len(choice['options']), 4)
+        self.assertEqual(choice['options'][0], '$\\sqrt{3}$', '選項的 A. 前綴要拆掉')
+        self.assertEqual(choice['points'], 3)
+        self.assertEqual(choice['answer'], '', '答案留空，等老師在題庫補')
+        self.assertEqual(choice['grade'], '中五')
+        self.assertEqual(choice['topic'], '坐標幾何')
+        self.assertIn('待核驗', choice['tags'], '答案留空，要標成待核驗')
+        self.assertIn('培華高二大測一', choice['source'])
+        self.assertEqual(blank['qtype'], '填空題')
+        self.assertEqual(blank['points'], 2)
+        # 匯入後要記住，列表上看得到
+        listed = self.call('GET', '/api/papers')['papers'][0]
+        self.assertEqual(listed['importedCount'], 2)
+        self.assertTrue(listed['importedAt'])
+        # 題庫真的多了這兩題
+        bank = self.call('GET', '/api/state')
+        self.assertEqual(len(bank['questions']), before + 2, '匯入後題庫要真的多出這兩題')
+
+    def test_import_rejects_unknown_topic(self):
+        paper = self.save()
+        self.call('POST', f"/api/papers/{paper['id']}/to-bank",
+                  {'topic': '不存在的分類'}, expect=400)
+
+    def test_saved_paper_exports_tex(self):
+        paper = self.save()
+        out = self.call('POST', f"/api/papers/{paper['id']}/to-tex", {})
+        self.assertIn(r'\documentclass', out['tex'])
+        self.assertIn('$30^{\\circ}$', out['tex'])
+        self.assertIn(r'\makebox', out['tex'], '選項要打橫')
+        self.assertTrue(out['filename'].endswith('.tex'))
+
+    def test_apply_returns_content_for_saving(self):
+        """排版完直接可以存：apply 要把題目內容帶回來，前端不用再上傳一次。"""
+        template = self.call('POST', '/api/paper-templates',
+                             {'name': '範本',
+                              'file': data_url(make_docx(TEMPLATE))})['template']
+        out = self.call('POST', f"/api/paper-templates/{template['id']}/apply",
+                        {'file': data_url(content_docx())})
+        content = out['content']
+        self.assertEqual(content['title'], '中三數學 小測')
+        self.assertEqual(len(content['sections']), 1)
+        self.assertEqual(len(content['sections'][0]['questions']), 2)
+        saved = self.call('POST', '/api/papers',
+                          {'title': content['title'], 'year': '2026',
+                           'grade': '初三', 'term': '第一段',
+                           'sections': content['sections']})['paper']
+        self.assertEqual(saved['questionCount'], 2)
 
 
 if __name__ == '__main__':

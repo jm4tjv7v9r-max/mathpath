@@ -856,3 +856,8 @@ html[data-theme=night] .topbar-link{color:#dbe6e6}
   flex-wrap:wrap;padding:12px 14px;border:1px solid var(--border);border-radius:10px;
   background:var(--surface-green)}
 .layout-result>div{display:flex;flex-direction:column;gap:2px}
+/* 我的試卷：卡片右上角的下載／刪除要並排，不要被上面的 flex-direction:column 影響 */
+.layout-result>.paper-card-actions{flex-direction:row;gap:10px;align-items:center}
+.layout-row select{padding:9px 11px;border:1px solid var(--border);border-radius:8px;
+  background:var(--paper);color:var(--ink);font:inherit}
+
