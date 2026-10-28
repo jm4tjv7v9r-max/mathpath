@@ -22,6 +22,7 @@ from pathlib import Path
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_TAB_ALIGNMENT
 from docx.oxml.ns import qn
+from docx.shared import Emu
 from docx.text.paragraph import Paragraph
 
 import omml
@@ -327,6 +328,42 @@ def _text_width(doc, p):
     return width
 
 
+# ── 選項打橫（一行 2～4 個）───────────────────────────────────────────
+DEFAULT_OPTIONS_PER_LINE = 4
+UNIT_CM = 0.23          # 12pt 半角字大約 0.21cm，留一點餘裕；全角算 2 個單位
+
+
+def _units(text: str) -> float:
+    """粗估一段文字的寬度（全角 2、半角 1），用來決定一行放得下幾個選項。"""
+    plain = MATH_RE.sub(lambda m: 'x' * max(1, len(m.group(1)) // 2), text)
+    return sum(2 if ord(ch) > 0x2E80 else 1 for ch in plain)
+
+
+def fit_columns(options: list[str], per_line: int, width_cm: float) -> int:
+    """一行放幾個：先用範本／預設的數量，選項太長就一路降。"""
+    widest = max((_units(o) for o in options), default=1)
+    for n in range(max(1, min(4, per_line)), 0, -1):
+        if widest <= (width_cm / n) / UNIT_CM:
+            return n
+    return 1
+
+
+def pack_options(options: list[str], columns: int) -> list[list[str]]:
+    """把選項切成每行 columns 個。"""
+    return [options[i:i + columns] for i in range(0, len(options), columns)]
+
+
+def _column_stops(p, doc, columns: int):
+    """範本沒有定位點時，自己按欄數補上（左邊界起算）。"""
+    sec = doc.sections[0]
+    full = sec.page_width - sec.left_margin - sec.right_margin
+    indent = p.paragraph_format.left_indent or 0
+    available = full - indent
+    for i in range(1, columns):
+        p.paragraph_format.tab_stops.add_tab_stop(
+            Emu(int(indent + available * i / columns)), WD_TAB_ALIGNMENT.LEFT)
+
+
 def _clone(doc, prototype_el, before):
     el = copy.deepcopy(prototype_el)
     before.addprevious(el)
@@ -368,7 +405,8 @@ def count_formulas(sections: list[Section]) -> int:
 
 
 def _render_into(tpl, sections: list[Section], title: str | None = None,
-                 closing: str | None = None) -> dict:
+                 closing: str | None = None,
+                 options_per_line: int = DEFAULT_OPTIONS_PER_LINE) -> dict:
     """把內容套進一個已開啟的 Document（不存檔，讓呼叫端決定存哪裡）。"""
     blocks = read_blocks(tpl)
     paragraphs = tpl.paragraphs
@@ -441,30 +479,19 @@ def _render_into(tpl, sections: list[Section], title: str | None = None,
                 _fill(ep, [extra])
 
             if q.options and 'option' in proto:
+                # 選項一律打橫排：範本有定位點就照範本的欄數，沒有就預設一行 4 個；
+                # 選項太長會自動降成 3、2、1 個，不會疊字。
                 per_line = option_columns(proto['option'])
-                if per_line >= 2:
-                    # 兩個選項太長時硬排同一行會擠在一起（tab 被推過定位點就失效），
-                    # 這種情況改成一行一個，寧可多佔行也不要疊字。
-                    def too_long(pair):
-                        plain = [MATH_RE.sub(lambda m: 'x' * len(m.group(1)), o) for o in pair]
-                        return sum(len(o) for o in plain) > 36
-
-                    i = 0
-                    while i < len(q.options):
-                        pair = q.options[i:i + 2]
-                        if len(pair) == 2 and not too_long(pair):
-                            op = _clone(tpl, proto['option']._p, sectpr)
-                            _fill(op, pair)
-                            i += 2
-                        else:
-                            for single in pair:
-                                op = _clone(tpl, proto['option']._p, sectpr)
-                                _fill(op, [single])
-                            i += len(pair)
-                else:
-                    for opt in q.options:
-                        op = _clone(tpl, proto['option']._p, sectpr)
-                        _fill(op, [opt])
+                auto = per_line < 2
+                if auto:
+                    per_line = options_per_line
+                width_cm = _text_width(tpl, proto['option']) / 360000
+                columns = fit_columns(q.options, per_line, width_cm)
+                for row in pack_options(q.options, columns):
+                    op = _clone(tpl, proto['option']._p, sectpr)
+                    _fill(op, row)
+                    if auto and len(row) > 1:
+                        _column_stops(op, tpl, columns)
 
             if 'answer_line' in proto and lines and not q.options:
                 for _ in range(lines):
@@ -483,9 +510,10 @@ def _render_into(tpl, sections: list[Section], title: str | None = None,
 
 
 def render_sections(template_path: str, sections: list[Section], out_path: str,
-                    title: str | None = None, closing: str | None = None) -> dict:
+                    title: str | None = None, closing: str | None = None,
+                    options_per_line: int = DEFAULT_OPTIONS_PER_LINE) -> dict:
     tpl = Document(template_path)
-    report = _render_into(tpl, sections, title, closing)
+    report = _render_into(tpl, sections, title, closing, options_per_line)
     tpl.save(out_path)
     report['out'] = str(Path(out_path).resolve())
     return report
@@ -530,20 +558,23 @@ def parse_content_bytes(data: bytes) -> tuple[list[str], list[Section]]:
 
 
 def render_with_sections(template_bytes: bytes, sections: list[Section],
-                         title: str | None = None) -> tuple[bytes, dict]:
+                         title: str | None = None,
+                         options_per_line: int = DEFAULT_OPTIONS_PER_LINE) -> tuple[bytes, dict]:
     """已經有 Section 物件時用這個（例如 PDF 由 AI 轉寫出來的內容）。"""
     tpl = Document(io.BytesIO(template_bytes))
-    report = _render_into(tpl, sections, title)
+    report = _render_into(tpl, sections, title, None, options_per_line)
     buf = io.BytesIO()
     tpl.save(buf)
     return buf.getvalue(), report
 
 
-def render_bytes(template_bytes: bytes, content_bytes: bytes) -> tuple[bytes, dict]:
+def render_bytes(template_bytes: bytes, content_bytes: bytes,
+                 options_per_line: int = DEFAULT_OPTIONS_PER_LINE) -> tuple[bytes, dict]:
     """伺服器用：兩份 docx 的 bytes 進，排好版的 docx bytes 出。"""
     tpl = Document(io.BytesIO(template_bytes))
     preamble, sections = parse_content_bytes(content_bytes)
-    report = _render_into(tpl, sections, preamble[0] if preamble else None)
+    report = _render_into(tpl, sections, preamble[0] if preamble else None,
+                          None, options_per_line)
     buf = io.BytesIO()
     tpl.save(buf)
     return buf.getvalue(), report

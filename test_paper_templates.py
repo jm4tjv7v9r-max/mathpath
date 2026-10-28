@@ -13,7 +13,9 @@ from unittest.mock import patch
 from docx import Document
 from docx.shared import Pt
 
+import latex_export
 import omml
+import paper_format
 import server
 
 DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
@@ -163,10 +165,13 @@ class PaperTemplateTests(unittest.TestCase):
 
         options = [p for p in doc.paragraphs
                    if p.text.strip()[:2] in ('A.', 'B.', 'C.', 'D.')]
-        self.assertEqual(len(options), 4)
-        for p in options:
-            self.assertEqual(sum(1 for c in p._p if c.tag.endswith('}oMath')), 0,
-                             f'選項行不該帶著範本的方程式：{p.text}')
+        self.assertEqual(len(options), 1, '選項要打橫排在同一行')
+        line = options[0].text
+        for label in ('A.', 'B.', 'C.', 'D.'):
+            self.assertIn(label, line)
+        self.assertIn('\t', line, '選項之間要用 tab 分欄')
+        self.assertEqual(sum(1 for c in options[0]._p if c.tag.endswith('}oMath')), 0,
+                         f'選項行不該帶著範本的方程式：{line}')
 
     def test_rejects_non_docx(self):
         self.call('POST', '/api/paper-templates',
@@ -327,6 +332,55 @@ class PdfImportTests(unittest.TestCase):
                         {'file': self.pdf_url(), 'consentExternal': True})
         self.assertIn(r'\section*{一、計算題}', out['tex'])
         self.assertIn('$x^{2}-5x+6=0$', out['tex'])
+
+
+class LatexExportTests(unittest.TestCase):
+    """LaTeX 輸出：選項打橫，公式一律是能編譯的 LaTeX。"""
+
+    def build(self, options, stem='求 $x$。', marks=None):
+        section = paper_format.Section(
+            title='一、選擇題', questions=[
+                paper_format.Question(stem=stem, marks=marks, options=options)])
+        return latex_export.to_tex('測試卷', [section], marks_position='trailing')
+
+    def test_options_are_laid_out_across_one_line(self):
+        tex = self.build(['A. $1$', 'B. $2$', 'C. $3$', 'D. $4$'])
+        line = next(l for l in tex.splitlines() if 'A. ' in l and 'D. ' in l)
+        for label in ('A. ', 'B. ', 'C. ', 'D. '):
+            self.assertIn(label, line)
+        self.assertIn(r'\makebox', line)
+        self.assertNotIn(r'\begin{enumerate}[label=\Alph*', tex, '不要再直排')
+
+    def test_long_options_fall_back_to_two_per_line(self):
+        long = ['A. ' + '甲乙丙丁戊己庚辛壬癸' * 2, 'B. ' + '甲乙丙丁戊己庚辛壬癸' * 2]
+        tex = self.build(long)
+        line = next(l for l in tex.splitlines() if 'A. ' in l)
+        self.assertNotIn('B. ', line, '太長就不要硬塞同一行')
+
+    def test_degree_and_units_become_real_latex(self):
+        tex = self.build(['A. $30\\degree$', 'B. 90$\\degree$'])
+        self.assertNotIn(r'\degree', tex, '\\degree 沒定義，編不過')
+        self.assertIn(r'$30^{\circ}$', tex)
+        self.assertIn(r'$90^{\circ}$', tex, '數字要跟度數一起進公式')
+
+    def test_fullwidth_punctuation_inside_math(self):
+        tex = self.build(['A. $\\left（ \\rho ，\\theta \\right）$'])
+        self.assertIn(r'$\left( \rho ,\theta \right)$', tex)
+
+    def test_empty_root_index_and_functions(self):
+        tex = self.build(['A. $\\sqrt[\\text{ }]{3}$', 'B. $y=\\rho sin\\theta$'])
+        self.assertIn(r'$\sqrt{3}$', tex)
+        self.assertIn(r'\sin\theta', tex)
+
+    def test_text_wrapper_around_a_formula_is_removed(self):
+        tex = self.build(['A. $\\text{4x+3y-3=0 }$', 'B. $-1\\text{或}5$'])
+        self.assertIn('$4x+3y-3=0$', tex)
+        self.assertIn(r'\text{或}', tex, '中文要留在 \\text 裡')
+
+    def test_fill_in_blanks_are_solid_rules(self):
+        tex = self.build(['A. 1'], stem='斜率 $k=$____________。')
+        self.assertIn(r'\rule', tex)
+        self.assertNotIn(r'\_\_\_', tex)
 
 
 if __name__ == '__main__':

@@ -3609,7 +3609,7 @@ async function paperLayoutPage(){
     </section>
     <section class="panel panel-pad" style="margin-top:16px">
       <h2 style="margin-bottom:6px">③ 或直接要 LaTeX（Overleaf）</h2>
-      <p class="field-hint">同一份 Word，直接輸出 .tex：公式原樣、題號連續、選項 A/B/C/D。用 XeLaTeX 編譯。</p>
+      <p class="field-hint">同一份 Word，直接輸出 .tex：題號連續、選擇題選項打橫（一行 4 個，太長自動變 2 個）、公式全部轉成 LaTeX。用 XeLaTeX 編譯。</p>
       <div class="layout-row">
         <label class="small-text">配分位置
           <select id="tex-marks" style="margin-left:6px;padding:6px 8px;border:1px solid var(--border);border-radius:8px;background:var(--paper);color:var(--ink)">
