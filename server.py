@@ -5142,7 +5142,8 @@ class Application:
         match = re.fullmatch(r'/api/paper-templates/([1-9]\d{0,17})/apply', path)
         if match and method == 'POST':
             self.teacher(user)
-            fields(body, ('file', 'consentExternal'), ('file',))
+            fields(body, ('file', 'consentExternal', 'mathAsText'), ('file',))
+            math_as_text = bool(body.get('mathAsText'))
             with self.db() as db:
                 row = db.execute('SELECT * FROM paper_templates WHERE id=?',
                                  (int(match.group(1)),)).fetchone()
@@ -5163,9 +5164,11 @@ class Application:
                     sections = sections_from_pdf_data(raw_sections)
                     if not sections:
                         fail(422, 'AI 在這份 PDF 裡讀不到題目（可能是掃描品質或版面太複雜）。')
-                    output, report = paper_format.render_with_sections(row['data'], sections, title)
+                    output, report = paper_format.render_with_sections(
+                        row['data'], sections, title, math_as_text=math_as_text)
                 else:
-                    output, report = paper_format.render_bytes(row['data'], data)
+                    output, report = paper_format.render_bytes(
+                        row['data'], data, math_as_text=math_as_text)
             except SystemExit as exc:
                 fail(400, str(exc) or '範本裡找不到題目段落（長得像「1. …」）。')
             except Exception as exc:

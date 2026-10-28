@@ -203,6 +203,18 @@ class PaperTemplateTests(unittest.TestCase):
         title = next(p for p in doc.paragraphs if '小測' in p.text)
         self.assertEqual(title.paragraph_format.alignment, WD_ALIGN_PARAGRAPH.CENTER)
 
+    def test_math_can_be_exported_as_latex_code(self):
+        """勾「數學符號用 LaTeX 代碼」：公式不再轉成 Word 方程式，直接留 $...$。"""
+        template = self.upload()['template']
+        out = self.call('POST', f"/api/paper-templates/{template['id']}/apply",
+                        {'file': data_url(content_docx()), 'mathAsText': True})
+        doc = Document(io.BytesIO(base64.b64decode(out['docx'].split(',', 1)[1])))
+        equations = sum(1 for p in doc.paragraphs for c in p._p if c.tag.endswith('}oMath'))
+        self.assertEqual(equations, 0, '勾了 LaTeX 代碼就不該有 Word 方程式')
+        texts = [p.text for p in doc.paragraphs]
+        self.assertTrue(any('$x^{2}-5x+6=0$' in t for t in texts), texts)
+        self.assertTrue(any(r'$\frac{1}{2}+\frac{1}{3}$' in t for t in texts), texts)
+
     def test_rejects_non_docx(self):
         self.call('POST', '/api/paper-templates',
                   {'name': '壞檔', 'file': data_url(b'not a zip')}, expect=400)

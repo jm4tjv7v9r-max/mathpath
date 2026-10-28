@@ -3605,6 +3605,10 @@ async function paperLayoutPage(){
         <input id="paper-file" type="file" accept=".docx,.pdf">
         <button class="primary" id="paper-apply">排版並下載</button>
       </div>
+      <label class="small-text" style="display:flex;gap:8px;align-items:center;margin-top:10px">
+        <input id="paper-math-text" type="checkbox">
+        數學符號用 LaTeX 代碼輸出（<code>$…$</code>，不轉成 Word 方程式）
+      </label>
       <div id="paper-result" style="margin-top:12px"></div>
     </section>
     <section class="panel panel-pad" style="margin-top:16px">
@@ -3659,7 +3663,8 @@ async function paperLayoutPage(){
       const isPdf=/pdf$/i.test(file.name||'')||file.type===PDF_MIME;
       if(isPdf&&!$('#pdf-consent').checked)throw new Error('PDF 需要先勾選「送給外部 AI 分析」。');
       const data=await fileData(file,[DOCX_MIME,PDF_MIME],12);
-      const res=await api(`/api/paper-templates/${tid}/apply`,{file:data,consentExternal:isPdf});
+      const mathAsText=$('#paper-math-text').checked;
+      const res=await api(`/api/paper-templates/${tid}/apply`,{file:data,consentExternal:isPdf,mathAsText});
       const st=res.stats||{};
       $('#paper-result').innerHTML=`<div class="layout-result">
         <div><strong>排好了</strong><span class="small-text">${st.sections||0} 個分部 · ${st.questions||0} 題 · ${st.formulas||0} 條公式${st.tables?` · ⚠️ 範本有 ${st.tables} 個表格未帶入`:''}</span></div>
@@ -3669,6 +3674,9 @@ async function paperLayoutPage(){
     }catch(e){toast(e.message);btn.disabled=false;btn.textContent=old;}
   };
   // ③ LaTeX：preamble 與配分位置記在這台裝置，下次不用重貼。
+  const mathText=$('#paper-math-text');
+  mathText.checked=localStorage.getItem('mathpath_math_text')==='1';
+  mathText.onchange=()=>localStorage.setItem('mathpath_math_text',mathText.checked?'1':'0');
   const pre=$('#tex-preamble'), marks=$('#tex-marks');
   pre.value=localStorage.getItem('mathpath_tex_preamble')||'';
   pre.oninput=()=>localStorage.setItem('mathpath_tex_preamble',pre.value);

@@ -281,21 +281,27 @@ def split_math(text: str):
     return parts or [('text', text)]
 
 
-def _write(p, cells: list[str], rpr=None):
-    """把 cells 依序寫進（已清空的）段落：cell 之間補一個 tab，靠 pPr 的定位點分欄。"""
+def _write(p, cells: list[str], rpr=None, math_as_text: bool = False):
+    """把 cells 依序寫進（已清空的）段落：cell 之間補一個 tab，靠 pPr 的定位點分欄。
+
+    math_as_text=True 時公式不轉成 Word 方程式，直接留下 $...$ 的 LaTeX 代碼。
+    """
     for index, cell in enumerate(cells):
         if index:
             _run(p, '\t', rpr)
         for kind, value in split_math(cell or ''):
             if kind == 'math':
-                p._p.append(omml.latex_to_omml(value))
+                if math_as_text:
+                    _run(p, f'${value}$', rpr)
+                else:
+                    p._p.append(omml.latex_to_omml(value))
             elif value:
                 _run(p, value, rpr)
 
 
-def _fill(p, cells: list[str]):
+def _fill(p, cells: list[str], math_as_text: bool = False):
     """清空後重寫，一次做完（範本殘留的公式／tab 不會漏出來）。"""
-    _write(p, cells, _wipe(p))
+    _write(p, cells, _wipe(p), math_as_text)
 
 
 def _tab_stops(p):
@@ -406,7 +412,8 @@ def count_formulas(sections: list[Section]) -> int:
 
 def _render_into(tpl, sections: list[Section], title: str | None = None,
                  closing: str | None = None,
-                 options_per_line: int = DEFAULT_OPTIONS_PER_LINE) -> dict:
+                 options_per_line: int = DEFAULT_OPTIONS_PER_LINE,
+                 math_as_text: bool = False) -> dict:
     """把內容套進一個已開啟的 Document（不存檔，讓呼叫端決定存哪裡）。"""
     blocks = read_blocks(tpl)
     paragraphs = tpl.paragraphs
@@ -453,7 +460,7 @@ def _render_into(tpl, sections: list[Section], title: str | None = None,
     if title:
         for p in cloned_head:
             if classify(p.text, p) == 'other' and p.runs:
-                _fill(p, [title])
+                _fill(p, [title], math_as_text)
                 break
 
     number = 1
@@ -462,25 +469,25 @@ def _render_into(tpl, sections: list[Section], title: str | None = None,
         if s.title and 'section' in proto:
             np = _clone(tpl, proto['section']._p, sectpr)
             tpl_title = template_headings[index] if index < len(template_headings) else ''
-            _fill(np, [_heading_text(tpl_title, s.title, s.questions)])
+            _fill(np, [_heading_text(tpl_title, s.title, s.questions)], math_as_text)
         lines = lines_by_index[index] if index < len(lines_by_index) and lines_by_index[index] \
             else default_lines
 
         for q in s.questions:
             np = _clone(tpl, q_proto._p, sectpr)
             if pos == 'trailing':
-                _fill(np, [f'{number}.　{q.stem}', _marks_text(marks_proto, q.marks)])
+                _fill(np, [f'{number}.　{q.stem}', _marks_text(marks_proto, q.marks)], math_as_text)
                 if marks_tab is not None:
                     np.paragraph_format.tab_stops.add_tab_stop(marks_tab, WD_TAB_ALIGNMENT.RIGHT)
             elif q.marks is not None:
-                _fill(np, [f'{number}.{_marks_text("（0 分）", q.marks)}　{q.stem}'])
+                _fill(np, [f'{number}.{_marks_text("（0 分）", q.marks)}　{q.stem}'], math_as_text)
             else:
-                _fill(np, [f'{number}.　{q.stem}'])
+                _fill(np, [f'{number}.　{q.stem}'], math_as_text)
             number += 1
 
             for extra in q.lines:
                 ep = _clone(tpl, q_proto._p, sectpr)
-                _fill(ep, [extra])
+                _fill(ep, [extra], math_as_text)
 
             if q.options and 'option' in proto:
                 # 選項一律打橫排：範本有定位點就照範本的欄數，沒有就預設一行 4 個；
@@ -493,7 +500,7 @@ def _render_into(tpl, sections: list[Section], title: str | None = None,
                 columns = fit_columns(q.options, per_line, width_cm)
                 for row in pack_options(q.options, columns):
                     op = _clone(tpl, proto['option']._p, sectpr)
-                    _fill(op, row)
+                    _fill(op, row, math_as_text)
                     if auto and len(row) > 1:
                         _column_stops(op, tpl, columns)
 
@@ -503,7 +510,7 @@ def _render_into(tpl, sections: list[Section], title: str | None = None,
 
     if closing and 'other' in proto:
         cp = _clone(tpl, proto['other']._p, sectpr)
-        _fill(cp, [closing])
+        _fill(cp, [closing], math_as_text)
 
     if tpl.tables:
         print(f'⚠️ 範本有 {len(tpl.tables)} 個表格，內容未帶入輸出', file=sys.stderr)
@@ -515,9 +522,10 @@ def _render_into(tpl, sections: list[Section], title: str | None = None,
 
 def render_sections(template_path: str, sections: list[Section], out_path: str,
                     title: str | None = None, closing: str | None = None,
-                    options_per_line: int = DEFAULT_OPTIONS_PER_LINE) -> dict:
+                    options_per_line: int = DEFAULT_OPTIONS_PER_LINE,
+                    math_as_text: bool = False) -> dict:
     tpl = Document(template_path)
-    report = _render_into(tpl, sections, title, closing, options_per_line)
+    report = _render_into(tpl, sections, title, closing, options_per_line, math_as_text)
     tpl.save(out_path)
     report['out'] = str(Path(out_path).resolve())
     return report
@@ -563,22 +571,24 @@ def parse_content_bytes(data: bytes) -> tuple[list[str], list[Section]]:
 
 def render_with_sections(template_bytes: bytes, sections: list[Section],
                          title: str | None = None,
-                         options_per_line: int = DEFAULT_OPTIONS_PER_LINE) -> tuple[bytes, dict]:
+                         options_per_line: int = DEFAULT_OPTIONS_PER_LINE,
+                         math_as_text: bool = False) -> tuple[bytes, dict]:
     """已經有 Section 物件時用這個（例如 PDF 由 AI 轉寫出來的內容）。"""
     tpl = Document(io.BytesIO(template_bytes))
-    report = _render_into(tpl, sections, title, None, options_per_line)
+    report = _render_into(tpl, sections, title, None, options_per_line, math_as_text)
     buf = io.BytesIO()
     tpl.save(buf)
     return buf.getvalue(), report
 
 
 def render_bytes(template_bytes: bytes, content_bytes: bytes,
-                 options_per_line: int = DEFAULT_OPTIONS_PER_LINE) -> tuple[bytes, dict]:
+                 options_per_line: int = DEFAULT_OPTIONS_PER_LINE,
+                 math_as_text: bool = False) -> tuple[bytes, dict]:
     """伺服器用：兩份 docx 的 bytes 進，排好版的 docx bytes 出。"""
     tpl = Document(io.BytesIO(template_bytes))
     preamble, sections = parse_content_bytes(content_bytes)
     report = _render_into(tpl, sections, preamble[0] if preamble else None,
-                          None, options_per_line)
+                          None, options_per_line, math_as_text)
     buf = io.BytesIO()
     tpl.save(buf)
     return buf.getvalue(), report
