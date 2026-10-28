@@ -2295,7 +2295,10 @@ def paper_sections_valid(raw):
         for item in questions:
             if not isinstance(item, dict):
                 fail(400, '題目必須是物件。')
-            stem = text(item.get('stem') or '', '題幹', MAX_TEXT)
+            # 題號後面沒有文字（整題是圖、題號自己一行）就跳過，不要整份存不進去
+            if not isinstance(item.get('stem'), str) or not item['stem'].strip():
+                continue
+            stem = text(item['stem'], '題幹', MAX_TEXT)
             marks = item.get('marks')
             if marks is not None:
                 try:
@@ -2306,7 +2309,10 @@ def paper_sections_valid(raw):
             options = [text(o, '選項', 600, empty=True) for o in (item.get('options') or [])][:10]
             lines = [text(l, '續行', 600, empty=True) for l in (item.get('lines') or [])][:10]
             items.append({'stem': stem, 'marks': marks, 'options': options, 'lines': lines})
-        sections.append({'title': title or None, 'questions': items})
+        if items:
+            sections.append({'title': title or None, 'questions': items})
+    if not sections:
+        fail(400, '這份試卷沒有可保存的題目（題號後面沒有文字）。')
     return sections
 
 
@@ -2383,7 +2389,8 @@ def sections_from_pdf_data(raw_sections):
                         marks=None if marks_in_heading else q.get('marks'),
                         options=q.get('options') or [],
                         lines=q.get('lines') or [])
-                     for q in section.get('questions') or []]
+                     for q in section.get('questions') or []
+                     if str(q.get('stem') or '').strip()]
         if questions:
             sections.append(paper_format.Section(title=section.get('title'), questions=questions))
     return sections

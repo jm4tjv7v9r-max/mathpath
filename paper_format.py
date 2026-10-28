@@ -201,6 +201,19 @@ def sections_from_json(path: str) -> tuple[str | None, list[Section], str | None
     return data.get('title'), sections, data.get('closing')
 
 
+def _only_with_stem(sections: list[Section]) -> list[Section]:
+    """題號後面沒有文字（整題是圖、或題號自己佔一行）的不要留成空白題。
+
+    留著的話版面會多一個孤零零的「3.」，存到「我的試卷」也會被伺服器擋下來。
+    """
+    out = []
+    for section in sections:
+        questions = [q for q in section.questions if (q.stem or '').strip()]
+        if questions:
+            out.append(Section(title=section.title, questions=questions))
+    return out
+
+
 def parse_content(path: str) -> tuple[list[str], list[Section]]:
     doc = Document(path)
     preamble: list[str] = []
@@ -229,7 +242,7 @@ def parse_content(path: str) -> tuple[list[str], list[Section]]:
             current.questions[-1].stem += text
         else:
             preamble.append(text)
-    return preamble, [s for s in sections if s.questions]
+    return preamble, _only_with_stem(sections)
 
 
 # ── 套版 ──────────────────────────────────────────────────────────────
@@ -585,7 +598,7 @@ def parse_content_bytes(data: bytes) -> tuple[list[str], list[Section]]:
             current.questions[-1].stem += text
         else:
             preamble.append(text)
-    return preamble, [s for s in sections if s.questions]
+    return preamble, _only_with_stem(sections)
 
 
 def render_with_sections(template_bytes: bytes, sections: list[Section],

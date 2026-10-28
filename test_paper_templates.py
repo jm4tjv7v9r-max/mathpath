@@ -216,6 +216,18 @@ class PaperTemplateTests(unittest.TestCase):
         self.assertTrue(any('$x^{2}-5x+6=0$' in t for t in texts), texts)
         self.assertTrue(any(r'$\frac{1}{2}+\frac{1}{3}$' in t for t in texts), texts)
 
+    def test_numbering_only_paragraph_is_not_a_question(self):
+        """「2.」單獨一行（整題是圖）不該變成空白題，否則存檔會被擋。"""
+        doc = Document()
+        doc.add_paragraph('一、單項選擇題')
+        doc.add_paragraph('1.　題目一')
+        doc.add_paragraph('2.')
+        doc.add_paragraph('3.　題目三')
+        buf = io.BytesIO()
+        doc.save(buf)
+        _, sections = paper_format.parse_content_bytes(buf.getvalue())
+        self.assertEqual([q.stem for q in sections[0].questions], ['題目一', '題目三'])
+
     def test_rejects_non_docx(self):
         self.call('POST', '/api/paper-templates',
                   {'name': '壞檔', 'file': data_url(b'not a zip')}, expect=400)
@@ -547,6 +559,14 @@ class PaperLibraryTests(unittest.TestCase):
         # 題庫真的多了這兩題
         bank = self.call('GET', '/api/state')
         self.assertEqual(len(bank['questions']), before + 2, '匯入後題庫要真的多出這兩題')
+
+    def test_save_skips_questions_without_text(self):
+        paper = self.call('POST', '/api/papers', {
+            'title': '有空題的卷',
+            'sections': [{'title': '一、選擇題', 'questions': [
+                {'stem': '有題目', 'marks': 2, 'options': [], 'lines': []},
+                {'stem': '   ', 'marks': 2, 'options': [], 'lines': []}]}]})['paper']
+        self.assertEqual(paper['questionCount'], 1)
 
     def test_import_rejects_unknown_topic(self):
         paper = self.save()
