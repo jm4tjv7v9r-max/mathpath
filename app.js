@@ -817,7 +817,7 @@ if(S.user?.role!=='teacher')nav=nav.filter(([id])=>id!=='import');
 if(S.user?.role==='teacher')nav=nav.filter(([id])=>id!=='growth');
 if(S.user?.role==='teacher'){nav=nav.filter(([id])=>id!=='practice');
   const mi=nav.findIndex(([id])=>id==='mistakes');
-  nav.splice(mi<0?nav.length:mi+1,0,['paper','紙本批改']);const li=nav.findIndex(([id])=>id==='paper');nav.splice(li<0?nav.length:li+1,0,['layout','卷面排版']);const at=nav.findIndex(([id])=>id==='mistakes');nav.splice(at<0?nav.length:at,0,['newq','新增題目']);nav.push(['ai','模型端點']);}$('#nav').innerHTML=nav.map(([id,label])=>`<button class="nav-item ${page===id?'active':''}" data-page="${id}">${icon(id)}<span>${label}</span>${id==='bank'?`<span class="count">${S.user?S.questions.length:'示例'}</span>`:id==='import'?'<span class="new">教師</span>':''}</button>`).join('');$('#settings-nav').innerHTML=icon('settings')+'<span>設定與隱私</span>';$('#settings-nav').classList.toggle('active',page==='settings');$('#font-scale').innerHTML=fontScaleControl();$('#theme-switch').innerHTML=themeControl();$('#account').innerHTML=`<span class="avatar">${S.user?(S.user.role==='teacher'?'師':'學'):'M'}</span><span class="account-info">${S.user?esc(S.user.name):'訪客預覽'}<small>${S.user?(S.user.role==='teacher'?'教師工作空間':'中三數學學習者'):'登入後開始學習'}</small></span>${icon(S.user?'chevron':'logout')}`;$('#avatar').textContent=S.user?(S.user.role==='teacher'?'師':'學'):'M';const labels={guide:'新手上路',homework:S.user?.role==='teacher'?'作業與成績':'我的作業',calendar:'日曆',board:'排行榜',mock:'模擬測驗',ai:'模型端點',bank:'數學題庫',practice:'自主練習',import:'試卷拆題',mistakes:S.user?.role==='teacher'?'作答批閱':'我的錯題本',paper:'紙本批改',growth:'學習足跡',newq:'新增題目',settings:'設定與隱私'};$('#crumb').textContent=labels[page] || '數學題庫';renderCalculator();}
+  nav.splice(mi<0?nav.length:mi+1,0,['paper','紙本批改']);const li=nav.findIndex(([id])=>id==='paper');nav.splice(li<0?nav.length:li+1,0,['layout','卷面排版']);const at=nav.findIndex(([id])=>id==='mistakes');nav.splice(at<0?nav.length:at,0,['newq','新增題目']);nav.push(['ai','模型端點']);}$('#nav').innerHTML=nav.map(([id,label])=>`<button class="nav-item ${page===id?'active':''}" data-page="${id}">${icon(id)}<span>${label}</span>${id==='bank'?`<span class="count">${S.user?S.questions.length:'示例'}</span>`:id==='import'?'<span class="new">教師</span>':''}</button>`).join('');$('#settings-nav').innerHTML=icon('settings')+'<span>設定與隱私</span>';$('#settings-nav').classList.toggle('active',page==='settings');$('#font-scale').innerHTML=fontScaleControl();$('#theme-switch').innerHTML=themeControl();$('#account').innerHTML=`<span class="avatar">${S.user?(S.user.role==='teacher'?'師':'學'):'M'}</span><span class="account-info">${S.user?esc(S.user.name):'訪客預覽'}<small>${S.user?(S.user.role==='teacher'?'教師工作空間':'中三數學學習者'):'登入後開始學習'}</small></span>${icon(S.user?'chevron':'logout')}`;$('#avatar').textContent=S.user?(S.user.role==='teacher'?'師':'學'):'M';const labels={guide:'新手上路',homework:S.user?.role==='teacher'?'作業與成績':'我的作業',calendar:'日曆',board:'排行榜',mock:'模擬測驗',ai:'模型端點',bank:'數學題庫',practice:'自主練習',import:'試卷拆題',mistakes:S.user?.role==='teacher'?'作答批閱':'我的錯題本',paper:'紙本批改',layout:'卷面排版',growth:'學習足跡',newq:'新增題目',settings:'設定與隱私'};$('#crumb').textContent=labels[page] || '數學題庫';renderCalculator();}
 
 let calCursor=null,calSelected=null;
 const calPad=n=>String(n).padStart(2,'0');
@@ -3576,8 +3576,9 @@ function layoutTemplateHtml(list,current){
     </label>`;}).join('');
 }
 async function paperLayoutPage(){
-  page='layout';shell();
+  // 卷面排版是教師功能：學生連入口都不該看到，直接回題庫（側欄也不會出現）
   if(S.user?.role!=='teacher')return bank();
+  page='layout';shell();
   const out=await api('/api/paper-templates').catch(()=>({templates:[]}));
   const list=out.templates||[];
   const saved=Number(sessionStorage.getItem('layoutTemplate')||0);
@@ -3592,6 +3593,7 @@ async function paperLayoutPage(){
         <input id="tpl-file" type="file" accept=".docx,.pdf">
         <button class="primary" id="tpl-save">儲存為範本</button>
       </div>
+      <div id="tpl-file-chip" class="small-text" style="margin-top:8px" hidden></div>
       <label class="small-text" style="display:flex;gap:8px;align-items:center;margin-top:12px">
         <input id="pdf-consent" type="checkbox" checked>
         PDF 需要把頁面影像送給外部 AI 分析（Word 不需要）
@@ -3605,6 +3607,7 @@ async function paperLayoutPage(){
         <input id="paper-file" type="file" accept=".docx,.pdf">
         <button class="primary" id="paper-apply">排版並下載</button>
       </div>
+      <div id="paper-file-chip" class="small-text" style="margin-top:8px" hidden></div>
       <label class="small-text" style="display:flex;gap:8px;align-items:center;margin-top:10px">
         <input id="paper-math-text" type="checkbox">
         數學符號用 LaTeX 代碼輸出（<code>$…$</code>，不轉成 Word 方程式）
@@ -3631,6 +3634,20 @@ async function paperLayoutPage(){
     </section>
   </div>`;
   const pick=()=>Number($('input[name=layout-tpl]:checked')?.value||0);
+  // 選了檔案後顯示檔名，右邊一個 ✕ 可以直接清掉（不用重新整理頁面）
+  const bindFileChip=(inputSel,chipSel)=>{
+    const input=$(inputSel),chip=$(chipSel);
+    const sync=()=>{
+      const f=input.files&&input.files[0];
+      chip.hidden=!f;
+      chip.innerHTML=f?`已選：<strong>${esc(f.name)}</strong><button type="button" class="text-button" style="margin-left:10px;color:#b8453b">✕ 刪除</button>`:'';
+      const btn=chip.querySelector('button');
+      if(btn)btn.onclick=()=>{input.value='';sync();};
+    };
+    input.onchange=sync;sync();
+  };
+  bindFileChip('#tpl-file','#tpl-file-chip');
+  bindFileChip('#paper-file','#paper-file-chip');
   $$('input[name=layout-tpl]').forEach(r=>r.onchange=()=>{
     sessionStorage.setItem('layoutTemplate',r.value);paperLayoutPage();});
   $$('[data-del-tpl]').forEach(b=>b.onclick=async()=>{

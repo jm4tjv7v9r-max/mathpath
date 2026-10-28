@@ -2806,6 +2806,27 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   assert.match(await firstGroup.locator('.paper-history-body').innerText(),/陳大文（座號 2）、李小明（座號 3）/,'要列出未批的是哪幾位');
   console.log('PASS: 紙本批改紀錄（按功課分組、算未批人數與名單、看得出上次批到誰）');
 
+  // 卷面排版只給老師：學生側欄不該有入口，直接呼叫也只會回到題庫。
+  // 新卷選了檔案要顯示檔名，右邊的 ✕ 一點就清掉（不用重新整理）。
+  const studentNav=await page.evaluate(()=>{const old=S.user;S.user={...old,role:'student'};shell();
+    const text=document.querySelector('#nav').textContent;S.user=old;shell();return text;});
+  assert.ok(!/卷面排版/.test(studentNav),'學生側欄不該出現卷面排版');
+  const studentMain=await page.evaluate(async()=>{const old=S.user;S.user={...old,role:'student'};
+    await paperLayoutPage();const text=document.querySelector('#main').textContent;S.user=old;return text;});
+  assert.ok(!/PAPER LAYOUT/.test(studentMain),'學生直接呼叫 paperLayoutPage 也進不去');
+  await page.evaluate(()=>paperLayoutPage());
+  await page.locator('#paper-file').waitFor({timeout:8000});
+  await page.locator('#paper-file').setInputFiles({name:'新卷.docx',
+    mimeType:'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    buffer:Buffer.from('PK\u0003\u0004測試')});
+  await page.locator('#paper-file-chip').waitFor({state:'visible',timeout:4000});
+  assert.match(await page.locator('#paper-file-chip').innerText(),/新卷\.docx/,'選了檔案要顯示檔名');
+  await page.locator('#paper-file-chip button').click();
+  await page.locator('#paper-file-chip').waitFor({state:'hidden',timeout:4000});
+  assert.equal(await page.evaluate(()=>document.querySelector('#paper-file').files.length),0,
+    '按 ✕ 要把已選檔案清掉');
+  console.log('PASS: 卷面排版只給老師（學生側欄沒入口、直接呼叫回題庫），新卷選了檔案可按 ✕ 刪除');
+
   // 帳號停用：管理員看得到「停用」，已停用的顯示「已停用」與「重新啟用」；
   // 不能停用自己與管理員（按鈕不出現）。實際的登入攔阻由後端測試驗證。
   const rosterHtml=await page.evaluate(()=>[
