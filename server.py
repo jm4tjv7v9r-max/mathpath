@@ -4187,7 +4187,9 @@ class Application:
             question_columns = {r['name'] for r in db.execute('PRAGMA table_info(questions)')}
             for name, sql in (('figure', 'ALTER TABLE questions ADD COLUMN figure BLOB'),
                               ('figure_mime', 'ALTER TABLE questions ADD COLUMN figure_mime TEXT'),
-                              ('figure_key', 'ALTER TABLE questions ADD COLUMN figure_key TEXT')):
+                              ('figure_key', 'ALTER TABLE questions ADD COLUMN figure_key TEXT'),
+                              # 入題庫時間：題庫可以照它排序；舊題目留 NULL（顯示為未記錄）
+                              ('created_at', 'ALTER TABLE questions ADD COLUMN created_at TEXT')):
                 if name not in question_columns:
                     db.execute(sql)
             # 作答「學生標示不會」：增量加欄，舊資料一律視為 0（照舊運作）。
@@ -4694,11 +4696,14 @@ class Application:
             # 二進位存到物件儲存，資料庫只留 key 字串。
             figure_key = self.storage.put('figures', figure, figure_mime)
             figure = None
-        cur = db.execute('INSERT INTO questions(payload,figure,figure_mime,figure_key) VALUES(?,?,?,?)',
-                         (json.dumps(q, ensure_ascii=False), figure, figure_mime, figure_key))
+        created_at = utc_now()
+        cur = db.execute('INSERT INTO questions(payload,figure,figure_mime,figure_key,created_at) '
+                         'VALUES(?,?,?,?,?)',
+                         (json.dumps(q, ensure_ascii=False), figure, figure_mime, figure_key,
+                          created_at))
         # question_public 要從這裡知道有沒有圖形，才會附上圖形網址；
         # 圖形本身存在獨立欄位（BLOB 或物件儲存的 key），不在 payload 裡。
-        return {'id': cur.lastrowid, **q, 'figure': has_figure}
+        return {'id': cur.lastrowid, **q, 'figure': has_figure, 'createdAt': created_at}
 
     def update_question(self, db, qid, q, body):
         """更新題目（教師）。body 有帶 figure 就換圖（空字串＝移除），沒帶就保留原圖。
@@ -4737,7 +4742,10 @@ class Application:
     def question_row(row):
         keys = row.keys()
         has_figure = row['figure'] is not None or ('figure_key' in keys and row['figure_key'] is not None)
-        return {'id': row['id'], **json.loads(row['payload']), 'figure': has_figure}
+        # 入題庫時間（舊資料庫補欄前建立的題目沒有，前端顯示為未記錄）
+        created_at = row['created_at'] if 'created_at' in keys else None
+        return {'id': row['id'], **json.loads(row['payload']), 'figure': has_figure,
+                'createdAt': created_at}
 
     @staticmethod
     def question_public(q, user):

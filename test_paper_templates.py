@@ -568,6 +568,14 @@ class PaperLibraryTests(unittest.TestCase):
                 {'stem': '   ', 'marks': 2, 'options': [], 'lines': []}]}]})['paper']
         self.assertEqual(paper['questionCount'], 1)
 
+    def test_questions_get_created_at(self):
+        """入題庫時間：匯入的題目與題庫列表都要有，前端才能照它排序。"""
+        paper = self.save()
+        out = self.call('POST', f"/api/papers/{paper['id']}/to-bank", {'topic': '坐標幾何'})
+        self.assertTrue(out['questions'][0]['createdAt'])
+        listed = self.call('GET', '/api/state')['questions']
+        self.assertTrue(all(q.get('createdAt') for q in listed), '每題都要有入庫時間')
+
     def test_import_rejects_unknown_topic(self):
         paper = self.save()
         self.call('POST', f"/api/papers/{paper['id']}/to-bank",

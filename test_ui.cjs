@@ -26,7 +26,7 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   const errors=[],dialogs=[];page.on('pageerror',e=>errors.push(e.message));page.on('dialog',d=>{dialogs.push(d.message());d.accept();});
   await page.emulateMedia({reducedMotion:'reduce'});
   let role=null;
-  const q={id:1,title:'因式分解解二次方程',content:'解方程 $x^2-5x+6=0$。',topic:'一元二次方程',grade:'中三',points:6,level:1,qtype:'選擇題',source:'校本題庫',tags:['因式分解'],hint:'利用零乘積性質。',answer:'C',options:['$x=1$ 或 $x=6$','$x=-2$ 或 $x=-3$','$x=2$ 或 $x=3$','$x=1$ 或 $x=-6$'],steps:['分解為 $(x-2)(x-3)=0$。','概率為 $\\dfrac{1}{3}$，長度 $5\\text{ cm}$。']};
+  const q={id:1,title:'因式分解解二次方程',content:'解方程 $x^2-5x+6=0$。',topic:'一元二次方程',grade:'中三',points:6,level:1,qtype:'選擇題',source:'校本題庫',tags:['因式分解'],hint:'利用零乘積性質。',answer:'C',createdAt:'2026-10-20T02:30:00Z',options:['$x=1$ 或 $x=6$','$x=-2$ 或 $x=-3$','$x=2$ 或 $x=3$','$x=1$ 或 $x=-6$'],steps:['分解為 $(x-2)(x-3)=0$。','概率為 $\\dfrac{1}{3}$，長度 $5\\text{ cm}$。']};
   const ai={configured:true,mode:'local',model:'test-vision'};
   const advice={source:'rules',strength:'本次一元二次方程已評分：6/6分。',focus:'推導步驟尚未批閱。',nextStep:'再做同知識點相似題。',recommended:[],notice:'測試資料，非真實成績。'};
   const assignment={id:1,title:'二次方程鞏固作業',classId:1,className:'中三甲班',questionCount:1,totalPoints:6,studentCount:2,submittedCount:0,gradedCount:0,dueAt:'2099-01-01T15:59:00Z',myStatus:'not_started',myScore:null,myConfirmedScore:null};
@@ -2907,6 +2907,17 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   assert.equal(await page.locator('#save-paper-grade').inputValue(),'高二','級別要從卷名猜出來');
   assert.equal(await page.locator('#save-paper-term').inputValue(),'第一段','學段要從卷名猜出來');
   console.log('PASS: 排版完成後可以下載 Word，保存表單自動帶出年份／級別／學段');
+
+  // 題庫：每題顯示入庫時間，可以按入庫時間排序
+  await page.locator('[data-page=bank]').first().click();
+  await page.locator('#sort-filter').waitFor({timeout:8000});
+  assert.match(await page.locator('#question-list').innerText(),/入庫 \d{4}-\d{2}-\d{2}/,
+    '題庫卡片要顯示入庫時間');
+  await page.locator('#sort-filter').selectOption('new');
+  assert.equal(await page.locator('#sort-filter').inputValue(),'new','排序選單要記住選擇');
+  assert.match(await page.locator('#question-list').innerText(),/因式分解解二次方程/,'排序後清單還在');
+  await page.locator('#sort-filter').selectOption('');
+  console.log('PASS: 題庫顯示入庫時間，可按入庫時間（新→舊／舊→新）排序');
 
   // 帳號停用：管理員看得到「停用」，已停用的顯示「已停用」與「重新啟用」；
   // 不能停用自己與管理員（按鈕不出現）。實際的登入攔阻由後端測試驗證。
