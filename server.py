@@ -6342,6 +6342,68 @@ class Application:
                     'figures': [{'id': qid, 'path': path_, 'url': f'/api/questions/{qid}/figure'}
                                 for qid, path_ in sorted(figures.items())],
                     'notice': '請用 XeLaTeX 編譯（xelatex questions.tex）；圖形已放在 figures/ 資料夾。'}, headers
+        if method == 'POST' and path == '/api/questions/bulk':
+            # 批次修改：匯入的整份卷常常跨多個知識點，逐題改太慢，這裡一次改一批。
+            self.teacher(user)
+            fields(body, ('ids', 'action', 'patch'), ('ids', 'action'))
+            ids = body['ids']
+            if not isinstance(ids, list) or not 1 <= len(ids) <= 50:
+                fail(400, '一次最多處理 50 題。')
+            ids = [number(v, '題目編號', 1, 10 ** 18, True) for v in ids]
+            action = body['action']
+            if action not in ('update', 'delete'):
+                fail(400, '動作只接受 update 或 delete。')
+            patch = body.get('patch') or {}
+            if not isinstance(patch, dict):
+                fail(400, 'patch 必須是物件。')
+            change = {}
+            if 'topic' in patch:
+                topic = text(patch['topic'], '分類', 30)
+                if topic not in TOPICS:
+                    fail(400, f'分類必須是題庫提供的知識分類之一：{TOPIC_HINT}。')
+                change['topic'] = topic
+            if 'grade' in patch:
+                grade = text(patch['grade'], '年級', 10)
+                if grade not in GRADES:
+                    fail(400, f'年級必須是中一至中六之一：{GRADE_HINT}。')
+                change['grade'] = grade
+            if 'level' in patch:
+                change['level'] = number(patch['level'], '難度', 1, 3, True)
+            if action == 'update' and not change:
+                fail(400, '沒有要修改的欄位。')
+            updated, removed, skipped = [], [], []
+            with self.db() as db:
+                for qid in ids:
+                    row = db.execute('SELECT * FROM questions WHERE id=?', (qid,)).fetchone()
+                    if row is None:
+                        skipped.append(qid)
+                        continue
+                    if action == 'delete':
+                        # 有作答紀錄的題目不能刪（作答是學生成績的一部分）
+                        used = db.execute('SELECT COUNT(*) FROM attempts WHERE question_id=?',
+                                          (qid,)).fetchone()[0]
+                        if used:
+                            skipped.append(qid)
+                            continue
+                        db.execute('DELETE FROM paper_questions WHERE question_id=?', (qid,))
+                        db.execute('DELETE FROM questions WHERE id=?', (qid,))
+                        removed.append(qid)
+                        continue
+                    payload = json.loads(row['payload'])
+                    payload.update(change)
+                    if 'topic' in change:
+                        # 換了主分類，原本的子分類多半不再屬於它
+                        if payload.get('subtopic') and payload['subtopic'] not in TOPIC_TREE.get(change['topic'], ()):
+                            payload['subtopic'] = ''
+                    try:
+                        clean = question_valid(payload)
+                    except APIError:
+                        skipped.append(qid)
+                        continue
+                    db.execute('UPDATE questions SET payload=? WHERE id=?',
+                               (json.dumps(clean, ensure_ascii=False), qid))
+                    updated.append(qid)
+            return {'updated': updated, 'removed': removed, 'skipped': skipped}, headers
         if method == 'POST' and path == '/api/questions/verify':
             # 老師看過答案後按「核驗」：把「待核驗」拿掉，這題才能佈置作業
             # （homework.recommendable() 會擋掉還掛著待核驗的題目）。

@@ -747,6 +747,36 @@ class PaperLibraryTests(unittest.TestCase):
         self.call('POST', '/api/papers/from-questions',
                   {'questionIds': [999999], 'title': '壞卷'}, expect=404)
 
+    def test_bulk_update_changes_fields(self):
+        """一份卷匯入的題目常常跨多個知識點，批次改分類／年級／難度。"""
+        questions = self.make_questions()
+        out = self.call('POST', '/api/questions/bulk', {
+            'ids': [q['id'] for q in questions], 'action': 'update',
+            'patch': {'topic': '三角學', 'grade': '中五', 'level': 3}})
+        self.assertEqual(len(out['updated']), 2)
+        listed = {q['id']: q for q in self.call('GET', '/api/state')['questions']}
+        one = listed[questions[0]['id']]
+        self.assertEqual((one['topic'], one['grade'], one['level']), ('三角學', '中五', 3))
+
+    def test_bulk_update_rejects_unknown_topic(self):
+        questions = self.make_questions()
+        self.call('POST', '/api/questions/bulk', {
+            'ids': [questions[0]['id']], 'action': 'update',
+            'patch': {'topic': '不存在的分類'}}, expect=400)
+
+    def test_bulk_delete_refuses_questions_with_attempts(self):
+        questions = self.make_questions()
+        if not self.student:
+            self.skipTest('沒有學生帳號')
+        self.call('POST', '/api/attempts',
+                  {'questionId': questions[0]['id'], 'answerText': 'B'}, user=self.student)
+        out = self.call('POST', '/api/questions/bulk', {
+            'ids': [q['id'] for q in questions], 'action': 'delete'})
+        self.assertEqual(out['removed'], [questions[1]['id']])
+        self.assertEqual(out['skipped'], [questions[0]['id']], '有作答的題目不能刪')
+        left = [q['id'] for q in self.call('GET', '/api/state')['questions']]
+        self.assertIn(questions[0]['id'], left)
+
     def test_import_rejects_unknown_topic(self):
         paper = self.save()
         self.call('POST', f"/api/papers/{paper['id']}/to-bank",

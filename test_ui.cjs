@@ -3008,6 +3008,24 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   assert.ok(buildBody.title,'要有卷名');
   console.log('PASS: 題庫勾題即可組成試卷（工具列顯示已選題數、沒選範本時下載 .tex）');
 
+  // 批次修改：一份卷匯入的題目常常跨多個知識點
+  let bulkBody=null;
+  await page.route('**/api/questions/bulk',route=>{
+    bulkBody=route.request().postDataJSON();
+    return route.fulfill({json:{updated:bulkBody.ids,removed:[],skipped:[]}});
+  });
+  await page.locator('[data-pick]').first().check();
+  await page.locator('#pick-edit').click();
+  await page.locator('#bulk-submit').waitFor({timeout:8000});
+  await page.locator('#bulk-topic').selectOption({index:1});
+  await page.locator('#bulk-submit').click();
+  await page.waitForFunction(()=>/已修改/.test(document.body.textContent||''),{timeout:8000});
+  assert.equal(bulkBody.action,'update');
+  assert.deepEqual(bulkBody.ids,[1]);
+  assert.ok(bulkBody.patch.topic,'要帶分類');
+  assert.equal(bulkBody.patch.grade,undefined,'沒選的欄位不要送');
+  console.log('PASS: 題庫可批次修改分類／年級／難度（只送有選的欄位）');
+
   // 帳號停用：管理員看得到「停用」，已停用的顯示「已停用」與「重新啟用」；
   // 不能停用自己與管理員（按鈕不出現）。實際的登入攔阻由後端測試驗證。
   const rosterHtml=await page.evaluate(()=>[
