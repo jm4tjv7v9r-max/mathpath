@@ -2878,6 +2878,7 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
     page.waitForEvent('download',{timeout:6000}),
     page.locator('[data-paper-tex="11"]').click()]);
   assert.match(texFile.suggestedFilename(),/\.tex$/,'我的試卷要能下載 .tex');
+
   await page.locator('[data-paper-card]').first().locator('summary').click();
   const gradePick=await page.locator('[data-paper-grade="11"]').inputValue();
   assert.equal(gradePick,'中五','高二要對應題庫的中五');
@@ -2887,6 +2888,24 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   assert.equal(importBody.grade,'中五');
   assert.equal(importBody.level,2);
   console.log('PASS: 我的試卷（搜尋＋年份／級別／學段篩選、一鍵匯入題庫並帶入年級對應）');
+  // 出作業：用這份卷匯入的題目直接建立作業
+  let assignBody=null;
+  await page.route(/\/api\/papers\/11$/,route=>route.fulfill({json:{
+    paper:{...paperFixture[0],questionIds:[1]}}}));
+  await page.route('**/api/homework',route=>route.fulfill({json:{
+    classes:[{id:1,name:'中三甲班',studentCount:3,studentIds:[1]}],assignments:[],ai}}));
+  await page.route('**/api/assignments',route=>{
+    assignBody=route.request().postDataJSON();
+    return route.fulfill({json:{assignment:{id:9,title:assignBody.title}}});
+  });
+  await page.locator('[data-paper-assign="11"]').click();
+  await page.locator('#assign-submit').waitFor({timeout:8000});
+  assert.equal(await page.locator('#assign-submit').isDisabled(),false,'題目都有答案且已核驗時可以建立');
+  await page.locator('#assign-submit').click();
+  await page.waitForFunction(()=>/作業已建立/.test(document.body.textContent||''),{timeout:8000});
+  assert.deepEqual(assignBody.questionIds,[1],'要帶入這份卷匯入的題目');
+  assert.ok(assignBody.dueAt,'要有截止時間');
+  console.log('PASS: 我的試卷可以直接出作業（帶入這份卷匯入的題目、班級與截止時間）');
 
   // 排版完成後的「下載」要真的能按：曾經用 innerHTML += 追加保存表單，
   // 把剛綁好事件的按鈕換成新的（沒有 onclick），點了完全沒反應。
@@ -2944,6 +2963,19 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   });
   assert.equal(fillShown,1,'有缺答案時要出現「AI 補答案」按鈕');
   console.log('PASS: 題庫「AI 補答案」按鈕只在有題目缺答案時出現');
+
+  // 待核驗的題目要有「核驗通過」按鈕（老師按了才能出作業）
+  assert.equal(await page.locator('[data-verify]').count(),0,'已核驗的題目不該再出現核驗按鈕');
+  const verifyShown=await page.evaluate(()=>{
+    const old=S.questions;
+    S.questions=[{...old[0],tags:['試卷匯入','待核驗']}];
+    bank();
+    const n=document.querySelectorAll('[data-verify]').length;
+    S.questions=old;bank();
+    return n;
+  });
+  assert.equal(verifyShown,1,'待核驗的題目要有核驗按鈕');
+  console.log('PASS: 題庫待核驗的題目有「核驗通過」按鈕，核驗後才能出作業');
 
   // 帳號停用：管理員看得到「停用」，已停用的顯示「已停用」與「重新啟用」；
   // 不能停用自己與管理員（按鈕不出現）。實際的登入攔阻由後端測試驗證。

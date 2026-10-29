@@ -662,6 +662,29 @@ class PaperLibraryTests(unittest.TestCase):
         self.call('POST', '/api/questions/solve',
                   {'ids': [q['id'] for q in imported] * 3}, expect=400)  # 一次最多 5 題
 
+    def test_verify_clears_review_marker(self):
+        """老師按「核驗」後要能佈置作業（作業端點會擋還掛著待核驗的題目）。"""
+        paper = self.save()
+        imported = self.call('POST', f"/api/papers/{paper['id']}/to-bank",
+                             {'topic': '坐標幾何'})['questions']
+        qid = imported[0]['id']
+        self.assertIn('待核驗', imported[0]['tags'])
+        out = self.call('POST', '/api/questions/verify', {'ids': [qid]})
+        self.assertEqual(out['verified'], [qid])
+        after = {q['id']: q for q in self.call('GET', '/api/state')['questions']}[qid]
+        self.assertNotIn('待核驗', after['tags'])
+        self.assertFalse(server.needs_review(after['source']))
+        # 再按一次不會重複處理
+        self.assertEqual(self.call('POST', '/api/questions/verify', {'ids': [qid]})['verified'], [])
+
+    def test_paper_detail_lists_imported_questions(self):
+        """「出作業」要知道這份卷匯入了哪幾題。"""
+        paper = self.save()
+        imported = self.call('POST', f"/api/papers/{paper['id']}/to-bank",
+                             {'topic': '坐標幾何'})['questions']
+        detail = self.call('GET', f"/api/papers/{paper['id']}")['paper']
+        self.assertEqual(detail['questionIds'], [q['id'] for q in imported])
+
     def test_import_rejects_unknown_topic(self):
         paper = self.save()
         self.call('POST', f"/api/papers/{paper['id']}/to-bank",
@@ -691,6 +714,20 @@ class PaperLibraryTests(unittest.TestCase):
                            'grade': '初三', 'term': '第一段',
                            'sections': content['sections']})['paper']
         self.assertEqual(saved['questionCount'], 2)
+
+
+class QueryPathTests(unittest.TestCase):
+    """查詢參數白名單：測試直接呼叫 dispatch，繞過了 HTTP 層，所以要在這裡單獨守。"""
+
+    def test_papers_list_accepts_query(self):
+        self.assertTrue(server.query_allowed('/api/papers', 'year=2026&grade=%E9%AB%98%E4%BA%8C'))
+
+    def test_calendar_still_allowed(self):
+        self.assertTrue(server.query_allowed('/api/calendar', 'from=2026-10-01'))
+
+    def test_other_paths_reject_query(self):
+        self.assertFalse(server.query_allowed('/api/questions', 'x=1'))
+        self.assertTrue(server.query_allowed('/api/questions', ''))
 
 
 if __name__ == '__main__':

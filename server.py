@@ -54,8 +54,18 @@ MAX_BODY = 4 * ((MAX_PDF + 2) // 3) + MAX_TEXT * 12 + 10_000
 SESSION_SECONDS = 12 * 3600
 SESSION_SECONDS_LONG = 30 * 24 * 3600
 # 允許帶查詢參數的路徑（日曆區間、歸檔選項）。
-QUERY_PATHS = ('/api/calendar', '/api/admin/archive/students', '/api/admin/archive/questions',
+QUERY_PATHS = ('/api/calendar', '/api/papers',
+               '/api/admin/archive/students', '/api/admin/archive/questions',
                '/api/admin/restore/questions', '/api/admin/restore/students')
+
+
+def query_allowed(path, query):
+    """只有白名單端點可以帶查詢參數。
+
+    測試是直接呼叫 dispatch，繞過了這一層；所以真實 HTTP 的這道檢查要單獨測，
+    否則「我的試卷」的年份／級別／學段篩選會在線上直接 400。
+    """
+    return not query or path in QUERY_PATHS
 # 需要串流下載的教師端點（不經過一般 JSON 回應）。
 ADMIN_DOWNLOADS = ('/api/admin/backup/db', '/api/admin/archive/questions',
                    '/api/admin/archive/students')
@@ -2344,6 +2354,14 @@ def paper_title_of(stem: str, limit: int = 60) -> str:
     return title or '未命名題目'
 
 
+REVIEW_RE = re.compile(r'待.*(?:核驗|核验|審核|审核|確認|确认)')
+
+
+def needs_review(value) -> bool:
+    """這段文字是不是「還沒核驗」的標記（跟 homework.recommendable 用同一條規則）。"""
+    return bool(REVIEW_RE.search(str(value or '')))
+
+
 def question_content(payload_json) -> str:
     """從資料庫存的 payload JSON 取 content（壞資料不讓整個匯入失敗）。"""
     try:
@@ -4233,7 +4251,9 @@ class Application:
                               ('figure_mime', 'ALTER TABLE questions ADD COLUMN figure_mime TEXT'),
                               ('figure_key', 'ALTER TABLE questions ADD COLUMN figure_key TEXT'),
                               # 入題庫時間：題庫可以照它排序；舊題目留 NULL（顯示為未記錄）
-                              ('created_at', 'ALTER TABLE questions ADD COLUMN created_at TEXT')):
+                              ('created_at', 'ALTER TABLE questions ADD COLUMN created_at TEXT'),
+                              # 這題是從哪份試卷匯入的（「出作業」要知道範圍）
+                              ('paper_id', 'ALTER TABLE questions ADD COLUMN paper_id INTEGER')):
                 if name not in question_columns:
                     db.execute(sql)
             # 我的試卷記住用哪個範本排的：之後要重出 Word 就不用再上傳一次。
@@ -5428,7 +5448,12 @@ class Application:
                 if method == 'DELETE':
                     db.execute('DELETE FROM papers WHERE id=?', (paper_id,))
                     return {'ok': True}, headers
-            return {'paper': paper_public(row, detail=True)}, headers
+                # 這份卷匯入題庫的那些題目（「出作業」直接拿這個清單）
+                question_ids = [r['id'] for r in db.execute(
+                    'SELECT id FROM questions WHERE paper_id=? ORDER BY id', (paper_id,))]
+            data = paper_public(row, detail=True)
+            data['questionIds'] = question_ids
+            return {'paper': data}, headers
 
         match = re.fullmatch(r'/api/papers/([1-9]\d{0,17})/to-docx', path)
         if match and method == 'POST':
@@ -5522,6 +5547,8 @@ class Application:
                 if len(prepared) > 200:
                     fail(400, '一次最多匯入 200 題。')
                 saved = [self.insert_question(db, q, None, None) for q in prepared]
+                db.executemany('UPDATE questions SET paper_id=? WHERE id=?',
+                               [(paper_id, q['id']) for q in saved])
                 db.execute('UPDATE papers SET imported_at=?, imported_count=? WHERE id=?',
                            (utc_now(), len(saved), paper_id))
             return {'count': len(saved), 'skipped': skipped,
@@ -6154,6 +6181,34 @@ class Application:
                     'figures': [{'id': qid, 'path': path_, 'url': f'/api/questions/{qid}/figure'}
                                 for qid, path_ in sorted(figures.items())],
                     'notice': '請用 XeLaTeX 編譯（xelatex questions.tex）；圖形已放在 figures/ 資料夾。'}, headers
+        if method == 'POST' and path == '/api/questions/verify':
+            # 老師看過答案後按「核驗」：把「待核驗」拿掉，這題才能佈置作業
+            # （homework.recommendable() 會擋掉還掛著待核驗的題目）。
+            self.teacher(user)
+            fields(body, ('ids',), ('ids',))
+            ids = body['ids']
+            if not isinstance(ids, list) or not 1 <= len(ids) <= 30:
+                fail(400, '一次最多核驗 30 題。')
+            ids = [number(v, '題目編號', 1, 10 ** 18, True) for v in ids]
+            verified = []
+            with self.db() as db:
+                for qid in ids:
+                    row = db.execute('SELECT * FROM questions WHERE id=?', (qid,)).fetchone()
+                    if row is None:
+                        continue
+                    payload = json.loads(row['payload'])
+                    tags = [t for t in (payload.get('tags') or []) if not needs_review(t)]
+                    source = payload.get('source') or ''
+                    if needs_review(source):
+                        source = re.sub(r'\s*[·・]\s*待\S*$', '', source).strip() or '教師核驗'
+                    if tags == (payload.get('tags') or []) and source == (payload.get('source') or ''):
+                        continue
+                    payload['tags'] = tags
+                    payload['source'] = source
+                    db.execute('UPDATE questions SET payload=? WHERE id=?',
+                               (json.dumps(payload, ensure_ascii=False), qid))
+                    verified.append(qid)
+            return {'verified': verified}, headers
         if method == 'POST' and path == '/api/questions/solve':
             # 批次補答案：題庫裡「待核驗」的題目（多半是從試卷匯入的）一次解一批。
             # 每批上限 5 題，前端分批呼叫——單一請求跑 20 題會超過網路層的 30 秒。
@@ -6845,7 +6900,7 @@ class Handler(BaseHTTPRequestHandler):
                 fail(403, '網站 Host 不在允許清單內。')
             parsed = urlsplit(self.path)
             if (parsed.scheme or parsed.netloc or parsed.fragment
-                    or (parsed.query and parsed.path not in QUERY_PATHS)):
+                    or not query_allowed(parsed.path, parsed.query)):
                 fail(400, '請使用本站的有效相對路徑，不支援查詢參數。')
             path = parsed.path
             body = {}

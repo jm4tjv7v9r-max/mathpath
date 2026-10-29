@@ -896,6 +896,7 @@ function filteredQuestions(){
   }
   return list;
 }
+const needsReview=q=>/待.*(?:核驗|核验|審核|审核|確認|确认)/.test(`${q.source||''} ${(q.tags||[]).join(' ')}`);
 function fmtWhen(iso){
   if(!iso)return '未記錄';
   const d=new Date(iso);if(isNaN(d.getTime()))return '未記錄';
@@ -923,7 +924,7 @@ document.addEventListener('click',e=>{
   document.addEventListener('keydown',onKey);
   document.body.appendChild(box);
 });
-function questionCard(q,n){return `<article class="question-card"><span class="question-number">${String(n).padStart(2,'0')}</span><div class="question-body"><div class="question-top"><h3>${mathText(q.title)}</h3><span class="badge l${q.level}">${levels[q.level]}</span><span class="badge outline">${esc(q.qtype||'解答題')}</span><span class="badge outline">${q.points} 分</span></div>${stemHtml(q)}<div class="question-meta"><span>${esc(q.tags.slice(0,2).join(' · '))}</span><i class="separator"></i><span>${esc(q.source)}</span>${q.createdAt?`<i class="separator"></i><span>入庫 ${fmtWhen(q.createdAt)}</span>`:''}</div></div><div class="question-controls"><button class="bookmark ${bookmarks.has(q.id)?'saved':''}" data-save="${q.id}" aria-label="${bookmarks.has(q.id)?'取消收藏':'收藏題目'}" aria-pressed="${bookmarks.has(q.id)}">${icon('bookmark')}</button><button class="practice-btn" data-qid="${q.id}">${S.user?.role==='teacher'?'檢視題目':'開始練習'} ${icon('chevron')}</button>${S.user?.role==='teacher'?`<button class="text-button" data-editq="${q.id}" style="font-size:calc(12px*var(--fs))">${icon('edit')}編輯題目</button><button class="text-button ai-gen-entry" data-aigen="${q.id}" style="font-size:calc(12px*var(--fs))">${icon('spark')}AI 生成類似題</button><button class="text-button" data-aifig="${q.id}" style="font-size:calc(12px*var(--fs))">${icon('spark')}${q.figure?'重新生成圖形':'AI 生成圖形'}</button><button class="text-button" data-aifig-manual="${q.id}" style="font-size:calc(12px*var(--fs))">${icon('upload')}手動插入圖形</button>${q.figure?`<button class="text-button" data-aifig-clear="${q.id}" style="font-size:calc(12px*var(--fs))">移除圖形</button>`:''}`:''}</div></article>`;}
+function questionCard(q,n){return `<article class="question-card"><span class="question-number">${String(n).padStart(2,'0')}</span><div class="question-body"><div class="question-top"><h3>${mathText(q.title)}</h3><span class="badge l${q.level}">${levels[q.level]}</span><span class="badge outline">${esc(q.qtype||'解答題')}</span><span class="badge outline">${q.points} 分</span></div>${stemHtml(q)}<div class="question-meta"><span>${esc(q.tags.slice(0,2).join(' · '))}</span><i class="separator"></i><span>${esc(q.source)}</span>${q.createdAt?`<i class="separator"></i><span>入庫 ${fmtWhen(q.createdAt)}</span>`:''}</div></div><div class="question-controls"><button class="bookmark ${bookmarks.has(q.id)?'saved':''}" data-save="${q.id}" aria-label="${bookmarks.has(q.id)?'取消收藏':'收藏題目'}" aria-pressed="${bookmarks.has(q.id)}">${icon('bookmark')}</button><button class="practice-btn" data-qid="${q.id}">${S.user?.role==='teacher'?'檢視題目':'開始練習'} ${icon('chevron')}</button>${S.user?.role==='teacher'&&needsReview(q)?`<button class="text-button" data-verify="${q.id}" style="font-size:calc(12px*var(--fs));color:#b8453b">核驗通過</button>`:''}${S.user?.role==='teacher'?`<button class="text-button" data-editq="${q.id}" style="font-size:calc(12px*var(--fs))">${icon('edit')}編輯題目</button><button class="text-button ai-gen-entry" data-aigen="${q.id}" style="font-size:calc(12px*var(--fs))">${icon('spark')}AI 生成類似題</button><button class="text-button" data-aifig="${q.id}" style="font-size:calc(12px*var(--fs))">${icon('spark')}${q.figure?'重新生成圖形':'AI 生成圖形'}</button><button class="text-button" data-aifig-manual="${q.id}" style="font-size:calc(12px*var(--fs))">${icon('upload')}手動插入圖形</button>${q.figure?`<button class="text-button" data-aifig-clear="${q.id}" style="font-size:calc(12px*var(--fs))">移除圖形</button>`:''}`:''}</div></article>`;}
 function bank(){beginView();page='bank';assignmentContext=null;mockContext=null;stopQuizClock();shell();
 const missingAnswers=S.user?.role==='teacher'?S.questions.filter(q=>!(q.answer||'').trim()).length:0;$('#main').innerHTML=`<div class="fade-in">${heading('QUESTION BANK','數學題庫','每一道題，都是通往理解的一步。',`<button class="secondary" data-action="collection">${icon('bookmark')}我的收藏</button>${S.user?.role==='teacher'?`${missingAnswers?`<button class="secondary" id="ai-fill-answers">${icon('spark')}AI 補答案（${missingAnswers} 題）</button>`:''}<button class="secondary" data-page="newq">${icon('plus')}新增題目</button><button class="secondary" id="export-latex">${icon('file')}匯出 LaTeX</button>`:''}<button class="primary" data-page="import">${icon('upload')}匯入試卷</button>`)}${!S.user?`<div class="field-hint" style="margin:-9px 0 17px">訪客預覽 · 以下為題庫示例，學習紀錄尚未開始。<button class="text-button" data-action="login" style="font-size:calc(13px*var(--fs));margin-left:8px">登入學習 ${icon('arrow')}</button></div>`:''}${hero()}${metrics()}<div class="bank-layout"><section class="panel bank-panel"><div class="panel-heading"><h2>精選題目 <span class="small-text" id="question-count"></span></h2><div class="segmented"><button data-view="list" class="${viewMode==='list'?'active':''}" aria-label="清單檢視">${icon('list')}</button><button data-view="grid" class="${viewMode==='grid'?'active':''}" aria-label="卡片檢視">${icon('bank')}</button></div></div><div class="filters"><label class="search-field">${icon('search')}<input id="question-search" value="${esc(search)}" placeholder="搜尋題目、知識點或試卷名稱…" aria-label="搜尋题目"></label><select id="grade-filter" aria-label="年級"><option value="">所有年級</option>${grades.map(g=>`<option ${grade===g?'selected':''}>${g}</option>`).join('')}</select><select id="level-filter" aria-label="難度"><option value="">所有難度</option>${[1,2,3].map(i=>`<option value="${i}" ${Number(level)===i?'selected':''}>${levels[i]}</option>`).join('')}</select><select id="qtype-filter" aria-label="題型"><option value="">所有題型</option>${qtypes.map(t=>`<option ${qtype===t?'selected':''}>${t}</option>`).join('')}</select><select id="sort-filter" aria-label="排序"><option value="">預設排序</option><option value="new" ${sortBy==='new'?'selected':''}>最新入庫</option><option value="old" ${sortBy==='old'?'selected':''}>最舊入庫</option></select></div><div class="topic-tabs">${['全部題目',...topics].map(t=>`<button class="topic-tab ${topic===t?'active':''}" data-topic="${t}">${t}</button>`).join('')}</div><div class="topic-tabs subtopic-tabs" style="display:${topic!=='全部題目'&&topic!=='我的收藏'&&subtopicsOf(topic).length?'flex':'none'}">${['全部子分類',...subtopicsOf(topic)].map(sb=>`<button class="subtopic-tab ${subtopic===sb?'active':''}" data-subtopic="${sb}">${sb}</button>`).join('')}</div><div class="question-list ${viewMode}" id="question-list"></div><div class="pagination" id="pagination"></div></section>${rightBank()}</div></div>`;renderList();$('#question-search').addEventListener('input',e=>{search=e.target.value;currentPage=1;renderList();});$('#grade-filter').addEventListener('change',e=>{grade=e.target.value;currentPage=1;renderList();});$('#level-filter').addEventListener('change',e=>{level=e.target.value;currentPage=1;renderList();});$('#qtype-filter').addEventListener('change',e=>{qtype=e.target.value;currentPage=1;renderList();});$('#sort-filter').addEventListener('change',e=>{sortBy=e.target.value;currentPage=1;renderList();});const fillBtn=$('#ai-fill-answers');
 if(fillBtn)fillBtn.onclick=async()=>{
@@ -2644,6 +2645,16 @@ function fillQuestionForm(prefix, q, state){
 
 // 編輯題目：教師可以改所有設定，含題解、評分標準與圖形。
 // 圖形只有在真的動過（換圖或移除）時才送出，否則保留題庫裡原本那張。
+async function verifyQuestion(qid){
+  // 老師看過答案後按一下：拿掉「待核驗」，這題才能佈置作業
+  try{
+    const res=await api('/api/questions/verify',{ids:[Number(qid)]});
+    if(!res.verified.length)return toast('這題已經核驗過了。');
+    toast('已核驗，可以佈置作業了');
+    await refresh().catch(()=>{});
+    if(page==='bank')bank();
+  }catch(e){toast(e.message);}
+}
 function editQuestionModal(id){
   const q=S.questions.find(x=>x.id===Number(id));
   if(!q)return toast('找不到題目，請重新整理題庫。');
@@ -3641,6 +3652,7 @@ function paperCardHtml(p){
       <div><strong>${esc(p.title)}</strong>
         <span class="small-text">${esc(meta)}${meta?' · ':''}${p.questionCount} 題${esc(imported)}</span></div>
       <div class="paper-card-actions">
+        <button class="primary" data-paper-assign="${p.id}">出作業</button>
         ${p.templateId?`<button class="secondary" data-paper-docx="${p.id}">下載 Word</button>`:''}
         <button class="secondary" data-paper-tex="${p.id}">下載 .tex</button>
         <button class="text-button" data-paper-del="${p.id}" style="color:#b8453b">刪除</button>
@@ -3704,6 +3716,7 @@ async function papersPage(){
       toast('已刪除');papersPage();
     }catch(e){toast(e.message);}
   });
+  $$('[data-paper-assign]').forEach(b=>b.onclick=()=>paperAssignModal(b.dataset.paperAssign));
   $$('[data-paper-docx]').forEach(b=>b.onclick=async()=>{
     const old=b.textContent;b.disabled=true;b.textContent='產生中…';
     try{
@@ -3736,6 +3749,56 @@ async function papersPage(){
       papersPage();
     }catch(e){toast(e.message);b.disabled=false;b.textContent=old;}
   });
+}
+// 從「我的試卷」直接出作業：用這份卷匯入題庫的那批題目。
+// 作業端點有硬條件（每題要有答案、且不能掛「待核驗」），所以在這裡先檢查並說清楚。
+async function paperAssignModal(paperId){
+  let detail, homework;
+  try{
+    [detail,homework]=await Promise.all([api('/api/papers/'+paperId),api('/api/homework')]);
+  }catch(e){return toast(e.message);}
+  const ids=(detail.paper&&detail.paper.questionIds)||[];
+  if(!ids.length)return toast('這份試卷還沒匯入題庫，先在卡片上按「一鍵匯入題庫」。');
+  const classes=(homework.classes||[]).filter(c=>c.studentCount>0);
+  if(!classes.length)return toast('還沒有可用的班級，請先在「作業與成績」建立班級與學生。');
+  const missing=ids.filter(qid=>{
+    const q=S.questions.find(x=>x.id===qid);
+    return !q||!(q.answer||'').trim()||needsReview(q);
+  });
+  const due=new Date(Date.now()+7*86400000);
+  due.setHours(18,0,0,0);
+  const pad=n=>String(n).padStart(2,'0');
+  const dueLocal=`${due.getFullYear()}-${pad(due.getMonth()+1)}-${pad(due.getDate())}T18:00`;
+  const title=(detail.paper.title||'作業').slice(0,60);
+  modal(`<h2>出作業</h2>
+    <p class="field-hint">用「${esc(detail.paper.title)}」匯入題庫的 ${ids.length} 題，直接變出一份作業。</p>
+    ${missing.length?`<div class="inline-error">有 ${missing.length} 題還沒有答案或還沒核驗，作業會建立失敗。
+      <button type="button" class="text-button" id="assign-goto-bank" style="margin-left:6px">去題庫核驗 ${icon('arrow')}</button></div>`:''}
+    <div class="form-field"><label class="field-label" for="assign-class">班級</label>
+      <select id="assign-class">${classes.map(c=>`<option value="${c.id}">${esc(c.name)}（${c.studentCount} 人）</option>`).join('')}</select></div>
+    <div class="form-field"><label class="field-label" for="assign-title">作業標題</label>
+      <input id="assign-title" value="${esc(title)}"></div>
+    <div class="form-field"><label class="field-label" for="assign-due">截止日期</label>
+      <input id="assign-due" type="datetime-local" value="${dueLocal}"></div>
+    <label class="small-text" style="display:flex;gap:8px;align-items:center;margin:10px 0">
+      <input id="assign-ai" type="checkbox"> 使用 AI 建議評分（教師仍可覆核）</label>
+    <button class="primary" id="assign-submit" ${missing.length?'disabled':''}>建立作業</button>`);
+  const go=$('#assign-goto-bank');
+  if(go)go.onclick=()=>{closeModal();search='待核驗';topic='全部題目';currentPage=1;bank();};
+  $('#assign-submit').onclick=async()=>{
+    const btn=$('#assign-submit');const old=btn.textContent;btn.disabled=true;btn.textContent='建立中…';
+    try{
+      await api('/api/assignments',{
+        title:($('#assign-title').value||'').trim()||title,
+        classId:Number($('#assign-class').value),
+        questionIds:ids,
+        dueAt:new Date($('#assign-due').value).toISOString(),
+        aiGrading:$('#assign-ai').checked});
+      closeModal();
+      toast('作業已建立，可在「作業與成績」查看');
+      homeworkPage();
+    }catch(e){toast(e.message);btn.disabled=false;btn.textContent=old;}
+  };
 }
 async function paperLayoutPage(){
   // 卷面排版是教師功能：學生連入口都不該看到，直接回題庫（側欄也不會出現）
@@ -4298,7 +4361,7 @@ if(b.id==='open-math-editor'){openMathEditor();return;}
       .catch(err=>{b.disabled=false;toast(err.message);});
     return;
   }if(b.dataset.page)return navigate(b.dataset.page);if(b.dataset.assignment)return assignmentPage(Number(b.dataset.assignment));if(b.dataset.mock)return mockExamPage(Number(b.dataset.mock));if(b.dataset.mockQ)return openMockQuestion(Number(b.dataset.mockQ));if(b.dataset.results)return resultsPage(Number(b.dataset.results));if(b.dataset.skipQ)return skipQuestionFromList(b.dataset.skipQ);
-if(b.dataset.assignmentQ)return openAssignmentQuestion(Number(b.dataset.assignmentQ));if(b.dataset.nextQuestion)return openAssignmentQuestion(Number(b.dataset.nextQuestion));if(b.dataset.prevQuestion)return openAssignmentQuestion(Number(b.dataset.prevQuestion));if(b.dataset.qid)return openQuestion(b.dataset.qid);if(b.dataset.topic){topic=b.dataset.topic;subtopic='';currentPage=1;return bank();}if(b.dataset.subtopic){subtopic=b.dataset.subtopic;currentPage=1;return bank();}if(b.dataset.pagination){currentPage=Number(b.dataset.pagination);return renderList();}if(b.dataset.view){viewMode=b.dataset.view;return bank();}if(b.dataset.save){const id=Number(b.dataset.save);if(bookmarks.has(id))bookmarks.delete(id);else bookmarks.add(id);saveBookmarks();b.classList.toggle('saved',bookmarks.has(id));b.setAttribute('aria-pressed',String(bookmarks.has(id)));toast(bookmarks.has(id)?'已收藏題目（本瀏覽器）':'已取消收藏');if(page==='bank'&&topic==='我的收藏')renderList();return;}if(b.dataset.answerMode){if(busy)return toast('正在保存作答，請等待完成。');preserveDraft();answerMode=b.dataset.answerMode;$$('[data-answer-mode]').forEach(x=>x.classList.toggle('active',x===b));renderAnswerArea();return;}if(b.dataset.generate)return generateQuestion(b.dataset.generate,currentQuestion&&currentQuestion.id);if(b.dataset.editq)return editQuestionModal(b.dataset.editq);if(b.dataset.aigen)return aiGenerateModal(b.dataset.aigen);if(b.dataset.aifig)return openFigureStudioForQuestion(b.dataset.aifig);if(b.dataset.aifigManual)return openFigureStudioForQuestion(b.dataset.aifigManual,true);if(b.dataset.aifigClear)return clearQuestionFigure(b.dataset.aifigClear);if(b.dataset.genKind)return generateQuestion(b.dataset.genKind,b.dataset.genQid);if(b.dataset.removeDraft){drafts.splice(Number(b.dataset.removeDraft),1);return renderImportContent();}if(b.dataset.history){historyFilter=b.dataset.history;historyFilterTouched=true;return recordsPage();}if(b.dataset.review)return reviewModal(b.dataset.review,null,null,(b.dataset.reviewQueue||'').split(',').map(Number).filter(n=>n),b.dataset.reviewView==='1');
+if(b.dataset.assignmentQ)return openAssignmentQuestion(Number(b.dataset.assignmentQ));if(b.dataset.nextQuestion)return openAssignmentQuestion(Number(b.dataset.nextQuestion));if(b.dataset.prevQuestion)return openAssignmentQuestion(Number(b.dataset.prevQuestion));if(b.dataset.qid)return openQuestion(b.dataset.qid);if(b.dataset.topic){topic=b.dataset.topic;subtopic='';currentPage=1;return bank();}if(b.dataset.subtopic){subtopic=b.dataset.subtopic;currentPage=1;return bank();}if(b.dataset.pagination){currentPage=Number(b.dataset.pagination);return renderList();}if(b.dataset.view){viewMode=b.dataset.view;return bank();}if(b.dataset.save){const id=Number(b.dataset.save);if(bookmarks.has(id))bookmarks.delete(id);else bookmarks.add(id);saveBookmarks();b.classList.toggle('saved',bookmarks.has(id));b.setAttribute('aria-pressed',String(bookmarks.has(id)));toast(bookmarks.has(id)?'已收藏題目（本瀏覽器）':'已取消收藏');if(page==='bank'&&topic==='我的收藏')renderList();return;}if(b.dataset.answerMode){if(busy)return toast('正在保存作答，請等待完成。');preserveDraft();answerMode=b.dataset.answerMode;$$('[data-answer-mode]').forEach(x=>x.classList.toggle('active',x===b));renderAnswerArea();return;}if(b.dataset.generate)return generateQuestion(b.dataset.generate,currentQuestion&&currentQuestion.id);if(b.dataset.editq)return editQuestionModal(b.dataset.editq);if(b.dataset.verify)return verifyQuestion(b.dataset.verify);if(b.dataset.aigen)return aiGenerateModal(b.dataset.aigen);if(b.dataset.aifig)return openFigureStudioForQuestion(b.dataset.aifig);if(b.dataset.aifigManual)return openFigureStudioForQuestion(b.dataset.aifigManual,true);if(b.dataset.aifigClear)return clearQuestionFigure(b.dataset.aifigClear);if(b.dataset.genKind)return generateQuestion(b.dataset.genKind,b.dataset.genQid);if(b.dataset.removeDraft){drafts.splice(Number(b.dataset.removeDraft),1);return renderImportContent();}if(b.dataset.history){historyFilter=b.dataset.history;historyFilterTouched=true;return recordsPage();}if(b.dataset.review)return reviewModal(b.dataset.review,null,null,(b.dataset.reviewQueue||'').split(',').map(Number).filter(n=>n),b.dataset.reviewView==='1');
 if(b.dataset.editUser)return editAccountModal(Number(b.dataset.editUser));switch(b.dataset.action){case'login':loginModal();break;case'close-modal':closeReviewAware();break;case'collection':topic='我的收藏';search='';currentPage=1;bank();break;case'start':requireLogin(()=>{const a=S.attempts.find(a=>a.status==='graded'&&a.score<a.maxScore);openQuestion(a?.questionId||S.questions[0]?.id||1);});break;case'hand-demo':openQuestion(1);break;}});
 $('#account').onclick=accountModal;$('#avatar').onclick=accountModal;$('#menu-btn').onclick=()=>$('#sidebar').classList.toggle('open');$('#help-btn').innerHTML=icon('help');$('#help-btn').onclick=()=>{modal(`<p class="eyebrow">LEARN WITH MATHPATH</p><h2>讓練習真正帶來理解</h2><ul class="feature-list"><li><strong>01 · 選一個知識點</strong>在題庫搜尋、篩選難度，從基礎題開始。</li><li><strong>02 · 寫出解題過程</strong>用滑鼠或觸控筆手寫、輸入文字，或上傳紙本手稿。</li><li><strong>03 · 看回饋，再練一次</strong>接入 AI 可取得建議評分；教師可覆核並給簡要建議。</li><li><strong>04 · 相似鞏固，進階加深</strong>做同知識點題目，練到能說清楚原因，再挑戰進階題。</li></ul><button class="primary wide" id="help-guide">看圖文版新手上路 ${icon('arrow')}</button><div class="import-warning">資料保存在網站伺服器；實際位置由管理員確認。作業分數與 AI 建議須教師覆核；自主練習可即時評分，未配置 AI 的手稿待批閱。所有學習紀錄均來自實際提交。</div>`);$('#help-guide').onclick=()=>{closeModal();guidePage();};};
 const scoreText=v=>v===null||v===undefined?'—':Number(v).toLocaleString('zh-HK',{maximumFractionDigits:1});
