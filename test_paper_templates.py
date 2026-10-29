@@ -623,6 +623,45 @@ class PaperLibraryTests(unittest.TestCase):
         self.assertEqual(paper['year'], '2026')
         self.assertEqual(paper['term'], '第一段')
 
+    def test_ai_fills_missing_answers(self):
+        """匯入後答案留空的題目，可以讓 AI 一次補一批（答案／詳解／rubric）。"""
+        paper = self.save()
+        imported = self.call('POST', f"/api/papers/{paper['id']}/to-bank",
+                             {'topic': '坐標幾何'})['questions']
+        self.assertTrue(all(not q['answer'] for q in imported))
+        self.app.ai.configured = True
+        asked = []
+
+        def fake_call(instruction, payload, image=None, model=None,
+                      temperature=None, timeout=None):
+            asked.append(payload['question']['qtype'])
+            return {'answer': 'B', 'steps': ['先求斜率'], 'analysis': '考傾斜角', 'rubric': []}
+
+        self.app.ai.call = fake_call
+        out = self.call('POST', '/api/questions/solve',
+                        {'ids': [q['id'] for q in imported]})
+        self.assertEqual(len(out['solved']), 2, out['failed'])
+        self.assertEqual(asked, ['選擇題', '填空題'])
+        self.assertEqual(out['solved'][0]['answer'], 'B')
+        self.assertEqual(out['solved'][0]['steps'], ['先求斜率'])
+        self.assertIn('待核驗', out['solved'][0]['tags'], 'AI 填的答案還是要老師核對')
+        listed = {q['id']: q for q in self.call('GET', '/api/state')['questions']}
+        self.assertEqual(listed[imported[0]['id']]['answer'], 'B', '答案要存回去')
+
+        again = self.call('POST', '/api/questions/solve', {'ids': [imported[0]['id']]})
+        self.assertEqual(again['solved'], [])
+        self.assertIn('已經有答案', again['failed'][0]['reason'])
+
+    def test_solve_needs_ai_and_caps_batch(self):
+        paper = self.save()
+        imported = self.call('POST', f"/api/papers/{paper['id']}/to-bank",
+                             {'topic': '坐標幾何'})['questions']
+        self.call('POST', '/api/questions/solve',
+                  {'ids': [q['id'] for q in imported]}, expect=409)  # 沒設定 AI
+        self.app.ai.configured = True
+        self.call('POST', '/api/questions/solve',
+                  {'ids': [q['id'] for q in imported] * 3}, expect=400)  # 一次最多 5 題
+
     def test_import_rejects_unknown_topic(self):
         paper = self.save()
         self.call('POST', f"/api/papers/{paper['id']}/to-bank",

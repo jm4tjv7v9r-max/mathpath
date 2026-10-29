@@ -2932,6 +2932,19 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   await page.locator('#sort-filter').selectOption('');
   console.log('PASS: 題庫顯示入庫時間，可按入庫時間（新→舊／舊→新）排序');
 
+  // AI 補答案：題目都有答案時不出現；有缺才出現（避免老師誤按）
+  assert.equal(await page.locator('#ai-fill-answers').count(),0,'都有答案時不該出現');
+  const fillShown=await page.evaluate(()=>{
+    const old=S.questions;
+    S.questions=old.map(q=>({...q,answer:''}));
+    bank();
+    const n=document.querySelectorAll('#ai-fill-answers').length;
+    S.questions=old;bank();
+    return n;
+  });
+  assert.equal(fillShown,1,'有缺答案時要出現「AI 補答案」按鈕');
+  console.log('PASS: 題庫「AI 補答案」按鈕只在有題目缺答案時出現');
+
   // 帳號停用：管理員看得到「停用」，已停用的顯示「已停用」與「重新啟用」；
   // 不能停用自己與管理員（按鈕不出現）。實際的登入攔阻由後端測試驗證。
   const rosterHtml=await page.evaluate(()=>[

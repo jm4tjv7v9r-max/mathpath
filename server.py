@@ -6154,6 +6154,58 @@ class Application:
                     'figures': [{'id': qid, 'path': path_, 'url': f'/api/questions/{qid}/figure'}
                                 for qid, path_ in sorted(figures.items())],
                     'notice': '請用 XeLaTeX 編譯（xelatex questions.tex）；圖形已放在 figures/ 資料夾。'}, headers
+        if method == 'POST' and path == '/api/questions/solve':
+            # 批次補答案：題庫裡「待核驗」的題目（多半是從試卷匯入的）一次解一批。
+            # 每批上限 5 題，前端分批呼叫——單一請求跑 20 題會超過網路層的 30 秒。
+            self.teacher(user)
+            fields(body, ('ids', 'consentExternal', 'force'), ('ids',))
+            if not self.ai.configured:
+                fail(409, '尚未設定 AI 模型；請先設定模型端點，或手動填寫答案。')
+            ids = body['ids']
+            if not isinstance(ids, list) or not 1 <= len(ids) <= 5:
+                fail(400, '一次最多補 5 題的答案。')
+            ids = [number(v, '題目編號', 1, 10 ** 18, True) for v in ids]
+            force = body.get('force') is True
+            consent = body.get('consentExternal')
+            self.ai.consent(consent)
+            solved, failed = [], []
+            with self.db() as db:
+                for qid in ids:
+                    row = db.execute('SELECT * FROM questions WHERE id=?', (qid,)).fetchone()
+                    if row is None:
+                        failed.append({'id': qid, 'reason': '找不到這道題目。'})
+                        continue
+                    q = self.question_row(row)
+                    if not force and (q.get('answer') or '').strip():
+                        failed.append({'id': qid, 'reason': '已經有答案。'})
+                        continue
+                    try:
+                        draft = ai_answer_draft(self, {
+                            'title': q.get('title', ''), 'content': q.get('content', ''),
+                            'topic': q.get('topic', ''), 'subtopic': q.get('subtopic', ''),
+                            'qtype': q.get('qtype'), 'options': q.get('options') or [],
+                            'points': q.get('points', 5), 'consentExternal': consent})
+                    except APIError as exc:
+                        failed.append({'id': qid, 'reason': exc.message})
+                        continue
+                    merged = {k: q.get(k) for k in
+                              ('title', 'content', 'topic', 'subtopic', 'level', 'points',
+                               'qtype', 'options', 'hint', 'source', 'tags')
+                              if q.get(k) is not None}
+                    merged.update({'answer': draft['answer'],
+                                   'steps': draft.get('steps') or [],
+                                   'analysis': draft.get('analysis') or '',
+                                   'rubric': draft.get('rubric') or []})
+                    try:
+                        payload = question_valid(merged)
+                    except APIError as exc:
+                        failed.append({'id': qid, 'reason': exc.message})
+                        continue
+                    db.execute('UPDATE questions SET payload=? WHERE id=?',
+                               (json.dumps(payload, ensure_ascii=False), qid))
+                    solved.append(self.question_public(
+                        {**payload, 'id': qid, 'figure': bool(q.get('figure'))}, user))
+            return {'solved': solved, 'failed': failed}, headers
         if method == 'POST' and path == '/api/questions/import':
             self.teacher(user)
             fields(body, ('questions',), ('questions',))
