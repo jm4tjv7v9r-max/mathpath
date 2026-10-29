@@ -685,6 +685,48 @@ class PaperLibraryTests(unittest.TestCase):
         detail = self.call('GET', f"/api/papers/{paper['id']}")['paper']
         self.assertEqual(detail['questionIds'], [q['id'] for q in imported])
 
+    def make_questions(self):
+        return self.call('POST', '/api/questions/import', {'questions': [
+            {'title': '斜率', 'content': '直線 $y=2x+1$ 的斜率是？', 'topic': '坐標幾何',
+             'level': 1, 'points': 4, 'answer': 'B', 'qtype': '選擇題',
+             'options': ['$1$', '$2$'], 'grade': '中三'},
+            {'title': '距離', 'content': '求 $A(0,0)$ 到 $B(3,4)$ 的距離。', 'topic': '坐標幾何',
+             'level': 2, 'points': 6, 'answer': '5', 'qtype': '填空題', 'grade': '中三'},
+        ]})['questions']
+
+    def test_build_paper_from_bank_questions(self):
+        """反向組卷：從題庫挑題直接出一份卷（存進我的試卷、可下載 Word／LaTeX）。"""
+        questions = self.make_questions()
+        template = self.call('POST', '/api/paper-templates',
+                             {'name': '範本',
+                              'file': data_url(make_docx(TEMPLATE))})['template']
+        out = self.call('POST', '/api/papers/from-questions', {
+            'questionIds': [q['id'] for q in questions], 'title': '自選題試卷',
+            'year': '2026年度', 'grade': '初三', 'term': '第二段',
+            'templateId': template['id']})
+        self.assertEqual(out['paper']['questionCount'], 2)
+        self.assertEqual(out['paper']['year'], '2026')
+        self.assertEqual(out['paper']['term'], '第二段')
+        self.assertIn('一、選擇題', out['tex'], '要按題型分節')
+        self.assertIn('二、填空題', out['tex'])
+        self.assertIn('A. $1$', out['tex'], '選項要補回 A. 前綴')
+        self.assertTrue(out['docx'].startswith('data:' + DOCX_MIME))
+        self.assertTrue(out['docxName'].endswith('.docx'))
+        detail = self.call('GET', f"/api/papers/{out['paper']['id']}")['paper']
+        self.assertEqual(detail['questionIds'], [q['id'] for q in questions])
+
+    def test_build_paper_without_template_gives_tex_only(self):
+        questions = self.make_questions()
+        out = self.call('POST', '/api/papers/from-questions', {
+            'questionIds': [questions[0]['id']], 'title': '只有 LaTeX'})
+        self.assertNotIn('docx', out)
+        self.assertIn(r'\documentclass', out['tex'])
+        self.assertEqual(out['paper']['templateId'], None)
+
+    def test_build_paper_rejects_missing_question(self):
+        self.call('POST', '/api/papers/from-questions',
+                  {'questionIds': [999999], 'title': '壞卷'}, expect=404)
+
     def test_import_rejects_unknown_topic(self):
         paper = self.save()
         self.call('POST', f"/api/papers/{paper['id']}/to-bank",

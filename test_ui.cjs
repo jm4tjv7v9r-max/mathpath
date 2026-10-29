@@ -2977,6 +2977,29 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   assert.equal(verifyShown,1,'待核驗的題目要有核驗按鈕');
   console.log('PASS: 題庫待核驗的題目有「核驗通過」按鈕，核驗後才能出作業');
 
+  // 反向組卷：勾選題目 → 組成試卷（存進我的試卷並下載）
+  await page.locator('[data-page=bank]').first().click();
+  await page.locator('[data-pick]').first().waitFor({timeout:8000});
+  assert.equal(await page.locator('#pick-bar').isHidden(),true,'沒勾題時不該出現工具列');
+  await page.locator('[data-pick]').first().check();
+  await page.locator('#pick-bar').waitFor({state:'visible',timeout:4000});
+  assert.match(await page.locator('#pick-count').innerText(),/已選 1 題/);
+  let buildBody=null;
+  await page.route('**/api/papers/from-questions',route=>{
+    buildBody=route.request().postDataJSON();
+    return route.fulfill({json:{paper:{id:21,title:buildBody.title},
+      tex:'\\documentclass{ctexart}',texName:'自選題試卷.tex'}});
+  });
+  await page.locator('#pick-build').click();
+  await page.locator('#build-submit').waitFor({timeout:8000});
+  const [builtFile]=await Promise.all([
+    page.waitForEvent('download',{timeout:6000}),
+    page.locator('#build-submit').click()]);
+  assert.match(builtFile.suggestedFilename(),/\.tex$/,'沒選範本時下載 .tex');
+  assert.deepEqual(buildBody.questionIds,[1],'要把勾選的題目帶去組卷');
+  assert.ok(buildBody.title,'要有卷名');
+  console.log('PASS: 題庫勾題即可組成試卷（工具列顯示已選題數、沒選範本時下載 .tex）');
+
   // 帳號停用：管理員看得到「停用」，已停用的顯示「已停用」與「重新啟用」；
   // 不能停用自己與管理員（按鈕不出現）。實際的登入攔阻由後端測試驗證。
   const rosterHtml=await page.evaluate(()=>[

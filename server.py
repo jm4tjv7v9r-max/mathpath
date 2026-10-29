@@ -2376,6 +2376,32 @@ def question_fingerprint(content: str) -> str:
     return hashlib.sha1(plain.encode('utf-8')).hexdigest()
 
 
+CN_NUMBERS = '一二三四五六七八九十'
+QTYPE_SECTION_ORDER = ('選擇題', '填空題', '解答題', '證明題')
+
+
+def sections_from_bank_questions(questions) -> list:
+    """題庫題目 → 試卷分部：按題型分節，選項補回「A.」前綴。"""
+    groups = {}
+    for q in questions:
+        groups.setdefault(q.get('qtype') or '解答題', []).append(q)
+    sections = []
+    for qtype in QTYPE_SECTION_ORDER:
+        items = groups.get(qtype) or []
+        if not items:
+            continue
+        rows = []
+        for q in items:
+            options = [f'{"ABCDEFGHIJ"[i]}. {opt}'
+                       for i, opt in enumerate(q.get('options') or [])]
+            rows.append(paper_format.Question(
+                stem=(q.get('content') or q.get('title') or '').strip(),
+                marks=q.get('points'), options=options, lines=[]))
+        sections.append(paper_format.Section(
+            title=f'{CN_NUMBERS[len(sections)]}、{qtype}', questions=rows))
+    return sections
+
+
 def paper_question_type(stem: str, options: list[str]) -> str:
     if len(options) >= 2:
         return '選擇題'
@@ -4196,6 +4222,10 @@ class Application:
                     data BLOB NOT NULL,
                     spec TEXT NOT NULL DEFAULT '{}',
                     created_at TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS paper_questions (
+                    paper_id INTEGER NOT NULL REFERENCES papers(id),
+                    question_id INTEGER NOT NULL REFERENCES questions(id),
+                    PRIMARY KEY (paper_id, question_id));
                 CREATE TABLE IF NOT EXISTS papers (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     owner_id INTEGER NOT NULL REFERENCES users(id),
@@ -4289,6 +4319,10 @@ class Application:
             if grade_columns and 'paper_key_id' not in grade_columns:
                 db.execute('ALTER TABLE paper_grades ADD COLUMN paper_key_id INTEGER')
             db.execute('BEGIN IMMEDIATE')
+            # 舊資料只有 questions.paper_id，補進對照表（INSERT OR IGNORE 可重複執行）。
+            # 放在 BEGIN 之後：INSERT 會開隱式交易，提前跑會讓這裡的 BEGIN 失敗。
+            db.execute('INSERT OR IGNORE INTO paper_questions(paper_id, question_id) '
+                       'SELECT paper_id, id FROM questions WHERE paper_id IS NOT NULL')
             if not db.execute('SELECT 1 FROM meta WHERE key=?', ('initialized',)).fetchone():
                 for username, role, default, env, name in [
                     ('student', 'student', 'Math1234!', 'MATH_STUDENT_PASSWORD', '演示學生'),
@@ -5435,6 +5469,64 @@ class Application:
                           'terms': distinct('term')}
             return {'papers': [paper_public(r) for r in rows], 'facets': facets}, headers
 
+        if method == 'POST' and path == '/api/papers/from-questions':
+            # 反向組卷：從題庫挑題直接變成一份試卷（存進「我的試卷」，可下載 Word／LaTeX）
+            self.teacher(user)
+            fields(body, ('questionIds', 'title', 'year', 'grade', 'term', 'templateId'),
+                   ('questionIds', 'title'))
+            ids = body['questionIds']
+            if not isinstance(ids, list) or not 1 <= len(ids) <= 40:
+                fail(400, '一次可以組 1 至 40 題。')
+            ids = [number(v, '題目編號', 1, 10 ** 18, True) for v in ids]
+            title = text(body['title'], '卷名', 200)
+            year = paper_year(body.get('year'))
+            grade = text(body.get('grade') or '', '級別', 20, empty=True)
+            term = paper_term(body.get('term'))
+            template_id = body.get('templateId')
+            with self.db() as db:
+                rows = [db.execute('SELECT * FROM questions WHERE id=?', (qid,)).fetchone()
+                        for qid in ids]
+                if any(row is None for row in rows):
+                    fail(404, '有題目已被刪除，請重新選。')
+                questions = [self.question_row(row) for row in rows]
+                sections = sections_from_bank_questions(questions)
+                if not sections:
+                    fail(422, '選的題目沒有內容。')
+                tpl = None
+                if template_id is not None:
+                    template_id = number(template_id, '範本', 1, 10 ** 18, True)
+                    tpl = db.execute('SELECT * FROM paper_templates WHERE id=?',
+                                     (template_id,)).fetchone()
+                    if tpl is None:
+                        fail(404, '找不到這個範本。')
+                    if tpl['owner_id'] != user['id'] and not self.is_owner(user, db):
+                        fail(403, '只有建立者或管理員可以使用這個範本。')
+                cur = db.execute(
+                    'INSERT INTO papers(owner_id,title,year,grade,term,sections,'
+                    'template_id,question_count,created_at) VALUES(?,?,?,?,?,?,?,?,?)',
+                    (user['id'], title, year, grade, term,
+                     json.dumps(paper_format.sections_to_dict(sections), ensure_ascii=False),
+                     template_id, len(questions), utc_now()))
+                paper_id = cur.lastrowid
+                db.executemany('INSERT OR IGNORE INTO paper_questions(paper_id, question_id) '
+                               'VALUES(?,?)', [(paper_id, qid) for qid in ids])
+                row = db.execute('SELECT * FROM papers WHERE id=?', (paper_id,)).fetchone()
+            result = {'paper': paper_public(row),
+                      'tex': latex_export.to_tex(title, sections, 'trailing'),
+                      'texName': title.replace('/', '／')[:60] + '.tex'}
+            if tpl is not None:
+                try:
+                    output, _ = paper_format.render_with_sections(tpl['data'], sections, title)
+                except SystemExit as exc:
+                    fail(409, str(exc) or '這個範本裡找不到題目段落，請換一個範本。')
+                except Exception as exc:
+                    ai_log(f'組卷排版失敗：{exc}')
+                    fail(422, '用這個範本排不起來，請換一個範本或只下載 LaTeX。')
+                result['docx'] = ('data:' + DOCX_MIME + ';base64,'
+                                  + base64.b64encode(output).decode())
+                result['docxName'] = title.replace('/', '／')[:60] + '.docx'
+            return result, headers
+
         match = re.fullmatch(r'/api/papers/([1-9]\d{0,17})', path)
         if match and method in ('GET', 'DELETE'):
             self.teacher(user)
@@ -5449,8 +5541,9 @@ class Application:
                     db.execute('DELETE FROM papers WHERE id=?', (paper_id,))
                     return {'ok': True}, headers
                 # 這份卷匯入題庫的那些題目（「出作業」直接拿這個清單）
-                question_ids = [r['id'] for r in db.execute(
-                    'SELECT id FROM questions WHERE paper_id=? ORDER BY id', (paper_id,))]
+                question_ids = [r['question_id'] for r in db.execute(
+                    'SELECT question_id FROM paper_questions WHERE paper_id=? '
+                    'ORDER BY question_id', (paper_id,))]
             data = paper_public(row, detail=True)
             data['questionIds'] = question_ids
             return {'paper': data}, headers
@@ -5549,6 +5642,8 @@ class Application:
                 saved = [self.insert_question(db, q, None, None) for q in prepared]
                 db.executemany('UPDATE questions SET paper_id=? WHERE id=?',
                                [(paper_id, q['id']) for q in saved])
+                db.executemany('INSERT OR IGNORE INTO paper_questions(paper_id, question_id) '
+                               'VALUES(?,?)', [(paper_id, q['id']) for q in saved])
                 db.execute('UPDATE papers SET imported_at=?, imported_count=? WHERE id=?',
                            (utc_now(), len(saved), paper_id))
             return {'count': len(saved), 'skipped': skipped,

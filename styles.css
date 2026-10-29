@@ -634,6 +634,13 @@ html[data-theme=night] .role-badge.off{background:#2a3437;color:#a9b7b9}
 .metric-row{margin-bottom:18px;gap:12px}
 .right-panel{padding:16px 16px 14px}
 .question-card{padding:16px 0}
+/* 題庫：教師勾選題目組卷 */
+.pick-box{display:inline-flex;align-items:center;margin-right:8px;vertical-align:middle}
+.pick-box input{width:16px;height:16px;accent-color:var(--green);cursor:pointer}
+.pick-bar{display:flex;gap:10px;align-items:center;margin-top:10px;padding:10px 12px;
+  border:1px solid var(--green);border-radius:10px;background:var(--surface-green)}
+.pick-bar[hidden]{display:none}
+.pick-bar span{font-weight:600}
 /* 題庫卡片內的選項是唯讀瀏覽，不需要那麼多留白；作答頁的選項維持原樣（方便點選）。 */
 .question-card .choice-options{margin-top:9px;gap:5px}
 .question-card .choice-options li{padding:6px 10px;line-height:1.5}
