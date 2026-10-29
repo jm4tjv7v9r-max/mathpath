@@ -743,6 +743,19 @@ function themeControl(){const cur=theme();return `<div class="font-scale" role="
 applyTheme(theme());
 function toast(msg){const t=$('#toast');t.textContent=msg;t.classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>t.classList.remove('show'),4200);}
 async function api(path,body){let r;try{r=await fetch(path,{method:body===undefined?'GET':'POST',headers:body===undefined?{}:{'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body),credentials:'same-origin'});}catch{throw new Error('無法連接網站伺服器，請確認服務已啟動。');}let data;try{data=await r.json();}catch{throw new Error(r.status===524?'AI 處理超過兩分鐘，已被網路層中斷。請縮短試卷、分批上傳，或稍後再試。':`伺服器回應無效（HTTP ${r.status}），請稍後再試；伺服器日誌會有實際原因。`);}if(!r.ok){if(r.status===401 && !path.includes('login') && !path.includes('change-password')){S.user=null;loginModal();}throw new Error(data.error || '操作未完成，請再試。');}serverIssue='';return data;}
+// 長 AI 工作（PDF 轉寫會超過 30 秒）：先拿 jobId，再輪詢 /api/jobs/{id}。
+async function apiJob(path,body,onTick){
+  const {jobId}=await api(path,{...body,async:true});
+  const started=Date.now();
+  for(;;){
+    await new Promise(r=>setTimeout(r,1200));
+    if(Date.now()-started>5*60*1000)throw new Error('處理超過 5 分鐘，請縮短試卷再試。');
+    const job=await api('/api/jobs/'+encodeURIComponent(jobId));
+    if(onTick)onTick(job);
+    if(job.status==='done')return job.result;
+    if(job.status==='error')throw new Error(job.error||'處理失敗，請稍後再試。');
+  }
+}
 async function refresh(){S=await api('/api/state');loadBookmarks();shell();}
 function empty(title,desc,button=''){return `<div class="empty">${icon('bank')}<h3>${title}</h3><p>${desc}</p>${button}</div>`;}
 // ── 新手上路：圖文並茂的快速指引 ──────────────────────────────────────
@@ -3964,7 +3977,9 @@ async function paperLayoutPage(){
       if(isPdf&&!$('#pdf-consent').checked)throw new Error('PDF 需要先勾選「送給外部 AI 分析」。');
       const data=await fileData(file,[DOCX_MIME,PDF_MIME],12);
       const mathAsText=$('#paper-math-text').checked;
-      const res=await api(`/api/paper-templates/${tid}/apply`,{file:data,consentExternal:isPdf,mathAsText});
+      const res=await apiJob(`/api/paper-templates/${tid}/apply`,
+        {file:data,consentExternal:isPdf,mathAsText},
+        job=>{btn.textContent=`排版中… ${Math.round(job.elapsed||0)} 秒`;});
       const st=res.stats||{};
       // 保存到「我的試卷」：年份／級別／學段先從卷名猜，老師改一下就能存
       const guess=guessPaperMeta(res.content?.title||res.filename);
@@ -4029,7 +4044,8 @@ async function paperLayoutPage(){
       const data=await fileData(file,[DOCX_MIME,PDF_MIME],12);
       const body={file:data,marksPosition:marks.value,consentExternal:isPdf};
       if(pre.value.trim())body.preamble=pre.value;
-      const res=await api('/api/papers/to-tex',body);
+      const res=await apiJob('/api/papers/to-tex',body,
+        job=>{btn.textContent=`產生中… ${Math.round(job.elapsed||0)} 秒`;});
       const blob=new Blob([res.tex],{type:'text/x-tex;charset=utf-8'});
       const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=res.filename;a.click();
       setTimeout(()=>URL.revokeObjectURL(a.href),2000);

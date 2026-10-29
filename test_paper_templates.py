@@ -7,6 +7,7 @@ import base64
 import io
 import json
 import tempfile
+import time
 import unittest
 from urllib.parse import urlencode
 from unittest.mock import patch
@@ -227,6 +228,25 @@ class PaperTemplateTests(unittest.TestCase):
         doc.save(buf)
         _, sections = paper_format.parse_content_bytes(buf.getvalue())
         self.assertEqual([q.stem for q in sections[0].questions], ['題目一', '題目三'])
+
+    def test_async_apply_returns_a_job(self):
+        """PDF 轉寫要 10–40 秒，改走背景工作：先回 jobId，前端輪詢結果。"""
+        template = self.upload()['template']
+        started = self.call('POST', f"/api/paper-templates/{template['id']}/apply",
+                            {'file': data_url(content_docx()), 'async': True})
+        self.assertIn('jobId', started)
+        job = {}
+        for _ in range(200):
+            job = self.call('GET', f"/api/jobs/{started['jobId']}")
+            if job['status'] != 'running':
+                break
+            time.sleep(0.05)
+        self.assertEqual(job['status'], 'done', job.get('error'))
+        self.assertTrue(job['result']['docx'].startswith('data:' + DOCX_MIME))
+        self.assertEqual(job['result']['stats']['questions'], 2)
+
+    def test_unknown_job_is_404(self):
+        self.call('GET', '/api/jobs/doesnotexist123', expect=404)
 
     def test_rejects_non_docx(self):
         self.call('POST', '/api/paper-templates',

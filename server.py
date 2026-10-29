@@ -59,6 +59,24 @@ QUERY_PATHS = ('/api/calendar', '/api/papers',
                '/api/admin/restore/questions', '/api/admin/restore/students')
 
 
+# ── 背景工作：長 AI 請求（PDF 轉寫）改成「先回 jobId，前端輪詢」 ────────────
+# 單一請求跑 10 頁 PDF 會超過網路層的 30 秒（實測 2 頁 9 秒），所以把工作丟到
+# 背景執行緒；結果暫存在記憶體（重啟就沒了，前端會收到 404 並提示重試）。
+JOBS: dict[str, dict] = {}
+JOB_TTL_SECONDS = 30 * 60
+JOB_MAX = 40
+
+
+def _prune_jobs():
+    now = time.time()
+    for job_id, job in list(JOBS.items()):
+        if now - job.get('at', now) > JOB_TTL_SECONDS:
+            JOBS.pop(job_id, None)
+    while len(JOBS) > JOB_MAX:
+        oldest = min(JOBS, key=lambda k: JOBS[k].get('at', 0))
+        JOBS.pop(oldest, None)
+
+
 def query_allowed(path, query):
     """只有白名單端點可以帶查詢參數。
 
@@ -5044,11 +5062,49 @@ class Application:
                 'questions': questions, 'demoAccounts': bool(demo_left),
                 'metrics': self.ai.metrics.snapshot()}, headers
 
+    def start_job(self, user, run):
+        """把 run() 丟到背景執行緒跑；回 jobId。結果與錯誤都留在 JOBS 裡等前端來拿。"""
+        _prune_jobs()
+        job_id = secrets.token_urlsafe(12)
+        job = {'id': job_id, 'user': user['id'], 'status': 'running',
+               'error': None, 'result': None, 'started': time.time(), 'at': time.time()}
+        JOBS[job_id] = job
+
+        def worker():
+            try:
+                job['result'] = run()
+                job['status'] = 'done'
+            except APIError as exc:
+                job['error'] = exc.message
+                job['status'] = 'error'
+            except Exception as exc:  # 背景執行緒的例外沒人接，一定要自己記下來
+                ai_log(f'背景工作失敗：{exc}')
+                job['error'] = '處理失敗，請縮短試卷或稍後再試。'
+                job['status'] = 'error'
+            finally:
+                job['at'] = time.time()
+
+        threading.Thread(target=worker, daemon=True).start()
+        return job_id
+
     def dispatch(self, method, path, body, user, token_hash, ip, query=''):
         headers = {}
         # 配額按「誰在呼叫」計：登入者用帳號，訪客用 IP（登入頁與同意前的呼叫）。
         begin_ai_request(AIQuota.key_for(user, ip))
         # /api/health 即使 DB 還沒好也要能回應，讓 Render 健康檢查不會 timeout。
+        job_match = re.fullmatch(r'/api/jobs/([A-Za-z0-9_-]{8,40})', path)
+        if method == 'GET' and job_match:
+            self.teacher(user)
+            job = JOBS.get(job_match[1])
+            if job is None:
+                fail(404, '這個工作已經結束或不存在（伺服器可能重啟過），請重新排版。')
+            if job['user'] != user['id']:
+                fail(403, '只能查看自己的工作。')
+            payload = {'status': job['status'], 'error': job['error'],
+                       'elapsed': round(time.time() - job['started'], 1)}
+            if job['status'] == 'done':
+                payload['result'] = job['result']
+            return payload, headers
         if method == 'POST' and path == '/api/paper-keys':
             # 第一步：教師上傳空白題目，AI 辨識題目並生成標準答案，等教師確認。
             self.teacher(user)
@@ -5269,7 +5325,12 @@ class Application:
         # ---------- 卷面排版：直接輸出 LaTeX（Overleaf 用） ----------
         if method == 'POST' and path == '/api/papers/to-tex':
             self.teacher(user)
-            fields(body, ('file', 'preamble', 'marksPosition', 'consentExternal'), ('file',))
+            fields(body, ('file', 'preamble', 'marksPosition', 'consentExternal', 'async'),
+                   ('file',))
+            if body.get('async'):
+                return {'jobId': self.start_job(
+                    user, lambda: self.dispatch(method, path, {**body, 'async': False},
+                                                user, token_hash, ip)[0])}, headers
             kind, data = decode_paper(body['file'])
             preamble = body.get('preamble')
             if preamble:
@@ -5366,8 +5427,13 @@ class Application:
         match = re.fullmatch(r'/api/paper-templates/([1-9]\d{0,17})/apply', path)
         if match and method == 'POST':
             self.teacher(user)
-            fields(body, ('file', 'consentExternal', 'mathAsText'), ('file',))
+            fields(body, ('file', 'consentExternal', 'mathAsText', 'async'), ('file',))
             math_as_text = bool(body.get('mathAsText'))
+            if body.get('async'):
+                # PDF 轉寫要 10–40 秒，交給背景工作跑，前端輪詢 /api/jobs/{id}
+                return {'jobId': self.start_job(
+                    user, lambda: self.dispatch(method, path, {**body, 'async': False},
+                                                user, token_hash, ip)[0])}, headers
             with self.db() as db:
                 row = db.execute('SELECT * FROM paper_templates WHERE id=?',
                                  (int(match.group(1)),)).fetchone()

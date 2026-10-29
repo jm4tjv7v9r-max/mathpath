@@ -2913,11 +2913,19 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
     +Buffer.from('PK\u0003\u0004demo').toString('base64');
   await page.route('**/api/paper-templates',route=>route.fulfill({json:{templates:[
     {id:7,name:'測試範本',createdAt:stamp,spec:{marksPosition:'leading',optionsPerLine:4}}]}}));
-  await page.route('**/api/paper-templates/7/apply',route=>route.fulfill({json:{
+  const applyResult={
     docx:demoDocx,filename:'培華中學2026年度第一段高二級數學科大測一.docx',
     stats:{sections:1,questions:2,formulas:1},
     content:{title:'培華中學2026年度第一段高二級數學科大測一',sections:[{title:'一、選擇題',
-      questions:[{stem:'斜率 $k=$？',marks:3,options:['A. $1$'],lines:[]}]}]}}}));
+      questions:[{stem:'斜率 $k=$？',marks:3,options:['A. $1$'],lines:[]}]}]}};
+  // 排版改成背景工作：async 請求先回 jobId，前端輪詢 /api/jobs/{id}
+  await page.route('**/api/paper-templates/7/apply',route=>{
+    const body=route.request().postDataJSON();
+    if(body.async)return route.fulfill({json:{jobId:'job7'}});
+    return route.fulfill({json:applyResult});
+  });
+  await page.route('**/api/jobs/job7',route=>route.fulfill({json:{
+    status:'done',elapsed:1.4,result:applyResult}}));
   await page.evaluate(()=>paperLayoutPage());
   await page.locator('#paper-file').waitFor({timeout:8000});
   await page.locator('#paper-file').setInputFiles({name:'新卷.docx',
