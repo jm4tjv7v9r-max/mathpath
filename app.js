@@ -9,7 +9,10 @@ const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt
 function katexHtml(tex, display){
   try{
     if(window.katex && typeof window.katex.renderToString === 'function'){
-      return window.katex.renderToString(tex, {displayMode: !!display, throwOnError: false, strict: false, trust: false});
+      const html=window.katex.renderToString(tex, {displayMode: !!display, throwOnError: false, strict: false, trust: false});
+      // KaTeX 認不得的寫法（例如 \left（ 全角括號）會回一段紅色的 katex-error；
+      // 與其讓老師看到紅字亂碼，不如把原始碼顯示出來，至少看得出是什麼
+      if(html.indexOf('katex-error') < 0) return html;
     }
   }catch(_){}
   return `<code class="math-fallback">${esc(tex)}</code>`;
@@ -920,7 +923,7 @@ document.addEventListener('click',e=>{
   document.addEventListener('keydown',onKey);
   document.body.appendChild(box);
 });
-function questionCard(q,n){return `<article class="question-card"><span class="question-number">${String(n).padStart(2,'0')}</span><div class="question-body"><div class="question-top"><h3>${mathText(q.title)}</h3><span class="badge l${q.level}">${levels[q.level]}</span><span class="badge outline">${esc(q.qtype||'解答題')}</span><span class="badge outline">${q.points} 分</span></div>${stemHtml(q)}<div class="question-meta"><span>${esc(q.tags.slice(0,2).join(' · '))}</span><i class="separator"></i><span>${esc(q.source)}</span><i class="separator"></i><span>入庫 ${fmtWhen(q.createdAt)}</span></div></div><div class="question-controls"><button class="bookmark ${bookmarks.has(q.id)?'saved':''}" data-save="${q.id}" aria-label="${bookmarks.has(q.id)?'取消收藏':'收藏題目'}" aria-pressed="${bookmarks.has(q.id)}">${icon('bookmark')}</button><button class="practice-btn" data-qid="${q.id}">${S.user?.role==='teacher'?'檢視題目':'開始練習'} ${icon('chevron')}</button>${S.user?.role==='teacher'?`<button class="text-button" data-editq="${q.id}" style="font-size:calc(12px*var(--fs))">${icon('edit')}編輯題目</button><button class="text-button ai-gen-entry" data-aigen="${q.id}" style="font-size:calc(12px*var(--fs))">${icon('spark')}AI 生成類似題</button><button class="text-button" data-aifig="${q.id}" style="font-size:calc(12px*var(--fs))">${icon('spark')}${q.figure?'重新生成圖形':'AI 生成圖形'}</button><button class="text-button" data-aifig-manual="${q.id}" style="font-size:calc(12px*var(--fs))">${icon('upload')}手動插入圖形</button>${q.figure?`<button class="text-button" data-aifig-clear="${q.id}" style="font-size:calc(12px*var(--fs))">移除圖形</button>`:''}`:''}</div></article>`;}
+function questionCard(q,n){return `<article class="question-card"><span class="question-number">${String(n).padStart(2,'0')}</span><div class="question-body"><div class="question-top"><h3>${mathText(q.title)}</h3><span class="badge l${q.level}">${levels[q.level]}</span><span class="badge outline">${esc(q.qtype||'解答題')}</span><span class="badge outline">${q.points} 分</span></div>${stemHtml(q)}<div class="question-meta"><span>${esc(q.tags.slice(0,2).join(' · '))}</span><i class="separator"></i><span>${esc(q.source)}</span>${q.createdAt?`<i class="separator"></i><span>入庫 ${fmtWhen(q.createdAt)}</span>`:''}</div></div><div class="question-controls"><button class="bookmark ${bookmarks.has(q.id)?'saved':''}" data-save="${q.id}" aria-label="${bookmarks.has(q.id)?'取消收藏':'收藏題目'}" aria-pressed="${bookmarks.has(q.id)}">${icon('bookmark')}</button><button class="practice-btn" data-qid="${q.id}">${S.user?.role==='teacher'?'檢視題目':'開始練習'} ${icon('chevron')}</button>${S.user?.role==='teacher'?`<button class="text-button" data-editq="${q.id}" style="font-size:calc(12px*var(--fs))">${icon('edit')}編輯題目</button><button class="text-button ai-gen-entry" data-aigen="${q.id}" style="font-size:calc(12px*var(--fs))">${icon('spark')}AI 生成類似題</button><button class="text-button" data-aifig="${q.id}" style="font-size:calc(12px*var(--fs))">${icon('spark')}${q.figure?'重新生成圖形':'AI 生成圖形'}</button><button class="text-button" data-aifig-manual="${q.id}" style="font-size:calc(12px*var(--fs))">${icon('upload')}手動插入圖形</button>${q.figure?`<button class="text-button" data-aifig-clear="${q.id}" style="font-size:calc(12px*var(--fs))">移除圖形</button>`:''}`:''}</div></article>`;}
 function bank(){beginView();page='bank';assignmentContext=null;mockContext=null;stopQuizClock();shell();$('#main').innerHTML=`<div class="fade-in">${heading('QUESTION BANK','數學題庫','每一道題，都是通往理解的一步。',`<button class="secondary" data-action="collection">${icon('bookmark')}我的收藏</button>${S.user?.role==='teacher'?`<button class="secondary" data-page="newq">${icon('plus')}新增題目</button><button class="secondary" id="export-latex">${icon('file')}匯出 LaTeX</button>`:''}<button class="primary" data-page="import">${icon('upload')}匯入試卷</button>`)}${!S.user?`<div class="field-hint" style="margin:-9px 0 17px">訪客預覽 · 以下為題庫示例，學習紀錄尚未開始。<button class="text-button" data-action="login" style="font-size:calc(13px*var(--fs));margin-left:8px">登入學習 ${icon('arrow')}</button></div>`:''}${hero()}${metrics()}<div class="bank-layout"><section class="panel bank-panel"><div class="panel-heading"><h2>精選題目 <span class="small-text" id="question-count"></span></h2><div class="segmented"><button data-view="list" class="${viewMode==='list'?'active':''}" aria-label="清單檢視">${icon('list')}</button><button data-view="grid" class="${viewMode==='grid'?'active':''}" aria-label="卡片檢視">${icon('bank')}</button></div></div><div class="filters"><label class="search-field">${icon('search')}<input id="question-search" value="${esc(search)}" placeholder="搜尋題目、知識點或試卷名稱…" aria-label="搜尋题目"></label><select id="grade-filter" aria-label="年級"><option value="">所有年級</option>${grades.map(g=>`<option ${grade===g?'selected':''}>${g}</option>`).join('')}</select><select id="level-filter" aria-label="難度"><option value="">所有難度</option>${[1,2,3].map(i=>`<option value="${i}" ${Number(level)===i?'selected':''}>${levels[i]}</option>`).join('')}</select><select id="qtype-filter" aria-label="題型"><option value="">所有題型</option>${qtypes.map(t=>`<option ${qtype===t?'selected':''}>${t}</option>`).join('')}</select><select id="sort-filter" aria-label="排序"><option value="">預設排序</option><option value="new" ${sortBy==='new'?'selected':''}>最新入庫</option><option value="old" ${sortBy==='old'?'selected':''}>最舊入庫</option></select></div><div class="topic-tabs">${['全部題目',...topics].map(t=>`<button class="topic-tab ${topic===t?'active':''}" data-topic="${t}">${t}</button>`).join('')}</div><div class="topic-tabs subtopic-tabs" style="display:${topic!=='全部題目'&&topic!=='我的收藏'&&subtopicsOf(topic).length?'flex':'none'}">${['全部子分類',...subtopicsOf(topic)].map(sb=>`<button class="subtopic-tab ${subtopic===sb?'active':''}" data-subtopic="${sb}">${sb}</button>`).join('')}</div><div class="question-list ${viewMode}" id="question-list"></div><div class="pagination" id="pagination"></div></section>${rightBank()}</div></div>`;renderList();$('#question-search').addEventListener('input',e=>{search=e.target.value;currentPage=1;renderList();});$('#grade-filter').addEventListener('change',e=>{grade=e.target.value;currentPage=1;renderList();});$('#level-filter').addEventListener('change',e=>{level=e.target.value;currentPage=1;renderList();});$('#qtype-filter').addEventListener('change',e=>{qtype=e.target.value;currentPage=1;renderList();});$('#sort-filter').addEventListener('change',e=>{sortBy=e.target.value;currentPage=1;renderList();});const lb=$('#export-latex');if(lb)lb.onclick=exportLatexDialog;}
 // ── 匯出 LaTeX（XeLaTeX 可編譯）──
 // 後端只回傳 .tex 文字；圖形由瀏覽器轉成 PNG（XeLaTeX 不支援 WebP），再用最小 ZIP 打包下載。
@@ -3604,7 +3607,13 @@ function guessPaperMeta(title){
     grade:(s.match(/高[一二三]|初[一二三]|中[一二三四五六]/)||[''])[0],
     term:(s.match(/第[一二三四]段/)||[''])[0]};
 }
+const PAPER_IMPORT_KEY='mathpath_paper_import';
+const paperImportPrefs=()=>{try{return JSON.parse(localStorage.getItem(PAPER_IMPORT_KEY)||'{}');}catch(_){return {};}};
 function paperCardHtml(p){
+  const prefs=paperImportPrefs();
+  const pickTopic=prefs.topic&&topics.includes(prefs.topic)?prefs.topic:topics[0];
+  const pickGrade=prefs.grade&&PAPER_GRADES.includes(prefs.grade)?prefs.grade:bankGrade(p.grade);
+  const pickLevel=String(prefs.level||2);
   const meta=[p.year,p.grade,p.term].filter(Boolean).join(' · ');
   const imported=p.importedCount?` · 已匯入 ${p.importedCount} 題`:'';
   return `<section class="panel panel-pad" style="margin-bottom:12px" data-paper-card="${p.id}">
@@ -3612,6 +3621,7 @@ function paperCardHtml(p){
       <div><strong>${esc(p.title)}</strong>
         <span class="small-text">${esc(meta)}${meta?' · ':''}${p.questionCount} 題${esc(imported)}</span></div>
       <div class="paper-card-actions">
+        ${p.templateId?`<button class="secondary" data-paper-docx="${p.id}">下載 Word</button>`:''}
         <button class="secondary" data-paper-tex="${p.id}">下載 .tex</button>
         <button class="text-button" data-paper-del="${p.id}" style="color:#b8453b">刪除</button>
       </div>
@@ -3619,9 +3629,9 @@ function paperCardHtml(p){
     <details class="paper-import" style="margin-top:10px">
       <summary class="text-button">一鍵匯入題庫（${p.questionCount} 題）</summary>
       <div class="layout-row" style="margin-top:8px">
-        <label class="small-text">分類<select data-paper-topic="${p.id}">${topics.map(t=>`<option>${esc(t)}</option>`).join('')}</select></label>
-        <label class="small-text">年級<select data-paper-grade="${p.id}">${PAPER_GRADES.map(g=>`<option ${g===bankGrade(p.grade)?'selected':''}>${g}</option>`).join('')}</select></label>
-        <label class="small-text">難度<select data-paper-level="${p.id}"><option value="1">易</option><option value="2" selected>中</option><option value="3">難</option></select></label>
+        <label class="small-text">分類<select data-paper-topic="${p.id}">${topics.map(t=>`<option ${t===pickTopic?'selected':''}>${esc(t)}</option>`).join('')}</select></label>
+        <label class="small-text">年級<select data-paper-grade="${p.id}">${PAPER_GRADES.map(g=>`<option ${g===pickGrade?'selected':''}>${g}</option>`).join('')}</select></label>
+        <label class="small-text">難度<select data-paper-level="${p.id}">${[['1','易'],['2','中'],['3','難']].map(([v,t])=>`<option value="${v}" ${v===pickLevel?'selected':''}>${t}</option>`).join('')}</select></label>
         <button class="primary" data-paper-import="${p.id}">確認匯入</button>
       </div>
       <p class="field-hint">答案留空，匯入後在題庫補（會標成「待核驗」）；題型按有無選項自動判斷。</p>
@@ -3674,6 +3684,14 @@ async function papersPage(){
       toast('已刪除');papersPage();
     }catch(e){toast(e.message);}
   });
+  $$('[data-paper-docx]').forEach(b=>b.onclick=async()=>{
+    const old=b.textContent;b.disabled=true;b.textContent='產生中…';
+    try{
+      const res=await api('/api/papers/'+b.dataset.paperDocx+'/to-docx',{});
+      const a=document.createElement('a');a.href=res.docx;a.download=res.filename;a.click();
+    }catch(e){toast(e.message);}
+    b.disabled=false;b.textContent=old;
+  });
   $$('[data-paper-tex]').forEach(b=>b.onclick=async()=>{
     const old=b.textContent;b.disabled=true;b.textContent='產生中…';
     try{
@@ -3690,8 +3708,10 @@ async function papersPage(){
                 level:Number($(`[data-paper-level="${id}"]`).value)};
     const old=b.textContent;b.disabled=true;b.textContent='匯入中…';
     try{
+      localStorage.setItem(PAPER_IMPORT_KEY,JSON.stringify(body));
       const res=await api('/api/papers/'+id+'/to-bank',body);
-      toast(`已匯入 ${res.count} 題到題庫`);
+      toast(res.skipped?`已匯入 ${res.count} 題，略過 ${res.skipped} 題重複`
+                        :`已匯入 ${res.count} 題到題庫`);
       await refresh().catch(()=>{});   // 題庫清單與側欄題數跟著更新
       papersPage();
     }catch(e){toast(e.message);b.disabled=false;b.textContent=old;}
@@ -3807,6 +3827,7 @@ async function paperLayoutPage(){
       const st=res.stats||{};
       // 保存到「我的試卷」：年份／級別／學段先從卷名猜，老師改一下就能存
       const guess=guessPaperMeta(res.content?.title||res.filename);
+      if(!guess.year)guess.year=String(new Date().getFullYear());
       // 一次寫完再綁事件：用 innerHTML += 會把上面剛綁好的下載按鈕換掉，點了沒反應
       $('#paper-result').innerHTML=`<div class="layout-result">
         <div><strong>排好了</strong><span class="small-text">${st.sections||0} 個分部 · ${st.questions||0} 題 · ${st.formulas||0} 條公式${st.tables?` · ⚠️ 範本有 ${st.tables} 個表格未帶入`:''}</span></div>
@@ -3815,11 +3836,14 @@ async function paperLayoutPage(){
         <p class="field-hint" style="margin:0 0 8px">保存到「我的試卷」：之後可以搜尋、按年份／級別／學段篩選，也能一鍵匯入題庫。</p>
         <div class="layout-row">
           <input id="save-paper-title" value="${esc(guess.title)}" placeholder="卷名">
-          <input id="save-paper-year" value="${esc(guess.year)}" placeholder="年份（2026）" style="max-width:130px">
-          <input id="save-paper-grade" value="${esc(guess.grade)}" placeholder="級別（高二）" style="max-width:130px">
-          <input id="save-paper-term" value="${esc(guess.term)}" placeholder="學段（第一段）" style="max-width:130px">
+          <input id="save-paper-year" list="paper-year-list" value="${esc(guess.year)}" placeholder="年份（2026）" style="max-width:130px">
+          <input id="save-paper-grade" list="paper-grade-list" value="${esc(guess.grade)}" placeholder="級別（高二）" style="max-width:130px">
+          <input id="save-paper-term" list="paper-term-list" value="${esc(guess.term)}" placeholder="學段（第一段）" style="max-width:130px">
           <button class="secondary" id="save-paper">保存到我的試卷</button>
         </div>
+        <datalist id="paper-year-list">${[0,1,2,3].map(i=>`<option>${new Date().getFullYear()-i}</option>`).join('')}</datalist>
+        <datalist id="paper-grade-list">${['初一','初二','初三','高一','高二','高三'].map(g=>`<option>${g}</option>`).join('')}</datalist>
+        <datalist id="paper-term-list">${['第一段','第二段','第三段'].map(t=>`<option>${t}</option>`).join('')}</datalist>
         <div id="save-paper-result" class="small-text" style="margin-top:8px"></div>
       </div>`;
       $('#dl-paper').onclick=()=>{const a=document.createElement('a');a.href=res.docx;a.download=res.filename;a.click();};
@@ -3831,6 +3855,7 @@ async function paperLayoutPage(){
             year:($('#save-paper-year').value||'').trim(),
             grade:($('#save-paper-grade').value||'').trim(),
             term:($('#save-paper-term').value||'').trim(),
+            templateId:tid,
             sections:res.content?.sections||[]});
           btn.textContent='已保存';btn.disabled=true;
           $('#save-paper-result').innerHTML=`已存進「我的試卷」：<button class="text-button" data-page="papers">去看看</button>`;

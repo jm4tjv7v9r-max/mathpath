@@ -576,6 +576,53 @@ class PaperLibraryTests(unittest.TestCase):
         listed = self.call('GET', '/api/state')['questions']
         self.assertTrue(all(q.get('createdAt') for q in listed), '每題都要有入庫時間')
 
+    def test_import_skips_duplicates(self):
+        """按兩次不該長出兩份題目。"""
+        paper = self.save()
+        first = self.call('POST', f"/api/papers/{paper['id']}/to-bank", {'topic': '坐標幾何'})
+        self.assertEqual(first['count'], 2)
+        self.assertEqual(first['skipped'], 0)
+        again = self.call('POST', f"/api/papers/{paper['id']}/to-bank",
+                          {'topic': '坐標幾何'}, expect=422)
+        self.assertIn('都有了', again['error'])
+        listed = self.call('GET', '/api/state')['questions']
+        titles = [q['content'] for q in listed if '傾斜角' in q['content']]
+        self.assertEqual(len(titles), 1, '同一題只該有一份')
+
+    def test_import_normalizes_formulas(self):
+        r"""\left（ 這種寫法 KaTeX 渲染不了，入庫前要換成半角。"""
+        paper = self.save(sections=[{'title': '一、選擇題', 'questions': [
+            {'stem': '已知 $\\left（ \\rho ，\\theta \\right）$，則(　　)', 'marks': 3,
+             'options': ['A. $30\\degree$', 'B. $\\sqrt[\\text{ }]{3}$'], 'lines': []}]}])
+        out = self.call('POST', f"/api/papers/{paper['id']}/to-bank", {'topic': '坐標幾何'})
+        q = out['questions'][0]
+        self.assertIn('\\left( ', q['content'])
+        self.assertNotIn('（', q['content'], '全角括號要換掉')
+        self.assertEqual(q['options'][0], '$30^{\\circ}$')
+        self.assertEqual(q['options'][1], '$\\sqrt{3}$')
+
+    def test_save_remembers_template_and_redownloads_docx(self):
+        template = self.call('POST', '/api/paper-templates',
+                             {'name': '範本',
+                              'file': data_url(make_docx(TEMPLATE))})['template']
+        paper = self.save(templateId=template['id'])
+        self.assertEqual(paper['templateId'], template['id'])
+        out = self.call('POST', f"/api/papers/{paper['id']}/to-docx", {})
+        self.assertTrue(out['docx'].startswith('data:' + DOCX_MIME))
+        self.assertTrue(out['filename'].endswith('.docx'))
+        raw = base64.b64decode(out['docx'].split(',', 1)[1])
+        self.assertIn('傾斜角', Document(io.BytesIO(raw)).paragraphs[2].text)
+
+    def test_paper_without_template_says_so(self):
+        paper = self.save()
+        out = self.call('POST', f"/api/papers/{paper['id']}/to-docx", {}, expect=409)
+        self.assertIn('沒有記住範本', out['error'])
+
+    def test_year_and_term_are_normalized(self):
+        paper = self.save(year='2026年度', term='第一學段')
+        self.assertEqual(paper['year'], '2026')
+        self.assertEqual(paper['term'], '第一段')
+
     def test_import_rejects_unknown_topic(self):
         paper = self.save()
         self.call('POST', f"/api/papers/{paper['id']}/to-bank",

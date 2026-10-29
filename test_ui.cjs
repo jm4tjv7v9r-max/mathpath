@@ -2828,16 +2828,17 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   console.log('PASS: 卷面排版只給老師（學生側欄沒入口、直接呼叫回題庫），新卷選了檔案可按 ✕ 刪除');
 
   // 我的試卷：存好的卷可以搜尋、按年份／級別／學段篩選，一鍵匯入題庫
-  let paperQuery='',importBody=null;
+  let paperQuery='',importBody=null,saveBody=null;
   const paperFixture=[
     {id:11,title:'培華高二大測一',year:'2026',grade:'高二',term:'第一段',questionCount:12,
-      importedCount:0,importedAt:null,createdAt:stamp},
+      importedCount:0,importedAt:null,templateId:7,createdAt:stamp},
     {id:12,title:'培華初三小測',year:'2025',grade:'初三',term:'第二段',questionCount:8,
       importedCount:0,importedAt:null,createdAt:stamp}];
   const paperFacets={years:['2026','2025'],grades:['高二','初三'],terms:['第一段','第二段']};
   const papersList=route=>{
     const url=new URL(route.request().url());
     if(route.request().method()==='POST'){
+      saveBody=route.request().postDataJSON();
       return route.fulfill({json:{paper:{...paperFixture[0],id:13,questionCount:2}}});
     }
     paperQuery=url.search;
@@ -2852,6 +2853,10 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   await page.route(/\/api\/papers\/\d+\/to-tex$/,route=>route.fulfill({json:{
     tex:'\\documentclass{ctexart}\n\\begin{document}x\\end{document}',
     filename:'培華高二大測一.tex'}}));
+  await page.route(/\/api\/papers\/\d+\/to-docx$/,route=>route.fulfill({json:{
+    docx:'data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,'
+      +Buffer.from('PK\u0003\u0004demo').toString('base64'),
+    filename:'培華高二大測一.docx'}}));
   const waitFor=async(fn,ms=8000)=>{const t0=Date.now();
     while(Date.now()-t0<ms){if(fn())return true;await new Promise(r=>setTimeout(r,80));}return false;};
   await page.locator('[data-page=papers]').first().click();
@@ -2865,6 +2870,10 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   await page.locator('#paper-q-go').click();
   assert.ok(await waitFor(()=>/q=%E5%A4%A7%E6%B8%AC/.test(paperQuery)),'搜尋字要帶進查詢：'+paperQuery);
   assert.equal(await page.locator('[data-paper-card]').count(),2,'篩選後清單要還在');
+  const [wordFile]=await Promise.all([
+    page.waitForEvent('download',{timeout:6000}),
+    page.locator('[data-paper-docx="11"]').click()]);
+  assert.match(wordFile.suggestedFilename(),/\.docx$/,'記住範本的試卷要能重出 Word');
   const [texFile]=await Promise.all([
     page.waitForEvent('download',{timeout:6000}),
     page.locator('[data-paper-tex="11"]').click()]);
@@ -2906,6 +2915,10 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   assert.equal(await page.locator('#save-paper-year').inputValue(),'2026','年份要從卷名猜出來');
   assert.equal(await page.locator('#save-paper-grade').inputValue(),'高二','級別要從卷名猜出來');
   assert.equal(await page.locator('#save-paper-term').inputValue(),'第一段','學段要從卷名猜出來');
+  await page.locator('#save-paper').click();
+  await page.waitForFunction(()=>/已保存|已存進/.test(document.body.textContent||''),{timeout:8000});
+  assert.equal(saveBody.templateId,7,'保存要記住用哪個範本，之後才能重出 Word');
+  assert.equal(saveBody.year,'2026','年份要一起送出去');
   console.log('PASS: 排版完成後可以下載 Word，保存表單自動帶出年份／級別／學段');
 
   // 題庫：每題顯示入庫時間，可以按入庫時間排序

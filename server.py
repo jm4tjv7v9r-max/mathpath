@@ -16,6 +16,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import io
 import latex
 import latex_export
+import mathnorm
 import paper_format
 import pdf_layout
 import ipaddress
@@ -2270,6 +2271,7 @@ def bank_grade(value: str) -> str:
 def paper_public(row, detail: bool = False) -> dict:
     data = {'id': row['id'], 'title': row['title'], 'year': row['year'],
             'grade': row['grade'], 'term': row['term'],
+            'templateId': row['template_id'] if 'template_id' in row.keys() else None,
             'questionCount': row['question_count'],
             'importedAt': row['imported_at'] if 'imported_at' in row.keys() else None,
             'importedCount': row['imported_count'] if 'imported_count' in row.keys() else 0,
@@ -2316,6 +2318,46 @@ def paper_sections_valid(raw):
     return sections
 
 
+def paper_year(value) -> str:
+    """年份收斂成四位數字：「2026 年度」「2026年」「26」都變成 2026，篩選才不會分裂。"""
+    raw = text(value or '', '年份', 20, empty=True)
+    found = re.search(r'(20\d{2})', raw)
+    if found:
+        return found.group(1)
+    short = re.fullmatch(r'(\d{2})', raw)
+    return '20' + short.group(1) if short else raw
+
+
+def paper_term(value) -> str:
+    """學段收斂成「第N段」：「第一學段」「第一段」「第 1 段」都算同一個。"""
+    raw = text(value or '', '學段', 20, empty=True)
+    found = re.search(r'第\s*([一二三四五六1-6])\s*(?:學)?段', raw)
+    return f'第{found.group(1)}段' if found else raw
+
+
+def paper_title_of(stem: str, limit: int = 60) -> str:
+    """用題幹開頭當標題；若剛好切在 $...$ 中間，補一個 $ 收尾，
+    否則題庫把標題當「文字 + 公式」渲染時會壞掉。"""
+    title = (stem or '').strip()[:limit].strip()
+    if title.count('$') % 2:
+        title += '$'
+    return title or '未命名題目'
+
+
+def question_content(payload_json) -> str:
+    """從資料庫存的 payload JSON 取 content（壞資料不讓整個匯入失敗）。"""
+    try:
+        return json.loads(payload_json).get('content', '')
+    except (TypeError, ValueError):
+        return ''
+
+
+def question_fingerprint(content: str) -> str:
+    """題目指紋：正規化公式、去掉所有空白後取 SHA1，用來擋重複匯入。"""
+    plain = re.sub(r'\s+', '', mathnorm.normalize_text(content or ''))
+    return hashlib.sha1(plain.encode('utf-8')).hexdigest()
+
+
 def paper_question_type(stem: str, options: list[str]) -> str:
     if len(options) >= 2:
         return '選擇題'
@@ -2326,19 +2368,20 @@ def paper_question_type(stem: str, options: list[str]) -> str:
 
 def paper_bank_payload(item: dict, meta: dict) -> dict:
     """一題試卷題目 → 題庫題目。答案留空，等老師在題庫補。"""
-    stem = (item.get('stem') or '').strip()
+    # 公式先正規化再進題庫：`\left（`、`\degree` 這些在 KaTeX 會直接渲染失敗
+    stem = mathnorm.normalize_text((item.get('stem') or '').strip())
     options = []
     for index, option in enumerate(item.get('options') or []):
         # 選項自帶「A. 」就拆掉，題庫自己編號
         cleaned = re.sub(r'^\s*[(（]?[A-Da-d]\s*[.、)．]\s*', '', str(option)).strip()
         if cleaned:
-            options.append(cleaned)
+            options.append(mathnorm.normalize_text(cleaned))
     qtype = paper_question_type(stem, options)
     if qtype != '選擇題':
         options = []
     marks = item.get('marks')
     points = max(1, min(100, round(float(marks)))) if marks else 1
-    return {'title': (stem[:60] or '未命名題目'),
+    return {'title': paper_title_of(stem),
             'content': stem,
             'topic': meta['topic'],
             'level': meta['level'],
@@ -4143,6 +4186,7 @@ class Application:
                     grade TEXT NOT NULL DEFAULT '',
                     term TEXT NOT NULL DEFAULT '',
                     sections TEXT NOT NULL DEFAULT '[]',
+                    template_id INTEGER,
                     question_count INTEGER NOT NULL DEFAULT 0,
                     imported_at TEXT,
                     imported_count INTEGER NOT NULL DEFAULT 0,
@@ -4192,6 +4236,10 @@ class Application:
                               ('created_at', 'ALTER TABLE questions ADD COLUMN created_at TEXT')):
                 if name not in question_columns:
                     db.execute(sql)
+            # 我的試卷記住用哪個範本排的：之後要重出 Word 就不用再上傳一次。
+            paper_columns = {r['name'] for r in db.execute('PRAGMA table_info(papers)')}
+            if paper_columns and 'template_id' not in paper_columns:
+                db.execute('ALTER TABLE papers ADD COLUMN template_id INTEGER')
             # 作答「學生標示不會」：增量加欄，舊資料一律視為 0（照舊運作）。
             attempt_columns = {r['name'] for r in db.execute('PRAGMA table_info(attempts)')}
             if 'skipped' not in attempt_columns:
@@ -5311,20 +5359,29 @@ class Application:
         if path == '/api/papers' and method in ('GET', 'POST'):
             self.teacher(user)
             if method == 'POST':
-                fields(body, ('title', 'year', 'grade', 'term', 'sections'),
+                fields(body, ('title', 'year', 'grade', 'term', 'sections', 'templateId'),
                        ('title', 'sections'))
                 title = text(body['title'], '卷名', 200)
-                year = text(body.get('year') or '', '年份', 20, empty=True)
+                year = paper_year(body.get('year'))
                 grade = text(body.get('grade') or '', '級別', 20, empty=True)
-                term = text(body.get('term') or '', '學段', 20, empty=True)
+                term = paper_term(body.get('term'))
                 sections = paper_sections_valid(body['sections'])
                 count = sum(len(s['questions']) for s in sections)
+                template_id = body.get('templateId')
                 with self.db() as db:
+                    if template_id is not None:
+                        template_id = number(template_id, '範本', 1, 10 ** 18, True)
+                        tpl = db.execute('SELECT owner_id FROM paper_templates WHERE id=?',
+                                         (template_id,)).fetchone()
+                        if tpl is None:
+                            fail(404, '找不到這個範本。')
+                        if tpl['owner_id'] != user['id'] and not self.is_owner(user, db):
+                            fail(403, '只有建立者或管理員可以使用這個範本。')
                     cur = db.execute(
                         'INSERT INTO papers(owner_id,title,year,grade,term,sections,'
-                        'question_count,created_at) VALUES(?,?,?,?,?,?,?,?)',
+                        'template_id,question_count,created_at) VALUES(?,?,?,?,?,?,?,?,?)',
                         (user['id'], title, year, grade, term,
-                         json.dumps(sections, ensure_ascii=False), count, utc_now()))
+                         json.dumps(sections, ensure_ascii=False), template_id, count, utc_now()))
                     row = db.execute('SELECT * FROM papers WHERE id=?',
                                      (cur.lastrowid,)).fetchone()
                 return {'paper': paper_public(row, detail=True)}, headers
@@ -5373,6 +5430,40 @@ class Application:
                     return {'ok': True}, headers
             return {'paper': paper_public(row, detail=True)}, headers
 
+        match = re.fullmatch(r'/api/papers/([1-9]\d{0,17})/to-docx', path)
+        if match and method == 'POST':
+            # 用存檔時記住的範本重新排一次：純本地運算，不會再燒 AI 配額。
+            self.teacher(user)
+            paper_id = int(match[1])
+            with self.db() as db:
+                row = db.execute('SELECT * FROM papers WHERE id=?', (paper_id,)).fetchone()
+                if row is None:
+                    fail(404, '找不到這份試卷。')
+                if row['owner_id'] != user['id'] and not self.is_owner(user, db):
+                    fail(403, '只有建立者或管理員可以下載這份試卷。')
+                template_id = row['template_id'] if 'template_id' in row.keys() else None
+                if not template_id:
+                    fail(409, '這份試卷沒有記住範本，請回「卷面排版」用同一份新卷重排一次。')
+                tpl = db.execute('SELECT * FROM paper_templates WHERE id=?',
+                                 (template_id,)).fetchone()
+                if tpl is None:
+                    fail(409, '原本的範本已被刪除，請回「卷面排版」重排一次。')
+            sections = paper_format.sections_from_dict(json.loads(row['sections'] or '[]'))
+            if not sections:
+                fail(422, '這份試卷沒有題目。')
+            try:
+                output, report = paper_format.render_with_sections(tpl['data'], sections,
+                                                                   row['title'])
+            except SystemExit as exc:
+                fail(409, str(exc) or '這個範本裡找不到題目段落，請換一個範本重排。')
+            except Exception as exc:
+                ai_log(f'用範本重排失敗：{exc}')
+                fail(422, '用原本的範本排不起來，請回「卷面排版」重排一次。')
+            filename = (row['title'] or '試卷').replace('/', '／')[:60] + '.docx'
+            return {'docx': 'data:' + DOCX_MIME + ';base64,'
+                            + base64.b64encode(output).decode(),
+                    'filename': filename, 'stats': report}, headers
+
         match = re.fullmatch(r'/api/papers/([1-9]\d{0,17})/to-tex', path)
         if match and method == 'POST':
             self.teacher(user)
@@ -5410,20 +5501,30 @@ class Application:
                     fail(403, '只有建立者或管理員可以匯入這份試卷。')
                 meta = {'topic': topic, 'grade': grade, 'level': level,
                         'source': ('試卷：' + row['title'])[:60]}
-                prepared = []
+                # 題庫已有的題目就跳過：老師按兩次、或兩份卷有同一題，都不該重複長出來
+                existing = {question_fingerprint(question_content(raw['payload']))
+                            for raw in db.execute('SELECT payload FROM questions')}
+                prepared, skipped = [], 0
                 for section in json.loads(row['sections'] or '[]'):
                     for item in section.get('questions') or []:
                         if not (item.get('stem') or '').strip():
                             continue
-                        prepared.append(question_valid(paper_bank_payload(item, meta)))
+                        payload = paper_bank_payload(item, meta)
+                        mark = question_fingerprint(payload['content'])
+                        if mark in existing:
+                            skipped += 1
+                            continue
+                        existing.add(mark)
+                        prepared.append(question_valid(payload))
                 if not prepared:
-                    fail(422, '這份試卷沒有可以匯入的題目。')
+                    fail(422, '這份試卷的題目題庫裡都有了。' if skipped
+                         else '這份試卷沒有可以匯入的題目。')
                 if len(prepared) > 200:
                     fail(400, '一次最多匯入 200 題。')
                 saved = [self.insert_question(db, q, None, None) for q in prepared]
                 db.execute('UPDATE papers SET imported_at=?, imported_count=? WHERE id=?',
                            (utc_now(), len(saved), paper_id))
-            return {'count': len(saved),
+            return {'count': len(saved), 'skipped': skipped,
                     'questions': [self.question_public(q, user) for q in saved]}, headers
 
         if method == 'GET' and path == '/api/paper-grades':

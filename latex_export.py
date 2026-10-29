@@ -31,51 +31,8 @@ ESCAPES = {
     '^': r'\textasciicircum{}',
 }
 
-# 數學模式裡的全角標點：LaTeX 不認，`\left（` 更會直接炸 Missing delimiter
-FULLWIDTH_IN_MATH = {
-    '（': '(', '）': ')', '［': '[', '］': ']', '｛': r'\{', '｝': r'\}',
-    '，': ',', '、': ',', '；': ';', '：': ':', '　': ' ', '％': r'\%',
-}
-
-FUNCTIONS = ('arcsin', 'arccos', 'arctan', 'sinh', 'cosh', 'tanh',
-             'sin', 'cos', 'tan', 'cot', 'sec', 'csc', 'log', 'ln', 'lg',
-             'lim', 'max', 'min', 'det', 'gcd')
-FUNC_RE = re.compile(r'(?<![\\\w])(' + '|'.join(FUNCTIONS) + r')(?![a-zA-Z])')
-
-DEGREE_RE = re.compile(r'\\degree\b')
-EMPTY_ROOT_RE = re.compile(r'\\sqrt\[(?:\s|\\text\{ *\}|\\mathrm\{ *\})*\]\{')
-TEXT_RE = re.compile(r'\\text\{([^{}]*)\}')
-PURE_MATH_TEXT_RE = re.compile(r'^[\s0-9A-Za-z+\-*/=<>^_{}().,\[\]|]+$')
-
-
-def _fix_text_groups(tex: str) -> str:
-    """`\text{4x+3y-3=0 }` 是 PDF 裡沒被當成公式的文字，拆掉 \\text 才排得像公式；
-    `\text{或}` 這種中文要留著。"""
-    def repl(m):
-        inner = m.group(1)
-        if PURE_MATH_TEXT_RE.match(inner) and re.search(r'[0-9=]', inner):
-            return inner.strip()
-        return m.group(0)
-    return TEXT_RE.sub(repl, tex)
-
-
-def normalize_math(tex: str) -> str:
-    """把一段（$ 之間的）公式修成能編譯、排版正確的 LaTeX。"""
-    # \sqrt[\text{ }]{3}：空根指數，先處理（它裡面就是 \text{ }）
-    tex = EMPTY_ROOT_RE.sub(r'\\sqrt{', tex)
-
-    # 保護 \text{...}：裡面的中文與文字不該被下面的規則改到
-    groups: list[str] = []
-
-    def stash(m):
-        groups.append(m.group(0))
-        return f'\x00{len(groups) - 1}\x00'
-
-    protected = TEXT_RE.sub(stash, tex)
-    protected = ''.join(FULLWIDTH_IN_MATH.get(ch, ch) for ch in protected)
-    protected = DEGREE_RE.sub(r'^{\\circ}', protected)
-    protected = FUNC_RE.sub(lambda m: '\\' + m.group(1), protected)
-    return re.sub(r'\x00(\d+)\x00', lambda m: _fix_text_groups(groups[int(m.group(1))]), protected)
+# 公式正規化（\degree、全角括號、\sqrt[\text{ }]…）放在 mathnorm，題庫入庫也用同一套
+from mathnorm import MATH_SPAN_RE, normalize_math, normalize_text  # noqa: E402
 
 
 def escape_text(text: str) -> str:
