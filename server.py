@@ -2380,6 +2380,16 @@ def needs_review(value) -> bool:
     return bool(REVIEW_RE.search(str(value or '')))
 
 
+def question_ready(q) -> bool:
+    """這題能不能給學生用：有答案，而且不是「待核驗」。
+
+    跟 homework.recommendable() 同一條規則——作業端點本來就會擋，但學生端的
+    題庫／自主練習之前沒擋，學生會練到還沒補答案的題目（等於白做）。
+    """
+    marker = (q.get('source') or '') + ' ' + ' '.join(q.get('tags') or [])
+    return bool((q.get('answer') or '').strip()) and not needs_review(marker)
+
+
 def question_content(payload_json) -> str:
     """從資料庫存的 payload JSON 取 content（壞資料不讓整個匯入失敗）。"""
     try:
@@ -6086,7 +6096,12 @@ class Application:
                 # 這裡的題目，不必再逐筆查一次。
                 question_rows = db.execute('SELECT * FROM questions ORDER BY id').fetchall()
                 qcache = {('bank', r['id']): self.question_row(r) for r in question_rows}
-                questions = [self.question_public(qcache[('bank', r['id'])], user) for r in question_rows]
+                # 學生只看到「有答案且已核驗」的題目；qcache 保留全部，
+                # 否則舊作答紀錄會查不到對應題目而爆掉。
+                questions = [self.question_public(qcache[('bank', r['id'])], user)
+                             for r in question_rows
+                             if user['role'] == 'teacher'
+                             or question_ready(qcache[('bank', r['id'])])]
                 if user['role'] == 'teacher':
                     rows = db.execute('SELECT a.* FROM attempts a WHERE (a.assignment_id IS NULL AND a.mock_id IS NULL) OR EXISTS '
                                       '(SELECT 1 FROM assignments h WHERE h.id=a.assignment_id AND h.teacher_id=?) '

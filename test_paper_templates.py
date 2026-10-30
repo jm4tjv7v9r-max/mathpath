@@ -777,6 +777,33 @@ class PaperLibraryTests(unittest.TestCase):
         left = [q['id'] for q in self.call('GET', '/api/state')['questions']]
         self.assertIn(questions[0]['id'], left)
 
+    def test_students_only_see_ready_questions(self):
+        """匯入的題目還沒答案／沒核驗前，學生不該在題庫與自主練習裡看到。"""
+        if not self.student:
+            self.skipTest('沒有學生帳號')
+        teacher_before = len(self.call('GET', '/api/state')['questions'])
+        student_before = len(self.call('GET', '/api/state', user=self.student)['questions'])
+        self.assertEqual(teacher_before, student_before, '種子題目本來就都能給學生用')
+
+        paper = self.save()
+        imported = self.call('POST', f"/api/papers/{paper['id']}/to-bank",
+                             {'topic': '坐標幾何'})['questions']
+        self.assertEqual(len(self.call('GET', '/api/state')['questions']), teacher_before + 2,
+                         '老師要看得到剛匯入的題目')
+        self.assertEqual(len(self.call('GET', '/api/state', user=self.student)['questions']),
+                         student_before, '沒答案又待核驗的題目，學生看不到')
+
+        self.app.ai.configured = True
+        self.app.ai.call = lambda *a, **k: {'answer': 'B', 'steps': ['先求斜率'],
+                                            'analysis': '考傾斜角', 'rubric': []}
+        ids = [q['id'] for q in imported]
+        self.call('POST', '/api/questions/solve', {'ids': ids})
+        self.assertEqual(len(self.call('GET', '/api/state', user=self.student)['questions']),
+                         student_before, '只補了答案、還沒核驗，仍然不給學生')
+        self.call('POST', '/api/questions/verify', {'ids': ids})
+        self.assertEqual(len(self.call('GET', '/api/state', user=self.student)['questions']),
+                         student_before + 2, '核驗後才出現在學生的題庫')
+
     def test_import_rejects_unknown_topic(self):
         paper = self.save()
         self.call('POST', f"/api/papers/{paper['id']}/to-bank",
