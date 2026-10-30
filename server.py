@@ -5383,7 +5383,9 @@ class Application:
             return {'tex': tex, 'filename': filename,
                     'stats': {'sections': len(sections),
                               'questions': sum(len(s.questions) for s in sections),
-                              'formulas': paper_format.count_formulas(sections)}}, headers
+                              'formulas': paper_format.count_formulas(sections),
+                              'oleObjects': (paper_format.count_ole_objects(data)
+                                             if kind == 'docx' else 0)}}, headers
 
         # ---------- 卷面排版：記住範本版式，把新卷套成同樣版面 ----------
         if path == '/api/paper-templates' and method in ('GET', 'POST'):
@@ -5479,6 +5481,8 @@ class Application:
                         fail(422, '讀不到這份 Word 的內容，請確認檔案沒有損壞。')
                     output, report = paper_format.render_bytes(
                         row['data'], data, math_as_text=math_as_text)
+                    # AxMath／MathType 的公式是 OLE 物件，解析讀不到，要讓老師知道
+                    report['oleObjects'] = paper_format.count_ole_objects(data)
             except SystemExit as exc:
                 fail(400, str(exc) or '範本裡找不到題目段落（長得像「1. …」）。')
             except Exception as exc:

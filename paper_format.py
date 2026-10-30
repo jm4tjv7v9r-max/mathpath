@@ -175,12 +175,47 @@ def analyze_bytes(data: bytes) -> dict:
 
 
 # ── 內容模型 ──────────────────────────────────────────────────────────
+SENTENCE_END_RE = re.compile(r'[。．]+')
+DOUBLE_DOT_RE = re.compile(r'\s*\.\s*(?=\.)')
+
+
+def normalize_punctuation(text: str) -> str:
+    """句尾統一用英文句點：中文句號「。」與全角「．」都換成「.」，重複的收成一個。
+
+    $...$ 裡的公式不動（公式內的點可能是小數點或省略號）。
+    原卷常見「一句用。、下一句用.」甚至「。．」連寫，排版出來很難看。
+    """
+    if not isinstance(text, str) or not text:
+        return text
+    out, pos = [], 0
+    for m in MATH_RE.finditer(text):
+        out.append(_punctuate(text[pos:m.start()]))
+        out.append(m.group(0))
+        pos = m.end()
+    out.append(_punctuate(text[pos:]))
+    return ''.join(out)
+
+
+def _punctuate(segment: str) -> str:
+    segment = SENTENCE_END_RE.sub('.', segment)
+    while DOUBLE_DOT_RE.search(segment):
+        segment = DOUBLE_DOT_RE.sub('', segment)
+    return segment
+
+
 @dataclass
 class Question:
     stem: str
     marks: float | None = None
     options: list[str] = field(default_factory=list)
     lines: list[str] = field(default_factory=list)      # 小題或續行
+
+    def __post_init__(self):
+        # 所有建立題目的路徑（Word 解析、PDF 轉寫、題庫組卷、讀回存檔）都會經過這裡，
+        # 句尾標點就在這裡統一，不必每個呼叫端各做一次。
+        self.stem = normalize_punctuation(self.stem)
+        self.options = [normalize_punctuation(o) for o in self.options]
+        self.lines = [normalize_punctuation(l) for l in self.lines]
 
 
 @dataclass
@@ -567,6 +602,19 @@ def render(template_path: str, content_path: str, out_path: str) -> dict:
     preamble, sections = parse_content(content_path)
     return render_sections(template_path, sections, out_path,
                            title=preamble[0] if preamble else None)
+
+
+def count_ole_objects(data: bytes) -> int:
+    """數一數 Word 裡有幾個 OLE 物件（AxMath／MathType 的公式就是這種）。
+
+    這些公式不是文字、也不是 Word 原生方程式，我們的解析讀不到；
+    不提醒的話，老師會以為排好了，結果整份卷的公式全不見。
+    """
+    try:
+        doc = Document(io.BytesIO(data))
+    except Exception:
+        return 0
+    return len(doc.element.body.findall('.//' + qn('w:object')))
 
 
 def parse_content_bytes(data: bytes) -> tuple[list[str], list[Section]]:

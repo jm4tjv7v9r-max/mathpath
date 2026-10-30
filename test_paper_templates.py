@@ -13,6 +13,7 @@ from urllib.parse import urlencode
 from unittest.mock import patch
 
 from docx import Document
+from docx.oxml import OxmlElement
 from docx.shared import Pt
 
 import latex_export
@@ -247,6 +248,22 @@ class PaperTemplateTests(unittest.TestCase):
 
     def test_unknown_job_is_404(self):
         self.call('GET', '/api/jobs/doesnotexist123', expect=404)
+
+    def test_warns_when_word_has_ole_formulas(self):
+        """AxMath／MathType 的公式是 OLE 物件，解析讀不到——要講，不能默默變成空白。"""
+        doc = Document()
+        doc.add_paragraph('中三數學 小測')
+        doc.add_paragraph('一、計算題')
+        p = doc.add_paragraph('1.　求 ')
+        run = p.add_run()
+        run._r.append(OxmlElement('w:object'))
+        p.add_run(' 的值。')
+        buf = io.BytesIO()
+        doc.save(buf)
+        template = self.upload()['template']
+        out = self.call('POST', f"/api/paper-templates/{template['id']}/apply",
+                        {'file': data_url(buf.getvalue())})
+        self.assertEqual(out['stats']['oleObjects'], 1, '要回報有幾個 OLE 公式讀不到')
 
     def test_rejects_non_docx(self):
         self.call('POST', '/api/paper-templates',
@@ -833,6 +850,28 @@ class PaperLibraryTests(unittest.TestCase):
                            'grade': '初三', 'term': '第一段',
                            'sections': content['sections']})['paper']
         self.assertEqual(saved['questionCount'], 2)
+
+
+class PunctuationTests(unittest.TestCase):
+    """試卷排版：句尾標點統一用英文句點。"""
+
+    def test_sentence_end_becomes_ascii_period(self):
+        q = paper_format.Question(stem='求 $x$。．', options=['A. $1$。'], lines=['下一句。'])
+        self.assertEqual(q.stem, '求 $x$.', '中文句號與全角句點都要換成 .，連寫的收成一個')
+        self.assertEqual(q.options, ['A. $1$.'])
+        self.assertEqual(q.lines, ['下一句.'])
+
+    def test_math_is_untouched(self):
+        q = paper_format.Question(stem='已知 $x=1.5$。求 $y$。')
+        self.assertIn('$x=1.5$', q.stem, '公式裡的小數點不能被動到')
+        self.assertTrue(q.stem.endswith('.'))
+
+    def test_tex_output_uses_period(self):
+        section = paper_format.Section(title='一、計算題', questions=[
+            paper_format.Question(stem='解方程 $x^{2}=1$。', marks=4)])
+        tex = latex_export.to_tex('卷', [section])
+        self.assertIn('解方程 $x^{2}=1$.', tex)
+        self.assertNotIn('。', tex)
 
 
 class QueryPathTests(unittest.TestCase):
