@@ -3047,6 +3047,14 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   assert.ok(reviewUi.verifyShown,'選到待核驗題目要出現「核驗已選」');
   console.log('PASS: 題庫「待核驗」快捷篩選與「核驗已選」批次核驗');
 
+  // 題庫匯出 CSV（匯出目前篩選出來的題目）
+  const [csvFile]=await Promise.all([
+    page.waitForEvent('download',{timeout:6000}),
+    page.locator('#export-questions').click()]);
+  assert.match(csvFile.suggestedFilename(),/^MathPath-題庫-\d{4}-\d{2}-\d{2}\.csv$/,
+    '要下載 CSV，檔名帶日期');
+  console.log('PASS: 題庫可匯出 CSV（檔名帶日期，匯出目前篩選結果）');
+
   // 帳號停用：管理員看得到「停用」，已停用的顯示「已停用」與「重新啟用」；
   // 不能停用自己與管理員（按鈕不出現）。實際的登入攔阻由後端測試驗證。
   const rosterHtml=await page.evaluate(()=>[

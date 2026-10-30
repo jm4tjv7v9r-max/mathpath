@@ -195,6 +195,7 @@ const paths = {
  target:'<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1"/>',
  flame:'<path d="M12 2c2 6 7 7 7 13a7 7 0 0 1-14 0c0-3 1-5 4-8l1 5c3-3 3-6 2-10Z"/>',
  help:'<circle cx="12" cy="12" r="9"/><path d="M9 8a3 3 0 0 1 6 1c0 2-3 2-3 4M12 17h.01"/>',
+ download:'<path d="M12 3v12m0 0l-4-4m4 4l4-4M4 19h16"/>',
  upload:'<path d="M12 16V3m-5 5 5-5 5 5M4 16v5h16v-5"/>',
  image:'<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8" cy="8" r="1.5"/><path d="m3 17 5-5 4 4 4-6 5 7"/>',
  undo:'<path d="M4 9h9a7 7 0 0 1 0 14M4 9l5-5M4 9l5 5"/>',
@@ -943,7 +944,7 @@ function questionCard(q,n){return `<article class="question-card">${S.user?.role
 function bank(){beginView();page='bank';assignmentContext=null;mockContext=null;stopQuizClock();shell();
 const missingAnswers=S.user?.role==='teacher'?S.questions.filter(q=>!(q.answer||'').trim()).length:0;
 const missingReview=S.user?.role==='teacher'?S.questions.filter(needsReview).length:0;
-pickedQuestions.clear();$('#main').innerHTML=`<div class="fade-in">${heading('QUESTION BANK','數學題庫','每一道題，都是通往理解的一步。',`<button class="secondary" data-action="collection">${icon('bookmark')}我的收藏</button>${S.user?.role==='teacher'?`${missingAnswers?`<button class="secondary" id="ai-fill-answers">${icon('spark')}AI 補答案（${missingAnswers} 題）</button>`:''}<button class="secondary" data-page="newq">${icon('plus')}新增題目</button><button class="secondary" id="export-latex">${icon('file')}匯出 LaTeX</button>`:''}<button class="primary" data-page="import">${icon('upload')}匯入試卷</button>`)}${!S.user?`<div class="field-hint" style="margin:-9px 0 17px">訪客預覽 · 以下為題庫示例，學習紀錄尚未開始。<button class="text-button" data-action="login" style="font-size:calc(13px*var(--fs));margin-left:8px">登入學習 ${icon('arrow')}</button></div>`:''}${hero()}${metrics()}<div class="bank-layout"><section class="panel bank-panel"><div class="panel-heading"><h2>精選題目 <span class="small-text" id="question-count"></span></h2><div class="segmented"><button data-view="list" class="${viewMode==='list'?'active':''}" aria-label="清單檢視">${icon('list')}</button><button data-view="grid" class="${viewMode==='grid'?'active':''}" aria-label="卡片檢視">${icon('bank')}</button></div></div><div class="filters"><label class="search-field">${icon('search')}<input id="question-search" value="${esc(search)}" placeholder="搜尋題目、知識點或試卷名稱…" aria-label="搜尋题目"></label><select id="grade-filter" aria-label="年級"><option value="">所有年級</option>${grades.map(g=>`<option ${grade===g?'selected':''}>${g}</option>`).join('')}</select><select id="level-filter" aria-label="難度"><option value="">所有難度</option>${[1,2,3].map(i=>`<option value="${i}" ${Number(level)===i?'selected':''}>${levels[i]}</option>`).join('')}</select><select id="qtype-filter" aria-label="題型"><option value="">所有題型</option>${qtypes.map(t=>`<option ${qtype===t?'selected':''}>${t}</option>`).join('')}</select>${S.user?.role==='teacher'&&missingReview?`<button class="topic-tab ${onlyReview?'active':''}" id="review-chip" aria-pressed="${onlyReview}">待核驗 ${missingReview}</button>`:''}<select id="sort-filter" aria-label="排序"><option value="">預設排序</option><option value="new" ${sortBy==='new'?'selected':''}>最新入庫</option><option value="old" ${sortBy==='old'?'selected':''}>最舊入庫</option></select></div><div class="topic-tabs">${['全部題目',...topics].map(t=>`<button class="topic-tab ${topic===t?'active':''}" data-topic="${t}">${t}</button>`).join('')}</div><div class="pick-bar" id="pick-bar" hidden><span id="pick-count"></span><button class="primary" id="pick-build">組成試卷</button><button class="secondary" id="pick-verify" hidden>核驗已選</button><button class="secondary" id="pick-edit">批次修改</button><button class="text-button" id="pick-delete" style="color:#b8453b">刪除</button><button class="secondary" id="pick-clear">清除</button></div><div class="topic-tabs subtopic-tabs" style="display:${topic!=='全部題目'&&topic!=='我的收藏'&&subtopicsOf(topic).length?'flex':'none'}">${['全部子分類',...subtopicsOf(topic)].map(sb=>`<button class="subtopic-tab ${subtopic===sb?'active':''}" data-subtopic="${sb}">${sb}</button>`).join('')}</div><div class="question-list ${viewMode}" id="question-list"></div><div class="pagination" id="pagination"></div></section>${rightBank()}</div></div>`;renderList();
+pickedQuestions.clear();$('#main').innerHTML=`<div class="fade-in">${heading('QUESTION BANK','數學題庫','每一道題，都是通往理解的一步。',`<button class="secondary" data-action="collection">${icon('bookmark')}我的收藏</button>${S.user?.role==='teacher'?`${missingAnswers?`<button class="secondary" id="ai-fill-answers">${icon('spark')}AI 補答案（${missingAnswers} 題）</button>`:''}<button class="secondary" data-page="newq">${icon('plus')}新增題目</button><button class="secondary" id="export-latex">${icon('file')}匯出 LaTeX</button><button class="secondary" id="export-questions">${icon('download')}匯出 CSV</button>`:''}<button class="primary" data-page="import">${icon('upload')}匯入試卷</button>`)}${!S.user?`<div class="field-hint" style="margin:-9px 0 17px">訪客預覽 · 以下為題庫示例，學習紀錄尚未開始。<button class="text-button" data-action="login" style="font-size:calc(13px*var(--fs));margin-left:8px">登入學習 ${icon('arrow')}</button></div>`:''}${hero()}${metrics()}<div class="bank-layout"><section class="panel bank-panel"><div class="panel-heading"><h2>精選題目 <span class="small-text" id="question-count"></span></h2><div class="segmented"><button data-view="list" class="${viewMode==='list'?'active':''}" aria-label="清單檢視">${icon('list')}</button><button data-view="grid" class="${viewMode==='grid'?'active':''}" aria-label="卡片檢視">${icon('bank')}</button></div></div><div class="filters"><label class="search-field">${icon('search')}<input id="question-search" value="${esc(search)}" placeholder="搜尋題目、知識點或試卷名稱…" aria-label="搜尋题目"></label><select id="grade-filter" aria-label="年級"><option value="">所有年級</option>${grades.map(g=>`<option ${grade===g?'selected':''}>${g}</option>`).join('')}</select><select id="level-filter" aria-label="難度"><option value="">所有難度</option>${[1,2,3].map(i=>`<option value="${i}" ${Number(level)===i?'selected':''}>${levels[i]}</option>`).join('')}</select><select id="qtype-filter" aria-label="題型"><option value="">所有題型</option>${qtypes.map(t=>`<option ${qtype===t?'selected':''}>${t}</option>`).join('')}</select>${S.user?.role==='teacher'&&missingReview?`<button class="topic-tab ${onlyReview?'active':''}" id="review-chip" aria-pressed="${onlyReview}">待核驗 ${missingReview}</button>`:''}<select id="sort-filter" aria-label="排序"><option value="">預設排序</option><option value="new" ${sortBy==='new'?'selected':''}>最新入庫</option><option value="old" ${sortBy==='old'?'selected':''}>最舊入庫</option></select></div><div class="topic-tabs">${['全部題目',...topics].map(t=>`<button class="topic-tab ${topic===t?'active':''}" data-topic="${t}">${t}</button>`).join('')}</div><div class="pick-bar" id="pick-bar" hidden><span id="pick-count"></span><button class="primary" id="pick-build">組成試卷</button><button class="secondary" id="pick-verify" hidden>核驗已選</button><button class="secondary" id="pick-edit">批次修改</button><button class="text-button" id="pick-delete" style="color:#b8453b">刪除</button><button class="secondary" id="pick-clear">清除</button></div><div class="topic-tabs subtopic-tabs" style="display:${topic!=='全部題目'&&topic!=='我的收藏'&&subtopicsOf(topic).length?'flex':'none'}">${['全部子分類',...subtopicsOf(topic)].map(sb=>`<button class="subtopic-tab ${subtopic===sb?'active':''}" data-subtopic="${sb}">${sb}</button>`).join('')}</div><div class="question-list ${viewMode}" id="question-list"></div><div class="pagination" id="pagination"></div></section>${rightBank()}</div></div>`;renderList();
 const pendingPicked=()=>[...pickedQuestions].filter(id=>{const q=S.questions.find(x=>x.id===id);return q&&needsReview(q);});
 const syncPickBar=()=>{
   const bar=$('#pick-bar');if(!bar)return;
@@ -996,7 +997,7 @@ if(fillBtn)fillBtn.onclick=async()=>{
   await refresh().catch(()=>{});
   bank();
 };
-const lb=$('#export-latex');if(lb)lb.onclick=exportLatexDialog;}
+const lb=$('#export-latex');if(lb)lb.onclick=exportLatexDialog;const eq=$('#export-questions');if(eq)eq.onclick=exportQuestionsCsv;}
 // ── 匯出 LaTeX（XeLaTeX 可編譯）──
 // 後端只回傳 .tex 文字；圖形由瀏覽器轉成 PNG（XeLaTeX 不支援 WebP），再用最小 ZIP 打包下載。
 const CRC_TABLE=(()=>{const t=new Uint32Array(256);for(let n=0;n<256;n++){let c=n;for(let k=0;k<8;k++)c=c&1?0xEDB88320^(c>>>1):c>>>1;t[n]=c>>>0;}return t;})();
@@ -3800,6 +3801,29 @@ async function papersPage(){
       papersPage();
     }catch(e){toast(e.message);b.disabled=false;b.textContent=old;}
   });
+}
+// 題庫匯出 CSV：匯出「目前篩選出來的」題目，老師可以拿去 Excel 統計或交給同事
+function exportQuestionsCsv(){
+  const list=filteredQuestions();
+  if(!list.length)return toast('目前沒有符合條件的題目。');
+  const head=['題號','標題','題目','分類','子分類','年級','難度','分值','題型','參考答案',
+              '選項','標籤','來源','入庫時間','有圖形','核驗狀態'];
+  const rows=[head];
+  list.forEach(q=>rows.push([
+    q.id, q.title, q.content, q.topic, q.subtopic||'', q.grade||'',
+    levels[q.level]||q.level, q.points, q.qtype||'解答題', q.answer||'',
+    (q.options||[]).map((o,i)=>`${'ABCDEFGHIJ'[i]}. ${o}`).join('  '),
+    (q.tags||[]).join(' '), q.source||'',
+    q.createdAt?fmtWhen(q.createdAt):'', q.figure?'有':'',
+    needsReview(q)?'待核驗':'已核驗']));
+  const csv='\ufeff'+rows.map(r=>r.map(csvCell).join(',')).join('\r\n');
+  const url=URL.createObjectURL(new Blob([csv],{type:'text/csv;charset=utf-8'}));
+  const link=document.createElement('a');
+  link.href=url;
+  link.download=`MathPath-題庫-${new Date().toISOString().slice(0,10)}.csv`;
+  document.body.appendChild(link);link.click();link.remove();
+  setTimeout(()=>URL.revokeObjectURL(url),1000);
+  toast(`已匯出 ${list.length} 題，可用試算表開啟`);
 }
 // 批次修改：一份卷匯入的題目常常跨多個知識點，逐題改太慢
 function bulkEditModal(){
