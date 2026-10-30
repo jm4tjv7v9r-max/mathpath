@@ -143,7 +143,7 @@ TOPIC_TREE = {
         '十字相乘法', '分組分解法', '拆項與添項法', '因式分解的應用',
     ],
     '方程與不等式': [
-        '方程的概念', '等式的性質', '一元一次方程', '解一元一次方程（移项）',
+        '方程的概念', '等式的性質', '一元一次方程', '解一元一次方程（移項）',
         '解一元一次方程（去括号）', '解一元一次方程（去分母）', '一元一次方程的應用',
         '二元一次方程組', '代入消元法', '加減消元法', '二元一次方程組的應用',
         '三元一次方程組', '不等式及其性質', '一元一次不等式', '一元一次不等式組',
@@ -275,7 +275,7 @@ TOPIC_TREE = {
         '列聯表與獨立性檢驗', '殘差分析',
     ],
     '概率': [
-        '隨機事件', '事件的关系与運算', '概率的意義', '古典概型',
+        '隨機事件', '事件的關係與運算', '概率的意義', '古典概型',
         '列舉法求概率', '樹狀圖求概率', '幾何概型', '頻率與概率的關係',
         '事件的相互獨立性', '條件概率', '概率的乘法公式', '全概率公式',
         '貝葉斯公式', '離散型隨機變量', '隨機變量的分佈列',
@@ -2234,7 +2234,7 @@ def seed_questions():
           '已抽紅球後，剩 $2$ 紅 $2$ 藍，第二球為紅球的概率為 $\\dfrac{2}{4}$。',
           '兩球皆紅的概率 $=\\dfrac{3}{5}\\times\\dfrac{2}{4}=\\dfrac{3}{10}$。'],
          '第二次抽球前，總數及紅球數都減 $1$。', ['不放回抽樣', '乘法法則']),
-        ('解一元一次方程', '解方程 $3x+5=20$。', '方程與不等式', '解一元一次方程（移项）', 1, 4, '$x=5$',
+        ('解一元一次方程', '解方程 $3x+5=20$。', '方程與不等式', '解一元一次方程（移項）', 1, 4, '$x=5$',
          ['兩邊減 $5$，得 $3x=15$。', '兩邊除以 $3$，得 $x=5$。'], '先移去常數項。', ['移項', '一次方程']),
         ('算術平均數', '數據 $2$、$4$、$6$、$8$、$10$ 的算術平均數是多少？', '集中趨勢與離差', '平均數', 1, 4,
          '$6$',
@@ -4351,6 +4351,12 @@ class Application:
             # 放在 BEGIN 之後：INSERT 會開隱式交易，提前跑會讓這裡的 BEGIN 失敗。
             db.execute('INSERT OR IGNORE INTO paper_questions(paper_id, question_id) '
                        'SELECT paper_id, id FROM questions WHERE paper_id IS NOT NULL')
+            # 兩個子分類標籤由簡體改成繁體：舊題目存的是舊字串，
+            # 不一起改的話，老師一編輯那題就會被「子分類不屬於主分類」擋下來。
+            for old_label, new_label in (('解一元一次方程（移项）', '解一元一次方程（移項）'),
+                                         ('事件的关系与運算', '事件的關係與運算')):
+                db.execute('UPDATE questions SET payload=replace(payload, ?, ?) '
+                           'WHERE payload LIKE ?', (old_label, new_label, f'%{old_label}%'))
             if not db.execute('SELECT 1 FROM meta WHERE key=?', ('initialized',)).fetchone():
                 for username, role, default, env, name in [
                     ('student', 'student', 'Math1234!', 'MATH_STUDENT_PASSWORD', '演示學生'),
@@ -6866,7 +6872,7 @@ class Application:
                 if not row:
                     fail(404, '找不到作答紀錄。')
                 if not self.homework.can_access_attempt(db, row, user):
-                    fail(403, '只有作业所属教师可以覆核此记录。')
+                    fail(403, '只有作業所屬教師可以覆核此記錄。')
                 score = number(body['score'], '分數', 0, row['max_score'])
                 self.confirm_attempt(db, row, user, score, feedback)
                 attempt = self.attempt_public(db, db.execute('SELECT * FROM attempts WHERE id=?', (row['id'],)).fetchone(), user)
@@ -7288,20 +7294,20 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
-    parser = argparse.ArgumentParser(description='MathPath 本地数学题库后端')
-    parser.add_argument('--host', default='127.0.0.1', help='监听地址，默认仅本机；内网使用明确的内网 IP')
+    parser = argparse.ArgumentParser(description='MathPath 本地數學題庫後端')
+    parser.add_argument('--host', default='127.0.0.1', help='監聽位址，預設僅本機；內網使用明確的內網 IP')
     parser.add_argument('--port', type=int, default=8765)
     parser.add_argument('--data-dir', type=Path, default=ROOT / 'data', help='SQLite 持久化目录')
     args = parser.parse_args()
     if not 1 <= args.port <= 65535:
-        parser.error('端口必须介于1和65535。')
+        parser.error('埠號必須介於 1 和 65535。')
     if args.host != 'localhost':
         try:
             address = ipaddress.ip_address(args.host)
             if address.version != 4:
-                parser.error('当前服务器支持 IPv4；请指定 IPv4 地址。')
+                parser.error('目前伺服器只支援 IPv4；請指定 IPv4 位址。')
         except ValueError:
-            parser.error('host 必须是 localhost 或明确的 IPv4 地址。')
+            parser.error('host 必須是 localhost 或明確的 IPv4 位址。')
     try:
         app = Application(args.data_dir)
         # 對外部署時優先用明確公開網址（Render 會自動提供 RENDER_EXTERNAL_URL），

@@ -1,4 +1,4 @@
-"""本地作业快照、权限、统计和逐次学习建议；不依赖外部服务。"""
+"""本地作業快照、權限、統計和逐次學習建議；不依賴外部服務。"""
 from datetime import date, datetime, timedelta, timezone
 import json
 import re
@@ -104,22 +104,22 @@ class Homework:
 
     def ids(self, value, field, limit):
         if not isinstance(value, list) or not 1 <= len(value) <= limit:
-            self.fail(400, f'{field}必须包含1至{limit}个编号。')
+            self.fail(400, f'{field}必須包含 1 至 {limit} 個編號。')
         return list(dict.fromkeys(self.number(v, field, 1, 2**63 - 1, True) for v in value))
 
     def deadline(self, value):
-        value = self.text(value, '截止时间', 64)
+        value = self.text(value, '截止時間', 64)
         if not re.fullmatch(r'\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}(?::\d{2}(?:\.\d{1,6})?)?(?:Z|[+-]\d{2}:\d{2})', value):
-            self.fail(400, '截止时间必须是带时区的 ISO 日期时间。')
+            self.fail(400, '截止時間必須是帶時區的 ISO 日期時間。')
         offset = re.search(r'[+-](\d{2}):(\d{2})$', value)
         if offset and (int(offset[1]) > 23 or int(offset[2]) > 59):
-            self.fail(400, '截止时间的时区偏移无效。')
+            self.fail(400, '截止時間的時區偏移無效。')
         try:
             due = datetime.fromisoformat(value.replace('Z', '+00:00')).astimezone(timezone.utc)
         except (ValueError, OverflowError):
-            self.fail(400, '截止时间无效。')
+            self.fail(400, '截止時間無效。')
         if due <= datetime.now(timezone.utc):
-            self.fail(400, '截止时间必须在未来。')
+            self.fail(400, '截止時間必須在未來。')
         return due.isoformat().replace('+00:00', 'Z')
 
     @staticmethod
@@ -137,7 +137,7 @@ class Homework:
             allowed = db.execute('SELECT 1 FROM assignment_recipients WHERE assignment_id=? AND user_id=?',
                                  (aid, user['id'])).fetchone() is not None
         if not allowed:
-            self.fail(403, '没有此作业的访问权限。')
+            self.fail(403, '沒有這份作業的存取權限。')
         return row
 
     @staticmethod
@@ -153,7 +153,7 @@ class Homework:
         row = db.execute('SELECT payload FROM assignment_questions WHERE assignment_id=? AND question_id=?',
                          (aid, qid)).fetchone()
         if not row:
-            self.fail(403, '题目不属于此作业。')
+            self.fail(403, '題目不屬於這份作業。')
         return json.loads(row['payload'])
 
     def question_for_attempt(self, db, row, cache=None):
@@ -196,7 +196,7 @@ class Homework:
 
     def assert_open(self, db, aid, user, qid=None):
         if user['role'] != 'student':
-            self.fail(403, '教师不能作为学生提交作业。')
+            self.fail(403, '教師不能以學生身分提交作業。')
         assignment = self.get_assignment(db, aid, user)
         recipient = db.execute('SELECT * FROM assignment_recipients WHERE assignment_id=? AND user_id=?',
                                (aid, user['id'])).fetchone()
@@ -205,7 +205,7 @@ class Homework:
             self.fail(403, '已正式提交的作业不能再次作答。')
         # 教師要求的訂正不受截止時間限制。
         if self.is_late(assignment) and not assignment['allow_late'] and not correction:
-            self.fail(403, '作业已超过截止时间，不能迟交。')
+            self.fail(403, '作業已超過截止時間，不能遲交。')
         # 模擬測驗：計時結束即不能再作答（訂正由教師另行開放，不受此限）。
         if not correction:
             timing = self.timing(assignment, recipient)
@@ -331,10 +331,10 @@ class Homework:
             q = questions[0]
             suggestion = self.rule_suggestion(db, q, {'score': None, 'max_score': q['points'],
                                                       'status': 'pending', 'feedback': '', 'method': 'not-started'})
-            suggestion['strength'] = '尚未开始作答，暂无已评分证据。'
-            suggestion['focus'] = f'先阅读{q["topic"]}题目，独立写出解题过程。'
-            suggestion['nextStep'] = '完成每道题后正式提交作业。'
-            suggestion['notice'] = '规则学习建议；尚无成绩，不判断具体错误。'
+            suggestion['strength'] = '尚未開始作答，暫無已評分證據。'
+            suggestion['focus'] = f'先閱讀{q["topic"]}題目，獨立寫出解題過程。'
+            suggestion['nextStep'] = '完成每道題後正式提交作業。'
+            suggestion['notice'] = '規則學習建議；尚無成績，不判斷具體錯誤。'
             return suggestion
         pending = [r for r in rows if r['status'] == 'pending']
         graded = [r for r in rows if r['status'] == 'graded' and r['score'] is not None]
@@ -345,7 +345,7 @@ class Homework:
             q = next(q for q in questions if q['id'] == chosen['question_id'])
             suggestion = self.rule_suggestion(db, q, chosen)
         if pending:
-            suggestion['notice'] += f' 当前有{len(pending)}题待批阅，未将待批阅题计为零分。'
+            suggestion['notice'] += f' 目前有 {len(pending)} 題待批閱，未將待批閱題計為零分。'
         return suggestion
 
     def report(self, db, assignment, uid, reviewed_only=False):
@@ -493,26 +493,26 @@ class Homework:
 
     def rule_suggestion(self, db, q, row):
         score, maximum = row['score'], row['max_score']
-        notice = '规则学习建议，不是 AI 诊断。'
+        notice = '規則學習建議，不是 AI 診斷。'
         if row['status'] != 'graded' or score is None:
-            strength = '已提交作答；尚未批阅，无法判断掌握情况。'
-            focus = f'{q["topic"]}待教师批阅，目前不能判断具体错误。'
-            next_step = '保留完整解题过程，等待教师反馈后再订正。'
-            notice += ' 待批阅不等于零分。'
+            strength = '已提交作答；尚未批閱，無法判斷掌握情況。'
+            focus = f'{q["topic"]}待教師批閱，目前不能判斷具體錯誤。'
+            next_step = '保留完整解題過程，等待教師回饋後再訂正。'
+            notice += ' 待批閱不等於零分。'
         else:
-            strength = f'本次{q["topic"]}已评分：{score:g}/{maximum:g}分。'
+            strength = f'本次{q["topic"]}已評分：{score:g}/{maximum:g} 分。'
             if row['method'] == 'rule-final':
-                focus = ('最终答案已通过严格等价检查，推导步骤尚未批阅。' if score == maximum else
-                         '最终答案未通过严格等价检查；不能据此确定具体推导错误，请教师覆核。')
+                focus = ('最終答案已通過嚴格等價檢查，推導步驟尚未批閱。' if score == maximum else
+                         '最終答案未通過嚴格等價檢查；不能據此確定具體推導錯誤，請教師覆核。')
             else:
                 focus = row['feedback'][:2000]
-            next_step = (f'根据真实评语复查过程。提示：{q["hint"]}' if q.get('hint') else '根据真实评语复查过程，尝试同主题练习。')
+            next_step = (f'根據真實評語複查過程。提示：{q["hint"]}' if q.get('hint') else '根據真實評語複查過程，嘗試同主題練習。')
             if row['method'] == 'ai-practice':
-                notice += ' 自主练习由 AI 即时评分并记录分数，不需教师批阅。'
+                notice += ' 自主練習由 AI 即時評分並記錄分數，不需教師批閱。'
             elif row['method'] == 'ai-advisory':
-                notice += ' AI 数学判断和成绩仍仅供教师覆核。'
+                notice += ' AI 數學判斷和成績仍僅供教師覆核。'
             elif row['method'] == 'teacher-reviewed':
-                notice += ' 依据教师覆核成绩与评语更新。'
+                notice += ' 依據教師覆核成績與評語更新。'
         return {'source': 'rules', 'strength': strength, 'focus': focus, 'nextStep': next_step,
                 'recommended': self.recommendations(db, q), 'notice': notice}
 
@@ -538,7 +538,7 @@ class Homework:
                         break
             self.app.ai.consent(consent)
             result = self.app.ai.call(
-                '根据本次真实批改结果、本人最多5次同主题已评分记录给出个别学习建议。'
+                '根據本次真實批改結果、本人最多 5 次同主題已評分記錄給出個別學習建議。'
                 '返回 JSON {strength:str,focus:str,nextStep:str,recommendedIds:[int]}；前三项必填。'
                 '推荐编号只能来自给定候选题，不虚构错误、进步或成绩；AI 数学判断仍供教师覆核。',
                 {'question': {k: q[k] for k in ('id', 'title', 'content', 'topic', 'level', 'hint')},
@@ -551,16 +551,16 @@ class Homework:
             selected = recommended
             if ids is not None:
                 if not isinstance(ids, list) or len(ids) > 6 or any(type(v) is not int for v in ids):
-                    raise ValueError('推荐编号无效')
+                    raise ValueError('推薦編號無效')
                 allowed = {v['id']: v for v in recommended}
                 # 无效模型推荐不进入响应，回退到真实题库精选候选。
                 selected = [allowed[v] for v in dict.fromkeys(ids) if v in allowed] or recommended
-            notice = ('AI 即时评分与学习建议；自主练习分数只作个人练习纪录，不需教师批阅。'
-                      if row['method'] == 'ai-practice' else 'AI 学习建议和数学判断仅供教师覆核。')
+            notice = ('AI 即時評分與學習建議；自主練習分數只作個人練習紀錄，不需教師批閱。'
+                      if row['method'] == 'ai-practice' else 'AI 學習建議和數學判斷僅供教師覆核。')
             suggestion.update(source='ai', recommended=selected, notice=notice)
         except Exception:
             suggestion = fallback
-            suggestion['notice'] += ' AI 学习建议生成失败，已保留批改成绩并使用规则建议。'
+            suggestion['notice'] += ' AI 學習建議生成失敗，已保留批改成績並使用規則建議。'
         with self.app.db() as db:
             db.execute('UPDATE attempts SET suggestion=? WHERE id=? AND teacher_reviewed=0',
                        (json.dumps(suggestion, ensure_ascii=False), row['id']))
@@ -682,15 +682,15 @@ class Homework:
             self.app.teacher(user)
             # 建立班級不必先選學生：studentIds 可省略或給空陣列。
             self.fields(body, ('name', 'studentIds'), ('name',))
-            name = self.text(body['name'], '班级名称', 200)
+            name = self.text(body['name'], '班級名稱', 200)
             raw_ids = body.get('studentIds') or []
-            ids = self.ids(raw_ids, '学生编号', 1000) if raw_ids else []
+            ids = self.ids(raw_ids, '學生編號', 1000) if raw_ids else []
             with self.app.db() as db:
                 db.execute('BEGIN IMMEDIATE')
                 for uid in ids:
                     row = db.execute('SELECT role FROM users WHERE id=?', (uid,)).fetchone()
                     if not row or row['role'] != 'student':
-                        self.fail(400, '班级成员必须全部是已存在的学生。')
+                        self.fail(400, '班級成員必須全部是已存在的學生。')
                 cur = db.execute('INSERT INTO classes(teacher_id,name) VALUES(?,?)', (user['id'], name))
                 db.executemany('INSERT INTO class_students(class_id,user_id) VALUES(?,?)', [(cur.lastrowid, uid) for uid in ids])
                 result = self.class_public(db, db.execute('SELECT * FROM classes WHERE id=?', (cur.lastrowid,)).fetchone(), user)
@@ -704,9 +704,9 @@ class Homework:
             with self.app.db() as db:
                 row = db.execute('SELECT * FROM assignments WHERE id=?', (aid,)).fetchone()
                 if row is None:
-                    self.fail(404, '找不到这份作业。')
+                    self.fail(404, '找不到這份作業。')
                 if row['teacher_id'] != user['id'] and not self.app.is_owner(user, db):
-                    self.fail(403, '只有布置这份作业的教师或管理员可以删除。')
+                    self.fail(403, '只有佈置這份作業的教師或管理員可以刪除。')
                 db.execute('BEGIN IMMEDIATE')
                 # 作答（含分數、AI 建議、手寫圖）——作業沒了就沒有歸屬，一併刪。
                 removed = db.execute('DELETE FROM attempts WHERE assignment_id=?', (aid,)).rowcount
@@ -723,13 +723,13 @@ class Homework:
             with self.app.db() as db:
                 row = db.execute('SELECT * FROM classes WHERE id=?', (cid,)).fetchone()
                 if row is None:
-                    self.fail(404, '找不到这个班级。')
+                    self.fail(404, '找不到這個班級。')
                 if row['teacher_id'] != user['id'] and not self.app.is_owner(user, db):
-                    self.fail(403, '只有建立这个班级的教师或管理员可以删除。')
+                    self.fail(403, '只有建立這個班級的教師或管理員可以刪除。')
                 used = db.execute('SELECT count(*) AS n FROM assignments WHERE class_id=?',
                                   (cid,)).fetchone()['n']
                 if used:
-                    self.fail(400, f'这个班级还有 {used} 份作业；请先处理这些作业再删除班级。')
+                    self.fail(400, f'這個班級還有 {used} 份作業；請先處理這些作業再刪除班級。')
                 db.execute('BEGIN IMMEDIATE')
                 db.execute('DELETE FROM class_students WHERE class_id=?', (cid,))
                 db.execute('DELETE FROM classes WHERE id=?', (cid,))
@@ -739,21 +739,21 @@ class Homework:
             # 更新班級：名稱與學生名單。建立班級時不必先選學生，之後在這裡加。
             self.app.teacher(user)
             self.fields(body, ('name', 'studentIds'), ('name',))
-            name = self.text(body['name'], '班级名称', 200)
+            name = self.text(body['name'], '班級名稱', 200)
             raw_ids = body.get('studentIds') or []
-            ids = self.ids(raw_ids, '学生编号', 1000) if raw_ids else []
+            ids = self.ids(raw_ids, '學生編號', 1000) if raw_ids else []
             cid = int(class_path[1])
             with self.app.db() as db:
                 row = db.execute('SELECT * FROM classes WHERE id=?', (cid,)).fetchone()
                 if row is None:
-                    self.fail(404, '找不到这个班级。')
+                    self.fail(404, '找不到這個班級。')
                 if row['teacher_id'] != user['id'] and not self.app.is_owner(user, db):
-                    self.fail(403, '只能修改自己建立的班级。')
+                    self.fail(403, '只能修改自己建立的班級。')
                 db.execute('BEGIN IMMEDIATE')
                 for uid in ids:
                     r = db.execute('SELECT role FROM users WHERE id=?', (uid,)).fetchone()
                     if not r or r['role'] != 'student':
-                        self.fail(400, '班级成员必须全部是已存在的学生。')
+                        self.fail(400, '班級成員必須全部是已存在的學生。')
                 db.execute('UPDATE classes SET name=? WHERE id=?', (name, cid))
                 db.execute('DELETE FROM class_students WHERE class_id=?', (cid,))
                 db.executemany('INSERT INTO class_students(class_id,user_id) VALUES(?,?)',
@@ -765,39 +765,39 @@ class Homework:
             self.fields(body, ('title', 'classId', 'questionIds', 'dueAt', 'description', 'allowLate', 'kind',
                                'durationMinutes', 'aiGrading'),
                         ('title', 'classId', 'questionIds', 'dueAt'))
-            title = self.text(body['title'], '作业标题', 200)
+            title = self.text(body['title'], '作業標題', 200)
             kind = body.get('kind', 'homework')
             if kind not in ('homework', 'quiz'):
-                self.fail(400, 'kind 必须是 homework 或 quiz。')
-            cid = self.number(body['classId'], '班级编号', 1, 2**63 - 1, True)
-            ids = self.ids(body['questionIds'], '题目编号', 30)
+                self.fail(400, 'kind 必須是 homework 或 quiz。')
+            cid = self.number(body['classId'], '班級編號', 1, 2**63 - 1, True)
+            ids = self.ids(body['questionIds'], '題目編號', 30)
             due = self.deadline(body['dueAt'])
             description = self.text(body.get('description', ''), '作业说明', 4000, empty=True)
             allow_late = body.get('allowLate', False)
             if type(allow_late) is not bool:
-                self.fail(400, 'allowLate 必须是布尔值。')
+                self.fail(400, 'allowLate 必須是布林值。')
             # 是否使用 AI 建議評分：只有教師能決定，且 AI 未接入時不得啟用（避免出現假的 AI 成績）。
             ai_grading = body.get('aiGrading', False)
             if type(ai_grading) is not bool:
-                self.fail(400, 'aiGrading 必须是布尔值。')
+                self.fail(400, 'aiGrading 必須是布林值。')
             if ai_grading and not self.app.ai.configured:
-                self.fail(409, '尚未接入 AI 模型，无法启用 AI 建议评分。')
+                self.fail(409, '尚未接入 AI 模型，無法啟用 AI 建議評分。')
             duration = body.get('durationMinutes')
             if duration is not None:
-                duration = self.number(duration, '作答时间（分钟）', 1, 300, True)
+                duration = self.number(duration, '作答時間（分鐘）', 1, 300, True)
             with self.app.db() as db:
                 db.execute('BEGIN IMMEDIATE')
                 classroom = db.execute('SELECT * FROM classes WHERE id=?', (cid,)).fetchone()
                 if not classroom:
-                    self.fail(404, '找不到班级。')
+                    self.fail(404, '找不到班級。')
                 if classroom['teacher_id'] != user['id']:
-                    self.fail(403, '只能向自己的班级布置作业。')
+                    self.fail(403, '只能向自己的班級佈置作業。')
                 recipients = db.execute('SELECT user_id FROM class_students WHERE class_id=?', (cid,)).fetchall()
                 if not recipients:
-                    self.fail(400, '班级至少需要一名学生。')
+                    self.fail(400, '班級至少需要一名學生。')
                 questions = [self.app.get_question(db, qid) for qid in ids]
                 if any(not self.recommendable(q) for q in questions):
-                    self.fail(400, '作业题必须已有非空答案且已完成教师核验。')
+                    self.fail(400, '作業題必須已有答案，且已完成教師核驗。')
                 self.deadline(due)
                 cur = db.execute('INSERT INTO assignments(teacher_id,class_id,class_name,title,description,due_at,created_at,allow_late,kind,duration_minutes,ai_grading) '
                                  'VALUES(?,?,?,?,?,?,?,?,?,?,?)', (user['id'], cid, classroom['name'], title, description, due, self.utc_now(), int(allow_late), kind, duration, int(ai_grading)))
@@ -814,7 +814,7 @@ class Homework:
         if method == 'POST' and action == 'start':
             # 模擬測驗開始計時：只在第一次記錄 started_at，之後重複呼叫不會重置時間。
             if user['role'] != 'student':
-                self.fail(403, '只有学生可以开始测验。')
+                self.fail(403, '只有學生可以開始測驗。')
             self.fields(body, ())
             with self.app.db() as db:
                 db.execute('BEGIN IMMEDIATE')
@@ -822,14 +822,14 @@ class Homework:
                 row = db.execute('SELECT * FROM assignment_recipients WHERE assignment_id=? AND user_id=?',
                                  (aid, user['id'])).fetchone()
                 if row['submitted_at']:
-                    self.fail(403, '已正式提交的测验不能重新开始。')
+                    self.fail(403, '已正式提交的測驗不能重新開始。')
                 if assignment['duration_minutes'] and not row['started_at']:
                     db.execute('UPDATE assignment_recipients SET started_at=? WHERE assignment_id=? AND user_id=?',
                                (self.utc_now(), aid, user['id']))
                 return {'mySubmission': self.submission(db, aid, user['id'])}
         if method == 'POST' and action == 'submit':
             if user['role'] != 'student':
-                self.fail(403, '只有学生可以正式提交作业。')
+                self.fail(403, '只有學生可以正式提交作業。')
             self.fields(body, ())
             with self.app.db() as db:
                 db.execute('BEGIN IMMEDIATE')
@@ -883,7 +883,7 @@ class Homework:
         if method == 'POST' and action == 'return':
             self.app.teacher(user)
             self.fields(body, ('studentId', 'questionIds', 'note'), ('studentId', 'note'))
-            student_id = self.number(body['studentId'], '学生编号', 1, 2**63 - 1, True)
+            student_id = self.number(body['studentId'], '學生編號', 1, 2**63 - 1, True)
             note = self.text(body['note'], '訂正說明', 2000)
             with self.app.db() as db:
                 db.execute('BEGIN IMMEDIATE')

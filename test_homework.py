@@ -409,7 +409,7 @@ class HomeworkTests(unittest.TestCase):
         saved = next(a for a in state['attempts'] if a['id'] == attempt['id'])
         self.assertEqual(saved['score'], 4)
         self.assertEqual(saved['gradingMethod'], 'ai-practice')
-        self.assertIn('不需教师批阅', saved['suggestion']['notice'])
+        self.assertIn('不需教師批閱', saved['suggestion']['notice'])
 
     def test_practice_ai_failure_falls_back_to_rule_and_still_records_score(self):
         # 自主練習以「即時評分、記錄分數」為目的；模型暫時失敗時退回規則核對，不能沒有分數。
@@ -977,7 +977,7 @@ class HomeworkTests(unittest.TestCase):
         self.assertIsNone(report['topicStats'][0]['percent'])
         self.assertTrue(report['awaitingReview'])
         self.assertIsNone(report['suggestion'], '教師批閱前不顯示學習建議')
-        self.assertIn('待批阅', self.teacher_attempt(aid, pending['id'])['suggestion']['notice'])
+        self.assertIn('待批閱', self.teacher_attempt(aid, pending['id'])['suggestion']['notice'])
         self.attempt(aid, 2, 'x=3或4')
         self.finalize(aid)
         report = self.detail(aid)['report']
@@ -1075,7 +1075,7 @@ class HomeworkTests(unittest.TestCase):
             self.assertEqual(stored['score'], 4)
             self.assertEqual(stored['aiScore'], 4)
             self.assertEqual(stored['suggestion']['source'], 'rules')
-            self.assertIn('已保留批改成绩', stored['suggestion']['notice'])
+            self.assertIn('已保留批改成績', stored['suggestion']['notice'])
         with self.app.db() as db:
             self.assertEqual(db.execute('SELECT count(*) FROM attempts').fetchone()[0], 4)
 
@@ -1096,7 +1096,7 @@ class HomeworkTests(unittest.TestCase):
             a = self.attempt(aid)
         stored = self.teacher_attempt(aid, a['id'])
         self.assertEqual(stored['score'], 4)
-        self.assertIn('失败', stored['suggestion']['notice'])
+        self.assertIn('學習建議生成失敗', stored['suggestion']['notice'])
 
     def test_ai_history_only_own_graded_same_topic_five(self):
         for _ in range(7):
@@ -1146,7 +1146,7 @@ class HomeworkTests(unittest.TestCase):
         pending = self.attempt(answer='', image=test_server.png_url())
         self.assertIsNone(pending['score'])
         self.assertIsNone(pending['ruleScore'])
-        self.assertIn('不能判断具体错误', pending['suggestion']['focus'])
+        self.assertIn('不能判斷具體錯誤', pending['suggestion']['focus'])
         self.assertEqual(pending['suggestion']['source'], 'rules')
 
     def test_privacy_state_attempts_images_and_reviews(self):
@@ -1574,7 +1574,7 @@ class HomeworkTests(unittest.TestCase):
         self.assertEqual(report['scoredPoints'], questions[1]['points'])
         self.assertLess(report['score'], report['maxScore'], '待批题目不计分，已评得分应少于卷面满分')
         self.assertEqual(report['percent'], 100.0, 'percent 只覆盖已评分的题目')
-        self.assertIn('待批阅', report['suggestion']['notice'])
+        self.assertIn('待批閱', report['suggestion']['notice'])
         # 快照不可变：之后修改题库答案，不影响已开始的测验评分。
         started2 = self.mock(topic='集中趨勢與離差', count=2, minutes=20)
         eid2, questions2 = started2['exam']['id'], started2['questions']
