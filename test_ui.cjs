@@ -3026,6 +3026,27 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   assert.equal(bulkBody.patch.grade,undefined,'沒選的欄位不要送');
   console.log('PASS: 題庫可批次修改分類／年級／難度（只送有選的欄位）');
 
+  // 待核驗快捷篩選 + 批次核驗（作業端點會擋待核驗，這是補答案後的收尾）
+  const reviewUi=await page.evaluate(()=>{
+    const old=S.questions;
+    S.questions=[{...old[0],tags:['試卷匯入','待核驗']},old[0]];
+    onlyReview=false;bank();
+    const chip=document.querySelector('#review-chip');
+    const chipText=chip?chip.textContent.trim():'';
+    if(chip)chip.click();
+    const filtered=document.querySelectorAll('.question-card').length;
+    const box=document.querySelector('[data-pick]');
+    if(box){box.checked=true;box.dispatchEvent(new Event('change',{bubbles:true}));}
+    const vb=document.querySelector('#pick-verify');
+    const verifyShown=!!vb&&!vb.hidden;
+    S.questions=old;onlyReview=false;bank();
+    return {chipText,filtered,verifyShown};
+  });
+  assert.match(reviewUi.chipText,/待核驗 1/,'篩選列要顯示待核驗題數');
+  assert.equal(reviewUi.filtered,1,'勾了待核驗篩選只該剩那一題');
+  assert.ok(reviewUi.verifyShown,'選到待核驗題目要出現「核驗已選」');
+  console.log('PASS: 題庫「待核驗」快捷篩選與「核驗已選」批次核驗');
+
   // 帳號停用：管理員看得到「停用」，已停用的顯示「已停用」與「重新啟用」；
   // 不能停用自己與管理員（按鈕不出現）。實際的登入攔阻由後端測試驗證。
   const rosterHtml=await page.evaluate(()=>[
