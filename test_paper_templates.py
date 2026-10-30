@@ -250,7 +250,7 @@ class PaperTemplateTests(unittest.TestCase):
         self.call('GET', '/api/jobs/doesnotexist123', expect=404)
 
     def test_warns_when_word_has_ole_formulas(self):
-        """AxMath／MathType 的公式是 OLE 物件，解析讀不到——要講，不能默默變成空白。"""
+        """外掛打出來的公式（OLE 物件）解析讀不到——要講，不能默默變成空白。"""
         doc = Document()
         doc.add_paragraph('中三數學 小測')
         doc.add_paragraph('一、計算題')

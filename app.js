@@ -4083,7 +4083,7 @@ async function paperLayoutPage(){
       if(!guess.year)guess.year=String(new Date().getFullYear());
       // 一次寫完再綁事件：用 innerHTML += 會把上面剛綁好的下載按鈕換掉，點了沒反應
       $('#paper-result').innerHTML=`<div class="layout-result">
-        <div><strong>排好了</strong><span class="small-text">${st.sections||0} 個分部 · ${st.questions||0} 題 · ${st.formulas||0} 條公式${st.tables?` · ⚠️ 範本有 ${st.tables} 個表格未帶入`:''}${st.oleObjects?` · ⚠️ 有 ${st.oleObjects} 個 AxMath／MathType 公式讀不到（請先轉成 Word 方程式或 PDF）`:''}</span></div>
+        <div><strong>排好了</strong><span class="small-text">${st.sections||0} 個分部 · ${st.questions||0} 題 · ${st.formulas||0} 條公式${st.tables?` · ⚠️ 範本有 ${st.tables} 個表格未帶入`:''}${st.oleObjects?` · ⚠️ 有 ${st.oleObjects} 個 Word 公式物件（MathType 等）讀不到（請先轉成 Word 方程式或 PDF）`:''}</span></div>
         <button class="primary" id="dl-paper">下載 ${esc(res.filename)}</button></div>
       <div class="panel" style="margin-top:12px;padding:12px">
         <p class="field-hint" style="margin:0 0 8px">保存到「我的試卷」：之後可以搜尋、按年份／級別／學段篩選，也能一鍵匯入題庫。</p>

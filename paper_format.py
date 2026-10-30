@@ -605,7 +605,7 @@ def render(template_path: str, content_path: str, out_path: str) -> dict:
 
 
 def count_ole_objects(data: bytes) -> int:
-    """數一數 Word 裡有幾個 OLE 物件（AxMath／MathType 的公式就是這種）。
+    """數一數 Word 裡有幾個 OLE 物件（MathType 這類外掛的公式就是這種）。
 
     這些公式不是文字、也不是 Word 原生方程式，我們的解析讀不到；
     不提醒的話，老師會以為排好了，結果整份卷的公式全不見。
