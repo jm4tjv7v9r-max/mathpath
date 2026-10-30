@@ -2581,7 +2581,9 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   assert.ok(questionUpdate.question.steps.length>0,'詳解步驟要一起送出');
   assert.equal(questionUpdate.question.options.length,4,'選項要一起送出');
   assert.equal(questionUpdate.figure,undefined,'沒有動圖形時不該送 figure（保留原本那張）');
-  console.log('PASS: 教師可在題庫編輯題目（所有設定帶入現值、存檔送出完整設定、不動圖形就不送 figure）');
+  assert.deepEqual(questionUpdate.question.tags,q.tags,'標籤要沿用原值（否則「待核驗」會被洗掉）');
+  assert.equal(questionUpdate.question.source,q.source,'來源要沿用原值');
+  console.log('PASS: 教師可在題庫編輯題目（所有設定帶入現值、存檔送出完整設定、不動圖形就不送 figure、標籤與來源不被洗掉）');
   // 只生成評分標準：已有答案的題目可以只補 rubric，不會改動答案。
   await page.route('**/api/questions/*/rubric', route => route.fulfill({json:{
     rubric:[{label:'列出 $180-55-65$ 的算式',percent:60},

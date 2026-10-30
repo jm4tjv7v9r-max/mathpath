@@ -2663,7 +2663,7 @@ function wireQuestionForm(prefix, state, opts){
       analysis:el('analysis').value.trim(),
       rubric:isObjectiveQtype(qtype)?[]:cleanRubric(state.rubric),
       options:qtype==='選擇題'?state.options.map(x=>String(x||'').trim()).filter(Boolean):[],
-      hint:el('hint').value.trim(),source:o.source||'手動輸入',tags:[],
+      hint:el('hint').value.trim(),source:o.source||'手動輸入',tags:o.tags||[],
       figure:o.figure?o.figure():undefined});
   };
 }
@@ -2749,6 +2749,10 @@ function editQuestionModal(id){
   if(rm)rm.onclick=()=>{picked=null;removed=true;paintFigure();};
   wireQuestionForm('editq',state,{
     qid:q.id,
+    // 表單沒有「標籤／來源」欄位；不沿用原本的值，一存檔就會把
+    // 「待核驗」洗掉（等於繞過核驗），來源也會變成「手動輸入」。
+    source:q.source,
+    tags:q.tags||[],
     figure:()=>picked||undefined,
     onSubmit:async draft=>{
       const body={question:draft};
