@@ -196,6 +196,11 @@ const paths = {
  flame:'<path d="M12 2c2 6 7 7 7 13a7 7 0 0 1-14 0c0-3 1-5 4-8l1 5c3-3 3-6 2-10Z"/>',
  help:'<circle cx="12" cy="12" r="9"/><path d="M9 8a3 3 0 0 1 6 1c0 2-3 2-3 4M12 17h.01"/>',
  download:'<path d="M12 3v12m0 0l-4-4m4 4l4-4M4 19h16"/>',
+ // 側欄這四個頁面原本沒有圖示，全部 fallback 成題庫的九宮格，看起來像五個一樣的按鈕
+ homework:'<path d="M9 3h6v3H9zM6 5H4v16h16V5h-2M8 13l2.5 2.5L16 10"/>',
+ paper:'<path d="M4 20l1-4L16 5l3 3L8 19zM14 7l3 3"/>',
+ layout:'<path d="M3 5h18v14H3zM9 5v14M15 5v14"/>',
+ papers:'<path d="M8 3h8l4 4v13H8zM14 3v4h4M5 7v14h11"/>',
  calendar:'<path d="M4 6h16v14H4zM8 3v4m8-4v4M4 10h16"/>',
  upload:'<path d="M12 16V3m-5 5 5-5 5 5M4 16v5h16v-5"/>',
  image:'<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8" cy="8" r="1.5"/><path d="m3 17 5-5 4 4 4-6 5 7"/>',
