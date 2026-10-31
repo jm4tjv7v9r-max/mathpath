@@ -873,7 +873,7 @@ function shell(){// 「新手上路」放最後——那是第一次來看的，
     {id:'homework',label:'作業成績'},
     {key:'bank',label:'題庫與入題',iconId:'bank',
      children:[['bank','題庫','list'],['import','試卷拆題入庫'],['newq','新增題目']]},
-    {key:'review',label:'批閱',iconId:'check',
+    {key:'review',label:'批閱',iconId:'edit',
      children:[['mistakes','作業批閱'],['paper','紙本批閱']]},
     {id:'layout',label:'試卷修正排版'},
     {id:'papers',label:'我的試卷'},
