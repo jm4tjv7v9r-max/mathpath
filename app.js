@@ -1133,9 +1133,11 @@ function renderList(){const list=filteredQuestions(),size=5,total=Math.ceil(list
 function requireLogin(fn){if(S.user){fn();return true;}loginModal(fn);return false;}
 let modalReturnFocus=null, modalSeq=0;
 function modal(html,large=false,dismiss=true){
+  // large 可以是 true（一般大視窗）或直接給 class 字串（例如 'large gen-modal'）。
+  const size=typeof large==='string'?large:(large?'large':'');
   if(!$('.modal'))modalReturnFocus=document.activeElement;
   const titleId=`modal-title-${++modalSeq}`;
-  $('#modal-root').innerHTML=`<div class="modal-backdrop"><section class="modal ${large?'large':''}" role="dialog" aria-modal="true" aria-labelledby="${titleId}" tabindex="-1">${dismiss?`<button class="icon-btn modal-close" data-action="close-modal" aria-label="關閉">×</button>`:''}${html}</section></div>`;
+  $('#modal-root').innerHTML=`<div class="modal-backdrop"><section class="modal ${size}" role="dialog" aria-modal="true" aria-labelledby="${titleId}" tabindex="-1">${dismiss?`<button class="icon-btn modal-close" data-action="close-modal" aria-label="關閉">×</button>`:''}${html}</section></div>`;
   const dialog=$('.modal'),title=$('h2',dialog);
   if(title){title.id=titleId;title.tabIndex=-1;title.focus();}else{dialog.removeAttribute('aria-labelledby');dialog.setAttribute('aria-label','操作視窗');dialog.focus();}
   $('#modal-root').onkeydown=e=>{
@@ -4014,45 +4016,52 @@ async function generatePaperModal(){
   let tpls=[];
   try{tpls=(await api('/api/paper-templates')).templates||[];}catch(e){return toast(e.message);}
   const rangeRow=(v='')=>`<div class="range-row"><input class="range-input" value="${esc(v)}" maxlength="120" placeholder="例如：直線的傾斜角與斜率"><button type="button" class="text-button range-del" aria-label="刪除這個範圍">✕</button></div>`;
+  const chip=(t)=>`<label class="gen-chip${['選擇題','填空題','解答題'].includes(t)?' on':''}"><input type="checkbox" class="gen-qtype" value="${t}" ${['選擇題','填空題','解答題'].includes(t)?'checked':''}>${t}</label>`;
   modal(`<p class="eyebrow">AI PAPER</p><h2>一鍵生成試卷</h2>
-    <p class="modal-intro">先上傳或選一個範本，再填測考範圍、難度與配分。預設先從題庫挑題，分數不夠才由 AI 補；配分由程式核算，總分一定等於你填的分數。</p>
-    <div class="form-field"><label class="field-label" for="gen-template">範本</label>
-      <select id="gen-template">${tpls.map(t=>`<option value="${t.id}">${esc(t.name)}</option>`).join('')}</select>
-      <button type="button" class="text-button" id="gen-upload" style="margin-top:6px">${icon('file')}上傳新範本（.docx）</button>
-      <input type="file" id="gen-tpl-file" accept=".docx" hidden>
-      ${tpls.length?'':'<p class="field-hint">還沒有範本；請先上傳一份學校的空白卷（.docx），版式會原樣沿用。</p>'}</div>
-    <div class="form-field"><label class="field-label">測考範圍</label>
+    <p class="modal-intro">選範本 → 填範圍與配分 → 生成。預設先從題庫挑題，分數不夠才由 AI 補；配分由程式核算，總分一定等於你填的分數。</p>
+    <div class="gen-tpl-row">
+      <div class="form-field"><label class="field-label" for="gen-template">範本</label>
+        <select id="gen-template">${tpls.map(t=>`<option value="${t.id}">${esc(t.name)}</option>`).join('')}</select></div>
+      <div class="form-field">
+        <button type="button" class="secondary" id="gen-upload">${icon('file')}上傳新範本（.docx）</button>
+        <input type="file" id="gen-tpl-file" accept=".docx" hidden></div>
+    </div>
+    ${tpls.length?'':'<p class="field-hint" style="margin:6px 0 0">還沒有範本；先上傳一份學校的空白卷（.docx），版式會原樣沿用。</p>'}
+    <div class="form-field"><label class="field-label">測考範圍（可加多個）</label>
       <div id="gen-ranges">${rangeRow()}</div>
       <button type="button" class="text-button" id="gen-add-range">＋ 增加範圍</button></div>
-    <div class="form-grid">
-      <div class="form-field"><label class="field-label" for="gen-duration">測考時間（分鐘）</label><input id="gen-duration" type="number" min="10" max="300" value="60"></div>
+    <div class="gen-grid">
+      <div class="form-field"><label class="field-label" for="gen-duration">時間（分鐘）</label><input id="gen-duration" type="number" min="10" max="300" value="60"></div>
       <div class="form-field"><label class="field-label" for="gen-grade">年級</label><select id="gen-grade">${['初一','初二','初三','高一','高二','高三'].map(g=>`<option>${g}</option>`).join('')}</select></div>
       <div class="form-field"><label class="field-label" for="gen-kind">類型</label><select id="gen-kind"><option>小測</option><option selected>大測</option><option>考試</option></select></div>
       <div class="form-field"><label class="field-label" for="gen-term">段</label><select id="gen-term"><option>第一段</option><option>第二段</option><option>第三段</option></select></div>
       <div class="form-field"><label class="field-label" for="gen-subject">科目</label><select id="gen-subject"><option>數學</option><option>幾何</option></select></div>
       <div class="form-field"><label class="field-label" for="gen-total">總分</label><input id="gen-total" type="number" min="10" max="300" value="100"></div>
     </div>
-    <div class="form-field"><label class="field-label">題型要求</label>
-      <div style="display:flex;flex-wrap:wrap;gap:10px">${['選擇題','填空題','解答題','證明題','附加題'].map(t=>`<label class="checkbox-line" style="display:inline-flex;gap:5px"><input type="checkbox" class="gen-qtype" value="${t}" ${['選擇題','填空題','解答題'].includes(t)?'checked':''}>${t}</label>`).join('')}</div>
-      <div id="gen-options-row" style="margin-top:9px">選擇題選項：
-        <label class="checkbox-line" style="display:inline-flex;gap:4px;margin-right:12px"><input type="radio" name="gen-opt" value="4" checked>4 個</label>
-        <label class="checkbox-line" style="display:inline-flex;gap:4px"><input type="radio" name="gen-opt" value="5">5 個</label></div></div>
-    <div class="form-field"><label class="field-label">題目來源</label>
-      <div style="display:flex;flex-wrap:wrap;gap:14px">
-        <label class="checkbox-line" style="display:inline-flex;gap:5px"><input type="radio" name="gen-source" value="bank" checked>題庫優先（不足才由 AI 補）</label>
-        <label class="checkbox-line" style="display:inline-flex;gap:5px"><input type="radio" name="gen-source" value="ai">全部由 AI 出題</label></div>
-      <p class="field-hint">「題庫優先」會先按範圍、題型、難度從題庫挑題，分數不夠才請 AI 補足；附加題一律由 AI 出。</p></div>
-    <div class="form-field"><label class="field-label">難度比例（易：中：難，合共 10）</label>
-      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-        <input id="gen-diff-easy" type="number" min="0" max="10" value="6" style="width:74px" aria-label="易的比例">
-        <span>：</span>
-        <input id="gen-diff-mid" type="number" min="0" max="10" value="3" style="width:74px" aria-label="中的比例">
-        <span>：</span>
-        <input id="gen-diff-hard" type="number" min="0" max="10" value="1" style="width:74px" aria-label="難的比例">
-        <span class="small-text" id="gen-diff-sum">合共 10</span></div></div>
-    <p class="field-hint">總分填 110 分時，附加題固定 10 分；配分會由程式重新核算，總分一定等於你填的分數。</p>
+    <div class="gen-block" style="margin-top:14px">
+      <div class="gen-block-head">
+        <p class="field-label">題型要求</p>
+        <div class="gen-inline" id="gen-options-row">選擇題選項
+          <label><input type="radio" name="gen-opt" value="4" checked>4 個</label>
+          <label><input type="radio" name="gen-opt" value="5">5 個</label></div>
+      </div>
+      <div class="gen-chips">${['選擇題','填空題','解答題','證明題','附加題'].map(chip).join('')}</div>
+    </div>
+    <div class="gen-pair">
+      <div class="gen-block"><p class="field-label">題目來源</p>
+        <div class="gen-inline">
+          <label><input type="radio" name="gen-source" value="bank" checked>題庫優先（不足才由 AI 補）</label>
+          <label><input type="radio" name="gen-source" value="ai">全部由 AI 出題</label></div></div>
+      <div class="gen-block"><p class="field-label">難度比例（易：中：難，合共 10）</p>
+        <div class="gen-diff">
+          <input id="gen-diff-easy" type="number" min="0" max="10" value="6" aria-label="易的比例"><span>：</span>
+          <input id="gen-diff-mid" type="number" min="0" max="10" value="3" aria-label="中的比例"><span>：</span>
+          <input id="gen-diff-hard" type="number" min="0" max="10" value="1" aria-label="難的比例">
+          <span class="small-text gen-diff-sum" id="gen-diff-sum">合共 10</span></div></div>
+    </div>
+    <p class="field-hint" style="margin-top:12px">總分填 110 分時，附加題固定 10 分（會自動勾選）。</p>
     <p class="error-text" id="gen-error"></p>
-    <button class="primary wide" id="gen-submit">生成試卷 ${icon('spark')}</button>`,true);
+    <button class="primary wide" id="gen-submit">生成試卷 ${icon('spark')}</button>`,'large gen-modal');
   const ranges=$('#gen-ranges');
   // 直接在這個視窗上傳範本：不必先跳去「卷面排版」，上傳完自動選好。
   $('#gen-upload').onclick=()=>$('#gen-tpl-file').click();
@@ -4080,7 +4089,12 @@ async function generatePaperModal(){
   });
   const syncOptions=()=>{
     const on=[...document.querySelectorAll('.gen-qtype')].some(x=>x.value==='選擇題'&&x.checked);
-    $('#gen-options-row').style.display=on?'block':'none';
+    $('#gen-options-row').style.display=on?'flex':'none';
+    // 勾選中的題型用實心樣式標示，一眼看得出選了哪幾個。
+    $$('.gen-chip').forEach(chip=>{
+      const box=$('input',chip);
+      chip.classList.toggle('on',!!(box&&box.checked));
+    });
   };
   $$('.gen-qtype').forEach(x=>x.onchange=syncOptions);syncOptions();
   // 難度比例：三格加起來必須是 10，邊打邊提示，不必等送出才發現。
