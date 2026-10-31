@@ -244,7 +244,9 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   await login('student');
   const weak=page.locator('.right-panel',{hasText:'最需要鞏固'});
   await weak.waitFor();assert.match(await weak.innerText(),/幾何/);assert.match(await weak.innerText(),/0%/);
-  await weak.locator('[data-topic]').click();await page.locator('.topic-tab.active').waitFor();assert.equal(await page.locator('#crumb').innerText(),'數學題庫');assert.equal(await page.locator('.topic-tab.active').innerText(),'幾何');
+  await weak.locator('[data-topic]').click();await page.locator('#topic-filter').waitFor();
+  assert.equal(await page.locator('#crumb').innerText(),'數學題庫');
+  assert.equal(await page.locator('#topic-filter').inputValue(),'幾何','點右側知識點要切到該分類');
   await page.locator('#account').click();await page.locator('#logout-btn').click();
 
   await login('teacher');await page.locator('[data-results]').first().click();
@@ -553,7 +555,7 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   await page.waitForTimeout(300);
   // 題庫：顯示題型，並可依題型篩選
   await gotoNav('bank');
-  await page.locator('[data-topic="全部題目"]').click();
+  await page.locator('#topic-filter').selectOption('全部題目');
   await page.locator('.question-card').first().waitFor();
   assert.match(await page.locator('.question-card').first().innerText(),/選擇題/,'題目卡應顯示題型');
   // 數學式子以 KaTeX 排版：$...$ 應被渲染，且頁面不得殘留原始 $ 標記
@@ -590,62 +592,48 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   assert.equal(await page.locator('.question-card').count(),1);
   await page.screenshot({path:path.join(__dirname,'..','MathPath-題型篩選.png'),fullPage:true});
   await page.locator('#qtype-filter').selectOption('');
-  // 兩層知識分類：所有主分類頁籤都要完整顯示（換行，不得被裁掉），選主分類後出現子分類
-  const mainTabCount = await page.locator('.topic-tab').count();
-  assert.ok(mainTabCount >= 27, `主分類頁籤應至少 27 個，實際 ${mainTabCount}`);
-  const clippedTabs = await page.evaluate(() => {
-    const box = document.querySelector('.topic-tabs').getBoundingClientRect();
-    return [...document.querySelectorAll('.topic-tab')]
-      .filter(t => { const r = t.getBoundingClientRect(); return r.right > box.right + 1 || r.left < box.left - 1; })
-      .map(t => t.textContent);
-  });
-  assert.equal(clippedTabs.length, 0, `分類頁籤不應被裁掉，卻有：${clippedTabs.join('、')}`);
-  // 年級篩選要有中一至中六
-  const bankGradeOpts = await page.locator('#grade-filter option').allInnerTexts();
-  assert.deepEqual(bankGradeOpts, ['所有年級','中一','中二','中三','中四','中五','中六'], '年級篩選應為中一至中六');
-  // 選「圓」→ 子分類頁籤出現且可篩選
-  await page.locator('.topic-tab', {hasText:'圓'}).first().click();
-  await page.locator('.subtopic-tabs').waitFor({timeout:5000});
-  const subTabCount = await page.locator('.subtopic-tab').count();
-  assert.ok(subTabCount > 5, `「圓」的子分類頁籤應多於 5 個，實際 ${subTabCount}`);
-  await page.locator('.subtopic-tab').nth(1).click();
-  assert.match(await page.locator('.subtopic-tab.active').innerText(), /^圓的基本概念$/, '子分類應可選中');
-  await page.screenshot({path:path.join(__dirname,'..','MathPath-兩層分類.png'),fullPage:true});
-  // 右側知識點面板不應再寫死只顯示前 4 個分類
-  assert.match(await page.locator('.right-panel').nth(1).innerText(), /知識點練習表現/);
-  await page.locator('[data-topic="全部題目"]').click();
-  // 兩層知識分類：所有主分類頁籤都要完整顯示（換行，不得被裁掉），選主分類後出現子分類
-  const tabCount = await page.locator('.topic-tab').count();
-  assert.ok(tabCount >= 27, `主分類頁籤應至少 27 個，實際 ${tabCount}`);
-  const clipped = await page.evaluate(() => {
-    const box = document.querySelector('.topic-tabs').getBoundingClientRect();
-    return [...document.querySelectorAll('.topic-tab')]
-      .filter(t => { const r = t.getBoundingClientRect(); return r.right > box.right + 1 || r.left < box.left - 1; })
-      .map(t => t.textContent);
-  });
-  assert.equal(clipped.length, 0, `分類頁籤不應被裁掉，卻有：${clipped.join('、')}`);
+  // 兩層知識分類：改成下拉選單（主分類 → 子分類），不再是一整牆標籤
+  const mainOpts = await page.locator('#topic-filter option').allInnerTexts();
+  assert.ok(mainOpts.length >= 28, `主分類下拉至少要有 28 個選項，實際 ${mainOpts.length}`);
   // 年級篩選要有中一至中六
   const gradeOpts = await page.locator('#grade-filter option').allInnerTexts();
   assert.deepEqual(gradeOpts, ['所有年級','中一','中二','中三','中四','中五','中六'], '年級篩選應為中一至中六');
-  // 選「圓」→ 子分類頁籤出現且可篩選
-  await page.locator('.topic-tab', {hasText:'圓'}).first().click();
-  await page.locator('.subtopic-tabs').waitFor({timeout:5000});
-  const subCount = await page.locator('.subtopic-tab').count();
-  assert.ok(subCount > 5, `「圓」的子分類頁籤應多於 5 個，實際 ${subCount}`);
-  await page.locator('.subtopic-tab').nth(1).click();
-  assert.match(await page.locator('.subtopic-tab.active').innerText(), /^圓的基本概念$/, '子分類應可選中');
+  // 選「圓」→ 子分類下拉出現且可篩選
+  await page.locator('#topic-filter').selectOption('圓');
+  await page.locator('#subtopic-filter').waitFor({timeout:5000});
+  const subCount = await page.locator('#subtopic-filter option').count();
+  assert.ok(subCount > 5, `「圓」的子分類應多於 5 個，實際 ${subCount}`);
+  await page.locator('#subtopic-filter').selectOption({index:1});
+  assert.match(await page.locator('#subtopic-filter').inputValue(), /^圓的基本概念$/, '子分類應可選中');
   await page.screenshot({path:path.join(__dirname,'..','MathPath-兩層分類.png'),fullPage:true});
   // 右側知識點面板不應再寫死只顯示前 4 個分類
   assert.match(await page.locator('.right-panel').nth(1).innerText(), /知識點練習表現/);
-  await page.locator('[data-topic="全部題目"]').click();
+  await page.locator('#topic-filter').selectOption('全部題目');
+  // 兩層知識分類：改成下拉選單（主分類 → 子分類），不再是一整牆標籤
+  const mainOpts2 = await page.locator('#topic-filter option').allInnerTexts();
+  assert.ok(mainOpts2.length >= 28, `主分類下拉至少要有 28 個選項，實際 ${mainOpts2.length}`);
+  // 年級篩選要有中一至中六
+  const gradeOpts2 = await page.locator('#grade-filter option').allInnerTexts();
+  assert.deepEqual(gradeOpts2, ['所有年級','中一','中二','中三','中四','中五','中六'], '年級篩選應為中一至中六');
+  // 選「圓」→ 子分類下拉出現且可篩選
+  await page.locator('#topic-filter').selectOption('圓');
+  await page.locator('#subtopic-filter').waitFor({timeout:5000});
+  const subCount2 = await page.locator('#subtopic-filter option').count();
+  assert.ok(subCount2 > 5, `「圓」的子分類應多於 5 個，實際 ${subCount2}`);
+  await page.locator('#subtopic-filter').selectOption({index:1});
+  assert.match(await page.locator('#subtopic-filter').inputValue(), /^圓的基本概念$/, '子分類應可選中');
+  await page.screenshot({path:path.join(__dirname,'..','MathPath-兩層分類.png'),fullPage:true});
+  // 右側知識點面板不應再寫死只顯示前 4 個分類
+  assert.match(await page.locator('.right-panel').nth(1).innerText(), /知識點練習表現/);
+  await page.locator('#topic-filter').selectOption('全部題目');
 
   // 課外比賽題：獨立成一個主分類，子分類依比賽／來源區分（前端分類樹要跟後端一致）
-  await page.locator('.topic-tab', {hasText:'比賽題'}).first().click();
-  await page.locator('.subtopic-tabs').waitFor({timeout:5000});
-  assert.deepEqual(await page.locator('.subtopic-tab').allInnerTexts(),
+  await page.locator('#topic-filter').selectOption('比賽題');
+  await page.locator('#subtopic-filter').waitFor({timeout:5000});
+  assert.deepEqual(await page.locator('#subtopic-filter option').allInnerTexts(),
     ['全部子分類','金蓮花','校際','AIMO','思維','其他'],
     '比賽題的子分類應為金蓮花／校際／AIMO／思維／其他');
-  await page.locator('[data-topic="全部題目"]').click();
+  await page.locator('#topic-filter').selectOption('全部題目');
 
   // 全自動拆分並匯入：一次完成拆分、題型分類與入庫
   await gotoNav('import');
