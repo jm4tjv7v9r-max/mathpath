@@ -2579,7 +2579,7 @@ class LoginAuditTests(unittest.TestCase):
 
 
 class PaperGenerateTests(unittest.TestCase):
-    """一鍵生成試卷：AI 產出後要逐項核對（總分、題型、選項數、110 分附加題）。"""
+    """一鍵生成試卷：題庫優先、配分由程式核算到剛好、難度比例要對。"""
 
     def setUp(self):
         import io as _io
@@ -2609,32 +2609,118 @@ class PaperGenerateTests(unittest.TestCase):
     def call(self, method, path, body=None):
         return self.app.dispatch(method, path, body or {}, self.teacher, None, '127.0.0.1')[0]
 
+    def seed_bank(self, points=5, qtype='選擇題', level=2, marker='一元二次方程'):
+        """放一題進題庫；marker 會寫進題面，讓「範圍」一定對得上。"""
+        with self.app.db() as db:
+            return self.app.insert_question(db, {
+                'title': f'解二次方程（{marker}）', 'content': f'[{marker}] 解方程 $x^2-5x+6=0$。',
+                'topic': '一元二次方程', 'subtopic': '因式分解法', 'grade': '中三',
+                'level': level, 'points': points, 'qtype': qtype,
+                'options': ['$x=2$', '$x=3$', '$x=2$ 或 $x=3$', '$x=-2$'] if qtype == '選擇題' else [],
+                'answer': 'C', 'steps': ['分解為 $(x-2)(x-3)=0$。'], 'hint': '',
+                'analysis': '', 'rubric': [], 'source': '校本題庫', 'tags': ['因式分解']})
+
+    def payload(self, **over):
+        body = {'templateId': self.tpl['id'], 'ranges': ['一元二次方程'], 'duration': 60,
+                'grade': '初三', 'examKind': '大測', 'term': '第一段', 'subject': '數學',
+                'qtypes': [{'type': '選擇題', 'optionCount': 4}, {'type': '解答題'}],
+                'totalPoints': 100, 'source': 'ai', 'difficulty': {'易': 6, '中': 3, '難': 1}}
+        body.update(over)
+        return body
+
+    def sections_of(self, out):
+        return self.call('GET', f"/api/papers/{out['paper']['id']}")['paper']['sections']
+
     def test_generates_and_checks_110_marks(self):
         self.app.ai.call = lambda *a, **k: {'sections': [
             {'title': '一、選擇題', 'qtype': '選擇題', 'questions': [
-                {'stem': '題目一', 'options': ['A', 'B', 'C', 'D'], 'marks': 50, 'answer': 'A', 'steps': []},
-                {'stem': '題目二', 'options': ['A', 'B', 'C', 'D'], 'marks': 50, 'answer': 'B', 'steps': []}]},
-            {'title': '二、附加題', 'qtype': '附加題', 'questions': [
-                {'stem': '附加題', 'options': [], 'marks': 10, 'answer': 'x', 'steps': []}]}]}
-        out = self.call('POST', '/api/papers/generate', {
-            'templateId': self.tpl['id'], 'ranges': ['直線的傾斜角'], 'duration': 60,
-            'grade': '初三', 'examKind': '大測', 'term': '第一段', 'subject': '幾何',
-            'qtypes': [{'type': '選擇題', 'optionCount': 4}, {'type': '附加題'}],
-            'totalPoints': 110})
-        self.assertEqual(out['paper']['questionCount'], 3)
+                {'stem': f'選{i}', 'options': ['A', 'B', 'C', 'D'], 'marks': 4,
+                 'difficulty': '易', 'answer': 'A', 'steps': []} for i in range(10)]},
+            {'title': '二、解答題', 'qtype': '解答題', 'questions': [
+                {'stem': f'解{i}', 'options': [], 'marks': 12,
+                 'difficulty': '中', 'answer': 'x', 'steps': []} for i in range(5)]},
+            {'title': '三、附加題', 'qtype': '附加題', 'questions': [
+                {'stem': '附加題', 'options': [], 'marks': 10, 'difficulty': '難',
+                 'answer': 'x', 'steps': []}]}]}
+        out = self.call('POST', '/api/papers/generate', self.payload(
+            source='ai', totalPoints=110,
+            qtypes=[{'type': '選擇題', 'optionCount': 4}, {'type': '解答題'},
+                    {'type': '附加題'}]))
+        self.assertEqual(out['paper']['questionCount'], 16)
         self.assertEqual(out['paper']['grade'], '初三')
         self.assertTrue(out['docx'].startswith('data:' + server.DOCX_MIME))
         self.assertEqual(out['paper']['term'], '第一段')
+        self.assertEqual(out['spec']['extraMarks'], 10)
+        sections = self.sections_of(out)
+        self.assertEqual(sum(q['marks'] for s in sections for q in s['questions']), 110)
+        extra = [s for s in sections if '附加' in s['title']][0]
+        self.assertEqual(sum(q['marks'] for q in extra['questions']), 10)
 
-    def test_rejects_when_marks_do_not_match(self):
+    def test_ai_shortfall_is_reallocated_to_the_exact_total(self):
+        """AI 自己加總 88 分時，配分要重新分配到剛好 100 分（不是直接報錯）。"""
         self.app.ai.call = lambda *a, **k: {'sections': [
             {'title': '一、選擇題', 'qtype': '選擇題', 'questions': [
-                {'stem': '題目一', 'options': ['A', 'B'], 'marks': 50, 'answer': 'A', 'steps': []}]}]}
+                {'stem': f'題目{i}', 'options': ['A', 'B', 'C', 'D'], 'marks': 8,
+                 'difficulty': '易', 'answer': 'A', 'steps': []} for i in range(11)]}]}
+        out = self.call('POST', '/api/papers/generate', self.payload(
+            source='ai', qtypes=[{'type': '選擇題', 'optionCount': 4}]))
+        sections = self.sections_of(out)
+        self.assertEqual(sum(q['marks'] for s in sections for q in s['questions']), 100)
+        for sec in sections:
+            for q in sec['questions']:
+                self.assertGreaterEqual(q['marks'], 1, '不可以出現 0 分題')
+
+    def test_bank_first_takes_questions_from_the_bank(self):
+        for _ in range(4):
+            self.seed_bank(points=5, marker='測試專用範圍')
+        calls = []
+        self.app.ai.call = lambda *a, **k: calls.append(1) or {'sections': [
+            {'title': '二、解答題', 'qtype': '解答題', 'questions': [
+                {'stem': f'求根{i}', 'options': [], 'marks': 10, 'difficulty': '中',
+                 'answer': 'x=2,3', 'steps': []} for i in range(8)]}]}
+        out = self.call('POST', '/api/papers/generate',
+                        self.payload(source='bank', ranges=['測試專用範圍']))
+        self.assertEqual(out['sources']['bank'], 4, '題庫優先要先從題庫挑題')
+        self.assertGreaterEqual(out['sources']['ai'], 1, '題庫分數不夠時才由 AI 補')
+        self.assertTrue(calls, '題庫不足時仍要請 AI 補題')
+        total = sum(q['marks'] for s in self.sections_of(out) for q in s['questions'])
+        self.assertEqual(total, 100)
+
+    def test_bank_only_when_bank_covers_the_whole_paper(self):
+        """題庫分數剛好夠時，不應該再叫 AI。"""
+        for _ in range(20):
+            self.seed_bank(points=5, marker='測試專用範圍')
+        self.app.ai.call = lambda *a, **k: (_ for _ in ()).throw(AssertionError('不應該呼叫 AI'))
+        out = self.call('POST', '/api/papers/generate', self.payload(
+            source='bank', ranges=['測試專用範圍'],
+            qtypes=[{'type': '選擇題', 'optionCount': 4}], totalPoints=100))
+        self.assertEqual(out['sources']['ai'], 0)
+        self.assertEqual(out['sources']['bank'], 20)
+        total = sum(q['marks'] for s in self.sections_of(out) for q in s['questions'])
+        self.assertEqual(total, 100)
+
+    def test_difficulty_ratio_must_sum_to_ten(self):
         with self.assertRaises(server.APIError) as ctx:
-            self.call('POST', '/api/papers/generate', {
-                'templateId': self.tpl['id'], 'ranges': ['範圍'], 'duration': 60,
-                'grade': '初三', 'examKind': '大測', 'term': '第一段', 'subject': '數學',
-                'qtypes': [{'type': '選擇題', 'optionCount': 4}], 'totalPoints': 100})
+            self.call('POST', '/api/papers/generate', self.payload(
+                difficulty={'易': 6, '中': 3, '難': 2}))
+        self.assertEqual(ctx.exception.status, 400)
+        self.assertIn('等於 10', ctx.exception.message)
+
+    def test_110_marks_requires_the_extra_section(self):
+        with self.assertRaises(server.APIError) as ctx:
+            self.call('POST', '/api/papers/generate', self.payload(
+                totalPoints=110, qtypes=[{'type': '選擇題', 'optionCount': 4}]))
+        self.assertEqual(ctx.exception.status, 400)
+        self.assertIn('附加題', ctx.exception.message)
+
+    def test_rejects_when_question_count_is_far_off(self):
+        """只給一題 50 分、卻要 100 分：題數明顯不對，要退回重做而不是硬湊。"""
+        self.app.ai.call = lambda *a, **k: {'sections': [
+            {'title': '一、選擇題', 'qtype': '選擇題', 'questions': [
+                {'stem': '題目一', 'options': ['A', 'B'], 'marks': 50,
+                 'difficulty': '易', 'answer': 'A', 'steps': []}]}]}
+        with self.assertRaises(server.APIError) as ctx:
+            self.call('POST', '/api/papers/generate', self.payload(source='ai'))
         self.assertEqual(ctx.exception.status, 422)
         self.assertIn('不符合要求', ctx.exception.message)
 

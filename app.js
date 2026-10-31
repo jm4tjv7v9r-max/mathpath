@@ -4015,7 +4015,7 @@ async function generatePaperModal(){
   try{tpls=(await api('/api/paper-templates')).templates||[];}catch(e){return toast(e.message);}
   const rangeRow=(v='')=>`<div class="range-row"><input class="range-input" value="${esc(v)}" maxlength="120" placeholder="例如：直線的傾斜角與斜率"><button type="button" class="text-button range-del" aria-label="刪除這個範圍">✕</button></div>`;
   modal(`<p class="eyebrow">AI PAPER</p><h2>一鍵生成試卷</h2>
-    <p class="modal-intro">先上傳或選一個範本，再填測考範圍與配分。AI 出題後會逐項核對總分、題型與選項數，符合才排版存檔。</p>
+    <p class="modal-intro">先上傳或選一個範本，再填測考範圍、難度與配分。預設先從題庫挑題，分數不夠才由 AI 補；配分由程式核算，總分一定等於你填的分數。</p>
     <div class="form-field"><label class="field-label" for="gen-template">範本</label>
       <select id="gen-template">${tpls.map(t=>`<option value="${t.id}">${esc(t.name)}</option>`).join('')}</select>
       <button type="button" class="text-button" id="gen-upload" style="margin-top:6px">${icon('file')}上傳新範本（.docx）</button>
@@ -4037,7 +4037,20 @@ async function generatePaperModal(){
       <div id="gen-options-row" style="margin-top:9px">選擇題選項：
         <label class="checkbox-line" style="display:inline-flex;gap:4px;margin-right:12px"><input type="radio" name="gen-opt" value="4" checked>4 個</label>
         <label class="checkbox-line" style="display:inline-flex;gap:4px"><input type="radio" name="gen-opt" value="5">5 個</label></div></div>
-    <p class="field-hint">總分填 110 分時，附加題固定 10 分；AI 產出後會核對，不符會自動請它重做一次。</p>
+    <div class="form-field"><label class="field-label">題目來源</label>
+      <div style="display:flex;flex-wrap:wrap;gap:14px">
+        <label class="checkbox-line" style="display:inline-flex;gap:5px"><input type="radio" name="gen-source" value="bank" checked>題庫優先（不足才由 AI 補）</label>
+        <label class="checkbox-line" style="display:inline-flex;gap:5px"><input type="radio" name="gen-source" value="ai">全部由 AI 出題</label></div>
+      <p class="field-hint">「題庫優先」會先按範圍、題型、難度從題庫挑題，分數不夠才請 AI 補足；附加題一律由 AI 出。</p></div>
+    <div class="form-field"><label class="field-label">難度比例（易：中：難，合共 10）</label>
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <input id="gen-diff-easy" type="number" min="0" max="10" value="6" style="width:74px" aria-label="易的比例">
+        <span>：</span>
+        <input id="gen-diff-mid" type="number" min="0" max="10" value="3" style="width:74px" aria-label="中的比例">
+        <span>：</span>
+        <input id="gen-diff-hard" type="number" min="0" max="10" value="1" style="width:74px" aria-label="難的比例">
+        <span class="small-text" id="gen-diff-sum">合共 10</span></div></div>
+    <p class="field-hint">總分填 110 分時，附加題固定 10 分；配分會由程式重新核算，總分一定等於你填的分數。</p>
     <p class="error-text" id="gen-error"></p>
     <button class="primary wide" id="gen-submit">生成試卷 ${icon('spark')}</button>`,true);
   const ranges=$('#gen-ranges');
@@ -4070,6 +4083,22 @@ async function generatePaperModal(){
     $('#gen-options-row').style.display=on?'block':'none';
   };
   $$('.gen-qtype').forEach(x=>x.onchange=syncOptions);syncOptions();
+  // 難度比例：三格加起來必須是 10，邊打邊提示，不必等送出才發現。
+  const diffInputs=['#gen-diff-easy','#gen-diff-mid','#gen-diff-hard'].map(s=>$(s));
+  const diffSum=()=>diffInputs.reduce((n,i)=>n+(Number(i.value)||0),0);
+  const syncDiff=()=>{
+    const sum=diffSum();const el=$('#gen-diff-sum');
+    el.textContent=sum===10?'合共 10':`合共 ${sum}，不等於 10`;
+    el.style.color=sum===10?'':'#b8453b';
+  };
+  diffInputs.forEach(i=>i.oninput=syncDiff);syncDiff();
+  // 總分 110 分＝附加題固定 10 分，所以直接幫教師勾好，不用記規則。
+  const totalInput=$('#gen-total');
+  totalInput.oninput=()=>{
+    if(Number(totalInput.value)!==110)return;
+    const box=[...document.querySelectorAll('.gen-qtype')].find(x=>x.value==='附加題');
+    if(box&&!box.checked){box.checked=true;syncOptions();}
+  };
   $('#gen-submit').onclick=async()=>{
     const btn=$('#gen-submit');const err=$('#gen-error');err.textContent='';
     const tplId=Number($('#gen-template').value||0);
@@ -4078,9 +4107,19 @@ async function generatePaperModal(){
     if(!list.length){err.textContent='請至少填一個測考範圍。';return;}
     const qtypes=[...document.querySelectorAll('.gen-qtype')].filter(x=>x.checked).map(x=>({type:x.value}));
     if(!qtypes.length){err.textContent='請至少選一種題型。';return;}
+    const total=Number($('#gen-total').value)||100;
+    if(total===110&&!qtypes.some(t=>t.type==='附加題')){
+      err.textContent='總分 110 分時一定要有附加題（固定 10 分）。';return;}
     const opt=document.querySelector('input[name=gen-opt]:checked');
     qtypes.forEach(t=>{if(t.type==='選擇題')t.optionCount=Number(opt?opt.value:4);});
-    const old=btn.innerHTML;btn.disabled=true;btn.textContent='AI 出題中…（約 20–60 秒）';
+    const difficulty={易:Number($('#gen-diff-easy').value)||0,
+                      中:Number($('#gen-diff-mid').value)||0,
+                      難:Number($('#gen-diff-hard').value)||0};
+    if(difficulty.易+difficulty.中+difficulty.難!==10){
+      err.textContent=`難度比例（易：中：難）相加要等於 10，現在是 ${difficulty.易+difficulty.中+difficulty.難}。`;return;}
+    const source=(document.querySelector('input[name=gen-source]:checked')||{}).value||'bank';
+    const old=btn.innerHTML;btn.disabled=true;
+    btn.textContent=source==='bank'?'挑題中…（題庫不足才會請 AI）':'AI 出題中…（約 20–60 秒）';
     try{
       const res=await api('/api/papers/generate',{
         templateId:Number($('#gen-template').value),
@@ -4091,11 +4130,15 @@ async function generatePaperModal(){
         term:$('#gen-term').value,
         subject:$('#gen-subject').value,
         qtypes,
-        totalPoints:Number($('#gen-total').value)||100,
+        totalPoints:total,
+        difficulty, source,
         consentExternal:S.ai.mode==='external'});
       const a=document.createElement('a');a.href=res.docx;a.download=res.filename;a.click();
       closeModal();
-      toast(`已生成「${res.paper.title}」（${res.paper.questionCount} 題），已存進我的試卷`);
+      const used=res.sources||{bank:0,ai:0};
+      const parts=[used.bank?`題庫 ${used.bank} 題`:'',used.ai?`AI 新出 ${used.ai} 題`:''].filter(Boolean);
+      toast(`已生成「${res.paper.title}」（${res.paper.questionCount} 題${parts.length?'：'+parts.join('、'):''}），已存進我的試卷`);
+      if((res.warnings||[]).length)setTimeout(()=>toast(res.warnings[0]),2600);
       papersPage();
     }catch(e){err.textContent=e.message;btn.disabled=false;btn.innerHTML=old;}
   };
