@@ -137,6 +137,15 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
     return route.fulfill({json:data});
   });
   const login=async who=>{await page.locator('#homework-login').click();await page.locator(`[data-role=${who}]`).click();await page.locator('#password').fill('testing-password');await page.locator('#login-form button[type=submit]').click();try{await page.locator('.modal').waitFor({state:'hidden'});}catch(err){console.error('LOGIN FAILED',who,JSON.stringify(await page.locator('.modal').innerText()),errors);throw err;}};
+  // 側欄的「題庫與入題」「批閱」是折疊分組：先展開再點子項
+  const gotoNav=async id=>{
+    const group={bank:'bank',import:'bank',newq:'bank',mistakes:'review',paper:'review'}[id];
+    if(group){
+      const btn=page.locator(`[data-nav-toggle=${group}]`);
+      if(await btn.count() && (await btn.getAttribute('aria-expanded'))==='false')await btn.click();
+    }
+    await page.locator(`[data-page=${id}]`).first().click();
+  };
   await page.goto('https://mathpath.test');await page.locator('#homework-login').waitFor();
   await page.screenshot({path:path.join(__dirname,'..','MathPath-作业版预览.png'),fullPage:true});
 
@@ -538,7 +547,7 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   await page.evaluate(()=>navigate('calendar'));
   await page.waitForTimeout(300);
   // 題庫：顯示題型，並可依題型篩選
-  await page.locator('[data-page=bank]').first().click();
+  await gotoNav('bank');
   await page.locator('[data-topic="全部題目"]').click();
   await page.locator('.question-card').first().waitFor();
   assert.match(await page.locator('.question-card').first().innerText(),/選擇題/,'題目卡應顯示題型');
@@ -566,7 +575,7 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   assert.equal(await page.locator('#final-answer').inputValue(), 'C', '點選應帶入最終答案');
   await page.screenshot({path:path.join(__dirname,'..','MathPath-選擇題作答.png'),fullPage:true});
   await page.screenshot({path:path.join(__dirname,'..','MathPath-數學式子.png'),fullPage:true});
-  await page.locator('[data-page=bank]').first().click();
+  await gotoNav('bank');
   await page.locator('.question-card').first().waitFor();
 
   assert.equal(await page.locator('.question-figure').count(),0,'沒有圖形的題目不應渲染圖形區塊（避免破圖）');
@@ -634,7 +643,7 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   await page.locator('[data-topic="全部題目"]').click();
 
   // 全自動拆分並匯入：一次完成拆分、題型分類與入庫
-  await page.locator('[data-page=import]').first().click();
+  await gotoNav('import');
   await page.locator('#sample-paper').click();
   await page.locator('#auto-import-paper').click();
   await page.waitForTimeout(500);
@@ -643,7 +652,7 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   assert.equal(await page.locator('#question-list').count(),1,'匯入後應回到題庫');
 
   // 先拆分預覽：草稿應帶入題型並顯示題目分析
-  await page.locator('[data-page=import]').first().click();
+  await gotoNav('import');
   await page.locator('#sample-paper').click();
   await page.locator('#parse-paper').click();
   await page.locator('.draft-card').waitFor();
@@ -678,7 +687,7 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   await page.locator('#manual-title').waitFor();
 
   // 教師手動輸入題目並繪製圖形
-  await page.locator('[data-page=import]').first().click();
+  await gotoNav('import');
   await page.locator('#manual-title').fill('直角三角形求斜邊');
   await page.locator('#manual-content').fill('直角三角形兩條直角邊長為 3 cm 和 4 cm，求斜邊長。');
   await page.locator('#manual-topic').selectOption('幾何');
@@ -1214,7 +1223,7 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
 
   // 版面：內容較少的頁面不應在頁尾之前留下大片空白
   await page.setViewportSize({width:1440,height:1000});
-  await page.locator('[data-page=mistakes]').first().click();
+  await gotoNav('mistakes');
   await page.locator('.page-heading').first().waitFor();
   const footerGap = await page.evaluate(() => {
     const main = document.querySelector('#main');
@@ -1260,7 +1269,7 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
     topics:['一元二次方程']
   }}));
   await page.reload({waitUntil:'networkidle'});
-  await page.locator('[data-page=bank]').first().click();
+  await gotoNav('bank');
   await page.locator('.question-card').first().waitFor({timeout:8000});
   await page.locator('.question-card').first().locator('.practice-btn').click();
   await page.locator('#answer-area').waitFor({timeout:8000});
@@ -1577,9 +1586,19 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   assert.equal(await page.locator('#nav [data-page=ai]').count(),0,'教師側邊欄不該出現模型端點');
   assert.equal(await page.locator('#nav [data-page=import]').count(),1,'試卷拆題入庫要收在「題庫」下面');
   const teacherNav=await page.locator('#nav').innerText();
-  for(const t of ['作業成績','題庫','批閱','試卷修正排版','我的試卷']) assert.ok(teacherNav.includes(t),`側欄要有「${t}」`);
-  assert.equal(await page.locator('#nav .nav-group').count(),1,'「批閱」是分組標題');
-  assert.ok(await page.locator('#nav .nav-item.child').count()>=4,'子項要縮排顯示');
+  for(const t of ['作業成績','題庫與入題','批閱','試卷修正排版','我的試卷']) assert.ok(teacherNav.includes(t),`側欄要有「${t}」`);
+  assert.equal(await page.locator('#nav .nav-children:not([hidden])').count(),0,'分組預設收起');
+  await page.locator('[data-nav-toggle=bank]').click();
+  await page.locator('#nav-bank:not([hidden])').waitFor({timeout:4000});
+  assert.equal(await page.locator('#nav-bank .nav-item.child').count(),3,'「題庫與入題」展開三項');
+  await page.locator('[data-nav-toggle=bank]').click();
+  assert.equal(await page.locator('#nav-bank').isHidden(),true,'再按一次要收起');
+  await page.locator('[data-nav-toggle=review]').click();
+  await page.locator('#nav-review:not([hidden])').waitFor({timeout:4000});
+  assert.equal(await page.locator('#nav-review .nav-item.child').count(),2,'「批閱」展開兩項');
+  await page.locator('[data-nav-toggle=review]').click();
+  assert.equal(await page.locator('#nav-review').isHidden(),true,'批閱再按一次要收起');
+  console.log('PASS: 教師側欄五大類，題庫與入題／批閱按下才向下展開');
   const resultsFixture = aiGrading => route => route.fulfill({json:{
     assignment:{...assignment,aiGrading},
     students:[{...student,status:'submitted',submittedAt:stamp,answeredCount:1,pendingCount:1,score:null,scoredPoints:0,confirmedScore:null,confirmedCount:0}],
@@ -1800,7 +1819,7 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   await page.locator('#account').click();await page.locator('#logout-btn').click();await page.waitForSelector('#homework-login');
   await login('teacher');
   await page.reload({waitUntil:'networkidle'});
-  await page.locator('#nav [data-page=bank]').click();
+  await gotoNav('bank');
   const genBtn=page.locator('[data-aigen]').first();
   await genBtn.waitFor({timeout:8000});
   const importBefore=importedQuestions?importedQuestions.length:0;
@@ -2432,7 +2451,7 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   console.log('PASS: 圖形工作室移除圖形可正常送出');
 
   // 教師手動新增題目：不必先匯入整份試卷，圖形用工作室（AI 生成／手繪／上傳）
-  await page.locator('[data-page=newq]').first().click();
+  await gotoNav('newq');
   await page.locator('#newq-title').waitFor({timeout:8000});
   assert.equal(await page.locator('#newq-title').count(),1,'題庫要能進到「新增題目」表單');
   await page.locator('#newq-title').fill('圓的切線長度');
@@ -2479,7 +2498,7 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
     questions:[{...q,answer:undefined,steps:undefined,figure:FIG}],attempts:[],
     stats:{completed:0,accuracy:0,streak:0,minutes:0},ai,topics:['一元二次方程','幾何']}}));
   await page.reload({waitUntil:'networkidle'});
-  await page.locator('[data-page=bank]').first().click();
+  await gotoNav('bank');
   await page.locator('.question-card').first().waitFor({timeout:8000});
   await page.waitForFunction(()=>{const i=document.querySelector('.question-card .question-figure img');return !!(i&&i.complete&&i.naturalWidth>0);},{timeout:8000});
   const figBox=await page.evaluate(()=>{
@@ -2731,7 +2750,7 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   // 等「我的錯題本」真的畫出來（上一頁也有 .record，只等 .record 會抓到舊 DOM）。
   const waitRecords=()=>page.waitForFunction(()=>{const m=document.querySelector('#main');
     return m&&/我的錯題本/.test(m.textContent)&&m.querySelectorAll('.record').length>0;},{timeout:8000});
-  await page.locator('[data-page=mistakes]').first().click();
+  await gotoNav('mistakes');
   await waitRecords();
   assert.equal(await page.locator('#main .badge.new-review').count(),1,'教師批完且學生未看過要標「新批閱」');
   assert.match(await page.locator('#main .badge.new-review').first().innerText(),/新批閱/);
@@ -2740,13 +2759,13 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   assert.equal(await page.locator('#modal-root .badge.new-review').count(),1,'彈窗裡也要標示這是新批閱');
   await page.locator('[data-action=close-modal]').click();
   await page.reload({waitUntil:'networkidle'});
-  await page.locator('[data-page=mistakes]').first().click();
+  await gotoNav('mistakes');
   await waitRecords();
   assert.equal(await page.locator('#main .badge.new-review').count(),0,'看過之後不應再標新批閱');
   // 教師日後改了分數（reviewedAt 變了）→ 應該再標一次，學生才知道要重看。
   await page.route('**/api/state', studentStateWith([{...reviewedAttempt,score:6,confirmedScore:6,reviewedAt:'2026-10-19T03:00:00Z'}]));
   await page.reload({waitUntil:'networkidle'});
-  await page.locator('[data-page=mistakes]').first().click();
+  await gotoNav('mistakes');
   await waitRecords();
   assert.equal(await page.locator('#main .badge.new-review').count(),1,'教師改分後要再標一次');
   console.log('PASS: 「新批閱」標記（批閱後標出、看過消失、改分再標）');
@@ -2807,7 +2826,7 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
         correctCount:2,score:50,createdAt:'2026-10-17T09:00:00Z',questions:[]}]}});
   });
   await page.evaluate(()=>sessionStorage.removeItem('paperClass'));
-  await page.locator('[data-page=paper]').first().click();
+  await gotoNav('paper');
   await page.locator('#paper-history .paper-history-group').first().waitFor({timeout:8000});
   assert.equal(await page.locator('#paper-history .paper-history-group').count(),2,'同一份功課要合成一組');
   const firstGroup=page.locator('#paper-history .paper-history-group').first();
@@ -2968,7 +2987,7 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   console.log('PASS: 排版完成後可以下載 Word，保存表單自動帶出年份／級別／學段');
 
   // 題庫：每題顯示入庫時間，可以按入庫時間排序
-  await page.locator('[data-page=bank]').first().click();
+  await gotoNav('bank');
   await page.locator('#sort-filter').waitFor({timeout:8000});
   assert.match(await page.locator('#question-list').innerText(),/入庫 \d{4}-\d{2}-\d{2}/,
     '題庫卡片要顯示入庫時間');
@@ -3005,7 +3024,7 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   console.log('PASS: 題庫待核驗的題目有「核驗通過」按鈕，核驗後才能出作業');
 
   // 反向組卷：勾選題目 → 組成試卷（存進我的試卷並下載）
-  await page.locator('[data-page=bank]').first().click();
+  await gotoNav('bank');
   await page.locator('[data-pick]').first().waitFor({timeout:8000});
   assert.equal(await page.locator('#pick-bar').isHidden(),true,'沒勾題時不該出現工具列');
   await page.locator('[data-pick]').first().check();

@@ -833,24 +833,30 @@ function guidePage(role){
 }
 
 let navEscBound=false;
+let navOpen={};   // 側欄分組展開狀態（key → bool）；沒設定就跟著當前頁面
 function shell(){// 「新手上路」放最後——那是第一次來看的，不是每天要點的。
 // 日曆、排行榜、新手上路已移到頂欄快速連結，側欄只留其餘功能（按使用頻率排）。
-// 教師側欄只有五大類：作業成績／題庫／批閱／試卷修正排版／我的試卷。
-  // 試卷拆題入庫、新增題目收進「題庫」；作業批閱、紙本批閱收進「批閱」。
-  const navRow=(id,label,active,child)=>`<button class="nav-item${child?' child':''} ${active?'active':''}" data-page="${id}">${icon(id)}<span>${label}</span>${id==='bank'?`<span class="count">${S.user?S.questions.length:'示例'}</span>`:''}</button>`;
+// 教師側欄只有五大類；「題庫與入題」「批閱」是按下去才向下展開的分組。
+  // 展開狀態記在 navOpen：沒設定過就跟著當前頁面（在裡面就展開）。
+  const navRow=(id,label,active,child,iconId)=>`<button class="nav-item${child?' child':''} ${active?'active':''}" data-page="${id}">${icon(iconId||id)}<span>${label}</span>${id==='bank'?`<span class="count">${S.user?S.questions.length:'示例'}</span>`:''}</button>`;
   const TEACHER_NAV=[
-    ['homework','作業成績'],
-    ['bank','題庫',[['import','試卷拆題入庫'],['newq','新增題目']]],
-    [null,'批閱',[['mistakes','作業批閱'],['paper','紙本批閱']]],
-    ['layout','試卷修正排版'],
-    ['papers','我的試卷'],
+    {id:'homework',label:'作業成績'},
+    {key:'bank',label:'題庫與入題',iconId:'bank',
+     children:[['bank','題庫','list'],['import','試卷拆題入庫'],['newq','新增題目']]},
+    {key:'review',label:'批閱',iconId:'check',
+     children:[['mistakes','作業批閱'],['paper','紙本批閱']]},
+    {id:'layout',label:'試卷修正排版'},
+    {id:'papers',label:'我的試卷'},
   ];
   let navHtml='';
   if(S.user?.role==='teacher'){
-    navHtml=TEACHER_NAV.map(([id,label,children])=>{
-      const active=page===id||(children||[]).some(([c])=>c===page);
-      const head=id?navRow(id,label,active,false):`<div class="nav-group${active?' active':''}">${label}</div>`;
-      return head+(children||[]).map(([c,l])=>navRow(c,l,page===c,true)).join('');
+    navHtml=TEACHER_NAV.map(g=>{
+      if(!g.children)return navRow(g.id,g.label,page===g.id,false);
+      const inside=g.children.some(([c])=>c===page);
+      const open=g.key in navOpen?navOpen[g.key]:inside;
+      const head=`<button class="nav-item nav-parent" data-nav-toggle="${g.key}" aria-expanded="${open}" aria-controls="nav-${g.key}">${icon(g.iconId)}<span>${g.label}</span><span class="chev">${icon('chevron')}</span></button>`;
+      const kids=`<div class="nav-children" id="nav-${g.key}"${open?'':' hidden'}>${g.children.map(([c,l,ic])=>navRow(c,l,page===c,true,ic)).join('')}</div>`;
+      return head+kids;
     }).join('');
   }else{
     let nav=[['homework','我的作業'],['mock','模擬測驗'],['bank','數學題庫'],['practice','自主練習'],['mistakes','我的錯題本'],['growth','學習足跡']];
@@ -4554,7 +4560,7 @@ if(b.id==='open-math-editor'){openMathEditor();return;}
       .catch(err=>{b.disabled=false;toast(err.message);});
     return;
   }if(b.dataset.page)return navigate(b.dataset.page);if(b.dataset.assignment)return assignmentPage(Number(b.dataset.assignment));if(b.dataset.mock)return mockExamPage(Number(b.dataset.mock));if(b.dataset.mockQ)return openMockQuestion(Number(b.dataset.mockQ));if(b.dataset.results)return resultsPage(Number(b.dataset.results));if(b.dataset.skipQ)return skipQuestionFromList(b.dataset.skipQ);
-if(b.dataset.assignmentQ)return openAssignmentQuestion(Number(b.dataset.assignmentQ));if(b.dataset.nextQuestion)return openAssignmentQuestion(Number(b.dataset.nextQuestion));if(b.dataset.prevQuestion)return openAssignmentQuestion(Number(b.dataset.prevQuestion));if(b.dataset.qid)return openQuestion(b.dataset.qid);if(b.dataset.topic){topic=b.dataset.topic;subtopic='';currentPage=1;return bank();}if(b.dataset.subtopic){subtopic=b.dataset.subtopic;currentPage=1;return bank();}if(b.dataset.pagination){currentPage=Number(b.dataset.pagination);return renderList();}if(b.dataset.view){viewMode=b.dataset.view;return bank();}if(b.dataset.save){const id=Number(b.dataset.save);if(bookmarks.has(id))bookmarks.delete(id);else bookmarks.add(id);saveBookmarks();b.classList.toggle('saved',bookmarks.has(id));b.setAttribute('aria-pressed',String(bookmarks.has(id)));toast(bookmarks.has(id)?'已收藏題目（本瀏覽器）':'已取消收藏');if(page==='bank'&&topic==='我的收藏')renderList();return;}if(b.dataset.answerMode){if(busy)return toast('正在保存作答，請等待完成。');preserveDraft();answerMode=b.dataset.answerMode;$$('[data-answer-mode]').forEach(x=>x.classList.toggle('active',x===b));renderAnswerArea();return;}if(b.dataset.generate)return generateQuestion(b.dataset.generate,currentQuestion&&currentQuestion.id);if(b.dataset.editq)return editQuestionModal(b.dataset.editq);if(b.dataset.verify)return verifyQuestion(b.dataset.verify);if(b.dataset.aigen)return aiGenerateModal(b.dataset.aigen);if(b.dataset.aifig)return openFigureStudioForQuestion(b.dataset.aifig);if(b.dataset.aifigManual)return openFigureStudioForQuestion(b.dataset.aifigManual,true);if(b.dataset.aifigClear)return clearQuestionFigure(b.dataset.aifigClear);if(b.dataset.genKind)return generateQuestion(b.dataset.genKind,b.dataset.genQid);if(b.dataset.removeDraft){drafts.splice(Number(b.dataset.removeDraft),1);return renderImportContent();}if(b.dataset.history){historyFilter=b.dataset.history;historyFilterTouched=true;return recordsPage();}if(b.dataset.review)return reviewModal(b.dataset.review,null,null,(b.dataset.reviewQueue||'').split(',').map(Number).filter(n=>n),b.dataset.reviewView==='1');
+if(b.dataset.assignmentQ)return openAssignmentQuestion(Number(b.dataset.assignmentQ));if(b.dataset.nextQuestion)return openAssignmentQuestion(Number(b.dataset.nextQuestion));if(b.dataset.prevQuestion)return openAssignmentQuestion(Number(b.dataset.prevQuestion));if(b.dataset.qid)return openQuestion(b.dataset.qid);if(b.dataset.topic){topic=b.dataset.topic;subtopic='';currentPage=1;return bank();}if(b.dataset.subtopic){subtopic=b.dataset.subtopic;currentPage=1;return bank();}if(b.dataset.pagination){currentPage=Number(b.dataset.pagination);return renderList();}if(b.dataset.view){viewMode=b.dataset.view;return bank();}if(b.dataset.save){const id=Number(b.dataset.save);if(bookmarks.has(id))bookmarks.delete(id);else bookmarks.add(id);saveBookmarks();b.classList.toggle('saved',bookmarks.has(id));b.setAttribute('aria-pressed',String(bookmarks.has(id)));toast(bookmarks.has(id)?'已收藏題目（本瀏覽器）':'已取消收藏');if(page==='bank'&&topic==='我的收藏')renderList();return;}if(b.dataset.answerMode){if(busy)return toast('正在保存作答，請等待完成。');preserveDraft();answerMode=b.dataset.answerMode;$$('[data-answer-mode]').forEach(x=>x.classList.toggle('active',x===b));renderAnswerArea();return;}if(b.dataset.generate)return generateQuestion(b.dataset.generate,currentQuestion&&currentQuestion.id);if(b.dataset.navToggle){const k=b.dataset.navToggle;const cur=b.getAttribute('aria-expanded')==='true';navOpen[k]=!cur;shell();return;}if(b.dataset.editq)return editQuestionModal(b.dataset.editq);if(b.dataset.verify)return verifyQuestion(b.dataset.verify);if(b.dataset.aigen)return aiGenerateModal(b.dataset.aigen);if(b.dataset.aifig)return openFigureStudioForQuestion(b.dataset.aifig);if(b.dataset.aifigManual)return openFigureStudioForQuestion(b.dataset.aifigManual,true);if(b.dataset.aifigClear)return clearQuestionFigure(b.dataset.aifigClear);if(b.dataset.genKind)return generateQuestion(b.dataset.genKind,b.dataset.genQid);if(b.dataset.removeDraft){drafts.splice(Number(b.dataset.removeDraft),1);return renderImportContent();}if(b.dataset.history){historyFilter=b.dataset.history;historyFilterTouched=true;return recordsPage();}if(b.dataset.review)return reviewModal(b.dataset.review,null,null,(b.dataset.reviewQueue||'').split(',').map(Number).filter(n=>n),b.dataset.reviewView==='1');
 if(b.dataset.editUser)return editAccountModal(Number(b.dataset.editUser));switch(b.dataset.action){case'login':loginModal();break;case'close-modal':closeReviewAware();break;case'collection':topic='我的收藏';search='';currentPage=1;bank();break;case'start':requireLogin(()=>{const a=S.attempts.find(a=>a.status==='graded'&&a.score<a.maxScore);openQuestion(a?.questionId||S.questions[0]?.id||1);});break;case'hand-demo':openQuestion(1);break;}});
 $('#account').onclick=accountModal;$('#avatar').onclick=accountModal;$('#menu-btn').onclick=()=>$('#sidebar').classList.toggle('open');
   // 點側欄以外的任何地方（遮罩）或按 Esc 就收起；手機上側欄會蓋住 ☰，沒有這個就只能重整。
