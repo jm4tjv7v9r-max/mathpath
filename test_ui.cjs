@@ -2679,6 +2679,26 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   });
   assert.equal(emptyMistakes.hasCta,false,'沒有錯題時不該出現「開始練習」按鈕');
   console.log('PASS: 錯題本沒有錯題時不引導開始練習');
+  // 數學比賽：預設地區優先（澳門→中國→外國），可搜尋、可改排序與地區
+  await page.route('**/api/contests', route=>route.fulfill({json:{
+    contests:[
+      {id:1,title:'東京數學賽',organizer:'日本主辦',region:'外國',audience:'中學生',deadline:'2027-01-10',eventDate:null,url:'',summary:'外國賽',source:'測試'},
+      {id:2,title:'澳門奧數',organizer:'澳門數學奧林匹克學會',region:'澳門',audience:'中學生',deadline:'2026-12-01',eventDate:null,url:'https://example.com',summary:'本地賽',source:'測試'},
+      {id:3,title:'華杯賽',organizer:'中國組委會',region:'中國',audience:'初中',deadline:null,eventDate:null,url:'',summary:'內地賽',source:'測試'}],
+    updatedAt:'2026-10-31T00:00:00Z'}}));
+  await page.locator('[data-page=contests]').first().click();
+  await page.locator('#contest-list .record').first().waitFor({timeout:8000});
+  assert.deepEqual(await page.locator('.record-body strong').allInnerTexts(),
+    ['澳門奧數','華杯賽','東京數學賽'],'預設排序要澳門→中國→外國');
+  await page.locator('#contest-search').fill('東京');
+  assert.equal(await page.locator('#contest-list .record').count(),1,'搜尋要生效');
+  await page.locator('#contest-search').fill('');
+  await page.locator('#contest-sort').selectOption('date');
+  assert.equal(await page.locator('.record-body strong').first().innerText(),'澳門奧數','改按截止日期排序');
+  await page.locator('#contest-region').selectOption('外國');
+  assert.equal(await page.locator('#contest-list .record').count(),1,'地區篩選要生效');
+  await page.locator('#contest-region').selectOption('');
+  console.log('PASS: 數學比賽頁（預設澳門→中國→外國、可搜尋、可改排序與地區）');
 
   // 日曆：同一份作業的「發布」與「截止」是兩筆事件，
   // 不該被數成兩份作業、也不該看起來像同一份作業重複列在好幾天。

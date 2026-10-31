@@ -2533,6 +2533,64 @@ class AIFailureTests(unittest.TestCase):
             self.assertEqual(server.public_origins_from_env(), ['https://mathpath-s5hr.onrender.com'])
 
 
+class ContestTests(unittest.TestCase):
+    """數學比賽清單：內建整理資料 + 每週排程寫入（要權杖）。"""
+
+    def setUp(self):
+        import os
+        self.tmp = tempfile.TemporaryDirectory()
+        self.app = server.Application(self.tmp.name, server.ROOT)
+        self.app.initialize()
+        with self.app.db() as db:
+            self.teacher = dict(db.execute("SELECT * FROM users WHERE role='teacher' LIMIT 1").fetchone())
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def call(self, method, path, body=None, user=None):
+        return self.app.dispatch(method, path, body or {}, self.teacher if user is None else user,
+                                 None, '127.0.0.1')[0]
+
+    def test_seeded_contests_have_three_regions(self):
+        data = self.call('GET', '/api/contests')
+        self.assertTrue(data['contests'], '第一次啟動要匯入內建清單')
+        regions = {c['region'] for c in data['contests']}
+        self.assertTrue(regions <= {'澳門', '中國', '外國'}, regions)
+        self.assertIn('澳門', regions, '澳門的比賽一定要有')
+        self.assertTrue(all(c['title'] for c in data['contests']))
+
+    def test_ingest_requires_token(self):
+        import os
+        os.environ.pop('MATH_INGEST_TOKEN', None)
+        with self.assertRaises(server.APIError) as ctx:
+            self.call('POST', '/api/contests/ingest', {'items': [{'title': 'x'}]})
+        self.assertEqual(ctx.exception.status, 403)
+
+        os.environ['MATH_INGEST_TOKEN'] = 'secret-token'
+        try:
+            with self.assertRaises(server.APIError) as ctx:
+                self.call('POST', '/api/contests/ingest', {'token': 'wrong', 'items': [{'title': 'x'}]})
+            self.assertEqual(ctx.exception.status, 403)
+            out = self.call('POST', '/api/contests/ingest', {
+                'token': 'secret-token',
+                'items': [{'title': '新比賽 2027', 'region': 'Macau', 'organizer': '測試主辦',
+                           'summary': '說明', 'deadline': '2027-03-01'}]})
+            self.assertEqual(out['saved'], 1)
+            titles = [c['title'] for c in self.call('GET', '/api/contests')['contests']]
+            self.assertIn('新比賽 2027', titles)
+            # 同一筆再寫一次不會重複（title+url 唯一）
+            self.call('POST', '/api/contests/ingest', {
+                'token': 'secret-token',
+                'items': [{'title': '新比賽 2027', 'region': '澳門'}]})
+            titles = [c['title'] for c in self.call('GET', '/api/contests')['contests']]
+            self.assertEqual(titles.count('新比賽 2027'), 1)
+            stored = next(c for c in self.call('GET', '/api/contests')['contests']
+                          if c['title'] == '新比賽 2027')
+            self.assertEqual(stored['region'], '澳門', 'Macau 要收斂成澳門')
+        finally:
+            os.environ.pop('MATH_INGEST_TOKEN', None)
+
+
 class HostAllowlistTests(unittest.TestCase):
     """對外部署的 Host 白名單：自訂網域與平台的 onrender.com 網址必須同時放行。"""
 

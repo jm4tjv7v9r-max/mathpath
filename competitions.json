@@ -1,0 +1,102 @@
+[
+  {
+    "title": "環亞太杯國際數學邀請賽（澳門區）",
+    "organizer": "「環亞太杯」國際數學組委會 · 澳門數學奧林匹克學會協辦",
+    "region": "澳門",
+    "audience": "中小學生（分年級組）",
+    "deadline": null,
+    "eventDate": null,
+    "url": "https://www.hkgea.org/",
+    "summary": "每年分初賽與進階選拔賽，澳門學生可經澳門數學奧林匹克學會報名；報名期通常在賽前 2–3 個月。"
+  },
+  {
+    "title": "亞洲國際數學奧林匹克公開賽（AIMO）",
+    "organizer": "澳門學勤進修教育中心等",
+    "region": "澳門",
+    "audience": "中小學生",
+    "deadline": null,
+    "eventDate": null,
+    "url": "",
+    "summary": "由港澳數學奧林匹克公開賽發展而成，每年舉辦，澳門設賽區；總決賽採巡迴制。"
+  },
+  {
+    "title": "數學大王國際邀請賽（澳門賽區）",
+    "organizer": "「數學大王」國際組委會 · 澳門數學奧林匹克學會協辦",
+    "region": "澳門",
+    "audience": "小學至初中",
+    "deadline": null,
+    "eventDate": null,
+    "url": "",
+    "summary": "澳門由數學奧林匹克學會協辦，報名多經學校或賽區平台統一處理。"
+  },
+  {
+    "title": "全澳青少年數學競賽",
+    "organizer": "澳門數學奧林匹克學會",
+    "region": "澳門",
+    "audience": "本澳中、小學生",
+    "deadline": null,
+    "eventDate": null,
+    "url": "",
+    "summary": "澳門本地歷史較久的奧數賽事，通常由學校推薦或統一報名，詳情以學會公告為準。"
+  },
+  {
+    "title": "港澳數學奧林匹克公開賽（HKMO）",
+    "organizer": "香港數學奧林匹克協會 · 澳門區協辦單位",
+    "region": "澳門",
+    "audience": "中小學生",
+    "deadline": null,
+    "eventDate": null,
+    "url": "",
+    "summary": "港澳兩地同時舉行，澳門學生可經澳門區協辦單位報名。"
+  },
+  {
+    "title": "華羅庚金杯少年數學邀請賽（澳門賽區）",
+    "organizer": "華羅庚金杯少年數學邀請賽組委會",
+    "region": "中國",
+    "audience": "小學高年級至初中",
+    "deadline": null,
+    "eventDate": null,
+    "url": "",
+    "summary": "內地具代表性的少年數學賽事，澳門學生可透過賽區承辦單位報名。"
+  },
+  {
+    "title": "希望杯全國數學邀請賽",
+    "organizer": "中國科學院數學與系統科學研究院等",
+    "region": "中國",
+    "audience": "中小學生",
+    "deadline": null,
+    "eventDate": null,
+    "url": "",
+    "summary": "內地傳統數學邀請賽，設有港澳賽區，報名時間以官方公佈為準。"
+  },
+  {
+    "title": "Australian Mathematics Competition（澳洲 AMC）",
+    "organizer": "Australian Maths Trust",
+    "region": "外國",
+    "audience": "中一至中六（按年級分卷）",
+    "deadline": null,
+    "eventDate": null,
+    "url": "https://www.amt.edu.au/",
+    "summary": "每年 8 月舉行，澳門學校可註冊為考點；試題為英文，重視應用與解難。"
+  },
+  {
+    "title": "AMC 8 / 10 / 12（美國數學競賽）",
+    "organizer": "Mathematical Association of America",
+    "region": "外國",
+    "audience": "中一至中六（按卷別）",
+    "deadline": null,
+    "eventDate": null,
+    "url": "https://maa.org/student-programs/amc/",
+    "summary": "每年 11 月（AMC 10/12）與 1 月（AMC 8）舉行，需由學校或授權考點報名。"
+  },
+  {
+    "title": "世界數學邀請賽（WMI）",
+    "organizer": "World Mathematics Invitational 組委會",
+    "region": "外國",
+    "audience": "中小學生",
+    "deadline": null,
+    "eventDate": null,
+    "url": "",
+    "summary": "分區賽與總決賽兩階段，澳門學生可經區內承辦機構報名。"
+  }
+]

@@ -2363,6 +2363,27 @@ def paper_term(value) -> str:
     return f'第{found.group(1)}段' if found else raw
 
 
+CONTEST_REGIONS = ('澳門', '中國', '外國')
+
+
+def contest_region(value) -> str:
+    """比賽地區只收斂成三類：澳門／中國／外國（外國包含港澳以外的一切）。"""
+    raw = str(value or '').strip()
+    if '澳' in raw or 'Macau' in raw or 'Macao' in raw:
+        return '澳門'
+    if '中' in raw or '國' in raw or '国' in raw or 'China' in raw:
+        return '中國'
+    return '外國'
+
+
+def contest_public(row) -> dict:
+    return {'id': row['id'], 'title': row['title'], 'organizer': row['organizer'],
+            'region': row['region'], 'audience': row['audience'],
+            'deadline': row['deadline'], 'eventDate': row['event_date'],
+            'url': row['url'], 'summary': row['summary'], 'source': row['source'],
+            'foundAt': row['found_at']}
+
+
 def paper_title_of(stem: str, limit: int = 60) -> str:
     """用題幹開頭當標題；若剛好切在 $...$ 中間，補一個 $ 收尾，
     否則題庫把標題當「文字 + 公式」渲染時會壞掉。"""
@@ -4250,6 +4271,19 @@ class Application:
                     data BLOB NOT NULL,
                     spec TEXT NOT NULL DEFAULT '{}',
                     created_at TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS competitions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    title TEXT NOT NULL,
+                    organizer TEXT NOT NULL DEFAULT '',
+                    region TEXT NOT NULL DEFAULT '澳門',
+                    audience TEXT NOT NULL DEFAULT '',
+                    deadline TEXT,
+                    event_date TEXT,
+                    url TEXT NOT NULL DEFAULT '',
+                    summary TEXT NOT NULL DEFAULT '',
+                    source TEXT NOT NULL DEFAULT '',
+                    found_at TEXT NOT NULL,
+                    UNIQUE(title, url));
                 CREATE TABLE IF NOT EXISTS paper_questions (
                     paper_id INTEGER NOT NULL REFERENCES papers(id),
                     question_id INTEGER NOT NULL REFERENCES questions(id),
@@ -4351,6 +4385,24 @@ class Application:
             # 放在 BEGIN 之後：INSERT 會開隱式交易，提前跑會讓這裡的 BEGIN 失敗。
             db.execute('INSERT OR IGNORE INTO paper_questions(paper_id, question_id) '
                        'SELECT paper_id, id FROM questions WHERE paper_id IS NOT NULL')
+            # 數學比賽：第一次啟動時把 repo 裡的 competitions.json 匯入（之後由每週排程更新）
+            if not db.execute('SELECT 1 FROM competitions LIMIT 1').fetchone():
+                seed_file = ROOT / 'competitions.json'
+                if seed_file.exists():
+                    try:
+                        for item in json.loads(seed_file.read_text(encoding='utf-8'))[:200]:
+                            if isinstance(item, dict) and item.get('title'):
+                                db.execute(
+                                    'INSERT OR IGNORE INTO competitions(title,organizer,region,audience,'
+                                    'deadline,event_date,url,summary,source,found_at) '
+                                    'VALUES(?,?,?,?,?,?,?,?,?,?)',
+                                    (str(item['title'])[:200], str(item.get('organizer') or '')[:120],
+                                     contest_region(item.get('region')), str(item.get('audience') or '')[:120],
+                                     item.get('deadline') or None, item.get('eventDate') or None,
+                                     str(item.get('url') or '')[:400], str(item.get('summary') or '')[:600],
+                                     '內建整理', utc_now()))
+                    except (ValueError, OSError) as exc:
+                        ai_log(f'匯入內建比賽清單失敗：{exc}')
             # 兩個子分類標籤由簡體改成繁體：舊題目存的是舊字串，
             # 不一起改的話，老師一編輯那題就會被「子分類不屬於主分類」擋下來。
             for old_label, new_label in (('解一元一次方程（移项）', '解一元一次方程（移項）'),
@@ -6100,6 +6152,48 @@ class Application:
                 fail(400, 'economy 必須是布林值。')
             self.set_economy(body['economy'])
             return {'active': self.ai.public(), 'economy': not self.ai.thinking}, headers
+        if method == 'GET' and path == '/api/contests':
+            # 數學比賽清單：公開資料（不含個人資料），訪客也看得到。
+            with self.db() as db:
+                rows = db.execute('SELECT * FROM competitions ORDER BY id DESC').fetchall()
+            updated = max((r['found_at'] for r in rows), default=None)
+            return {'contests': [contest_public(r) for r in rows],
+                    'updatedAt': updated}, headers
+
+        if method == 'POST' and path == '/api/contests/ingest':
+            # 每週排程（自動搜尋）用這個寫入；要 MATH_INGEST_TOKEN，未設定就整支關閉。
+            expected = os.environ.get('MATH_INGEST_TOKEN', '').strip()
+            if not expected:
+                fail(403, '未設定 MATH_INGEST_TOKEN，暫不接受外部寫入。')
+            if not hmac.compare_digest(str(body.get('token') or ''), expected):
+                fail(403, '寫入權杖不正確。')
+            items = body.get('items')
+            if not isinstance(items, list) or not 1 <= len(items) <= 50:
+                fail(400, '一次最多寫入 50 筆比賽。')
+            saved = 0
+            with self.db() as db:
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    title = text(item.get('title') or '', '比賽名稱', 200)
+                    url = text(item.get('url') or '', '連結', 400, empty=True)
+                    db.execute(
+                        'INSERT INTO competitions(title,organizer,region,audience,deadline,event_date,'
+                        'url,summary,source,found_at) VALUES(?,?,?,?,?,?,?,?,?,?) '
+                        'ON CONFLICT(title,url) DO UPDATE SET organizer=excluded.organizer,'
+                        'region=excluded.region,audience=excluded.audience,deadline=excluded.deadline,'
+                        'event_date=excluded.event_date,summary=excluded.summary,'
+                        'source=excluded.source,found_at=excluded.found_at',
+                        (title, text(item.get('organizer') or '', '主辦', 120, empty=True),
+                         contest_region(item.get('region')),
+                         text(item.get('audience') or '', '參賽對象', 120, empty=True),
+                         item.get('deadline') or None, item.get('eventDate') or None, url,
+                         text(item.get('summary') or '', '說明', 600, empty=True),
+                         text(item.get('source') or '每週自動搜尋', '來源', 200, empty=True),
+                         utc_now()))
+                    saved += 1
+            return {'saved': saved}, headers
+
         if method == 'GET' and path == '/api/state':
             with self.db() as db:
                 # 題庫題目先抓好，同時當作作答題目的快取——自主練習的作答指的就是

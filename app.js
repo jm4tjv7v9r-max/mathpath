@@ -893,7 +893,7 @@ function shell(){// 「新手上路」放最後——那是第一次來看的，
     if(S.user?.role!=='student')nav=nav.filter(([id])=>id!=='mock');
     navHtml=nav.map(([id,label])=>navRow(id,label,page===id,false)).join('');
   }
-  $('#nav').innerHTML=navHtml;$('#settings-nav').innerHTML=icon('settings')+'<span>設定與隱私</span>';$('#settings-nav').classList.toggle('active',page==='settings');$('#font-scale').innerHTML=fontScaleControl();$('#theme-switch').innerHTML=themeControl();$('#account').innerHTML=`<span class="avatar">${S.user?(S.user.role==='teacher'?'師':'學'):'M'}</span><span class="account-info">${S.user?esc(S.user.name):'訪客預覽'}<small>${S.user?(S.user.role==='teacher'?'教師工作空間':'中三數學學習者'):'登入後開始學習'}</small></span>${icon(S.user?'chevron':'logout')}`;$('#avatar').textContent=S.user?(S.user.role==='teacher'?'師':'學'):'M';const labels={guide:'新手上路',homework:S.user?.role==='teacher'?'作業成績':'我的作業',calendar:'日曆',board:'排行榜',mock:'模擬測驗',ai:'模型端點',bank:'數學題庫',practice:'自主練習',import:'試卷拆題入庫',mistakes:S.user?.role==='teacher'?'作業批閱':'我的錯題本',paper:'紙本批閱',layout:'試卷修正排版',papers:'我的試卷',growth:'學習足跡',newq:'新增題目',settings:'設定與隱私'};$('#crumb').textContent=labels[page] || '數學題庫';renderCalculator();}
+  $('#nav').innerHTML=navHtml;$('#settings-nav').innerHTML=icon('settings')+'<span>設定與隱私</span>';$('#settings-nav').classList.toggle('active',page==='settings');$('#font-scale').innerHTML=fontScaleControl();$('#theme-switch').innerHTML=themeControl();$('#account').innerHTML=`<span class="avatar">${S.user?(S.user.role==='teacher'?'師':'學'):'M'}</span><span class="account-info">${S.user?esc(S.user.name):'訪客預覽'}<small>${S.user?(S.user.role==='teacher'?'教師工作空間':'中三數學學習者'):'登入後開始學習'}</small></span>${icon(S.user?'chevron':'logout')}`;$('#avatar').textContent=S.user?(S.user.role==='teacher'?'師':'學'):'M';const labels={contests:'數學比賽',guide:'新手上路',homework:S.user?.role==='teacher'?'作業成績':'我的作業',calendar:'日曆',board:'排行榜',mock:'模擬測驗',ai:'模型端點',bank:'數學題庫',practice:'自主練習',import:'試卷拆題入庫',mistakes:S.user?.role==='teacher'?'作業批閱':'我的錯題本',paper:'紙本批閱',layout:'試卷修正排版',papers:'我的試卷',growth:'學習足跡',newq:'新增題目',settings:'設定與隱私'};$('#crumb').textContent=labels[page] || '數學題庫';renderCalculator();}
 
 let calCursor=null,calSelected=null;
 const calPad=n=>String(n).padStart(2,'0');
@@ -4539,7 +4539,7 @@ $('#bulk-class-toggle').onchange=e=>{$('#bulk-class-field').hidden=!e.target.che
 $('#bulk-submit').onclick=async()=>{const {rows,errors}=bulkPreview();if(errors.length)return toast('請先修正名單格式錯誤。');if(!rows.length)return toast('請輸入至少一位學生。');if(rows.length>200)return toast('每批最多200位學生。');const makeClass=$('#bulk-class-toggle').checked,className=$('#bulk-class-name').value.trim();if(makeClass&&!className)return toast('請填寫班級名稱，或取消建立班級。');const b=$('#bulk-submit');b.disabled=true;b.textContent='正在建立…';try{const {users:created}=await api('/api/users/bulk',{students:rows.map(r=>({username:r.username,name:r.name,seat:r.seat,password:r.password}))});let classNote='';if(makeClass){try{const {class:room}=await api('/api/classes',{name:className,studentIds:created.map(u=>u.id)});classNote=`<div class="hint-box" style="margin-top:12px">已同時建立班級「${esc(room.name)}」，共 ${room.studentCount} 位學生，可直接佈置作業。</div>`;}catch(err){classNote=`<div class="inline-error" style="margin-top:12px">帳戶已建立，但班級未建立：${esc(err.message)}可在「作業與成績」重新建立班級。</div>`;}}const merged=rows.map((r,i)=>({username:r.username,password:r.password,name:(created[i]&&created[i].name)||r.name||r.username,seat:(created[i]&&created[i].seat)||r.seat||''}));const hasName=merged.some(r=>r.name!==r.username),hasSeat=merged.some(r=>r.seat);const cols=[['學號',r=>r.username]].concat(hasName?[['姓名',r=>r.name]]:[],hasSeat?[['班內號',r=>r.seat]]:[],[['密碼',r=>r.password]]);const text=[cols.map(c=>c[0]).join('\t'),...merged.map(r=>cols.map(c=>c[1](r)).join('\t'))].join('\n');$('#bulk-result').innerHTML=`<div class="import-warning">已建立 ${created.length} 個帳戶${merged.some(r=>r.name===r.username)?`（${merged.filter(r=>r.name===r.username).length} 個未填姓名，以學號顯示）`:""}。密碼只會顯示這一次，請立即複製並私下發給學生。</div>${classNote}<pre class="code-block">${esc(text)}</pre><button class="secondary wide" id="bulk-copy" style="margin-top:10px">${icon('file')}複製帳號密碼</button>`;$('#bulk-copy').onclick=async()=>{try{await navigator.clipboard.writeText(text);toast('已複製，請妥善保管。');}catch{toast('無法自動複製，請手動選取。');}};$('#bulk-students').value='';$('#bulk-class-toggle').checked=false;$('#bulk-class-field').hidden=true;$('#bulk-class-name').value='';bulkPreview();toast(`已建立 ${created.length} 個學生帳戶。`);}catch(err){$('#bulk-error').textContent=err.message;}finally{b.disabled=false;b.innerHTML=icon('upload')+'批次建立學生帳戶';}};}catch(e){toast(e.message);}}
 function deploymentHelp(){modal(`<p class="eyebrow">SERVER SETUP</p><h2>啟動與部署說明</h2><p class="modal-intro">資料保存在網站伺服器；實際位置由管理員確認。以下是可選部署方式，不代表目前網站的部署狀態。</p><h3>本機預覽</h3><p class="info-note">雙擊 start.command，或用 Python 3 啟動：</p><pre class="code-block">python3 server.py --host 127.0.0.1 --port 8765</pre><p class="info-note">瀏覽器開啟 http://127.0.0.1:8765。</p><h3>校內連線</h3><p class="info-note">由資訊人員將 --host 設為伺服器的校內 IP，並限制防火牆只允許校內來源；正式使用需反向代理 HTTPS。不要把演示帳戶直接用於全校。</p><h3>目前帳戶範圍</h3><p class="info-note">初始演示配置包含學生與教師帳戶；實際帳戶由管理員確認。教師可在「設定與隱私」建立獨立學生帳戶，避免共用作答紀錄。可在「作業與成績」建立班級並發布作業；校內單一登入及批量帳戶管理仍可再擴充。</p><div class="import-warning">資料保存在網站伺服器；實際位置由管理員確認。預設資料庫路徑為 data/mathpath.sqlite3；備份及保存年限應按學校規定安排。AI 必須另行配置，未配置時手写作答由教師批閱。</div>`);}
 function navigate(target){if(busy)return toast('目前操作正在進行，請等待完成。');preserveDraft();if(page==='practice'&&strokes.length&&target!=='practice'&&!lastResult&&!confirm('尚未提交的手寫內容未保存。確定離開？'))return;beginView();$('#sidebar').classList.remove('open');if(target!=='practice'){assignmentContext=null;mockContext=null;stopQuizClock();}page=target;switch(target){case'guide':guidePage();break;
-case'homework':homeworkPage();break;case'calendar':calendarPage();break;case'board':leaderboardPage();break;case'mock':mockPage();break;case'ai':aiConfigPage();break;case'bank':bank();break;case'practice':practice();break;case'import':importPage();break;case'newq':newQuestionPage();break;case'mistakes':recordsPage();break;case'paper':paperGradePage();break;case'layout':paperLayoutPage();break;case'papers':papersPage();break;case'growth':growthPage();break;case'settings':settingsPage();break;default:bank();}window.scrollTo({top:0,behavior:'instant'});}
+case'homework':homeworkPage();break;case'calendar':calendarPage();break;case'board':leaderboardPage();break;case'mock':mockPage();break;case'contests':contestsPage();break;case'ai':aiConfigPage();break;case'bank':bank();break;case'practice':practice();break;case'import':importPage();break;case'newq':newQuestionPage();break;case'mistakes':recordsPage();break;case'paper':paperGradePage();break;case'layout':paperLayoutPage();break;case'papers':papersPage();break;case'growth':growthPage();break;case'settings':settingsPage();break;default:bank();}window.scrollTo({top:0,behavior:'instant'});}
 document.addEventListener('click',e=>{const b=e.target.closest('button');if(!b||b.disabled)return;if(b.dataset.fontScale){applyFontScale(b.dataset.fontScale);shell();toast(`字體已設為「${FONT_SCALES.find(([id])=>id===b.dataset.fontScale)[1]}」，只影響這台裝置。`);return;}
 if(b.dataset.themeId){applyTheme(b.dataset.themeId);shell();toast(`版面已設為「${THEMES.find(([id])=>id===b.dataset.themeId)[1]}」，只影響這台裝置。`);return;}
 if(b.id==='open-math-editor'){openMathEditor();return;}
@@ -4654,6 +4654,69 @@ function exportResultsCsv(){if(!resultData)return;const a=resultData.assignment,
 function weakTopic(){const graded=S.attempts.filter(a=>a.status==='graded'&&a.score!==null&&a.maxScore>0);if(!graded.length)return null;const by={};graded.forEach(a=>{const t=by[a.topic]||(by[a.topic]={score:0,max:0,n:0});t.score+=a.score;t.max+=a.maxScore;t.n++;});return Object.entries(by).map(([topic,v])=>({topic,percent:Math.round(v.score*100/v.max),n:v.n})).sort((a,b)=>a.percent-b.percent||b.n-a.n)[0];}
 function weakTopicPanel(){const wt=weakTopic();return `<section class="panel right-panel"><h2>${icon('target')}最需要鞏固</h2>${wt?`<p class="field-hint">依已批閱作答計算，不代表完整能力診斷。</p><div class="knowledge-row"><span>${esc(wt.topic)}</span><span>${wt.percent}%</span></div><div class="progress-track"><div class="progress-fill gold" style="width:${wt.percent}%"></div></div><p class="field-hint">已批閱 ${wt.n} 次。先重做錯題，再做同知識點的相似題，最後挑戰進階題。</p><button class="secondary wide" data-topic="${esc(wt.topic)}">開始針對練習 ${icon('arrow')}</button>`:`<p class="field-hint">還沒有已批閱的作答。完成作業或練習後，這裡會指出最需要鞏固的知識點。</p>`}</section>`;}
 function homeworkMetrics(items){return `<div class="metric-row">${items.map(([label,value,foot])=>`<div class="metric"><div class="metric-label">${label}</div><div class="metric-value">${value}</div><div class="metric-foot">${foot}</div></div>`).join('')}</div>`;}
+// 數學比賽：每週二早上由排程自動搜尋，這裡只負責顯示；預設排序是澳門 → 中國 → 外國。
+let contestData=null, contestQuery='', contestRegion='', contestSort='region';
+const CONTEST_REGION_ORDER={'澳門':0,'中國':1,'外國':2};
+function contestSorted(){
+  const list=(contestData?.contests||[]).filter(c=>{
+    if(contestRegion&&c.region!==contestRegion)return false;
+    if(!contestQuery)return true;
+    const hay=`${c.title} ${c.organizer} ${c.audience} ${c.summary}`.toLowerCase();
+    return hay.includes(contestQuery.toLowerCase());
+  });
+  const byRegion=(a,b)=>CONTEST_REGION_ORDER[a.region]-CONTEST_REGION_ORDER[b.region];
+  const byDate=(a,b)=>(a.deadline||'9999-12-31').localeCompare(b.deadline||'9999-12-31');
+  if(contestSort==='date')return list.sort((a,b)=>byDate(a,b)||byRegion(a,b));
+  if(contestSort==='title')return list.sort((a,b)=>a.title.localeCompare(b.title,'zh-Hant'));
+  return list.sort((a,b)=>byRegion(a,b)||byDate(a,b));
+}
+function renderContests(){
+  const list=contestSorted(), box=$('#contest-list');
+  if(!box)return;
+  const count=$('#contest-count');if(count)count.textContent=`${list.length} 項`;
+  if(!list.length){box.innerHTML=empty('沒有符合的比賽','換個關鍵字或把地區改成「全部地區」。');return;}
+  box.innerHTML=`<div class="record-list">${list.map(c=>`<article class="record">
+    <span class="record-icon">${icon('target')}</span>
+    <div class="record-body">
+      <strong>${esc(c.title)}</strong>
+      <p>${esc(c.organizer||'主辦機構待確認')}${c.audience?` · ${esc(c.audience)}`:''}</p>
+      <p class="small-text">${esc(c.summary)}</p>
+      <small>${c.deadline?`報名截止 ${esc(c.deadline)}`:'報名日期待主辦公佈'}${c.eventDate?` · 比賽 ${esc(c.eventDate)}`:''}${c.source?` · 來源：${esc(c.source)}`:''}</small>
+    </div>
+    <div class="contest-side"><span class="badge l${CONTEST_REGION_ORDER[c.region]+1}">${esc(c.region)}</span>
+      ${c.url?`<a class="secondary" href="${esc(c.url)}" target="_blank" rel="noopener noreferrer">官方網站</a>`:''}</div>
+  </article>`).join('')}</div>`;
+}
+async function contestsPage(){
+  beginView();page='contests';assignmentContext=null;mockContext=null;stopQuizClock();shell();
+  const target=viewTarget();
+  $('#main').innerHTML=`<div class="fade-in">${heading('MATH CONTESTS','數學比賽',
+    '每週二早上 9:00 自動搜尋澳門學生可以參加的數學比賽；排序預設澳門優先，可自行更改。')}
+    <section class="panel"><div class="panel-heading"><h2>${icon('target')}比賽清單 <span class="small-text" id="contest-count"></span></h2>
+      <span class="small-text" id="contest-updated"></span></div>
+    <div class="filters">
+      <label class="search-field">${icon('search')}<input id="contest-search" placeholder="搜尋比賽、主辦或關鍵字…" aria-label="搜尋比賽"></label>
+      <select id="contest-region" aria-label="地區"><option value="">全部地區</option>${['澳門','中國','外國'].map(r=>`<option ${contestRegion===r?'selected':''}>${r}</option>`).join('')}</select>
+      <select id="contest-sort" aria-label="排序"><option value="region" ${contestSort==='region'?'selected':''}>地區優先</option><option value="date" ${contestSort==='date'?'selected':''}>截止日期</option><option value="title" ${contestSort==='title'?'selected':''}>名稱</option></select>
+    </div>
+    <div id="contest-list">${empty('正在讀取比賽清單','從網站伺服器取得最新資料。')}</div>
+    <p class="field-hint">「地區優先」＝澳門 → 中國 → 外國。資料由每週排程自動整理，報名日期與資格請以主辦機構公佈為準。</p>
+    </section></div>`;
+  $('#contest-search').addEventListener('input',e=>{contestQuery=e.target.value;renderContests();});
+  $('#contest-region').addEventListener('change',e=>{contestRegion=e.target.value;renderContests();});
+  $('#contest-sort').addEventListener('change',e=>{contestSort=e.target.value;renderContests();});
+  try{
+    const data=await api('/api/contests');
+    if(!viewMatches(target))return;
+    contestData=data;
+    const up=$('#contest-updated');
+    if(up)up.textContent=data.updatedAt?`最後更新 ${fmtWhen(data.updatedAt)}`:'尚未更新';
+    renderContests();
+  }catch(e){
+    if(!viewMatches(target))return;
+    $('#contest-list').innerHTML=`<div class="inline-error">${esc(e.message)}</div>`;
+  }
+}
 // 教師查閱每個學生成績：先選班級 → 每個學生一列 → 點進去看各份作業的分數
 const GRADE_STATUS={submitted:'已提交',in_progress:'進行中',not_started:'未開始'};
 async function classGradesModal(cid){

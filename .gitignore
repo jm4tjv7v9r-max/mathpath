@@ -10,3 +10,8 @@ __pycache__/
 
 # 基準測試的每次輸出（要留的結論請寫進文件，不要堆在 repo）
 bench/results-*.md
+
+# 每週排程寫入比賽清單用的權杖（本機檔案，不要上傳）
+.ingest-token
+# 排程寫不進網站時的暫存結果
+competitions-inbox.json
