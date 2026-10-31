@@ -778,7 +778,7 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   assert.equal(manualQ.title,'直角三角形求斜邊');
   assert.equal(manualQ.qtype,'解答題','手動輸入應帶題型');
   assert.ok(/^data:image\/(png|webp);base64,/.test(manualQ.figure),'匯入必須帶題目圖形（PNG 或 WebP）');
-  await page.locator('[data-page=settings]').first().click();await page.locator('#manage-users').click();  await page.locator('#bulk-students').fill('陳大文,s3a01\n李小美,s3a02\n黃志強,s3\n壞行');
+  await page.locator('[data-page=settings]').first().click();await page.locator('#manage-students').click();  await page.locator('#bulk-students').fill('陳大文,s3a01\n李小美,s3a02\n黃志強,s3\n壞行');
   assert.match(await page.locator('#bulk-preview').innerText(),/將建立 2 個帳戶/);
   assert.match(await page.locator('#bulk-error').innerText(),/第 3 行/);assert.match(await page.locator('#bulk-error').innerText(),/第 4 行/);
   await page.locator('#bulk-file').setInputFiles({name:'名單.csv',mimeType:'text/csv',buffer:Buffer.from('\ufeff姓名,帳號,密碼\n陳大文,s3a01\n李小美,s3a02\n')});
@@ -864,13 +864,14 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
       {id:9,username:'teacher2',name:'李老師',role:'teacher',seat:null,createdBy:2},
       {id:1,username:'student',name:'介面測試學生',role:'student',seat:'1',createdBy:2}]}});
     return route.fallback();});
-  await page.locator('#manage-users').click();
+  await page.locator('#manage-teachers').click();
   await page.locator('#teacher-create-form').waitFor();
   const rosterRows=(await page.locator('.roster-row').allInnerTexts()).map(t=>t.replace(/\s+/g,' ').trim());
-  assert.equal(rosterRows.length,2,'帳號管理要同時列出教師與學生');
+  assert.equal(rosterRows.length,1,'教師帳號視窗只列教師');
   assert.match(rosterRows[0],/教師.*李老師.*teacher2.*編輯/,'教師列要有「教師」角色標籤與帳號');
   assert.match(await page.locator('.account-group').first().innerText(),/教師帳號（1）/);
-  assert.match(await page.locator('.account-group').last().innerText(),/獨立學生帳戶（1）/);
+  assert.equal(await page.locator('#user-create-form').count(),0,'教師視窗不該出現學生表單');
+  assert.match(await page.locator('.modal h2').innerText(),/^教師帳號$/);
   // 建立教師帳號：要送出 role=teacher
   await page.locator('#teacher-name').fill('王老師');
   await page.locator('#teacher-username').fill('teacher3');
@@ -893,13 +894,38 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   await page.screenshot({path:path.join(__dirname,'..','MathPath-教師帳號管理.png'),fullPage:true});
   await page.locator('[data-action=close-modal]').click();
 
+  // 建立班級時可以一併建立學生帳號（先建帳號，再把 id 編進班級）
+  let classBulk=null, classBody=null;
+  await page.route('**/api/users/bulk',route=>{classBulk=route.request().postDataJSON();
+    return route.fulfill({json:{count:2,users:[
+      {id:31,username:'s3b01',name:'甲生',role:'student'},
+      {id:32,username:'s3b02',name:'乙生',role:'student'}]}});});
+  await page.route('**/api/classes',route=>{
+    if(route.request().method()==='POST'){classBody=route.request().postDataJSON();
+      return route.fulfill({json:{class:{id:9,name:classBody.name,studentCount:2,studentIds:[31,32]}}});}
+    return route.fallback();});
+  await page.locator('[data-page=homework]').first().click();
+  await page.locator('#create-class').click();
+  await page.locator('#class-name').fill('中三乙班');
+  await page.locator('#class-students').fill('s3b01,甲生,1\ns3b02,乙生,2');
+  await page.locator('#class-password').fill('MathPass1234');
+  await page.locator('#class-form button[type=submit]').click();
+  await page.waitForFunction(()=>/已建立「中三乙班」/.test(document.querySelector('#toast').textContent),{timeout:8000});
+  assert.deepEqual(classBulk.students.map(x=>x.username),['s3b01','s3b02'],'要一次送出兩個學號');
+  assert.equal(classBulk.students[0].password,'MathPass1234','用老師填的初始密碼');
+  assert.deepEqual(classBody.studentIds,[31,32],'新建的學生要編進這個班');
+  console.log('PASS: 建立班級可以一併建立學生帳號並編入班級');
+
   // ── 一般教師（非管理員）：不能新增教師、看不到資料管理 ──
   // 直接在瀏覽器裡切換 isOwner（不動路由），測完再切回來。
   await page.evaluate(()=>{S.user.isOwner=false;settingsPage();});
-  await page.locator('#manage-users').click();
-  await page.locator('#user-create-form').waitFor();
+  await page.locator('#manage-teachers').click();
+  await page.locator('.modal').waitFor();
   assert.equal(await page.locator('#teacher-create-form').count(),0,'一般教師不應看到新增教師表單');
   assert.match(await page.locator('.modal').innerText(),/只有\s*管理員帳號/,'要說明只有管理員能新增教師');
+  await page.locator('[data-action=close-modal]').click();
+  await page.locator('#manage-students').click();
+  await page.locator('#user-create-form').waitFor();
   assert.match(await page.locator('.modal').innerText(),/修改自己建立的學生/,'要說明一般教師只能改自己建立的學生');
   await page.locator('[data-action=close-modal]').click();
   assert.equal(await page.locator('#admin-reset').count(),0,'一般教師不應看到學年重置');
