@@ -1005,7 +1005,10 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   await login('teacher');
 
   // 模型端點頁面：可隨時更換並測試，金鑰不回讀到瀏覽器。
-  await page.locator('[data-page=ai]').first().click();
+  // 側欄不再放模型端點，改由「設定與隱私」進入。
+  await page.locator('#settings-nav').click();
+  await page.locator('#ai-config-link').waitFor({timeout:8000});
+  await page.locator('#ai-config-link').click();
   await page.locator('#ai-form').waitFor();
   assert.match(await page.locator('.metric').first().innerText(),/未接入/);
   assert.match(await page.locator('.capability-list').innerText(),/未能使用|需要文字模型/);
@@ -1571,8 +1574,12 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   await page.locator('#account').click();await page.locator('#logout-btn').click();await page.waitForSelector('#homework-login');
   await login('teacher');
   assert.equal(await page.locator('#nav [data-page=practice]').count(),0,'教師側邊欄不應出現自主練習');
-  assert.equal(await page.locator('#nav [data-page=ai]').count(),1,'教師側邊欄應有模型端點');
-  assert.equal(await page.locator('#nav [data-page=import]').count(),1,'教師側邊欄應有試卷拆題');
+  assert.equal(await page.locator('#nav [data-page=ai]').count(),0,'教師側邊欄不該出現模型端點');
+  assert.equal(await page.locator('#nav [data-page=import]').count(),1,'試卷拆題入庫要收在「題庫」下面');
+  const teacherNav=await page.locator('#nav').innerText();
+  for(const t of ['作業成績','題庫','批閱','試卷修正排版','我的試卷']) assert.ok(teacherNav.includes(t),`側欄要有「${t}」`);
+  assert.equal(await page.locator('#nav .nav-group').count(),1,'「批閱」是分組標題');
+  assert.ok(await page.locator('#nav .nav-item.child').count()>=4,'子項要縮排顯示');
   const resultsFixture = aiGrading => route => route.fulfill({json:{
     assignment:{...assignment,aiGrading},
     students:[{...student,status:'submitted',submittedAt:stamp,answeredCount:1,pendingCount:1,score:null,scoredPoints:0,confirmedScore:null,confirmedCount:0}],
