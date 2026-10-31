@@ -1149,6 +1149,44 @@ class HomeworkTests(unittest.TestCase):
         self.assertIn('不能判斷具體錯誤', pending['suggestion']['focus'])
         self.assertEqual(pending['suggestion']['source'], 'rules')
 
+    def test_calendar_import_saves_only_valid_events(self):
+        """匯入行事曆：AI 抽出來的事件要逐條檢查，不合理的擋掉，合法的存進日曆。"""
+        import base64
+        import io as _io
+        from docx import Document
+        doc = Document()
+        doc.add_paragraph('2026 年 11 月行事曆')
+        doc.add_paragraph('11 月 5 日 14:30 數學科會議（禮堂）')
+        buf = _io.BytesIO()
+        doc.save(buf)
+        payload = 'data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,' + base64.b64encode(buf.getvalue()).decode()
+        self.app.ai.configured = True
+        self.app.ai.call = lambda *a, **k: {'events': [
+            {'date': '2026-11-05', 'time': '14:30', 'title': '數學科會議', 'location': '禮堂', 'note': '帶成績表'},
+            {'date': '不是日期', 'title': '壞資料'},
+            {'date': '2099-01-01', 'title': '太遠了'},
+            {'date': '2026-11-06', 'time': '25:99', 'title': '時間亂寫'}]}
+        out = self.call('POST', '/api/calendar/import',
+                        {'file': payload, 'filename': '行事曆.docx'}, user=self.teacher)
+        self.assertEqual(len(out['added']), 2, out)
+        first = out['added'][0]
+        self.assertEqual(first['startTime'], '14:30')
+        self.assertEqual(first['location'], '禮堂')
+        self.assertEqual(first['source'], '行事曆.docx')
+        self.assertEqual(len(out['skipped']), 2, '格式不對與日期太遠的都要列出來')
+        # 時間格式不對的仍然存進去，但時間留空（不整條丟掉）
+        self.assertEqual(out['added'][1]['startTime'], '')
+        # 再匯入一次：同名同日要跳過
+        again = self.call('POST', '/api/calendar/import',
+                          {'file': payload, 'filename': '行事曆.docx'}, user=self.teacher)
+        self.assertEqual(again['added'], [])
+        self.assertTrue(any('已經有同名事項' in s['reason'] for s in again['skipped']))
+
+    def test_calendar_import_rejects_unknown_file_type(self):
+        self.app.ai.configured = True
+        self.error(400, 'POST', '/api/calendar/import',
+                   {'file': 'data:text/plain;base64,aGVsbG8=', 'filename': 'x.txt'}, self.teacher)
+
     def test_class_report_lists_students_and_scores(self):
         """教師要能按學生查閱成績：一個班 × 每份作業，逐人列出狀態與分數。"""
         aid = self.assignment((1,))

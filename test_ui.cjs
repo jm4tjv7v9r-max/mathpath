@@ -2688,13 +2688,21 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
     updatedAt:'2026-10-31T00:00:00Z'}}));
   await page.locator('[data-page=contests]').first().click();
   await page.locator('#contest-list .record').first().waitFor({timeout:8000});
+  // 預設「可報名優先」：兩筆有截止日期且未過期（澳門 12-01、東京 2027-01-10）排前，待公佈的華杯賽排最後
   assert.deepEqual(await page.locator('.record-body strong').allInnerTexts(),
-    ['澳門奧數','華杯賽','東京數學賽'],'預設排序要澳門→中國→外國');
+    ['澳門奧數','東京數學賽','華杯賽'],'可報名的要排前');
+  assert.deepEqual(await page.locator('.contest-status').allInnerTexts(),
+    ['可報名','可報名','待公佈'],'狀態要分色標示');
+  await page.locator('#contest-sort').selectOption('region');
+  assert.deepEqual(await page.locator('.record-body strong').allInnerTexts(),
+    ['澳門奧數','華杯賽','東京數學賽'],'地區優先＝澳門→中國→外國');
   await page.locator('#contest-search').fill('東京');
   assert.equal(await page.locator('#contest-list .record').count(),1,'搜尋要生效');
   await page.locator('#contest-search').fill('');
   await page.locator('#contest-sort').selectOption('date');
   assert.equal(await page.locator('.record-body strong').first().innerText(),'澳門奧數','改按截止日期排序');
+  assert.match(await page.locator('.contest-facts').first().innerText(),/比賽地點/,'要列出比賽地點');
+  assert.match(await page.locator('.contest-facts').first().innerText(),/出處/,'要列出出處');
   await page.locator('#contest-region').selectOption('外國');
   assert.equal(await page.locator('#contest-list .record').count(),1,'地區篩選要生效');
   await page.locator('#contest-region').selectOption('');

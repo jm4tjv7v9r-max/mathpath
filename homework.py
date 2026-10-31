@@ -1,5 +1,7 @@
 """本地作業快照、權限、統計和逐次學習建議；不依賴外部服務。"""
+import base64
 from datetime import date, datetime, timedelta, timezone
+import io
 import json
 import re
 from urllib.parse import parse_qsl
@@ -47,10 +49,17 @@ class Homework:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL REFERENCES users(id),
                 date TEXT NOT NULL, title TEXT NOT NULL, note TEXT NOT NULL, kind TEXT NOT NULL,
-                created_at TEXT NOT NULL);
+                created_at TEXT NOT NULL, start_time TEXT NOT NULL DEFAULT '',
+                location TEXT NOT NULL DEFAULT '', source TEXT NOT NULL DEFAULT '');
             CREATE INDEX IF NOT EXISTS calendar_notes_user ON calendar_notes(user_id, date);
         ''')
         db.execute('BEGIN IMMEDIATE')
+        note_columns = {r['name'] for r in db.execute('PRAGMA table_info(calendar_notes)')}
+        for name, ddl in (('start_time', "ALTER TABLE calendar_notes ADD COLUMN start_time TEXT NOT NULL DEFAULT ''"),
+                          ('location', "ALTER TABLE calendar_notes ADD COLUMN location TEXT NOT NULL DEFAULT ''"),
+                          ('source', "ALTER TABLE calendar_notes ADD COLUMN source TEXT NOT NULL DEFAULT ''")):
+            if note_columns and name not in note_columns:
+                db.execute(ddl)
         columns = {r['name'] for r in db.execute('PRAGMA table_info(attempts)')}
         recipient_columns = {r['name'] for r in db.execute('PRAGMA table_info(assignment_recipients)')}
         assignment_columns = {r['name'] for r in db.execute('PRAGMA table_info(assignments)')}
@@ -607,10 +616,154 @@ class Homework:
             (user['id'], start.isoformat(), end.isoformat())).fetchall()]
         return {'events': events, 'notes': notes, 'from': values['from'], 'to': values['to']}
 
+    # ---------- 行事曆匯入：檔案 → 文字／圖片 → AI 抽事件 → 逐條檢查 ----------
+    CALENDAR_MIME = {
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'docx',
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'xlsx',
+        'application/pdf': 'pdf',
+        'image/jpeg': 'image', 'image/png': 'image', 'image/webp': 'image',
+    }
+    CALENDAR_PROMPT = (
+        '你是學校行政助理。請從下面的行事曆資料抽出「事項」，只回 JSON：'
+        '{events:[{date:"YYYY-MM-DD",time:"HH:MM" 或 "",title:str,location:str,note:str}]}。'
+        '規則：date 必須是 YYYY-MM-DD；沒有寫年份就用最近一次合理的年份；'
+        '時間不確定就留空；title 最多 40 字，寫活動名稱而不是整段句子；'
+        'location 沒有就留空；note 用一句話補充。'
+        '只抽真正有日期的事項，純標題或說明文字不要輸出。最多 60 條。'
+    )
+
+    def _calendar_file(self, value):
+        m = re.fullmatch(r'data:([A-Za-z0-9.+/-]+);base64,([A-Za-z0-9+/=]+)', value or '')
+        if not m:
+            self.fail(400, '檔案格式不正確，請重新選擇檔案。')
+        mime = m.group(1).lower()
+        if mime not in self.CALENDAR_MIME:
+            self.fail(400, '只接受 DOCX、XLSX、PDF、JPG、PNG、WebP（HEIC 會在瀏覽器先轉檔）。')
+        try:
+            data = base64.b64decode(m.group(2), validate=True)
+        except (ValueError, TypeError):
+            self.fail(400, '檔案內容損壞，請重新選擇。')
+        if len(data) > 15 * 1024 * 1024:
+            self.fail(413, '檔案不可超過 15 MB。')
+        return data, mime
+
+    def _calendar_extract(self, data, mime):
+        """把檔案變成純文字；圖片則原樣交給 AI 看。"""
+        kind = self.CALENDAR_MIME[mime]
+        text = ''
+        try:
+            if kind == 'image':
+                return '', 'data:' + mime + ';base64,' + base64.b64encode(data).decode()
+            if kind == 'docx':
+                import docx
+                doc = docx.Document(io.BytesIO(data))
+                parts = [p.text for p in doc.paragraphs]
+                for table in doc.tables:
+                    for row in table.rows:
+                        cells = [c.text.strip() for c in row.cells]
+                        if any(cells):
+                            parts.append(' | '.join(cells))
+                text = '\n'.join(x for x in parts if x.strip())
+            elif kind == 'xlsx':
+                import openpyxl
+                book = openpyxl.load_workbook(io.BytesIO(data), data_only=True, read_only=True)
+                lines = []
+                for sheet in book.worksheets:
+                    lines.append(f'# {sheet.title}')
+                    for row in sheet.iter_rows(values_only=True):
+                        cells = [str(c).strip() for c in row if c not in (None, '')]
+                        if cells:
+                            lines.append(' | '.join(cells))
+                text = '\n'.join(lines)
+            else:
+                from pypdf import PdfReader
+                reader = PdfReader(io.BytesIO(data))
+                text = '\n'.join((page.extract_text() or '') for page in reader.pages[:12])
+        except Exception as exc:
+            self.fail(422, f'讀不到這個檔案（{exc}）；請確認檔案沒有損壞。')
+        text = (text or '').strip()
+        if len(text) < 10:
+            self.fail(422, '這個檔案沒有可讀的文字（可能是掃描檔），請改上傳 JPG／PNG 圖片。')
+        return text[:20000], None
+
+    def _calendar_events(self, text, image, filename, fix=None):
+        """請 AI 抽事件；回（合法事件, 有問題的項目）。"""
+        payload = {'filename': filename}
+        if text:
+            payload['text'] = text
+        instruction = self.CALENDAR_PROMPT
+        if fix:
+            instruction += '上一次的輸出有這些問題，請修正：' + '；'.join(fix[:6])
+        try:
+            result = self.app.ai.call(instruction, payload, image=image)
+        except Exception as exc:
+            self.fail(502, f'AI 分析失敗：{exc}')
+        raw = result.get('events') if isinstance(result, dict) else None
+        if not isinstance(raw, list):
+            return [], ['AI 沒有回傳可用的行程']
+        today = date.today()
+        events, problems = [], []
+        for item in raw[:80]:
+            if not isinstance(item, dict):
+                continue
+            title = str(item.get('title') or '').strip()[:40]
+            if not title:
+                continue
+            day = str(item.get('date') or '').strip()
+            if not re.fullmatch(r'\d{4}-\d{2}-\d{2}', day):
+                problems.append(f'{title}（日期格式不對）')
+                continue
+            try:
+                when = date.fromisoformat(day)
+            except ValueError:
+                problems.append(f'{title}（{day} 不是有效日期）')
+                continue
+            if when < today - timedelta(days=30) or when > today + timedelta(days=730):
+                problems.append(f'{title}（{day} 不在合理範圍）')
+                continue
+            clock = str(item.get('time') or '').strip()
+            if clock and not re.fullmatch(r'([01]\d|2[0-3]):[0-5]\d', clock):
+                clock = ''
+            events.append({'date': day, 'time': clock, 'title': title,
+                           'location': str(item.get('location') or '').strip()[:60],
+                           'note': str(item.get('note') or '').strip()[:300]})
+        return events, problems
+
+    def _calendar_save(self, user, events, filename):
+        saved, skipped = [], []
+        with self.app.db() as db:
+            existing = {(r['date'], r['title']) for r in db.execute(
+                'SELECT date,title FROM calendar_notes WHERE user_id=?', (user['id'],))}
+            count = db.execute('SELECT COUNT(*) FROM calendar_notes WHERE user_id=?',
+                               (user['id'],)).fetchone()[0]
+            for event in events:
+                key = (event['date'], event['title'])
+                if key in existing:
+                    skipped.append({'title': event['title'],
+                                    'reason': f"{event['date']} 已經有同名事項"})
+                    continue
+                if count >= 500:
+                    skipped.append({'title': event['title'], 'reason': '提醒事項已達 500 則上限'})
+                    continue
+                cur = db.execute(
+                    'INSERT INTO calendar_notes(user_id,date,title,note,kind,created_at,'
+                    'start_time,location,source) VALUES(?,?,?,?,?,?,?,?,?)',
+                    (user['id'], event['date'], event['title'], event['note'], 'imported',
+                     self.utc_now(), event['time'], event['location'], filename))
+                existing.add(key)
+                count += 1
+                saved.append(db.execute('SELECT * FROM calendar_notes WHERE id=?',
+                                        (cur.lastrowid,)).fetchone())
+        return saved, skipped
+
     @staticmethod
     def note_public(row):
+        keys = row.keys()
         return {'id': row['id'], 'date': row['date'], 'title': row['title'], 'note': row['note'],
-                'kind': row['kind'], 'createdAt': row['created_at']}
+                'kind': row['kind'], 'createdAt': row['created_at'],
+                'startTime': row['start_time'] if 'start_time' in keys else '',
+                'location': row['location'] if 'location' in keys else '',
+                'source': row['source'] if 'source' in keys else ''}
 
     def _calendar_day(self, field, value):
         if not re.fullmatch(r'\d{4}-\d{2}-\d{2}', value):
@@ -657,6 +810,27 @@ class Homework:
         if method == 'GET' and path == '/api/calendar':
             with self.app.db() as db:
                 return self.calendar(db, query, user)
+        if method == 'POST' and path == '/api/calendar/import':
+            # 教師匯入行事曆：檔案 → 文字（或圖片）→ AI 抽事件 → 逐條檢查 → 存進日曆。
+            self.app.teacher(user)
+            self.fields(body, ('file', 'consentExternal', 'filename'), ('file',))
+            if not self.app.ai.configured:
+                self.fail(409, '尚未設定 AI 模型；請先在「模型端點」設定後再匯入。')
+            self.app.ai.consent(body.get('consentExternal'))
+            filename = self.text(body.get('filename') or '行事曆', '檔名', 200, empty=True)
+            data, mime = self._calendar_file(body['file'])
+            text, image = self._calendar_extract(data, mime)
+            events, problems = self._calendar_events(text, image, filename)
+            if problems and events:
+                # 有問題的再請 AI 修一次（把問題回饋給它），仍然不行就只存合法的
+                events, problems = self._calendar_events(text, image, filename, fix=problems)
+            saved, skipped = self._calendar_save(user, events, filename)
+            if not saved and not skipped:
+                # 全部都是不合法的事件才算失敗；重複的會放在 skipped 讓前端說明
+                self.fail(422, '沒有可以加入日曆的事項。' + (f'（{problems[0]}）' if problems else ''))
+            return {'added': [self.note_public(r) for r in saved],
+                    'skipped': skipped + [{'title': p, 'reason': '格式或日期不合理'} for p in problems]}
+
         if method == 'POST' and path == '/api/calendar/notes':
             self.fields(body, ('date', 'title', 'note'), ('date', 'title'))
             day = self._calendar_day('日期', body['date'])

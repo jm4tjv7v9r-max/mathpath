@@ -2,3 +2,5 @@
 pypdf
 pypdfium2>=5.0,<6
 python-docx>=1.1,<2
+# 教師匯入行事曆要讀 .xlsx
+openpyxl>=3.1,<4

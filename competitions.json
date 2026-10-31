@@ -7,7 +7,9 @@
     "deadline": null,
     "eventDate": null,
     "url": "https://www.hkgea.org/",
-    "summary": "每年分初賽與進階選拔賽，澳門學生可經澳門數學奧林匹克學會報名；報名期通常在賽前 2–3 個月。"
+    "summary": "每年分初賽與進階選拔賽，澳門學生可經澳門數學奧林匹克學會報名；報名期通常在賽前 2–3 個月。",
+    "location": "澳門（場地待主辦公佈）",
+    "source": "環亞太杯組委會 / 澳門數學奧林匹克學會"
   },
   {
     "title": "亞洲國際數學奧林匹克公開賽（AIMO）",
@@ -17,7 +19,9 @@
     "deadline": null,
     "eventDate": null,
     "url": "",
-    "summary": "由港澳數學奧林匹克公開賽發展而成，每年舉辦，澳門設賽區；總決賽採巡迴制。"
+    "summary": "由港澳數學奧林匹克公開賽發展而成，每年舉辦，澳門設賽區；總決賽採巡迴制。",
+    "location": "澳門賽區（場地待主辦公佈）",
+    "source": "澳門學勤進修教育中心"
   },
   {
     "title": "數學大王國際邀請賽（澳門賽區）",
@@ -27,7 +31,9 @@
     "deadline": null,
     "eventDate": null,
     "url": "",
-    "summary": "澳門由數學奧林匹克學會協辦，報名多經學校或賽區平台統一處理。"
+    "summary": "澳門由數學奧林匹克學會協辦，報名多經學校或賽區平台統一處理。",
+    "location": "澳門賽區（場地待主辦公佈）",
+    "source": "「數學大王」國際組委會"
   },
   {
     "title": "全澳青少年數學競賽",
@@ -37,7 +43,9 @@
     "deadline": null,
     "eventDate": null,
     "url": "",
-    "summary": "澳門本地歷史較久的奧數賽事，通常由學校推薦或統一報名，詳情以學會公告為準。"
+    "summary": "澳門本地歷史較久的奧數賽事，通常由學校推薦或統一報名，詳情以學會公告為準。",
+    "location": "澳門（場地待主辦公佈）",
+    "source": "澳門數學奧林匹克學會"
   },
   {
     "title": "港澳數學奧林匹克公開賽（HKMO）",
@@ -47,7 +55,9 @@
     "deadline": null,
     "eventDate": null,
     "url": "",
-    "summary": "港澳兩地同時舉行，澳門學生可經澳門區協辦單位報名。"
+    "summary": "港澳兩地同時舉行，澳門學生可經澳門區協辦單位報名。",
+    "location": "香港／澳門（雙邊賽區）",
+    "source": "香港數學奧林匹克協會"
   },
   {
     "title": "華羅庚金杯少年數學邀請賽（澳門賽區）",
@@ -57,7 +67,9 @@
     "deadline": null,
     "eventDate": null,
     "url": "",
-    "summary": "內地具代表性的少年數學賽事，澳門學生可透過賽區承辦單位報名。"
+    "summary": "內地具代表性的少年數學賽事，澳門學生可透過賽區承辦單位報名。",
+    "location": "澳門賽區（場地待主辦公佈）",
+    "source": "華羅庚金杯組委會"
   },
   {
     "title": "希望杯全國數學邀請賽",
@@ -67,7 +79,9 @@
     "deadline": null,
     "eventDate": null,
     "url": "",
-    "summary": "內地傳統數學邀請賽，設有港澳賽區，報名時間以官方公佈為準。"
+    "summary": "內地傳統數學邀請賽，設有港澳賽區，報名時間以官方公佈為準。",
+    "location": "內地賽區（港澳另行安排）",
+    "source": "希望杯組委會"
   },
   {
     "title": "Australian Mathematics Competition（澳洲 AMC）",
@@ -77,7 +91,9 @@
     "deadline": null,
     "eventDate": null,
     "url": "https://www.amt.edu.au/",
-    "summary": "每年 8 月舉行，澳門學校可註冊為考點；試題為英文，重視應用與解難。"
+    "summary": "每年 8 月舉行，澳門學校可註冊為考點；試題為英文，重視應用與解難。",
+    "location": "學校考點（澳門多所中學設考場）",
+    "source": "Australian Maths Trust"
   },
   {
     "title": "AMC 8 / 10 / 12（美國數學競賽）",
@@ -87,7 +103,9 @@
     "deadline": null,
     "eventDate": null,
     "url": "https://maa.org/student-programs/amc/",
-    "summary": "每年 11 月（AMC 10/12）與 1 月（AMC 8）舉行，需由學校或授權考點報名。"
+    "summary": "每年 11 月（AMC 10/12）與 1 月（AMC 8）舉行，需由學校或授權考點報名。",
+    "location": "授權考點（多為學校）",
+    "source": "Mathematical Association of America"
   },
   {
     "title": "世界數學邀請賽（WMI）",
@@ -97,6 +115,8 @@
     "deadline": null,
     "eventDate": null,
     "url": "",
-    "summary": "分區賽與總決賽兩階段，澳門學生可經區內承辦機構報名。"
+    "summary": "分區賽與總決賽兩階段，澳門學生可經區內承辦機構報名。",
+    "location": "分區賽場地待主辦公佈",
+    "source": "WMI 組委會"
   }
 ]

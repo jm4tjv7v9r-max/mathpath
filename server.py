@@ -2380,7 +2380,8 @@ def contest_public(row) -> dict:
     return {'id': row['id'], 'title': row['title'], 'organizer': row['organizer'],
             'region': row['region'], 'audience': row['audience'],
             'deadline': row['deadline'], 'eventDate': row['event_date'],
-            'url': row['url'], 'summary': row['summary'], 'source': row['source'],
+            'url': row['url'], 'summary': row['summary'],
+            'location': row['location'] if 'location' in row.keys() else '', 'source': row['source'],
             'foundAt': row['found_at']}
 
 
@@ -4281,6 +4282,7 @@ class Application:
                     event_date TEXT,
                     url TEXT NOT NULL DEFAULT '',
                     summary TEXT NOT NULL DEFAULT '',
+                    location TEXT NOT NULL DEFAULT '',
                     source TEXT NOT NULL DEFAULT '',
                     found_at TEXT NOT NULL,
                     UNIQUE(title, url));
@@ -4385,6 +4387,9 @@ class Application:
             # 放在 BEGIN 之後：INSERT 會開隱式交易，提前跑會讓這裡的 BEGIN 失敗。
             db.execute('INSERT OR IGNORE INTO paper_questions(paper_id, question_id) '
                        'SELECT paper_id, id FROM questions WHERE paper_id IS NOT NULL')
+            contest_columns = {r['name'] for r in db.execute('PRAGMA table_info(competitions)')}
+            if contest_columns and 'location' not in contest_columns:
+                db.execute("ALTER TABLE competitions ADD COLUMN location TEXT NOT NULL DEFAULT ''")
             # 數學比賽：第一次啟動時把 repo 裡的 competitions.json 匯入（之後由每週排程更新）
             if not db.execute('SELECT 1 FROM competitions LIMIT 1').fetchone():
                 seed_file = ROOT / 'competitions.json'
@@ -4394,13 +4399,14 @@ class Application:
                             if isinstance(item, dict) and item.get('title'):
                                 db.execute(
                                     'INSERT OR IGNORE INTO competitions(title,organizer,region,audience,'
-                                    'deadline,event_date,url,summary,source,found_at) '
-                                    'VALUES(?,?,?,?,?,?,?,?,?,?)',
+                                    'deadline,event_date,url,summary,location,source,found_at) '
+                                    'VALUES(?,?,?,?,?,?,?,?,?,?,?)',
                                     (str(item['title'])[:200], str(item.get('organizer') or '')[:120],
                                      contest_region(item.get('region')), str(item.get('audience') or '')[:120],
                                      item.get('deadline') or None, item.get('eventDate') or None,
                                      str(item.get('url') or '')[:400], str(item.get('summary') or '')[:600],
-                                     '內建整理', utc_now()))
+                                     str(item.get('location') or '')[:200],
+                                     str(item.get('source') or '內建整理')[:200], utc_now()))
                     except (ValueError, OSError) as exc:
                         ai_log(f'匯入內建比賽清單失敗：{exc}')
             # 兩個子分類標籤由簡體改成繁體：舊題目存的是舊字串，
@@ -6179,16 +6185,17 @@ class Application:
                     url = text(item.get('url') or '', '連結', 400, empty=True)
                     db.execute(
                         'INSERT INTO competitions(title,organizer,region,audience,deadline,event_date,'
-                        'url,summary,source,found_at) VALUES(?,?,?,?,?,?,?,?,?,?) '
+                        'url,summary,location,source,found_at) VALUES(?,?,?,?,?,?,?,?,?,?,?) '
                         'ON CONFLICT(title,url) DO UPDATE SET organizer=excluded.organizer,'
                         'region=excluded.region,audience=excluded.audience,deadline=excluded.deadline,'
                         'event_date=excluded.event_date,summary=excluded.summary,'
-                        'source=excluded.source,found_at=excluded.found_at',
+                        'location=excluded.location,source=excluded.source,found_at=excluded.found_at',
                         (title, text(item.get('organizer') or '', '主辦', 120, empty=True),
                          contest_region(item.get('region')),
                          text(item.get('audience') or '', '參賽對象', 120, empty=True),
                          item.get('deadline') or None, item.get('eventDate') or None, url,
                          text(item.get('summary') or '', '說明', 600, empty=True),
+                         text(item.get('location') or '', '地點', 200, empty=True),
                          text(item.get('source') or '每週自動搜尋', '來源', 200, empty=True),
                          utc_now()))
                     saved += 1

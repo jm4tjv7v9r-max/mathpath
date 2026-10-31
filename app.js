@@ -4655,37 +4655,68 @@ function weakTopic(){const graded=S.attempts.filter(a=>a.status==='graded'&&a.sc
 function weakTopicPanel(){const wt=weakTopic();return `<section class="panel right-panel"><h2>${icon('target')}最需要鞏固</h2>${wt?`<p class="field-hint">依已批閱作答計算，不代表完整能力診斷。</p><div class="knowledge-row"><span>${esc(wt.topic)}</span><span>${wt.percent}%</span></div><div class="progress-track"><div class="progress-fill gold" style="width:${wt.percent}%"></div></div><p class="field-hint">已批閱 ${wt.n} 次。先重做錯題，再做同知識點的相似題，最後挑戰進階題。</p><button class="secondary wide" data-topic="${esc(wt.topic)}">開始針對練習 ${icon('arrow')}</button>`:`<p class="field-hint">還沒有已批閱的作答。完成作業或練習後，這裡會指出最需要鞏固的知識點。</p>`}</section>`;}
 function homeworkMetrics(items){return `<div class="metric-row">${items.map(([label,value,foot])=>`<div class="metric"><div class="metric-label">${label}</div><div class="metric-value">${value}</div><div class="metric-foot">${foot}</div></div>`).join('')}</div>`;}
 // 數學比賽：每週二早上由排程自動搜尋，這裡只負責顯示；預設排序是澳門 → 中國 → 外國。
-let contestData=null, contestQuery='', contestRegion='', contestSort='region';
+let contestData=null, contestQuery='', contestRegion='', contestSort='open';
 const CONTEST_REGION_ORDER={'澳門':0,'中國':1,'外國':2};
+function contestStatus(c){
+  if(!c.deadline)return 'pending';            // 主辦還沒公佈報名期
+  const today=new Date();today.setHours(0,0,0,0);
+  const due=new Date(`${c.deadline}T23:59:59`);
+  if(Number.isNaN(due.getTime()))return 'pending';
+  return due>=today?'open':'closed';
+}
+const CONTEST_STATUS_TEXT={open:'可報名',pending:'待公佈',closed:'已截止'};
+const CONTEST_STATUS_RANK={open:0,pending:1,closed:2};
 function contestSorted(){
   const list=(contestData?.contests||[]).filter(c=>{
     if(contestRegion&&c.region!==contestRegion)return false;
     if(!contestQuery)return true;
-    const hay=`${c.title} ${c.organizer} ${c.audience} ${c.summary}`.toLowerCase();
+    const hay=`${c.title} ${c.organizer} ${c.audience} ${c.summary} ${c.location||''} ${c.source||''}`.toLowerCase();
     return hay.includes(contestQuery.toLowerCase());
   });
   const byRegion=(a,b)=>CONTEST_REGION_ORDER[a.region]-CONTEST_REGION_ORDER[b.region];
   const byDate=(a,b)=>(a.deadline||'9999-12-31').localeCompare(b.deadline||'9999-12-31');
+  const byStatus=(a,b)=>CONTEST_STATUS_RANK[contestStatus(a)]-CONTEST_STATUS_RANK[contestStatus(b)];
   if(contestSort==='date')return list.sort((a,b)=>byDate(a,b)||byRegion(a,b));
   if(contestSort==='title')return list.sort((a,b)=>a.title.localeCompare(b.title,'zh-Hant'));
-  return list.sort((a,b)=>byRegion(a,b)||byDate(a,b));
+  if(contestSort==='region')return list.sort((a,b)=>byRegion(a,b)||byStatus(a,b)||byDate(a,b));
+  // 預設：可以報名的排前，其次待公佈，最後已截止；同組內澳門優先、再看截止日
+  return list.sort((a,b)=>byStatus(a,b)||byRegion(a,b)||byDate(a,b));
+}
+function daysLeft(deadline){
+  if(!deadline)return null;
+  const today=new Date();today.setHours(0,0,0,0);
+  const due=new Date(`${deadline}T23:59:59`);
+  if(Number.isNaN(due.getTime()))return null;
+  return Math.ceil((due-today)/86400000);
 }
 function renderContests(){
   const list=contestSorted(), box=$('#contest-list');
   if(!box)return;
   const count=$('#contest-count');if(count)count.textContent=`${list.length} 項`;
   if(!list.length){box.innerHTML=empty('沒有符合的比賽','換個關鍵字或把地區改成「全部地區」。');return;}
-  box.innerHTML=`<div class="record-list">${list.map(c=>`<article class="record">
-    <span class="record-icon">${icon('target')}</span>
-    <div class="record-body">
-      <strong>${esc(c.title)}</strong>
-      <p>${esc(c.organizer||'主辦機構待確認')}${c.audience?` · ${esc(c.audience)}`:''}</p>
-      <p class="small-text">${esc(c.summary)}</p>
-      <small>${c.deadline?`報名截止 ${esc(c.deadline)}`:'報名日期待主辦公佈'}${c.eventDate?` · 比賽 ${esc(c.eventDate)}`:''}${c.source?` · 來源：${esc(c.source)}`:''}</small>
-    </div>
-    <div class="contest-side"><span class="badge l${CONTEST_REGION_ORDER[c.region]+1}">${esc(c.region)}</span>
-      ${c.url?`<a class="secondary" href="${esc(c.url)}" target="_blank" rel="noopener noreferrer">官方網站</a>`:''}</div>
-  </article>`).join('')}</div>`;
+  box.innerHTML=`<div class="record-list">${list.map(c=>{
+    const st=contestStatus(c), left=daysLeft(c.deadline);
+    const deadlineText=c.deadline
+      ?`${esc(c.deadline)}${st==='open'&&left!==null?`（還有 ${left} 天）`:'（已截止）'}`
+      :'待主辦公佈';
+    return `<article class="record contest-row ${st}">
+      <span class="record-icon">${icon('target')}</span>
+      <div class="record-body">
+        <strong>${esc(c.title)}</strong>
+        <p>${esc(c.organizer||'主辦機構待確認')}${c.audience?` · ${esc(c.audience)}`:''}</p>
+        <dl class="contest-facts">
+          <div><dt>報名截止</dt><dd>${deadlineText}</dd></div>
+          <div><dt>比賽時間</dt><dd>${c.eventDate?esc(c.eventDate):'待主辦公佈'}</dd></div>
+          <div><dt>比賽地點</dt><dd>${c.location?esc(c.location):'待主辦公佈'}</dd></div>
+          <div><dt>出處</dt><dd>${esc(c.source||'未標明')}${c.url?` · <a href="${esc(c.url)}" target="_blank" rel="noopener noreferrer">官方網站</a>`:''}</dd></div>
+        </dl>
+        <p class="small-text">${esc(c.summary)}</p>
+      </div>
+      <div class="contest-side">
+        <span class="contest-status ${st}">${CONTEST_STATUS_TEXT[st]}</span>
+        <span class="badge l${CONTEST_REGION_ORDER[c.region]+1}">${esc(c.region)}</span>
+      </div>
+    </article>`;}).join('')}</div>`;
 }
 async function contestsPage(){
   beginView();page='contests';assignmentContext=null;mockContext=null;stopQuizClock();shell();
@@ -4697,10 +4728,10 @@ async function contestsPage(){
     <div class="filters">
       <label class="search-field">${icon('search')}<input id="contest-search" placeholder="搜尋比賽、主辦或關鍵字…" aria-label="搜尋比賽"></label>
       <select id="contest-region" aria-label="地區"><option value="">全部地區</option>${['澳門','中國','外國'].map(r=>`<option ${contestRegion===r?'selected':''}>${r}</option>`).join('')}</select>
-      <select id="contest-sort" aria-label="排序"><option value="region" ${contestSort==='region'?'selected':''}>地區優先</option><option value="date" ${contestSort==='date'?'selected':''}>截止日期</option><option value="title" ${contestSort==='title'?'selected':''}>名稱</option></select>
+      <select id="contest-sort" aria-label="排序"><option value="open" ${contestSort==='open'?'selected':''}>可報名優先</option><option value="region" ${contestSort==='region'?'selected':''}>地區優先</option><option value="date" ${contestSort==='date'?'selected':''}>截止日期</option><option value="title" ${contestSort==='title'?'selected':''}>名稱</option></select>
     </div>
     <div id="contest-list">${empty('正在讀取比賽清單','從網站伺服器取得最新資料。')}</div>
-    <p class="field-hint">「地區優先」＝澳門 → 中國 → 外國。資料由每週排程自動整理，報名日期與資格請以主辦機構公佈為準。</p>
+    <p class="field-hint">預設「可報名優先」：可以報名的排前面，其次是待公佈，最後是已截止。「地區優先」＝澳門 → 中國 → 外國。資料由每週排程自動整理，報名日期與資格請以主辦機構公佈為準。</p>
     </section></div>`;
   $('#contest-search').addEventListener('input',e=>{contestQuery=e.target.value;renderContests();});
   $('#contest-region').addEventListener('change',e=>{contestRegion=e.target.value;renderContests();});
@@ -4769,7 +4800,55 @@ function studentGradesModal(cid,st){
     <button class="secondary" id="back-grades" style="margin-top:14px">← 回班級總表</button>`,true);
   $('#back-grades').onclick=()=>classGradesModal(cid);
 }
-async function homeworkPage(){beginView();page='homework';assignmentContext=null;mockContext=null;currentQuestion=null;stopQuizClock();shell();const target=viewTarget();const teacher=S.user?.role==='teacher';$('#main').innerHTML=heading('ASSIGN · REVIEW · GROW',teacher?'作業與成績':'我的作業',teacher?'把每次作業，轉化為可跟進的學習回饋。':'領取作業，寫下思考，每次提交都有下一步建議。');if(!S.user){$('#main').innerHTML+=`<section class="hero homework-hero"><div><p class="eyebrow">MathPath · 數學作業研習室</p><h2>從一份作業，看見每個學生的進步。</h2><p>教師佈置 · 學生手寫 · AI 建議批閱 · 成績統計 · 個別學習建議</p><button class="primary" id="homework-login">登入作業空間 ${icon('arrow')}</button><button class="secondary" data-page="bank" style="margin-left:10px">瀏覽題庫</button><button class="secondary" data-page="guide" style="margin-left:10px">新手上路</button></div></section><div class="homework-features">${[['import','教師佈置作業','建立班級，選題與截止日期，發布後保存題目及學生名單快照。'],['practice','學生寫下思考','逐題保存文字或手稿，完成所有題目後正式提交。'],['growth','批閱與學習建議','AI 接入後可建議評分；教師覆核，分數與每次建議分開記錄。']].map(([i,t,p])=>`<section class="panel"><div class="feature-icon">${icon(i)}</div><h2>${t}</h2><p>${p}</p></section>`).join('')}</div><div class="import-warning" style="margin-top:22px">資料保存在網站伺服器；實際位置由管理員確認。作業分數與 AI 建議須教師覆核；自主練習可即時核對文字答案，未接入 AI 的手稿待批閱。</div>`;$('#homework-login').onclick=()=>loginModal(homeworkPage);return;}$('#main').innerHTML+='<section class="panel">'+empty('正在讀取作業','從網站伺服器讀取班級與作業紀錄。')+'</section>';try{const data=await api('/api/homework');if(!viewMatches(target))return;HW=data;const a=HW.assignments;const submitted=teacher?a.reduce((n,v)=>n+v.submittedCount,0):a.filter(v=>v.myStatus==='submitted').length;$('#main').innerHTML=`<div class="fade-in">${heading('ASSIGN · REVIEW · GROW',teacher?'作業與成績':'我的作業',teacher?'佈置、批阅、統計，用具體建議引導每個學生的下一步。':'依次完成作業，回看回饋，再鞏固最需要練習的知識點。',teacher?`<button class="secondary" id="class-grades">${icon('list')}學生成績</button><button class="secondary" id="create-class">${icon('bank')}建立班級</button><button class="primary" id="create-assignment">${icon('import')}佈置作業</button>`:`<button class="secondary" id="refresh-homework">${icon('undo')}重新整理</button>`)}${homeworkMetrics([['已發布作業',a.length,'只顯示你有權查看的作業'],['我的班級',HW.classes.length,teacher?'班級名單由教師建立':'作業只對指定學生開放'],[teacher?'正式提交人次':'已正式提交',submitted,'逐題保存後，需正式提交作業'],['AI 批閱服務',S.ai.configured?'已配置':'待接入',S.ai.configured?'建議分數仍需教師覆核':'手稿待批 · 文字規則核對']])}<div class="homework-layout"><section><div class="section-head"><h2>${teacher?'已發布的作業':'待辦與已交作業'}</h2><div class="section-head-actions"><span class="small-text">${a.length} 份</span><button class="secondary" data-page="calendar">${icon('calendar')}查看日曆</button></div></div><div class="assignment-list">${a.length?a.map(v=>`<article class="panel assignment-card"><div class="assignment-card-head"><span class="assignment-icon">${icon('file')}</span><div><span class="badge">${esc(v.className)}</span><h2>${mathText(v.title)}</h2></div><span class="badge ${new Date(v.dueAt)<new Date()?'l2':''}">${teacher?'已發布':statusText(v.myStatus)}</span></div><div class="assignment-meta"><span>${v.questionCount} 題 · ${v.totalPoints} 分</span><span>${icon('clock')}截止 ${dateText(v.dueAt)}</span>${teacher?'':dueSoonBadge(v.dueAt,v.myStatus)}</div><div class="assignment-bottom"><span class="small-text">${v.kind==='quiz'?'測驗':'作業'}${v.durationMinutes?` · 限時 ${v.durationMinutes} 分鐘`:''} · ${teacher?`已交 ${v.submittedCount} / ${v.studentCount} 人 · 全題已評 ${v.gradedCount} 人`:`目前已評得分 ${scoreText(v.myScore)} · 教師確認 ${scoreText(v.myConfirmedScore)}`}</span>${!teacher&&S.attempts.some(a=>a.assignmentId===v.id&&isNewReview(a))?NEW_REVIEW_BADGE:''}<div style="display:flex;gap:8px;align-items:center">${teacher&&(v.teacherId===S.user?.id||S.user?.isOwner)?`<button class="text-button" data-del-assign="${v.id}" data-del-title="${esc(v.title)}" style="font-size:calc(13px*var(--fs));color:#b8453b">刪除</button>`:''}<button class="primary" ${teacher?'data-results':'data-assignment'}="${v.id}">${teacher?'查看成績與建議':v.myStatus==='submitted'?'查看批閱與建議':'開始／繼續作業'} ${icon('arrow')}</button></div></div></article>`).join(''):`<section class="panel">${empty(teacher?'還沒有發布作業':'目前沒有指派給你的作業',teacher?'先建立班級，再从題庫選題發布。':'教師發布到你的班級後，作業會出現在這裡。')}</section>`}</div></section><aside class="right-stack">${teacher?'':weakTopicPanel()}<section class="panel right-panel"><h2>${icon('bank')}${teacher?'我的班級':'所屬班級'}</h2>${HW.classes.length?HW.classes.map(c=>{const canDel=teacher&&(c.teacherId===S.user?.id||S.user?.isOwner);return `<div class="class-mini"><div><strong>${esc(c.name)}</strong><span>${c.studentCount} 位學生</span></div><div style="display:flex;gap:10px">${teacher?`<button class="text-button" data-manage-class="${c.id}" style="font-size:calc(13px*var(--fs))">管理學生</button>`:''}${canDel?`<button class="text-button" data-del-class="${c.id}" data-del-name="${esc(c.name)}" style="font-size:calc(13px*var(--fs));color:#b8453b">刪除</button>`:''}</div></div>`;}).join(''):'<p class="field-hint">尚未加入班級。</p>'}${teacher?`<button class="text-button" id="class-manage-link" style="font-size:calc(14px*var(--fs))">建立班級 ${icon('arrow')}</button>`:''}</section><section class="panel right-panel tip-panel"><h2>${icon('bulb')}分數不是學習的終點</h2><p>每次作答都有學習建議：<br>做得好的地方 → 需要留意 → 下一步練習。<br><br>待批阅不當零分；AI 建議分與教師確認分分開保存。</p></section><section class="panel right-panel"><h2>${icon('lock')}運行狀態</h2><p class="field-hint">資料保存在網站伺服器；實際位置由管理員確認。AI ${S.ai.configured?'已配置，仍需真實效果核驗':'尚未接入，不產生假評分'}。</p></section></aside></div></div>`;if(teacher){$('#create-class').onclick=createClassModal;const cgBtn=$('#class-grades');if(cgBtn)cgBtn.onclick=()=>classGradesModal();$('#class-manage-link').onclick=createClassModal;$('#create-assignment').onclick=createAssignmentModal;}else $('#refresh-homework').onclick=homeworkPage;}catch(e){if(viewMatches(target))$('#main').innerHTML+=`<div class="inline-error">${esc(e.message)}</div>`;}}
+// 教師首頁的「近七日事項」：只列今天起七天內的，今天那筆加大加粗換色
+async function renderWeekAhead(){
+  const box=$('#week-ahead');if(!box)return;
+  const pad=n=>String(n).padStart(2,'0');
+  const iso=d=>`${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
+  const today=new Date();today.setHours(0,0,0,0);
+  const from=iso(today),to=iso(new Date(today.getTime()+6*86400000));
+  try{
+    const data=await api(`/api/calendar?from=${from}&to=${to}`);
+    const notes=data.notes||[];
+    const head=`<div class="panel-heading"><h2>${icon('clock')}近七日事項 <span class="small-text">${notes.length} 項</span></h2><button class="text-button" data-page="calendar">打開日曆 ${icon('arrow')}</button></div>`;
+    if(!notes.length){box.innerHTML=head+'<p class="field-hint" style="padding:0 22px 18px">未來七天沒有安排。</p>';return;}
+    box.innerHTML=head+`<div class="week-list">${notes.map(n=>{
+      const isToday=n.date===from;
+      const meta=[n.startTime,n.location].filter(Boolean).join(' · ')||'全天';
+      return `<article class="week-item${isToday?' today':''}">
+        <span class="week-date">${esc(n.date.slice(5))}</span>
+        <div class="week-body"><strong>${esc(n.title)}</strong>
+          <small>${esc(meta)}${n.note?` · ${esc(n.note)}`:''}</small></div>
+        ${isToday?'<span class="week-today">今天</span>':''}
+      </article>`;}).join('')}</div>`;
+  }catch(e){box.innerHTML='';}
+}
+async function homeworkPage(){beginView();page='homework';assignmentContext=null;mockContext=null;currentQuestion=null;stopQuizClock();shell();const target=viewTarget();const teacher=S.user?.role==='teacher';$('#main').innerHTML=heading('ASSIGN · REVIEW · GROW',teacher?'作業與成績':'我的作業',teacher?'把每次作業，轉化為可跟進的學習回饋。':'領取作業，寫下思考，每次提交都有下一步建議。');if(!S.user){$('#main').innerHTML+=`<section class="hero homework-hero"><div><p class="eyebrow">MathPath · 數學作業研習室</p><h2>從一份作業，看見每個學生的進步。</h2><p>教師佈置 · 學生手寫 · AI 建議批閱 · 成績統計 · 個別學習建議</p><button class="primary" id="homework-login">登入作業空間 ${icon('arrow')}</button><button class="secondary" data-page="bank" style="margin-left:10px">瀏覽題庫</button><button class="secondary" data-page="guide" style="margin-left:10px">新手上路</button></div></section><div class="homework-features">${[['import','教師佈置作業','建立班級，選題與截止日期，發布後保存題目及學生名單快照。'],['practice','學生寫下思考','逐題保存文字或手稿，完成所有題目後正式提交。'],['growth','批閱與學習建議','AI 接入後可建議評分；教師覆核，分數與每次建議分開記錄。']].map(([i,t,p])=>`<section class="panel"><div class="feature-icon">${icon(i)}</div><h2>${t}</h2><p>${p}</p></section>`).join('')}</div><div class="import-warning" style="margin-top:22px">資料保存在網站伺服器；實際位置由管理員確認。作業分數與 AI 建議須教師覆核；自主練習可即時核對文字答案，未接入 AI 的手稿待批閱。</div>`;$('#homework-login').onclick=()=>loginModal(homeworkPage);return;}$('#main').innerHTML+='<section class="panel">'+empty('正在讀取作業','從網站伺服器讀取班級與作業紀錄。')+'</section>';try{const data=await api('/api/homework');if(!viewMatches(target))return;HW=data;const a=HW.assignments;const submitted=teacher?a.reduce((n,v)=>n+v.submittedCount,0):a.filter(v=>v.myStatus==='submitted').length;$('#main').innerHTML=`<div class="fade-in">${heading('ASSIGN · REVIEW · GROW',teacher?'作業與成績':'我的作業',teacher?'佈置、批阅、統計，用具體建議引導每個學生的下一步。':'依次完成作業，回看回饋，再鞏固最需要練習的知識點。',teacher?`<button class="secondary" id="import-calendar">${icon('upload')}匯入行事曆</button><button class="secondary" id="class-grades">${icon('list')}學生成績</button><button class="secondary" id="create-class">${icon('bank')}建立班級</button><button class="primary" id="create-assignment">${icon('import')}佈置作業</button>`:`<button class="secondary" id="refresh-homework">${icon('undo')}重新整理</button>`)}${homeworkMetrics([['已發布作業',a.length,'只顯示你有權查看的作業'],['我的班級',HW.classes.length,teacher?'班級名單由教師建立':'作業只對指定學生開放'],[teacher?'正式提交人次':'已正式提交',submitted,'逐題保存後，需正式提交作業'],['AI 批閱服務',S.ai.configured?'已配置':'待接入',S.ai.configured?'建議分數仍需教師覆核':'手稿待批 · 文字規則核對']])}${teacher?'<section class="panel" id="week-ahead" style="margin-bottom:18px"></section>':''}<div class="homework-layout"><section><div class="section-head"><h2>${teacher?'已發布的作業':'待辦與已交作業'}</h2><div class="section-head-actions"><span class="small-text">${a.length} 份</span><button class="secondary" data-page="calendar">${icon('calendar')}查看日曆</button></div></div><div class="assignment-list">${a.length?a.map(v=>`<article class="panel assignment-card"><div class="assignment-card-head"><span class="assignment-icon">${icon('file')}</span><div><span class="badge">${esc(v.className)}</span><h2>${mathText(v.title)}</h2></div><span class="badge ${new Date(v.dueAt)<new Date()?'l2':''}">${teacher?'已發布':statusText(v.myStatus)}</span></div><div class="assignment-meta"><span>${v.questionCount} 題 · ${v.totalPoints} 分</span><span>${icon('clock')}截止 ${dateText(v.dueAt)}</span>${teacher?'':dueSoonBadge(v.dueAt,v.myStatus)}</div><div class="assignment-bottom"><span class="small-text">${v.kind==='quiz'?'測驗':'作業'}${v.durationMinutes?` · 限時 ${v.durationMinutes} 分鐘`:''} · ${teacher?`已交 ${v.submittedCount} / ${v.studentCount} 人 · 全題已評 ${v.gradedCount} 人`:`目前已評得分 ${scoreText(v.myScore)} · 教師確認 ${scoreText(v.myConfirmedScore)}`}</span>${!teacher&&S.attempts.some(a=>a.assignmentId===v.id&&isNewReview(a))?NEW_REVIEW_BADGE:''}<div style="display:flex;gap:8px;align-items:center">${teacher&&(v.teacherId===S.user?.id||S.user?.isOwner)?`<button class="text-button" data-del-assign="${v.id}" data-del-title="${esc(v.title)}" style="font-size:calc(13px*var(--fs));color:#b8453b">刪除</button>`:''}<button class="primary" ${teacher?'data-results':'data-assignment'}="${v.id}">${teacher?'查看成績與建議':v.myStatus==='submitted'?'查看批閱與建議':'開始／繼續作業'} ${icon('arrow')}</button></div></div></article>`).join(''):`<section class="panel">${empty(teacher?'還沒有發布作業':'目前沒有指派給你的作業',teacher?'先建立班級，再从題庫選題發布。':'教師發布到你的班級後，作業會出現在這裡。')}</section>`}</div></section><aside class="right-stack">${teacher?'':weakTopicPanel()}<section class="panel right-panel"><h2>${icon('bank')}${teacher?'我的班級':'所屬班級'}</h2>${HW.classes.length?HW.classes.map(c=>{const canDel=teacher&&(c.teacherId===S.user?.id||S.user?.isOwner);return `<div class="class-mini"><div><strong>${esc(c.name)}</strong><span>${c.studentCount} 位學生</span></div><div style="display:flex;gap:10px">${teacher?`<button class="text-button" data-manage-class="${c.id}" style="font-size:calc(13px*var(--fs))">管理學生</button>`:''}${canDel?`<button class="text-button" data-del-class="${c.id}" data-del-name="${esc(c.name)}" style="font-size:calc(13px*var(--fs));color:#b8453b">刪除</button>`:''}</div></div>`;}).join(''):'<p class="field-hint">尚未加入班級。</p>'}${teacher?`<button class="text-button" id="class-manage-link" style="font-size:calc(14px*var(--fs))">建立班級 ${icon('arrow')}</button>`:''}</section><section class="panel right-panel tip-panel"><h2>${icon('bulb')}分數不是學習的終點</h2><p>每次作答都有學習建議：<br>做得好的地方 → 需要留意 → 下一步練習。<br><br>待批阅不當零分；AI 建議分與教師確認分分開保存。</p></section><section class="panel right-panel"><h2>${icon('lock')}運行狀態</h2><p class="field-hint">資料保存在網站伺服器；實際位置由管理員確認。AI ${S.ai.configured?'已配置，仍需真實效果核驗':'尚未接入，不產生假評分'}。</p></section></aside></div></div>`;if(teacher){if(teacher)renderWeekAhead();
+  const calBtn=$('#import-calendar');
+  if(calBtn){
+    const picker=document.createElement('input');
+    picker.type='file';picker.id='calendar-file';picker.hidden=true;
+    picker.accept='.pdf,.docx,.xlsx,.jpg,.jpeg,.png,.webp,.heic,.heif';
+    document.body.appendChild(picker);
+    calBtn.onclick=()=>picker.click();
+    picker.onchange=async e=>{
+      const raw=e.target.files&&e.target.files[0];
+      if(!raw)return;
+      if(raw.size>15*1024*1024)return toast('檔案不可超過 15 MB。');
+      const old=calBtn.textContent;calBtn.disabled=true;calBtn.textContent='AI 分析中…';
+      try{
+        const file=await normalizeHeicFile(raw);
+        const data=await readAsDataUrl(file||raw);
+        const res=await api('/api/calendar/import',{file:data,filename:raw.name,consentExternal:S.ai.mode==='external'});
+        const added=res.added||[],skipped=res.skipped||[];
+        toast(`已加入 ${added.length} 項${skipped.length?`，${skipped.length} 項略過`:''}`);
+        if(skipped.length)console.info('略過的行事曆事項',skipped);
+        renderWeekAhead();
+      }catch(err){toast(err.message);}
+      calBtn.disabled=false;calBtn.textContent=old;picker.value='';
+    };
+  }
+  $('#create-class').onclick=createClassModal;const cgBtn=$('#class-grades');if(cgBtn)cgBtn.onclick=()=>classGradesModal();$('#class-manage-link').onclick=createClassModal;$('#create-assignment').onclick=createAssignmentModal;}else $('#refresh-homework').onclick=homeworkPage;}catch(e){if(viewMatches(target))$('#main').innerHTML+=`<div class="inline-error">${esc(e.message)}</div>`;}}
 // 建立班級：只填名稱（不必先選學生）。之後從「管理學生」加入名單。
 function createClassModal(){
   modal(`<p class="eyebrow">CLASSROOM</p><h2>建立班級</h2><p class="modal-intro">先建立班級，之後再從「管理學生」加入名單。每份作業發布時會保存收件名單快照。</p><form id="class-form"><div class="form-field"><label class="field-label" for="class-name">班級名稱</label><input id="class-name" placeholder="例如：中三甲班" maxlength="100" required></div><p class="error-text" id="class-error"></p><button class="primary wide" type="submit">建立班級 ${icon('check')}</button></form>`);
