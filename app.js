@@ -3805,7 +3805,7 @@ async function papersPage(){
   const target=viewTarget();
   const qs=new URLSearchParams();
   ['q','year','grade','term'].forEach(k=>{if(paperFilter[k])qs.set(k,paperFilter[k]);});
-  const head=heading('PAPER LIBRARY','我的試卷','存好的卷可以在這裡搜尋、按年份／級別／學段篩選，一鍵把題目匯入題庫。');
+  const head=heading('PAPER LIBRARY','我的試卷','存好的卷可以在這裡搜尋、按年份／級別／學段篩選，一鍵把題目匯入題庫。',`<button class="primary" id="generate-paper">${icon('spark')}一鍵生成試卷</button>`);
   let data={papers:[],facets:{years:[],grades:[],terms:[]}};
   try{data=await api('/api/papers'+(qs.toString()?'?'+qs.toString():''));}
   catch(e){if(!viewMatches(target))return;
@@ -3845,6 +3845,8 @@ async function papersPage(){
       toast('已刪除');papersPage();
     }catch(e){toast(e.message);}
   });
+  const gp=$('#generate-paper');
+  if(gp)gp.onclick=generatePaperModal;
   $$('[data-paper-assign]').forEach(b=>b.onclick=()=>paperAssignModal(b.dataset.paperAssign));
   $$('[data-paper-docx]').forEach(b=>b.onclick=async()=>{
     const old=b.textContent;b.disabled=true;b.textContent='產生中…';
@@ -3988,6 +3990,114 @@ async function buildPaperModal(){
       toast(`已建立「${res.paper.title}」，可在「我的試卷」再下載或出作業`);
       bank();
     }catch(e){toast(e.message);btn.disabled=false;btn.textContent=old;}
+  };
+}
+// 登入紀錄：管理員看全部（含教師），一般教師只看自己班上的學生
+async function loginLogModal(){
+  let data;
+  try{data=await api('/api/logins');}catch(e){return toast(e.message);}
+  const rows=(data.events||[]).map(e=>`<tr>
+    <td>${esc(e.name)}<span class="small-text"> ${esc(e.username)}</span></td>
+    <td>${e.role==='teacher'?'教師':'學生'}</td>
+    <td>${esc(fmtWhen(e.at))}</td>
+    <td>${esc(e.ip||'—')}</td></tr>`).join('');
+  modal(`<p class="eyebrow">ACCESS LOG</p><h2>登入紀錄</h2>
+    <p class="modal-intro">${data.scope==='all'
+      ?'所有教師與學生的登入時間與 IP（最近 200 筆）。'
+      :'你班上學生的登入時間與 IP（最近 200 筆）。'}</p>
+    <div class="table-scroll"><table class="results-table">
+      <thead><tr><th>帳號</th><th>身分</th><th>登入時間</th><th>IP</th></tr></thead>
+      <tbody>${rows||'<tr><td colspan="4">還沒有登入紀錄。</td></tr>'}</tbody></table></div>`,true);
+}
+// 一鍵生成試卷：選範本 → 填範圍與配分 → AI 出題（伺服器會逐項核對）→ 排版存檔
+async function generatePaperModal(){
+  let tpls=[];
+  try{tpls=(await api('/api/paper-templates')).templates||[];}catch(e){return toast(e.message);}
+  const rangeRow=(v='')=>`<div class="range-row"><input class="range-input" value="${esc(v)}" maxlength="120" placeholder="例如：直線的傾斜角與斜率"><button type="button" class="text-button range-del" aria-label="刪除這個範圍">✕</button></div>`;
+  modal(`<p class="eyebrow">AI PAPER</p><h2>一鍵生成試卷</h2>
+    <p class="modal-intro">先上傳或選一個範本，再填測考範圍與配分。AI 出題後會逐項核對總分、題型與選項數，符合才排版存檔。</p>
+    <div class="form-field"><label class="field-label" for="gen-template">範本</label>
+      <select id="gen-template">${tpls.map(t=>`<option value="${t.id}">${esc(t.name)}</option>`).join('')}</select>
+      <button type="button" class="text-button" id="gen-upload" style="margin-top:6px">${icon('file')}上傳新範本（.docx）</button>
+      <input type="file" id="gen-tpl-file" accept=".docx" hidden>
+      ${tpls.length?'':'<p class="field-hint">還沒有範本；請先上傳一份學校的空白卷（.docx），版式會原樣沿用。</p>'}</div>
+    <div class="form-field"><label class="field-label">測考範圍</label>
+      <div id="gen-ranges">${rangeRow()}</div>
+      <button type="button" class="text-button" id="gen-add-range">＋ 增加範圍</button></div>
+    <div class="form-grid">
+      <div class="form-field"><label class="field-label" for="gen-duration">測考時間（分鐘）</label><input id="gen-duration" type="number" min="10" max="300" value="60"></div>
+      <div class="form-field"><label class="field-label" for="gen-grade">年級</label><select id="gen-grade">${['初一','初二','初三','高一','高二','高三'].map(g=>`<option>${g}</option>`).join('')}</select></div>
+      <div class="form-field"><label class="field-label" for="gen-kind">類型</label><select id="gen-kind"><option>小測</option><option selected>大測</option><option>考試</option></select></div>
+      <div class="form-field"><label class="field-label" for="gen-term">段</label><select id="gen-term"><option>第一段</option><option>第二段</option><option>第三段</option></select></div>
+      <div class="form-field"><label class="field-label" for="gen-subject">科目</label><select id="gen-subject"><option>數學</option><option>幾何</option></select></div>
+      <div class="form-field"><label class="field-label" for="gen-total">總分</label><input id="gen-total" type="number" min="10" max="300" value="100"></div>
+    </div>
+    <div class="form-field"><label class="field-label">題型要求</label>
+      <div style="display:flex;flex-wrap:wrap;gap:10px">${['選擇題','填空題','解答題','證明題','附加題'].map(t=>`<label class="checkbox-line" style="display:inline-flex;gap:5px"><input type="checkbox" class="gen-qtype" value="${t}" ${['選擇題','填空題','解答題'].includes(t)?'checked':''}>${t}</label>`).join('')}</div>
+      <div id="gen-options-row" style="margin-top:9px">選擇題選項：
+        <label class="checkbox-line" style="display:inline-flex;gap:4px;margin-right:12px"><input type="radio" name="gen-opt" value="4" checked>4 個</label>
+        <label class="checkbox-line" style="display:inline-flex;gap:4px"><input type="radio" name="gen-opt" value="5">5 個</label></div></div>
+    <p class="field-hint">總分填 110 分時，附加題固定 10 分；AI 產出後會核對，不符會自動請它重做一次。</p>
+    <p class="error-text" id="gen-error"></p>
+    <button class="primary wide" id="gen-submit">生成試卷 ${icon('spark')}</button>`,true);
+  const ranges=$('#gen-ranges');
+  // 直接在這個視窗上傳範本：不必先跳去「卷面排版」，上傳完自動選好。
+  $('#gen-upload').onclick=()=>$('#gen-tpl-file').click();
+  $('#gen-tpl-file').onchange=async e=>{
+    const file=e.target.files[0];if(!file)return;
+    const btn=$('#gen-upload');const old=btn.innerHTML;
+    btn.disabled=true;btn.innerHTML='上傳中…';
+    try{
+      const data=await fileData(file,[DOCX_MIME],12);
+      const res=await api('/api/paper-templates',{
+        name:(file.name||'').replace(/\.docx$/i,'')||'未命名範本',file:data});
+      const sel=$('#gen-template');
+      const opt=document.createElement('option');
+      opt.value=res.template.id;opt.textContent=res.template.name;
+      sel.appendChild(opt);sel.value=String(res.template.id);
+      toast('範本已上傳，可以直接生成試卷');
+    }catch(err){toast(err.message);}
+    finally{btn.disabled=false;btn.innerHTML=old;e.target.value='';}
+  };
+  $('#gen-add-range').onclick=()=>{ranges.insertAdjacentHTML('beforeend',rangeRow());};
+  ranges.addEventListener('click',e=>{
+    const del=e.target.closest('.range-del');if(!del)return;
+    if(ranges.children.length<=1)return toast('至少要有一個測考範圍。');
+    del.closest('.range-row').remove();
+  });
+  const syncOptions=()=>{
+    const on=[...document.querySelectorAll('.gen-qtype')].some(x=>x.value==='選擇題'&&x.checked);
+    $('#gen-options-row').style.display=on?'block':'none';
+  };
+  $$('.gen-qtype').forEach(x=>x.onchange=syncOptions);syncOptions();
+  $('#gen-submit').onclick=async()=>{
+    const btn=$('#gen-submit');const err=$('#gen-error');err.textContent='';
+    const tplId=Number($('#gen-template').value||0);
+    if(!tplId){err.textContent='請先上傳或選一個範本。';return;}
+    const list=[...ranges.querySelectorAll('.range-input')].map(i=>i.value.trim()).filter(Boolean);
+    if(!list.length){err.textContent='請至少填一個測考範圍。';return;}
+    const qtypes=[...document.querySelectorAll('.gen-qtype')].filter(x=>x.checked).map(x=>({type:x.value}));
+    if(!qtypes.length){err.textContent='請至少選一種題型。';return;}
+    const opt=document.querySelector('input[name=gen-opt]:checked');
+    qtypes.forEach(t=>{if(t.type==='選擇題')t.optionCount=Number(opt?opt.value:4);});
+    const old=btn.innerHTML;btn.disabled=true;btn.textContent='AI 出題中…（約 20–60 秒）';
+    try{
+      const res=await api('/api/papers/generate',{
+        templateId:Number($('#gen-template').value),
+        ranges:list,
+        duration:Number($('#gen-duration').value)||60,
+        grade:$('#gen-grade').value,
+        examKind:$('#gen-kind').value,
+        term:$('#gen-term').value,
+        subject:$('#gen-subject').value,
+        qtypes,
+        totalPoints:Number($('#gen-total').value)||100,
+        consentExternal:S.ai.mode==='external'});
+      const a=document.createElement('a');a.href=res.docx;a.download=res.filename;a.click();
+      closeModal();
+      toast(`已生成「${res.paper.title}」（${res.paper.questionCount} 題），已存進我的試卷`);
+      papersPage();
+    }catch(e){err.textContent=e.message;btn.disabled=false;btn.innerHTML=old;}
   };
 }
 // 從「我的試卷」直接出作業：用這份卷匯入題庫的那批題目。
@@ -4429,9 +4539,10 @@ function settingsPage(){page='settings';shell();$('#main').innerHTML=`<div class
 MATH_AI_MODEL=你的文字模型名稱
 MATH_AI_VISION_MODEL=你的視覺模型名稱
 MATH_AI_DRAW_MODEL=你的繪圖模型名稱（選用，留空沿用文字模型）
-MATH_AI_API_KEY=伺服器端密鑰（若需要）</pre><p class="info-note">上述是配置格式示例，並非已安裝的模型。設定後需重新啟動伺服器；真實模型須由學校部署並測試。</p></details><div class="import-warning">作業的 AI 評分只是建議，不應直接決定正式考試成績；無法辨認的手寫、複雜證明及特殊解法，必須交由教師覆核。自主練習與自助模擬測驗由 AI 即時評分並記錄分數，不需教師批閱，分數只作個人練習紀錄。</div></section><div><section class="panel settings-panel"><h2>資料保護</h2><details class="settings-details"><summary>我們如何保護資料</summary><ul><li>資料保存在網站伺服器；實際位置由管理員確認。</li><li>學生僅可讀取自己的作答；教師可查看及批閱。</li><li>手寫圖片受登入與角色權限保護。</li><li>外部 AI 作答與試卷傳送需逐次明確同意。</li><li>收藏只保存於本瀏覽器，不跨裝置同步。</li><li>正式部署需 HTTPS、存取限制與獨立學生帳戶。</li></ul></details>${S.user?.role==='teacher'?`<button class="secondary wide" id="manage-teachers" style="font-size:calc(14px*var(--fs));margin-bottom:8px">${icon('edit')}教師帳號</button><button class="secondary wide" id="manage-students" style="font-size:calc(14px*var(--fs));margin-bottom:14px">${icon('list')}學生帳號</button>`:''}${S.user?.role==='teacher'?`<button class="text-button" id="deployment-help" style="font-size:calc(14px*var(--fs))">查看啟動與內網使用方式 ${icon('arrow')}</button>`:''}</section><section class="panel settings-panel" style="margin-top:20px"><h2>帳戶密碼</h2>${S.user?`<form id="password-form"><div class="form-field"><label class="field-label" for="old-password">目前密碼</label><input id="old-password" type="password" autocomplete="current-password" required maxlength="256"></div><div class="form-field"><label class="field-label" for="new-password">新密碼（至少10字）</label><input id="new-password" type="password" autocomplete="new-password" minlength="10" maxlength="256" required></div><p class="error-text" id="password-error"></p><button class="secondary" type="submit">更新密碼 ${icon('lock')}</button></form>`:`<p class="info-note">登入後可更換演示帳戶密碼。</p><button class="secondary" data-action="login">登入帳戶</button>`}</section></div></div>${dataAdminHtml()}</div>`;if($('#deployment-help'))$('#deployment-help').onclick=deploymentHelp;if($('#ai-config-link'))$('#ai-config-link').onclick=()=>navigate('ai');if($('#manage-teachers'))$('#manage-teachers').onclick=()=>manageUsers('teacher');
+MATH_AI_API_KEY=伺服器端密鑰（若需要）</pre><p class="info-note">上述是配置格式示例，並非已安裝的模型。設定後需重新啟動伺服器；真實模型須由學校部署並測試。</p></details><div class="import-warning">作業的 AI 評分只是建議，不應直接決定正式考試成績；無法辨認的手寫、複雜證明及特殊解法，必須交由教師覆核。自主練習與自助模擬測驗由 AI 即時評分並記錄分數，不需教師批閱，分數只作個人練習紀錄。</div></section><div><section class="panel settings-panel"><h2>資料保護</h2><details class="settings-details"><summary>我們如何保護資料</summary><ul><li>資料保存在網站伺服器；實際位置由管理員確認。</li><li>學生僅可讀取自己的作答；教師可查看及批閱。</li><li>手寫圖片受登入與角色權限保護。</li><li>外部 AI 作答與試卷傳送需逐次明確同意。</li><li>收藏只保存於本瀏覽器，不跨裝置同步。</li><li>正式部署需 HTTPS、存取限制與獨立學生帳戶。</li></ul></details>${S.user?.role==='teacher'?`<button class="secondary wide" id="manage-teachers" style="font-size:calc(14px*var(--fs));margin-bottom:8px">${icon('edit')}教師帳號</button><button class="secondary wide" id="manage-students" style="font-size:calc(14px*var(--fs));margin-bottom:8px">${icon('list')}學生帳號</button><button class="secondary wide" id="login-log" style="font-size:calc(14px*var(--fs));margin-bottom:14px">${icon('clock')}登入紀錄</button>`:''}${S.user?.role==='teacher'?`<button class="text-button" id="deployment-help" style="font-size:calc(14px*var(--fs))">查看啟動與內網使用方式 ${icon('arrow')}</button>`:''}</section><section class="panel settings-panel" style="margin-top:20px"><h2>帳戶密碼</h2>${S.user?`<form id="password-form"><div class="form-field"><label class="field-label" for="old-password">目前密碼</label><input id="old-password" type="password" autocomplete="current-password" required maxlength="256"></div><div class="form-field"><label class="field-label" for="new-password">新密碼（至少10字）</label><input id="new-password" type="password" autocomplete="new-password" minlength="10" maxlength="256" required></div><p class="error-text" id="password-error"></p><button class="secondary" type="submit">更新密碼 ${icon('lock')}</button></form>`:`<p class="info-note">登入後可更換演示帳戶密碼。</p><button class="secondary" data-action="login">登入帳戶</button>`}</section></div></div>${dataAdminHtml()}</div>`;if($('#deployment-help'))$('#deployment-help').onclick=deploymentHelp;if($('#ai-config-link'))$('#ai-config-link').onclick=()=>navigate('ai');if($('#manage-teachers'))$('#manage-teachers').onclick=()=>manageUsers('teacher');
 if($('#manage-students'))$('#manage-students').onclick=()=>manageUsers('student');
-if($('#manage-users'))$('#manage-users').onclick=manageUsers;bindDataAdmin();if($('#password-form'))$('#password-form').onsubmit=async e=>{e.preventDefault();const btn=$('[type="submit"]',e.target);btn.disabled=true;try{const r=await api('/api/change-password',{oldPassword:$('#old-password').value,newPassword:$('#new-password').value});await refresh();settingsPage();toast(r.notice);}catch(err){$('#password-error').textContent=err.message;btn.disabled=false;}};}
+if($('#manage-users'))$('#manage-users').onclick=manageUsers;
+if($('#login-log'))$('#login-log').onclick=loginLogModal;bindDataAdmin();if($('#password-form'))$('#password-form').onsubmit=async e=>{e.preventDefault();const btn=$('[type="submit"]',e.target);btn.disabled=true;try{const r=await api('/api/change-password',{oldPassword:$('#old-password').value,newPassword:$('#new-password').value});await refresh();settingsPage();toast(r.notice);}catch(err){$('#password-error').textContent=err.message;btn.disabled=false;}};}
 function randomPassword(){const chars='ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';const a=new Uint32Array(12);crypto.getRandomValues(a);return[...a].map(n=>chars[n%chars.length]).join('');}
 const BULK_FIELD_NAMES={name:'姓名',username:'學號',seat:'班內號',password:'密碼'};
 const BULK_HEADERS={name:/^(姓名|名字|名稱|名称|學生|学生|name)$/i,username:/^(學號|学号|帳號|帐号|账号|登入帳號|登入帐号|username|account|login|id)$/i,seat:/^(班內號|班内号|班號|班号|座號|座号|seat|no|number)$/i,password:/^(密碼|密码|password|passwd|pass|pwd)$/i};
@@ -4779,6 +4890,7 @@ async function classGradesModal(cid){
       <td>${done} / ${total}</td>
       <td>${st.pending?`<span class="badge l2">${st.pending}</span>`:'0'}</td>
       <td>${st.averagePercent==null?'—':`${st.averagePercent}%`}</td>
+      <td>${st.lastLoginAt?esc(fmtWhen(st.lastLoginAt)):'未登入'}</td>
       <td><button class="secondary" data-stu="${st.id}">查看</button></td>
     </tr>`;
   }).join('');
@@ -4787,8 +4899,8 @@ async function classGradesModal(cid){
     <div class="form-field"><label class="field-label" for="grade-class">班級</label>
       <select id="grade-class">${classes.map(c=>`<option value="${c.id}" ${c.id===id?'selected':''}>${esc(c.name)}（${c.studentCount} 人）</option>`).join('')}</select></div>
     <div class="table-scroll"><table class="results-table">
-      <thead><tr><th>學生</th><th>已交</th><th>待批</th><th>平均</th><th></th></tr></thead>
-      <tbody>${rows||'<tr><td colspan="5">這個班還沒有學生。</td></tr>'}</tbody>
+      <thead><tr><th>學生</th><th>已交</th><th>待批</th><th>平均</th><th>最後登入</th><th></th></tr></thead>
+      <tbody>${rows||'<tr><td colspan="6">這個班還沒有學生。</td></tr>'}</tbody>
     </table></div>`,true);
   $('#grade-class').onchange=e=>classGradesModal(e.target.value);
   $$('[data-stu]').forEach(b=>b.onclick=()=>{
@@ -4803,13 +4915,14 @@ function studentGradesModal(cid,st){
         ?(a.score==null?'<span class="small-text">待批</span>':`${a.score} / ${a.totalPoints}`)
         :(GRADE_STATUS[a.status]||'—')}</td>
       <td>${a.pendingCount?`<span class="badge l2">${a.pendingCount}</span>`:'0'}</td>
+      <td>${a.minutes==null?'—':`${a.minutes} 分鐘`}</td>
       <td>${a.submittedAt?esc(String(a.submittedAt).slice(0,10)):'—'}${a.late?' <span class="badge">遲交</span>':''}</td>
     </tr>`).join('');
   modal(`<h2>${esc(st.name)}</h2>
     <p class="field-hint">${st.seat?`座號 ${esc(st.seat)} · `:''}已交 ${st.submitted} 份${st.pending?` · 待批 ${st.pending} 題`:''}${st.averagePercent==null?'':` · 平均 ${st.averagePercent}%`}</p>
     <div class="table-scroll"><table class="results-table">
-      <thead><tr><th>作業</th><th>分數</th><th>待批</th><th>提交</th></tr></thead>
-      <tbody>${rows||'<tr><td colspan="4">還沒有作業。</td></tr>'}</tbody>
+      <thead><tr><th>作業</th><th>分數</th><th>待批</th><th>用時</th><th>提交</th></tr></thead>
+      <tbody>${rows||'<tr><td colspan="5">還沒有作業。</td></tr>'}</tbody>
     </table></div>
     <button class="secondary" id="back-grades" style="margin-top:14px">← 回班級總表</button>`,true);
   $('#back-grades').onclick=()=>classGradesModal(cid);

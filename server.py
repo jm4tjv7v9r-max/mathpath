@@ -1725,6 +1725,121 @@ def ai_answer_draft(app, body):
     return {**answer, 'qtype': qtype, 'options': options, 'method': 'AI 生成'}
 
 
+PAPER_QTYPES = ('選擇題', '填空題', '解答題', '證明題', '附加題')
+PAPER_GEN_PROMPT = (
+    '你是資深中學數學科老師，要為指定範圍出一份試卷。只回 JSON：'
+    '{sections:[{title:str,qtype:str,questions:[{stem:str,options:[str],marks:number,'
+    'answer:str,steps:[str]}]}],totalPoints:number}。'
+    '規則：①每個分部只放一種題型，title 用「一、選擇題」這種格式；'
+    '②所有題目 marks 加總必須剛好等於指定總分；'
+    '③選擇題 options 數量必須跟指定的一致（不要加 A. 前綴）；'
+    '④若總分是 110 分，必須有「附加題」分部且剛好 10 分；'
+    '⑤題目要覆蓋指定測考範圍，難度符合年級；'
+    '⑥數學式一律 LaTeX，行內用 $...$；'
+    '⑦answer 寫最終答案，steps 寫 2 至 4 步關鍵過程。'
+)
+
+
+def paper_generation_spec(body):
+    """整理前端送來的出卷要求（範圍、題型、配分…）。"""
+    ranges = [text(v, '測考範圍', 120) for v in (body.get('ranges') or []) if str(v).strip()]
+    if not ranges:
+        fail(400, '請至少填一個測考範圍。')
+    if len(ranges) > 8:
+        fail(400, '測考範圍最多 8 個。')
+    total = number(body.get('totalPoints'), '總分', 10, 300, True)
+    qtypes = []
+    for item in body.get('qtypes') or []:
+        if not isinstance(item, dict):
+            continue
+        kind = item.get('type')
+        if kind not in PAPER_QTYPES:
+            fail(400, f'題型只能是：{"、".join(PAPER_QTYPES)}。')
+        entry = {'type': kind}
+        if kind == '選擇題':
+            entry['optionCount'] = number(item.get('optionCount', 4), '選項數量', 4, 5, True)
+        qtypes.append(entry)
+    if not qtypes:
+        fail(400, '請至少選一種題型。')
+    spec = {'ranges': ranges, 'totalPoints': total, 'qtypes': qtypes,
+            'duration': number(body.get('duration', 60), '測考時間（分鐘）', 10, 300, True),
+            'grade': text(body.get('grade') or '', '年級', 20, empty=True),
+            'examKind': text(body.get('examKind') or '大測', '類型', 20),
+            'term': text(body.get('term') or '第一段', '段', 20),
+            'subject': text(body.get('subject') or '數學', '科目', 20)}
+    if spec['examKind'] not in ('小測', '大測', '考試'):
+        fail(400, '類型只能是小測、大測或考試。')
+    if spec['term'] not in ('第一段', '第二段', '第三段'):
+        fail(400, '段只能是第一段、第二段或第三段。')
+    if spec['subject'] not in ('數學', '幾何'):
+        fail(400, '科目只能是數學或幾何。')
+    return spec
+
+
+def paper_generation_check(spec, sections):
+    """把 AI 產出的卷面跟要求逐項核對；回問題清單（空＝全部合格）。"""
+    problems = []
+    total = sum((q.marks or 0) for sec in sections for q in sec.questions)
+    if abs(total - spec['totalPoints']) > 0.01:
+        problems.append(f'總分是 {total:g} 分，要求 {spec["totalPoints"]} 分')
+    wanted = [t['type'] for t in spec['qtypes']]
+    have = [sec.title for sec in sections]
+    for kind in wanted:
+        if not any(kind in (title or '') for title in have):
+            problems.append(f'缺少「{kind}」分部')
+    if spec['totalPoints'] == 110:
+        extra = [sec for sec in sections if '附加' in (sec.title or '')]
+        if not extra:
+            problems.append('110 分要有附加題')
+        elif abs(sum((q.marks or 0) for q in extra[0].questions) - 10) > 0.01:
+            problems.append('附加題要剛好 10 分')
+    for t in spec['qtypes']:
+        if t['type'] != '選擇題':
+            continue
+        for sec in sections:
+            if '選擇' not in (sec.title or ''):
+                continue
+            for q in sec.questions:
+                if len(q.options) != t['optionCount']:
+                    problems.append(f'選擇題「{(q.stem or "")[:12]}…」有 {len(q.options)} 個選項，'
+                                    f'要求 {t["optionCount"]} 個')
+    return problems
+
+
+def ai_generate_paper(app, spec, fix=None):
+    """請 AI 出卷；回（分部清單, 問題清單）。"""
+    want = '、'.join(
+        f'{t["type"]}（{"、".join([str(t["optionCount"]) + " 個選項"] if t["type"] == "選擇題" else [])}）'
+        if t['type'] == '選擇題' else t['type'] for t in spec['qtypes'])
+    instruction = PAPER_GEN_PROMPT
+    if fix:
+        instruction += '上一次的結果有這些問題，請修正：' + '；'.join(fix[:6])
+    result = app.ai.call(instruction, {
+        '年級': spec['grade'], '類型': spec['examKind'], '段': spec['term'],
+        '科目': spec['subject'], '測考範圍': spec['ranges'], '測考時間（分鐘）': spec['duration'],
+        '題型要求': want, '總分': spec['totalPoints']})
+    sections = []
+    for sec in (result.get('sections') if isinstance(result, dict) else None) or []:
+        if not isinstance(sec, dict):
+            continue
+        rows = []
+        for q in sec.get('questions') or []:
+            if not isinstance(q, dict):
+                continue
+            stem = str(q.get('stem') or '').strip()
+            if not stem:
+                continue
+            options = [str(o).strip() for o in (q.get('options') or []) if str(o).strip()]
+            try:
+                marks = float(q.get('marks') or 0)
+            except (TypeError, ValueError):
+                marks = 0
+            rows.append(paper_format.Question(stem=stem, marks=marks or None, options=options))
+        if rows:
+            sections.append(paper_format.Section(title=str(sec.get('title') or '') or None, questions=rows))
+    return sections, paper_generation_check(spec, sections)
+
+
 def ai_rubric_draft(app, q):
     """只為「已有答案」的題目生成評分標準，不重寫答案與詳解。
 
@@ -2748,6 +2863,18 @@ def db_timeout():
     except ValueError:
         return 30.0
     return min(300.0, max(1.0, value))
+
+
+def db_journal():
+    """SQLite 日誌模式；MATH_DB_JOURNAL 可覆寫（預設 WAL）。
+
+    少數環境（唯讀暫存目錄、或安全策略禁止刪除 `-journal` 檔）會讓 SQLite
+    連建表都回 `disk I/O error`。把這個變數設成 `OFF`／`MEMORY` 就不會產生
+    journal 檔，可以照常讀寫——代價是當機時失去回滾保護，只建議在測試或
+    可重建的資料上使用。
+    """
+    mode = (os.environ.get('MATH_DB_JOURNAL') or 'WAL').strip().upper()
+    return mode if mode in ('WAL', 'MEMORY', 'DELETE', 'TRUNCATE', 'PERSIST', 'OFF') else 'WAL'
 
 
 def ai_review_limit():
@@ -4218,6 +4345,9 @@ class Application:
                                    validate_image=validate_image)
         # initialize() 必須由 main() 在背景執行緒呼叫，避免 Render 健康檢查 timeout。
         # initialize() 完成前 /api/health 回 starting，其它端點會因 DB 未就緒回 503。
+        # 由 MathServer 依 MATH_PUBLIC_ORIGIN 覆寫；直接呼叫 dispatch() 的測試
+        # 沒有 MathServer 包裝，這裡先給安全預設值，避免 AttributeError。
+        self.secure_cookie = False
         self.initialized = False
         self.init_lock = threading.Lock()
         self.init_error = None
@@ -4230,6 +4360,11 @@ class Application:
         db.row_factory = sqlite3.Row
         db.execute('PRAGMA foreign_keys=ON')
         db.execute('PRAGMA busy_timeout=10000')
+        mode = db_journal()
+        if mode != 'WAL':
+            # WAL 會寫在資料庫檔頭、所有連線共用；其它模式是「每條連線」生效，
+            # 所以這裡要逐條連線重設，否則又會冒出 journal 檔。
+            db.execute(f'PRAGMA journal_mode={mode}')
         try:
             with db:
                 yield db
@@ -4238,7 +4373,7 @@ class Application:
 
     def initialize(self):
         with self.db() as db:
-            db.execute('PRAGMA journal_mode=WAL')
+            db.execute(f'PRAGMA journal_mode={db_journal()}')
             db.executescript('''
                 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS users (
@@ -4272,6 +4407,13 @@ class Application:
                     data BLOB NOT NULL,
                     spec TEXT NOT NULL DEFAULT '{}',
                     created_at TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS login_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    role TEXT NOT NULL,
+                    at TEXT NOT NULL,
+                    ip TEXT NOT NULL DEFAULT '');
+                CREATE INDEX IF NOT EXISTS login_events_user ON login_events(user_id, id DESC);
                 CREATE TABLE IF NOT EXISTS competitions (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     title TEXT NOT NULL,
@@ -5613,6 +5755,46 @@ class Application:
                           'terms': distinct('term')}
             return {'papers': [paper_public(r) for r in rows], 'facets': facets}, headers
 
+        if method == 'POST' and path == '/api/papers/generate':
+            # 一鍵生成試卷：範本 + 範圍 + 題型配分 → AI 出題 → 逐項核對 → 用範本排版存檔
+            self.teacher(user)
+            if not self.ai.configured:
+                fail(409, '尚未設定 AI 模型；請先在「模型端點」設定後再生成。')
+            self.ai.consent(body.get('consentExternal'))
+            spec = paper_generation_spec(body)
+            template_id = number(body.get('templateId'), '範本', 1, 10 ** 18, True)
+            with self.db() as db:
+                tpl = db.execute('SELECT * FROM paper_templates WHERE id=?', (template_id,)).fetchone()
+                if tpl is None:
+                    fail(404, '找不到這個範本。')
+                if tpl['owner_id'] != user['id'] and not self.is_owner(user, db):
+                    fail(403, '只有建立者或管理員可以使用這個範本。')
+            sections, problems = ai_generate_paper(self, spec)
+            if problems:
+                sections, problems = ai_generate_paper(self, spec, fix=problems)
+            if problems:
+                fail(422, 'AI 產出的卷面不符合要求：' + '；'.join(problems[:4]) + '。可以再按一次生成。')
+            title = f"{spec['grade'] or ''}{spec['examKind']}（{spec['term']}）".strip() or 'AI 生成試卷'
+            try:
+                output, report = paper_format.render_with_sections(tpl['data'], sections, title)
+            except SystemExit as exc:
+                fail(409, str(exc) or '這個範本裡找不到題目段落，請換一個範本。')
+            except Exception as exc:
+                ai_log(f'生成試卷排版失敗：{exc}')
+                fail(422, '用這個範本排不起來，請換一個範本。')
+            with self.db() as db:
+                cur = db.execute(
+                    'INSERT INTO papers(owner_id,title,year,grade,term,sections,'
+                    'template_id,question_count,created_at) VALUES(?,?,?,?,?,?,?,?,?)',
+                    (user['id'], title, '', spec['grade'], spec['term'],
+                     json.dumps(paper_format.sections_to_dict(sections), ensure_ascii=False),
+                     template_id, sum(len(x.questions) for x in sections), utc_now()))
+                row = db.execute('SELECT * FROM papers WHERE id=?', (cur.lastrowid,)).fetchone()
+            return {'paper': paper_public(row),
+                    'docx': 'data:' + DOCX_MIME + ';base64,' + base64.b64encode(output).decode(),
+                    'filename': title.replace('/', '／')[:60] + '.docx',
+                    'stats': report, 'spec': spec}, headers
+
         if method == 'POST' and path == '/api/papers/from-questions':
             # 反向組卷：從題庫挑題直接變成一份試卷（存進「我的試卷」，可下載 Word／LaTeX）
             self.teacher(user)
@@ -5858,6 +6040,12 @@ class Application:
                 db.execute('DELETE FROM sessions WHERE expires<=?', (time.time(),))
                 db.execute('INSERT INTO sessions VALUES(?,?,?)',
                            (hashlib.sha256(token.encode()).hexdigest(), row['id'], time.time() + seconds))
+                # 登入紀錄：管理員可查教師、教師可查學生（只留最近 500 筆）
+                db.execute('INSERT INTO login_events(user_id,role,at,ip) VALUES(?,?,?,?)',
+                           (row['id'], row['role'], utc_now(), str(ip or '')[:64]))
+                db.execute('DELETE FROM login_events WHERE user_id=? AND id NOT IN '
+                           '(SELECT id FROM login_events WHERE user_id=? ORDER BY id DESC LIMIT 500)',
+                           (row['id'], row['id']))
             headers['Set-Cookie'] = self.cookie(token, seconds=seconds)
             # 與 /api/session 一致：前端靠 isOwner 決定要不要顯示管理員功能。
             login_user = self.user_public(row)
@@ -6158,6 +6346,28 @@ class Application:
                 fail(400, 'economy 必須是布林值。')
             self.set_economy(body['economy'])
             return {'active': self.ai.public(), 'economy': not self.ai.thinking}, headers
+        if method == 'GET' and path == '/api/logins':
+            # 管理員：所有教師的登入紀錄；教師：自己班學生的登入紀錄。
+            with self.db() as db:
+                if self.is_owner(user, db):
+                    rows = db.execute(
+                        'SELECT e.at,e.ip,u.name,u.username,u.role FROM login_events e '
+                        "JOIN users u ON u.id=e.user_id WHERE u.role IN ('teacher','student') "
+                        'ORDER BY e.id DESC LIMIT 200').fetchall()
+                    scope = 'all'
+                else:
+                    self.teacher(user)
+                    rows = db.execute(
+                        'SELECT e.at,e.ip,u.name,u.username,u.role FROM login_events e '
+                        'JOIN users u ON u.id=e.user_id WHERE u.role=\'student\' AND EXISTS '
+                        '(SELECT 1 FROM class_students cs JOIN classes c ON c.id=cs.class_id '
+                        ' WHERE cs.user_id=u.id AND c.teacher_id=?) '
+                        'ORDER BY e.id DESC LIMIT 200', (user['id'],)).fetchall()
+                    scope = 'students'
+            return {'scope': scope,
+                    'events': [{'at': r['at'], 'ip': r['ip'], 'name': r['name'],
+                                'username': r['username'], 'role': r['role']} for r in rows]}, headers
+
         if method == 'GET' and path == '/api/contests':
             # 數學比賽清單：公開資料（不含個人資料），訪客也看得到。
             with self.db() as db:

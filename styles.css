@@ -47,6 +47,10 @@ html[data-theme=night] .topbar-links{border-left-color:#2a3437}.local-badge{font
 .mock-actions{display:flex;align-items:center;gap:8px}
 /* 數學比賽：右側地區徽章與官方連結 */
 /* 教師首頁「近七日事項」：今天那筆放大加粗換色 */
+/* 一鍵生成試卷：可增減的測考範圍 */
+.range-row{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+.range-row .range-input{flex:1;min-width:0}
+.range-row .range-del{color:#b8453b;font-size:calc(14px*var(--fs));padding:0 4px}
 .week-list{padding:0 22px 18px;display:flex;flex-direction:column;gap:8px}
 .week-item{display:flex;align-items:center;gap:12px;padding:10px 12px;
   border:1px solid var(--border);border-radius:10px;background:var(--paper)}

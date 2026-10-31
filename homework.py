@@ -900,14 +900,17 @@ class Homework:
                 if classroom['teacher_id'] != user['id']:
                     self.fail(403, '只能查看自己班級的成績。')
                 roster = db.execute(
-                    'SELECT u.id,u.name,u.username,u.seat FROM class_students s '
+                    'SELECT u.id,u.name,u.username,u.seat, '
+                    '(SELECT MAX(e.at) FROM login_events e WHERE e.user_id=u.id) AS last_login '
+                    'FROM class_students s '
                     'JOIN users u ON u.id=s.user_id WHERE s.class_id=? ORDER BY '
                     "CASE WHEN u.seat IS NULL OR trim(u.seat)='' THEN 1 ELSE 0 END, "
                     'CAST(u.seat AS INTEGER), u.seat, u.name, u.id', (cid,)).fetchall()
                 assignments = db.execute('SELECT * FROM assignments WHERE class_id=? ORDER BY id DESC',
                                          (cid,)).fetchall()
                 slots = {r['id']: {'id': r['id'], 'name': r['name'], 'username': r['username'],
-                                   'seat': r['seat'], 'assignments': [], 'gradedPoints': 0.0,
+                                   'seat': r['seat'], 'lastLoginAt': r['last_login'],
+                                   'assignments': [], 'gradedPoints': 0.0,
                                    'gradedMax': 0.0, 'pending': 0, 'submitted': 0, 'notStarted': 0}
                          for r in roster}
                 for a in assignments:
@@ -924,6 +927,16 @@ class Homework:
                         submitted_at = recip['submitted_at'] if recip else None
                         status = ('submitted' if submitted_at else
                                   ('in_progress' if own else 'not_started'))
+                        # 完成用時＝第一次作答到正式提交（沒提交就留空）
+                        minutes = None
+                        if submitted_at and own:
+                            try:
+                                first = min(datetime.fromisoformat(
+                                    str(r['submitted_at']).replace('Z', '+00:00')) for r in own)
+                                last = datetime.fromisoformat(str(submitted_at).replace('Z', '+00:00'))
+                                minutes = max(0, round((last - first).total_seconds() / 60))
+                            except (ValueError, TypeError):
+                                minutes = None
                         slot['assignments'].append({
                             'id': a['id'], 'title': a['title'], 'dueAt': a['due_at'],
                             'totalPoints': total, 'status': status,
@@ -931,6 +944,7 @@ class Homework:
                             'confirmedScore': sums['confirmedScore'],
                             'pendingCount': sums['pendingCount'],
                             'answeredCount': len(own), 'submittedAt': submitted_at,
+                            'minutes': minutes,
                             'late': bool(recip['late']) if recip else False})
                         if status == 'submitted':
                             slot['submitted'] += 1

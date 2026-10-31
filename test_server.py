@@ -2533,6 +2533,112 @@ class AIFailureTests(unittest.TestCase):
             self.assertEqual(server.public_origins_from_env(), ['https://mathpath-s5hr.onrender.com'])
 
 
+class LoginAuditTests(unittest.TestCase):
+    """登入紀錄：管理員看得到教師，教師只看得到自己班上的學生。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.app = server.Application(self.tmp.name, server.ROOT)
+        self.app.initialize()
+        self.teacher = self.login('teacher', 'Teach1234!')
+        self.student = self.login('student', 'Math1234!')
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def login(self, username, password, ip='10.0.0.7'):
+        payload, _ = self.app.dispatch('POST', '/api/login',
+                                       {'username': username, 'password': password},
+                                       None, None, ip)
+        return payload['user']
+
+    def call(self, method, path, body=None, user=None, ip='10.0.0.7'):
+        return self.app.dispatch(method, path, body or {}, user, None, ip)[0]
+
+    def test_login_writes_an_event_with_ip(self):
+        out = self.call('GET', '/api/logins', user=self.teacher)
+        self.assertEqual(out['scope'], 'all')
+        mine = [e for e in out['events'] if e['username'] == 'teacher']
+        self.assertTrue(mine, '登入後要留下紀錄')
+        self.assertEqual(mine[0]['ip'], '10.0.0.7')
+
+    def test_owner_sees_teachers_teacher_sees_only_students(self):
+        owner_view = self.call('GET', '/api/logins', user=self.teacher)
+        roles = {e['role'] for e in owner_view['events']}
+        self.assertIn('teacher', roles, '管理員要能看到教師登入')
+        # 另建一位非管理員教師（沒有班級）→ 只看得到學生
+        with self.app.db() as db:
+            db.execute("INSERT INTO users(username,name,role,password) VALUES(?,?,?,?)",
+                       ('teacher9', '另一位老師', 'teacher',
+                        db.execute('SELECT password FROM users WHERE username=?', ('teacher',)).fetchone()[0]))
+            other = dict(db.execute('SELECT * FROM users WHERE username=?', ('teacher9',)).fetchone())
+        view = self.call('GET', '/api/logins', user=other)
+        self.assertEqual(view['scope'], 'students')
+        self.assertTrue(all(e['role'] == 'student' for e in view['events']),
+                        '一般教師只看得到學生登入')
+
+
+class PaperGenerateTests(unittest.TestCase):
+    """一鍵生成試卷：AI 產出後要逐項核對（總分、題型、選項數、110 分附加題）。"""
+
+    def setUp(self):
+        import io as _io
+        from docx import Document
+        self.tmp = tempfile.TemporaryDirectory()
+        self.app = server.Application(self.tmp.name, server.ROOT)
+        self.app.initialize()
+        with self.app.db() as db:
+            self.teacher = dict(db.execute("SELECT * FROM users WHERE role='teacher' LIMIT 1").fetchone())
+        doc = Document()
+        doc.add_paragraph('中三數學 小測')
+        doc.add_paragraph('一、選擇題')
+        doc.add_paragraph('1.　題目一（　　）')
+        doc.add_paragraph('2.　題目二（　　）')
+        buf = _io.BytesIO()
+        doc.save(buf)
+        import base64
+        self.tpl = self.call('POST', '/api/paper-templates', {
+            'name': '測試範本',
+            'file': 'data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,'
+                    + base64.b64encode(buf.getvalue()).decode()})['template']
+        self.app.ai.configured = True
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def call(self, method, path, body=None):
+        return self.app.dispatch(method, path, body or {}, self.teacher, None, '127.0.0.1')[0]
+
+    def test_generates_and_checks_110_marks(self):
+        self.app.ai.call = lambda *a, **k: {'sections': [
+            {'title': '一、選擇題', 'qtype': '選擇題', 'questions': [
+                {'stem': '題目一', 'options': ['A', 'B', 'C', 'D'], 'marks': 50, 'answer': 'A', 'steps': []},
+                {'stem': '題目二', 'options': ['A', 'B', 'C', 'D'], 'marks': 50, 'answer': 'B', 'steps': []}]},
+            {'title': '二、附加題', 'qtype': '附加題', 'questions': [
+                {'stem': '附加題', 'options': [], 'marks': 10, 'answer': 'x', 'steps': []}]}]}
+        out = self.call('POST', '/api/papers/generate', {
+            'templateId': self.tpl['id'], 'ranges': ['直線的傾斜角'], 'duration': 60,
+            'grade': '初三', 'examKind': '大測', 'term': '第一段', 'subject': '幾何',
+            'qtypes': [{'type': '選擇題', 'optionCount': 4}, {'type': '附加題'}],
+            'totalPoints': 110})
+        self.assertEqual(out['paper']['questionCount'], 3)
+        self.assertEqual(out['paper']['grade'], '初三')
+        self.assertTrue(out['docx'].startswith('data:' + server.DOCX_MIME))
+        self.assertEqual(out['paper']['term'], '第一段')
+
+    def test_rejects_when_marks_do_not_match(self):
+        self.app.ai.call = lambda *a, **k: {'sections': [
+            {'title': '一、選擇題', 'qtype': '選擇題', 'questions': [
+                {'stem': '題目一', 'options': ['A', 'B'], 'marks': 50, 'answer': 'A', 'steps': []}]}]}
+        with self.assertRaises(server.APIError) as ctx:
+            self.call('POST', '/api/papers/generate', {
+                'templateId': self.tpl['id'], 'ranges': ['範圍'], 'duration': 60,
+                'grade': '初三', 'examKind': '大測', 'term': '第一段', 'subject': '數學',
+                'qtypes': [{'type': '選擇題', 'optionCount': 4}], 'totalPoints': 100})
+        self.assertEqual(ctx.exception.status, 422)
+        self.assertIn('不符合要求', ctx.exception.message)
+
+
 class ContestTests(unittest.TestCase):
     """數學比賽清單：內建整理資料 + 每週排程寫入（要權杖）。"""
 
