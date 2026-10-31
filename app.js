@@ -1180,6 +1180,7 @@ function practicePickerHtml(){
   const typePool=practicePool(true);
   const available=[...new Set(typePool.map(q=>q.qtype||'解答題'))];
   const pool=practicePool(false);
+  const ready=practiceRangeReady();
   const attempted=new Set(S.attempts.map(a=>a.questionId));
   const fresh=pool.filter(q=>!attempted.has(q.id));
   const preview=pool.slice(0,8).map(q=>`<button class="practice-range-row" data-pr-q="${q.id}">
@@ -1197,11 +1198,13 @@ function practicePickerHtml(){
       <div class="form-field"><label class="field-label" for="pr-qtype">題型</label>
         <select id="pr-qtype"><option value="">全部題型</option>${available.map(t=>`<option value="${esc(t)}"${practiceRange.qtype===t?' selected':''}>${esc(t)}</option>`).join('')}</select></div>
     </div>
-    <p class="field-hint">${pool.length
-      ? `符合條件 ${pool.length} 題${fresh.length?`，其中 ${fresh.length} 題還沒練過`:''}。「開始練習」會優先挑沒練過的題目。`
-      : '目前題庫沒有符合這個範圍的題目，請放寬章節或題型。'}</p>
+    <p class="field-hint">${!ready
+      ? '先選章節、子分類（該章節有子分類時）與題型，再按「開始練習」；想直接練就按「隨機一題」。'
+      : pool.length
+        ? `符合條件 ${pool.length} 題${fresh.length?`，其中 ${fresh.length} 題還沒練過`:''}。「開始練習」會優先挑沒練過的題目。`
+        : '目前題庫沒有符合這個範圍的題目，請放寬章節或題型。'}</p>
     <div class="practice-setup-actions">
-      <button class="primary" id="pr-start"${pool.length?'':' disabled'}>開始練習 ${icon('arrow')}</button>
+      <button class="primary" id="pr-start"${ready&&pool.length?'':' disabled'}>開始練習 ${icon('arrow')}</button>
       <button class="secondary" id="pr-random"${pool.length?'':' disabled'}>隨機一題</button>
     </div>
     ${preview?`<div class="practice-range-list"><p class="panel-sub">這個範圍的題目（點選可直接開始）</p>${preview}</div>`:''}
@@ -1223,9 +1226,17 @@ function bindPracticePicker(){
   const rand=$('#pr-random');if(rand)rand.onclick=()=>practiceStart(true);
   $$('[data-pr-q]').forEach(b=>b.onclick=()=>openQuestion(Number(b.dataset.prQ)));
 }
+// 「開始練習」要先選好章節（有子分類的話也要選）與題型；「隨機一題」不受限制。
+function practiceRangeReady(){
+  const topic=practiceRange.topic;
+  if(!topic)return false;
+  const subs=[...new Set((S.questions||[]).filter(q=>q.topic===topic).map(q=>q.subtopic).filter(Boolean))];
+  return (!subs.length||!!practiceRange.subtopic)&&!!practiceRange.qtype;
+}
 function practiceStart(random){
   const pool=practicePool(false);
   if(!pool.length)return toast('目前沒有符合這個範圍的題目。');
+  if(!random&&!practiceRangeReady())return toast('請先選好章節、子分類與題型；想直接練可以按「隨機一題」。');
   if(random)return openQuestion(pool[Math.floor(Math.random()*pool.length)].id);
   const attempted=new Set(S.attempts.map(a=>a.questionId));
   const fresh=pool.filter(q=>!attempted.has(q.id));
@@ -2955,7 +2966,7 @@ function recordsPage(){page='mistakes';shell();if(!S.user)return loginModal(reco
   const filtered=S.attempts.filter(a=>historyFilter==='all'||historyFilter==='pending'&&a.status==='pending'||historyFilter==='wrong'&&a.status==='graded'&&a.score<a.maxScore||historyFilter==='saved'&&bookmarks.has(a.questionId));// 教師批閱時用「畫面上這份清單」當待批佇列，存檔後一路批到完。
 // 建議覆核的題目排前面：教師一打開就先看到最需要判斷的那幾題（其餘順序不變）。
 const ordered=teacher?[...filtered].sort((x,y)=>(y.reviewFlags?.length?1:0)-(x.reviewFlags?.length?1:0)):filtered;
-const reviewQueue=teacher?ordered.map(x=>x.id).join(','):'';$('#main').innerHTML=`<div class="fade-in">${heading(teacher?'REVIEW & FEEDBACK':'REFLECT & IMPROVE',teacher?'作答批閱':'我的錯題本',teacher?'看見學生的推導，用簡短回饋引導下一步。':'錯題不是終點。回看思路，再用相似題鞏固理解。',`<button class="secondary" id="refresh-records">${icon('undo')}重新整理</button>`)}<div class="history-filters">${[['all',teacher?'全部作答':'全部紀錄'],['wrong','需要鞏固'],['pending','等待批閱'],['saved','已收藏題目']].map(([id,t])=>`<button data-history="${id}" class="${historyFilter===id?'active':''}">${t}</button>`).join('')}</div><section class="panel records-panel">${filtered.length?filtered.map(a=>`<article class="record"><div class="record-icon">${icon(a.status==='pending'?'clock':a.score<a.maxScore?'mistakes':'check')}</div><div class="record-main"><strong>${esc(a.questionTitle)}</strong> <span class="badge">${esc(a.topic)}</span>${teacher&&a.reviewFlags?.length?'<span class="badge review-flag">建議覆核</span>':''}${!teacher&&isNewReview(a)?NEW_REVIEW_BADGE:''}${teacher&&!a.assignmentId&&!a.mockId?'<span class="badge self-practice">自主練習 · 不需批閱</span>':''}<p>${mathText(a.feedback)}</p>${teacher?`<details class="record-advice"><summary>學習建議與推薦題目</summary>${suggestionCard(a.suggestion)}</details>`:suggestionCard(a.suggestion)}<small>${esc(new Date(a.submittedAt).toLocaleString('zh-HK'))}${teacher&&a.student?' · '+esc(a.student.name):''} · ${teacher&&!a.assignmentId&&!a.mockId?'學生自主練習 · 不計入作業成績':a.teacherReviewed?'教師已覆核':a.gradingMethod==='awaiting-review'?'已提交 · 等待教師批閱':a.gradingMethod==='rule-final'?'規則核對 · 非步驟評分':a.gradingMethod==='ai-practice'?'AI 即時評分 · 不需教師批閱':a.gradingMethod==='ai-advisory'?'AI 建議 · 未教師覆核':'等待教師'}</small><div class="record-actions">${teacher?'':`<button class="secondary" data-qid="${a.questionId}">再練一次 ${icon('arrow')}</button>`}${teacher&&!a.assignmentId&&!a.mockId?`<button class="secondary" data-review="${a.id}" data-review-view="1">查看作答</button>`:`<button class="${teacher?'primary':'secondary'}" data-review="${a.id}" data-review-queue="${reviewQueue}">${teacher?'查看與批閱':'查看作答'}</button>`}</div></div><div class="record-score">${a.status==='pending'?'待批閱':`${a.score} <small>/ ${a.maxScore} 分</small>`}</div></article>`).join(''):empty(historyFilter==='wrong'?'目前沒有需鞏固的題目':'還沒有作答紀錄',historyFilter==='pending'?'提交手寫作答後，可在這裡查看批閱進度。':'開始一道練習，讓思考留下足跡。',`${teacher?`<button class="secondary" data-page="bank">前往數學題庫 ${icon('arrow')}</button>`:`<button class="primary" data-action="start">開始練習 ${icon('arrow')}</button>`}`)}</section></div>`;$('#refresh-records').onclick=async()=>{try{await refresh();recordsPage();toast('已讀取最新批閱紀錄。');}catch(e){toast(e.message);}};}
+const reviewQueue=teacher?ordered.map(x=>x.id).join(','):'';$('#main').innerHTML=`<div class="fade-in">${heading(teacher?'REVIEW & FEEDBACK':'REFLECT & IMPROVE',teacher?'作答批閱':'我的錯題本',teacher?'看見學生的推導，用簡短回饋引導下一步。':'錯題不是終點。回看思路，再用相似題鞏固理解。',`<button class="secondary" id="refresh-records">${icon('undo')}重新整理</button>`)}<div class="history-filters">${[['all',teacher?'全部作答':'全部紀錄'],['wrong','需要鞏固'],['pending','等待批閱'],['saved','已收藏題目']].map(([id,t])=>`<button data-history="${id}" class="${historyFilter===id?'active':''}">${t}</button>`).join('')}</div><section class="panel records-panel">${filtered.length?filtered.map(a=>`<article class="record"><div class="record-icon">${icon(a.status==='pending'?'clock':a.score<a.maxScore?'mistakes':'check')}</div><div class="record-main"><strong>${esc(a.questionTitle)}</strong> <span class="badge">${esc(a.topic)}</span>${teacher&&a.reviewFlags?.length?'<span class="badge review-flag">建議覆核</span>':''}${!teacher&&isNewReview(a)?NEW_REVIEW_BADGE:''}${teacher&&!a.assignmentId&&!a.mockId?'<span class="badge self-practice">自主練習 · 不需批閱</span>':''}<p>${mathText(a.feedback)}</p>${teacher?`<details class="record-advice"><summary>學習建議與推薦題目</summary>${suggestionCard(a.suggestion)}</details>`:suggestionCard(a.suggestion)}<small>${esc(new Date(a.submittedAt).toLocaleString('zh-HK'))}${teacher&&a.student?' · '+esc(a.student.name):''} · ${teacher&&!a.assignmentId&&!a.mockId?'學生自主練習 · 不計入作業成績':a.teacherReviewed?'教師已覆核':a.gradingMethod==='awaiting-review'?'已提交 · 等待教師批閱':a.gradingMethod==='rule-final'?'規則核對 · 非步驟評分':a.gradingMethod==='ai-practice'?'AI 即時評分 · 不需教師批閱':a.gradingMethod==='ai-advisory'?'AI 建議 · 未教師覆核':'等待教師'}</small><div class="record-actions">${teacher?'':`<button class="secondary" data-qid="${a.questionId}">再練一次 ${icon('arrow')}</button>`}${teacher&&!a.assignmentId&&!a.mockId?`<button class="secondary" data-review="${a.id}" data-review-view="1">查看作答</button>`:`<button class="${teacher?'primary':'secondary'}" data-review="${a.id}" data-review-queue="${reviewQueue}">${teacher?'查看與批閱':'查看作答'}</button>`}</div></div><div class="record-score">${a.status==='pending'?'待批閱':`${a.score} <small>/ ${a.maxScore} 分</small>`}</div></article>`).join(''):empty(historyFilter==='wrong'?'目前沒有需鞏固的題目':'還沒有作答紀錄',historyFilter==='pending'?'提交手寫作答後，可在這裡查看批閱進度。':'開始一道練習，讓思考留下足跡。',`${teacher?`<button class="secondary" data-page="bank">前往數學題庫 ${icon('arrow')}</button>`:''}`)}</section></div>`;$('#refresh-records').onclick=async()=>{try{await refresh();recordsPage();toast('已讀取最新批閱紀錄。');}catch(e){toast(e.message);}};}
 // ── AI 判定印章與批語：貼在手寫稿上，但絕不遮住手寫內容 ──
 // 先把圖片縮成小畫布做「墨水圖」，找出哪些格子有筆跡；印章與批語只放在沒有筆跡的
 // 空白處（找不到空白處就不畫在圖上，仍可在下方文字清單看到），因此不會壓住學生的字。
@@ -4589,7 +4600,12 @@ if(b.id==='open-math-editor'){openMathEditor();return;}
       .then(r=>{$('#paper-result').innerHTML=paperResultHtml(r.grade);toast(`已更新：${r.grade.score} / 100`);})
       .catch(err=>{b.disabled=false;toast(err.message);});
     return;
-  }if(b.dataset.page)return navigate(b.dataset.page);if(b.dataset.assignment)return assignmentPage(Number(b.dataset.assignment));if(b.dataset.mock)return mockExamPage(Number(b.dataset.mock));if(b.dataset.mockQ)return openMockQuestion(Number(b.dataset.mockQ));if(b.dataset.results)return resultsPage(Number(b.dataset.results));if(b.dataset.skipQ)return skipQuestionFromList(b.dataset.skipQ);
+  }if(b.dataset.page)return navigate(b.dataset.page);if(b.dataset.assignment)return assignmentPage(Number(b.dataset.assignment));if(b.dataset.mock)return mockExamPage(Number(b.dataset.mock));
+if(b.dataset.mockDel){
+  const id=Number(b.dataset.mockDel);
+  if(!confirm('刪除這場未完成的模擬測驗？已作答的內容會一併清除。'))return;
+  return api(`/api/mock/${id}/delete`,{}).then(()=>{toast('已刪除這場模擬測驗。');return mockPage();}).catch(e=>toast(e.message));
+}if(b.dataset.mockQ)return openMockQuestion(Number(b.dataset.mockQ));if(b.dataset.results)return resultsPage(Number(b.dataset.results));if(b.dataset.skipQ)return skipQuestionFromList(b.dataset.skipQ);
 if(b.dataset.assignmentQ){
   const qid=Number(b.dataset.assignmentQ);
   const done=(assignmentDetail?.attempts||[]).some(x=>x.questionId===qid);
@@ -4841,7 +4857,7 @@ ${homeworkMetrics([['已開始場數',exams.length,'模擬測驗不計入正式�
 <p class="field-hint">題目只從答案已核驗的題庫抽選；按「開始」後即開始倒數，時間到會自動封存；教師佈置的測驗須教師覆核，自助模擬測驗即時評分可評的作答。${S.ai.configured?'已接入 AI：文字與手寫作答都會即時批閱。':'未接入 AI：文字作答即時核對最終答案；手寫作答會列為待批閱，不計入總分（不會當零分）。'}</p>
 <div id="mock-error"></div><button class="primary" id="mock-start">開始模擬測驗 ${icon('arrow')}</button></section>
 <section class="panel panel-pad"><div class="section-head"><h2>我的模擬測驗紀錄</h2><span class="small-text">${exams.length} 場</span></div>
-${exams.length?`<div class="record-list">${exams.map(e=>`<article class="record"><span class="record-icon">${icon('mock')}</span><div class="record-body"><strong>${esc(e.topic)}${e.subtopic?` › ${esc(e.subtopic)}`:''} · ${e.questionCount} 題 · 限時 ${e.minutes} 分鐘</strong><p>${e.status==='submitted'?`已提交 · ${scoreText(e.score)} / ${e.maxScore} 分${e.percent!=null?`（${e.percent}%）`:''}${e.expired?' · 逾時自動提交':''}${e.pendingCount?` · ${e.pendingCount} 題待批閱`:''}`:`進行中 · 剩餘 ${fmtClock(e.remainingSeconds||0)}`}</p><small>${dateText(e.startedAt)}</small></div><button class="secondary" data-mock="${e.id}">${e.status==='submitted'?'查看結果':'繼續作答'}</button></article>`).join('')}</div>`:'<p class="field-hint">還沒有紀錄。選擇上面的條件開始第一場模擬測驗。</p>'}
+${exams.length?`<div class="record-list">${exams.map(e=>`<article class="record"><span class="record-icon">${icon('mock')}</span><div class="record-body"><strong>${esc(e.topic)}${e.subtopic?` › ${esc(e.subtopic)}`:''} · ${e.questionCount} 題 · 限時 ${e.minutes} 分鐘</strong><p>${e.status==='submitted'?`已提交 · ${scoreText(e.score)} / ${e.maxScore} 分${e.percent!=null?`（${e.percent}%）`:''}${e.expired?' · 逾時自動提交':''}${e.pendingCount?` · ${e.pendingCount} 題待批閱`:''}`:`進行中 · 剩餘 ${fmtClock(e.remainingSeconds||0)}`}</p><small>${dateText(e.startedAt)}</small></div><div class="mock-actions"><button class="secondary" data-mock="${e.id}">${e.status==='submitted'?'查看結果':'繼續作答'}</button>${e.status==='submitted'?'':`<button class="text-button" data-mock-del="${e.id}" style="color:#b8453b">刪除</button>`}</div></article>`).join('')}</div>`:'<p class="field-hint">還沒有紀錄。選擇上面的條件開始第一場模擬測驗。</p>'}
 </section></div>`;
 const syncMockSub=()=>{const sel=$('#mock-subtopic');if(!sel)return;const subs=(o.subtopics||{})[$('#mock-topic').value]||[];sel.innerHTML='<option value="">全部子分類</option>'+subs.map(v=>`<option>${esc(v)}</option>`).join('');};$('#mock-topic').onchange=syncMockSub;syncMockSub();
 $('#mock-start').onclick=async()=>{const b=$('#mock-start');b.disabled=true;$('#mock-error').innerHTML='';const body={count:Number($('#mock-count').value),minutes:Number($('#mock-minutes').value)};const topic=$('#mock-topic').value,level=$('#mock-level').value,qtype=$('#mock-qtype').value;if(topic)body.topic=topic;const sub=$('#mock-subtopic')?$('#mock-subtopic').value:'';if(sub)body.subtopic=sub;if(level)body.level=Number(level);if(qtype)body.qtype=qtype;const request=viewTarget();try{const r=await api('/api/mock',body);if(!viewMatches(request))return;toast('模擬測驗已開始，請把握時間。');mockExamPage(r.exam.id);}catch(e){if(!viewMatches(request))return;$('#mock-error').innerHTML=`<div class="inline-error">${esc(e.message)}</div>`;b.disabled=false;}};}

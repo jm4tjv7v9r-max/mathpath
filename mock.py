@@ -204,6 +204,20 @@ class MockExams:
                     'attempts': attempts, 'report': report,
                     'notice': '模擬測驗作答紀錄只供你本人查看；教師不會用於正式評分。'}
 
+        if method == 'POST' and action == 'delete':
+            # 未完成的模擬測驗可以刪掉；已提交的是成績紀錄，不給刪。
+            if user['role'] != 'student':
+                self.fail(403, '只有學生可以刪除自己的模擬測驗。')
+            with self.app.db() as db:
+                db.execute('BEGIN IMMEDIATE')
+                row = self._exam(db, eid, user)
+                if row['submitted_at']:
+                    self.fail(409, '已提交的模擬測驗是成績紀錄，不能刪除。')
+                db.execute('DELETE FROM attempts WHERE mock_id=?', (eid,))
+                db.execute('DELETE FROM mock_questions WHERE exam_id=?', (eid,))
+                db.execute('DELETE FROM mock_exams WHERE id=?', (eid,))
+            return {'deleted': eid}
+
         if method == 'POST' and action == 'submit':
             self.fields(body, ())
             with self.app.db() as db:
@@ -236,7 +250,7 @@ class MockExams:
     @staticmethod
     def _match(path):
         import re
-        m = re.fullmatch(r'/api/mock/([1-9]\d{0,17})(?:/(submit))?', path)
+        m = re.fullmatch(r'/api/mock/([1-9]\d{0,17})(?:/(submit|delete))?', path)
         return (int(m[1]), m[2]) if m else None
 
     def options(self, db):

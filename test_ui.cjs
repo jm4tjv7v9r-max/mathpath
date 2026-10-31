@@ -1796,18 +1796,29 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
     ['全部章節','一元二次方程','函數'],'自主練習應可選章節');
   assert.match(await page.locator('#pr-count').innerText(),/3 題符合/);
   assert.equal(await page.locator('#pr-subtopic').isDisabled(),true,'未選章節時子分類應停用');
+  // 還沒選範圍時不能開始練習，但「隨機一題」可以
+  assert.equal(await page.locator('#pr-start').isDisabled(),true,'未選範圍時不能按開始練習');
+  assert.equal(await page.locator('#pr-random').isDisabled(),false,'隨機一題不受範圍限制');
   await page.locator('#pr-topic').selectOption('一元二次方程');
   await page.locator('#pr-subtopic').waitFor();
   assert.equal(await page.locator('#pr-subtopic').isDisabled(),false,'選了章節後子分類應可用');
   assert.deepEqual((await page.locator('#pr-subtopic option').allInnerTexts()).map(t=>t.trim()),
     ['全部子分類','因式分解法'],'子分類應隨章節連動');
+  assert.equal(await page.locator('#pr-start').isDisabled(),true,'還沒選子分類與題型時仍不能開始');
+  await page.locator('#pr-subtopic').selectOption('因式分解法');
   await page.locator('#pr-qtype').selectOption('選擇題');
+  assert.equal(await page.locator('#pr-start').isDisabled(),false,'章節／子分類／題型都選好才能開始');
   assert.match(await page.locator('#pr-count').innerText(),/1 題符合/,'題型篩選應生效');
   assert.equal(await page.locator('[data-pr-q]').count(),1);
   // 換章節後原本的題型已不存在，應自動放寬而不是顯示 0 題
   await page.locator('#pr-topic').selectOption('函數');
   await page.locator('#pr-count').waitFor();
   assert.match(await page.locator('#pr-count').innerText(),/1 題符合/,'換章節應自動放寬不合用的題型');
+  const subSel=page.locator('#pr-subtopic');
+  if(!(await subSel.isDisabled())&&(await subSel.locator('option').count())>1){
+    await subSel.selectOption({index:1});
+    await page.locator('#pr-qtype').selectOption({index:1});
+  }
   await page.locator('#pr-start').click();
   await page.locator('#answer-area').waitFor({timeout:8000});
   assert.match(await page.locator('#main').innerText(),/一次函數求值/,'應開啟符合範圍的題目');
@@ -2654,6 +2665,15 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   await page.locator('.record-actions [data-qid]').first().waitFor({timeout:8000});
   assert.match(await page.locator('.record-actions').first().innerText(),/再練一次/,'學生的錯題本仍要能再練一次');
   console.log('PASS: 教師作答批閱不顯示「再練一次」（學生的錯題本仍保留）');
+  // 錯題本沒有錯題時，不要引導學生「開始練習」
+  const emptyMistakes=await page.evaluate(()=>{
+    const old=S.attempts; S.attempts=[]; recordsPage();
+    const text=document.querySelector('#main').innerText;
+    const hasCta=[...document.querySelectorAll('#main button')].some(b=>/開始練習/.test(b.textContent));
+    S.attempts=old; return {hasCta,text:text.slice(0,80)};
+  });
+  assert.equal(emptyMistakes.hasCta,false,'沒有錯題時不該出現「開始練習」按鈕');
+  console.log('PASS: 錯題本沒有錯題時不引導開始練習');
 
   // 日曆：同一份作業的「發布」與「截止」是兩筆事件，
   // 不該被數成兩份作業、也不該看起來像同一份作業重複列在好幾天。

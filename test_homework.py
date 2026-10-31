@@ -1547,6 +1547,31 @@ class HomeworkTests(unittest.TestCase):
         self.assertEqual(result['report']['answeredCount'], 1)
         self.assertIsNotNone(result['report']['suggestion']['nextStep'])
 
+    def test_unfinished_mock_can_be_deleted(self):
+        """未完成的模擬測驗可以刪掉（連同已作答的紀錄）。"""
+        started = self.mock(count=2, minutes=10)
+        eid, questions = started['exam']['id'], started['questions']
+        self.call('POST', '/api/attempts',
+                  {'questionId': questions[0]['id'], 'answerText': '6', 'mockId': eid})
+        out = self.call('POST', f'/api/mock/{eid}/delete')
+        self.assertEqual(out['deleted'], eid)
+        self.assertEqual([e['id'] for e in self.call('GET', '/api/mock')['exams']], [])
+        self.error(404, 'GET', f'/api/mock/{eid}')
+        with self.app.db() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM attempts WHERE mock_id=?',
+                                        (eid,)).fetchone()[0], 0, '作答紀錄要一起清掉')
+
+    def test_submitted_mock_cannot_be_deleted(self):
+        started = self.mock(count=1, minutes=10)
+        eid = started['exam']['id']
+        self.call('POST', '/api/attempts',
+                  {'questionId': started['questions'][0]['id'], 'answerText': '6', 'mockId': eid})
+        self.mock_submit(eid)
+        self.error(409, 'POST', f'/api/mock/{eid}/delete')
+        # 別人的測驗也不能刪
+        other = self.mock(count=1, minutes=10)
+        self.error(404, 'POST', f"/api/mock/{other['exam']['id']}/delete", user=self.other)
+
     def test_mock_exam_rbac_ownership_and_question_scope(self):
         started = self.mock(topic='集中趨勢與離差', count=2, minutes=10)
         eid, questions = started['exam']['id'], started['questions']
