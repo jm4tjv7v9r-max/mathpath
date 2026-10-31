@@ -4524,7 +4524,11 @@ async function manageUsers(focus='all'){try{const {users,ownerId}=await api('/ap
 const teachers=users.filter(u=>u.role==='teacher'),students=users.filter(u=>u.role==='student');
 const canAddTeacher=!!S.user?.isOwner;
 const headHtml=`<p class="eyebrow">ACCOUNTS</p><h2>${focus==='teacher'?'教師帳號':focus==='student'?'學生帳號':'帳號管理'}</h2>
-<p class="modal-intro">${canAddTeacher?'管理員可建立教師帳號，並修改任何帳號；教師可建立學生帳號，並修改自己建立的學生。':'你可以建立學生帳號，並修改自己建立的學生；其他帳號只可檢視。'}</p>
+<p class="modal-intro">${focus==='teacher'
+  ?(canAddTeacher?'管理員可以建立教師帳號，並修改任何帳號。':'只有管理員可以新增教師；你可以檢視現有教師帳號。')
+  :(canAddTeacher
+    ?'建立學生帳號，或把整班名單批次匯入；姓名可以留空（以學號顯示）。'
+    :'你可以建立學生帳號，並修改自己建立的學生；其他帳號只可檢視。')}</p>
 `;
 const teacherHtml=`<p class="account-group">教師帳號（${teachers.length}）</p>
 <div class="review-answer" style="max-height:150px;overflow:auto">${teachers.map(accountRow).join('')}</div>
@@ -4870,12 +4874,35 @@ function createClassModal(){
       <div class="form-field"><label class="field-label" for="class-students">學生名單</label>
         <textarea id="class-students" class="answer-field" style="min-height:120px;font-size:calc(15px*var(--fs))"
           placeholder="每行一位：學號,姓名,班內號&#10;s3a01,陳大文,1&#10;s3a02,李小美,2"></textarea></div>
-      <div class="form-field"><label class="field-label" for="class-password">初始密碼（至少 10 字；留空會自動產生）</label>
+      <div class="form-field"><label class="field-label" for="class-password">初始密碼（至少 10 字；留空＝每人自動產生）</label>
         <input id="class-password" maxlength="256" placeholder="例如：MathPass1234" autocomplete="off"></div>
+      <div class="bulk-tools"><label class="secondary" for="class-file">${icon('upload')}上傳名單檔案</label>
+        <input id="class-file" type="file" accept=".csv,.txt,text/csv,text/plain" hidden>
+        <button class="text-button" id="class-template" type="button">${icon('file')}下載名單範本</button></div>
       <p class="field-hint">學號只接受英文字母、數字、底線、點或連字號；<strong>姓名與班內號可以留空</strong>（姓名留空就以學號顯示）。</p>
       <p class="error-text" id="class-error"></p>
       <button class="primary wide" type="submit">建立班級 ${icon('check')}</button>
     </form>`);
+  const fileInput=$('#class-file');
+  if(fileInput)fileInput.onchange=async e=>{
+    const file=e.target.files&&e.target.files[0];
+    if(!file)return;
+    if(file.size>1024*1024)return toast('名單檔案不可超過 1 MB。');
+    try{
+      const text=await new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result);r.onerror=()=>rej(new Error('讀取失敗'));r.readAsText(file,'UTF-8');});
+      $('#class-students').value=String(text||'').replace(/^\ufeff/,'');
+      toast(`已載入名單：${file.name}`);
+    }catch(err){toast(err.message);}
+    e.target.value='';
+  };
+  const tplBtn=$('#class-template');
+  if(tplBtn)tplBtn.onclick=()=>{
+    const csv='\ufeff學號,姓名,班內號\r\ns3a01,陳大文,1\r\ns3a02,李小美,2\r\n';
+    const url=URL.createObjectURL(new Blob([csv],{type:'text/csv;charset=utf-8'}));
+    const a=document.createElement('a');a.href=url;a.download='MathPath-班級名單範本.csv';
+    document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);
+    toast('已下載名單範本，可用試算表填寫後另存 CSV。');
+  };
   $('#class-form').onsubmit=async e=>{
     e.preventDefault();
     const b=$('[type=submit]',e.target);
@@ -4883,31 +4910,42 @@ function createClassModal(){
     const name=($('#class-name').value||'').trim();
     const raw=($('#class-students').value||'').trim();
     const typed=($('#class-password').value||'');
-    const password=typed||`Math${String(Math.floor(100000+Math.random()*900000))}`;
     let students=[];
     if(raw){
-      const lines=raw.split(/\r?\n/).map(x=>x.trim()).filter(x=>x&&!x.startsWith('#'));
+      // 格式：學號[,姓名][,班內號]；密碼在上面的欄位統一指定（留空＝每人自動產生）
+      let lines=raw.split(/\r?\n/).map(x=>x.trim()).filter(x=>x&&!x.startsWith('#'));
+      if(lines.length&&/學號|帳號/.test(lines[0])&&/姓名|班內號|密碼/.test(lines[0]))lines=lines.slice(1);
       const bad=[];
       students=lines.map((line,i)=>{
         const parts=line.split(/[,，;；\t]/).map(x=>x.trim());
         const username=parts[0]||'';
-        if(!/^[A-Za-z0-9_.-]{3,40}$/.test(username)){bad.push(`第 ${i+1} 行學號「${username}」格式不對`);return null;}
-        return {username,name:parts[1]||'',seat:parts[2]||'',password};
+        if(!/^[A-Za-z0-9_.-]{3,40}$/.test(username)){
+          bad.push(`第 ${i+1} 行學號「${username}」格式不對（只能是英文字母、數字、_ . -）`);
+          return null;
+        }
+        let name=parts[1]||'',seat=parts[2]||'';
+        if(!seat&&/^\d{1,3}$/.test(name)){seat=name;name='';}   // 只寫「學號,3」時當班內號
+        return {username,name,seat,password:typed||''};
       }).filter(Boolean);
-      if(bad.length){errBox.textContent=bad.slice(0,4).join('；');return;}
+      if(bad.length){errBox.innerHTML=bad.slice(0,4).map(esc).join('<br>');return;}
+      if(!students.length){errBox.textContent='名單裡沒有可用的學生。';return;}
       if(students.length>200){errBox.textContent='一次最多建立 200 位學生。';return;}
     }
     b.disabled=true;
     try{
       let created=[];
       if(students.length){
-        const out=await api('/api/users/bulk',{students});
+        const payload=students.map(x=>({...x,
+          password:x.password||`Math${String(Math.floor(100000+Math.random()*900000))}`}));
+        const out=await api('/api/users/bulk',{students:payload});
         created=out.users||[];
       }
       await api('/api/classes',{name,studentIds:created.map(u=>u.id)});
       closeModal();
       if(created.length){
-        toast(`已建立「${name}」，並加入 ${created.length} 位學生；初始密碼：${password}`);
+        toast(typed
+          ?`已建立「${name}」，並加入 ${created.length} 位學生；初始密碼：${typed}`
+          :`已建立「${name}」，並加入 ${created.length} 位學生（密碼各自自動產生，可在「學生帳號」查看／重設）`);
       }else{
         toast('班級已建立，可再到「管理學生」加入名單。');
       }
