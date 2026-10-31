@@ -1231,6 +1231,16 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   await login('teacher');
   await page.setViewportSize({width:390,height:844});
   await page.locator('#menu-btn').click();await page.locator('[data-page=homework]').first().click();await page.locator('.assignment-card').first().waitFor();assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
+  // 側欄抽屜：點側欄以外（遮罩）或按 Esc 都要收起——手機上側欄會蓋住 ☰
+  await page.locator('#menu-btn').click();
+  await page.locator('#sidebar.open').waitFor({timeout:4000});
+  await page.locator('#nav-scrim').click({position:{x:340,y:600}});
+  assert.equal(await page.evaluate(()=>document.querySelector('#sidebar').classList.contains('open')),false,'點側欄以外要收起');
+  await page.locator('#menu-btn').click();
+  await page.locator('#sidebar.open').waitFor({timeout:4000});
+  await page.keyboard.press('Escape');
+  assert.equal(await page.evaluate(()=>document.querySelector('#sidebar').classList.contains('open')),false,'按 Esc 要收起');
+  console.log('PASS: 手機側欄點外面或按 Esc 會收起');
   // ── 填空題：只有手寫／文字作答，文字作答提供數學鍵盤與即時排版預覽 ──
   await page.setViewportSize({width:1440,height:1000});
   await page.locator('#account').click();await page.locator('#logout-btn').click();await page.locator('#homework-login').waitFor();
