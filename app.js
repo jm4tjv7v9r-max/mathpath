@@ -729,15 +729,23 @@ function clearCurrentDraft(){const key=draftKey();if(key)try{sessionStorage.remo
 function clearUserDrafts(uid){try{for(let i=sessionStorage.length-1;i>=0;i--){const k=sessionStorage.key(i);if(k?.startsWith(`mathpath_draft_${uid}_`))sessionStorage.removeItem(k);}}catch{}}
 // 切換作答方式時要判斷「這一種方式有沒有內容」，有就提示會清除
 function hasProcessContent(mode){
+  const typed=()=>{
+    const fa=$('#final-answer'),pr=$('#answer-process');
+    return !!((fa&&fa.value.trim())||(pr&&pr.value.trim())||(window.answerTextDraft||'').trim());
+  };
   if(mode==='hand')return strokes.length>0;
   if(mode==='upload')return !!answerFile;
   if(mode==='choice')return !!selectedOption;
-  return !!(($('#answer-process')&&$('#answer-process').value.trim())||window.answerTextDraft);
+  return typed();   // 文字作答：連「最終答案」輸入框也算解題內容
 }
 function clearProcessForMode(mode){
   if(mode==='hand'){strokes=[];redoStrokes=[];}
   else if(mode==='upload'){answerFile=null;}
-  else if(mode==='text'){const pr=$('#answer-process');if(pr)pr.value='';window.answerTextDraft='';}
+  else if(mode==='text'){
+    const fa=$('#final-answer'),pr=$('#answer-process');
+    if(fa)fa.value='';if(pr)pr.value='';
+    window.answerTextDraft='';
+  }
 }
 // 「修改作答」：把這一題的作答整個清掉，重新寫一次
 function clearAnswerState(){
