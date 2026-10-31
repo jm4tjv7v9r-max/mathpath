@@ -1248,6 +1248,11 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   await login('teacher');
   await page.setViewportSize({width:390,height:844});
   await page.locator('#menu-btn').click();await page.locator('[data-page=homework]').first().click();await page.locator('.assignment-card').first().waitFor();assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
+  // 標題列的按鈕不能被壓成一字一行（曾經在 375px 出現「我/的/收/藏」直排）
+  const headBtns=await page.evaluate(()=>[...document.querySelectorAll('.page-heading .actions button')].map(b=>{
+    const r=b.getBoundingClientRect();return {w:Math.round(r.width),h:Math.round(r.height),t:b.textContent.trim()};}));
+  assert.ok(headBtns.length>0,'標題列應有按鈕');
+  for(const b of headBtns)assert.ok(b.h<64,`按鈕「${b.t}」被壓成多行（高 ${b.h}px）`);
   // 側欄抽屜：點側欄以外（遮罩）或按 Esc 都要收起——手機上側欄會蓋住 ☰
   await page.locator('#menu-btn').click();
   await page.locator('#sidebar.open').waitFor({timeout:4000});
