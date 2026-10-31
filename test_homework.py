@@ -1149,6 +1149,24 @@ class HomeworkTests(unittest.TestCase):
         self.assertIn('不能判斷具體錯誤', pending['suggestion']['focus'])
         self.assertEqual(pending['suggestion']['source'], 'rules')
 
+    def test_class_report_lists_students_and_scores(self):
+        """教師要能按學生查閱成績：一個班 × 每份作業，逐人列出狀態與分數。"""
+        aid = self.assignment((1,))
+        self.attempt(aid, qid=1, answer='x=2')
+        out = self.call('GET', f'/api/classes/{self.cid}/report', user=self.teacher)
+        self.assertEqual(out['class']['assignmentCount'], 1)
+        row = next(s for s in out['students'] if s['assignments'][0]['answeredCount'])
+        self.assertEqual(row['assignments'][0]['id'], aid)
+        self.assertEqual(row['assignments'][0]['status'], 'in_progress')
+        self.assertEqual(row['assignments'][0]['answeredCount'], 1)
+        self.assertEqual(row['pending'], sum(a['pendingCount'] for a in row['assignments']),
+                         '待批題數要是各份作業的總和')
+        self.assertIsNone(row['averagePercent'], '還沒提交就不算平均')
+        self.assertTrue(all('assignments' in s for s in out['students']), '每個學生都要有一列')
+
+    def test_class_report_is_owner_only(self):
+        self.error(403, 'GET', f'/api/classes/{self.cid}/report', user=self.teacher2)
+
     def test_privacy_state_attempts_images_and_reviews(self):
         aid = self.assignment((1,))
         a = self.attempt(aid, answer='', image=test_server.png_url())

@@ -229,8 +229,13 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   await page.locator('[data-assignment-q]').click();
   assert.equal(await page.locator('#hand-canvas').count(),1,'手寫解題應顯示書寫區');assert.equal(await page.locator('#math-keyboard').count(),0,'作答頁已不再有數學鍵盤');await page.locator('[data-answer-mode=text]').click();assert.equal(await page.locator('#answer-process').count(),0,'文字作答不應再出現解題步驟輸入框');await page.locator('#final-answer').fill('x=2或3');
   await page.waitForFunction(()=>sessionStorage.getItem('mathpath_draft_1_1_1')?.includes('x=2或3'));
-  await page.reload();await page.locator('[data-assignment]').first().click();await page.locator('[data-assignment-q]').click();assert.equal(await page.locator('#final-answer').inputValue(),'x=2或3');assert.equal(await page.locator('#answer-process').count(),0,'文字作答不應有解題步驟輸入框');assert.match(await page.locator('#draft-status').innerText(),/已恢復本分頁草稿/);
-  await page.locator('#account').click();await page.locator('#logout-btn').click();await page.locator('#homework-login').waitFor();assert.equal(await page.evaluate(()=>sessionStorage.getItem('mathpath_draft_1_1_1')),null);
+  // 已經作答過的題目：按「修改作答」要先確認（dialog 自動接受），確認後清掉先前的答案
+  await page.reload();await page.locator('[data-assignment]').first().click();
+  await page.locator('[data-assignment-q]').click();
+  assert.equal(await page.locator('#final-answer').inputValue(),'','修改作答後要清空先前的答案');
+  assert.match(await page.locator('#toast').innerText(),/已清除先前的作答/,'要提示已清除');
+  await page.locator('#account').click();await page.locator('#logout-btn').click();await page.locator('#homework-login').waitFor();
+  assert.equal(await page.evaluate(()=>sessionStorage.getItem('mathpath_draft_1_1_1')),null);
   await page.locator('#homework-login').click();
   await page.locator('.login-remembered').waitFor();
   assert.match(await page.locator('.login-remembered').innerText(),/student/,'應顯示已記住的登入帳戶');
@@ -2843,6 +2848,33 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   assert.equal(await firstGroup.locator('tbody tr').count(),1,'展開後列出已批的學生');
   assert.match(await firstGroup.locator('.paper-history-body').innerText(),/陳大文（座號 2）、李小明（座號 3）/,'要列出未批的是哪幾位');
   console.log('PASS: 紙本批改紀錄（按功課分組、算未批人數與名單、看得出上次批到誰）');
+  // 學生成績：教師可按學生查閱（班級總表 → 個人各份作業分數）
+  await page.route('**/api/classes/1/report', route=>route.fulfill({json:{
+    class:{id:1,name:'中三甲班',studentCount:2,assignmentCount:1},
+    students:[
+      {id:1,name:'陳大文',username:'s3a01',seat:'1',
+       assignments:[{id:9,title:'因式分解',dueAt:stamp,totalPoints:12,status:'submitted',score:10,
+         scoredPoints:10,confirmedScore:null,pendingCount:0,answeredCount:3,submittedAt:stamp,late:false}],
+       gradedPoints:10,gradedMax:12,pending:0,submitted:1,notStarted:0,averageScore:10,averagePercent:83.3},
+      {id:2,name:'李小明',username:'s3a02',seat:'2',
+       assignments:[{id:9,title:'因式分解',dueAt:stamp,totalPoints:12,status:'not_started',score:null,
+         scoredPoints:0,confirmedScore:null,pendingCount:0,answeredCount:0,submittedAt:null,late:false}],
+       gradedPoints:0,gradedMax:0,pending:0,submitted:0,notStarted:1,averageScore:null,averagePercent:null}]}}));
+  await page.locator('[data-page=homework]').first().click();
+  await page.locator('#class-grades').waitFor({timeout:8000});
+  await page.locator('#class-grades').click();
+  await page.locator('#grade-class').waitFor({timeout:8000});
+  const gradeTable=await page.locator('.modal').innerText();
+  assert.match(gradeTable,/陳大文/,'要列出每個學生');
+  assert.match(gradeTable,/83\.3%/,'要顯示平均');
+  assert.match(gradeTable,/1 \/ 1/,'要顯示已交份數');
+  await page.locator('[data-stu="1"]').click();
+  await page.locator('#back-grades').waitFor({timeout:6000});
+  assert.match(await page.locator('.modal').innerText(),/10 \/ 12/,'個人頁要看得到每份作業的分數');
+  await page.locator('#back-grades').click();
+  await page.locator('#grade-class').waitFor({timeout:6000});
+  await page.locator('[data-action=close-modal]').click();
+  console.log('PASS: 教師可按學生查閱成績（班級總表 → 個人各份作業分數）');
 
   // 卷面排版只給老師：學生側欄不該有入口，直接呼叫也只會回到題庫。
   // 新卷選了檔案要顯示檔名，右邊的 ✕ 一點就清掉（不用重新整理）。

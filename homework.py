@@ -714,6 +714,70 @@ class Homework:
                 db.execute('DELETE FROM assignment_recipients WHERE assignment_id=?', (aid,))
                 db.execute('DELETE FROM assignments WHERE id=?', (aid,))
             return {'deleted': aid, 'attempts': removed}
+        class_report = re.fullmatch(r'/api/classes/([1-9]\d{0,17})/report', path)
+        if class_report and method == 'GET':
+            # 按學生看的成績總表：一個班 × 每份作業，逐人列出已交／待批／分數。
+            self.app.teacher(user)
+            cid = int(class_report[1])
+            with self.app.db() as db:
+                classroom = db.execute('SELECT * FROM classes WHERE id=?', (cid,)).fetchone()
+                if not classroom:
+                    self.fail(404, '找不到班級。')
+                if classroom['teacher_id'] != user['id']:
+                    self.fail(403, '只能查看自己班級的成績。')
+                roster = db.execute(
+                    'SELECT u.id,u.name,u.username,u.seat FROM class_students s '
+                    'JOIN users u ON u.id=s.user_id WHERE s.class_id=? ORDER BY '
+                    "CASE WHEN u.seat IS NULL OR trim(u.seat)='' THEN 1 ELSE 0 END, "
+                    'CAST(u.seat AS INTEGER), u.seat, u.name, u.id', (cid,)).fetchall()
+                assignments = db.execute('SELECT * FROM assignments WHERE class_id=? ORDER BY id DESC',
+                                         (cid,)).fetchall()
+                slots = {r['id']: {'id': r['id'], 'name': r['name'], 'username': r['username'],
+                                   'seat': r['seat'], 'assignments': [], 'gradedPoints': 0.0,
+                                   'gradedMax': 0.0, 'pending': 0, 'submitted': 0, 'notStarted': 0}
+                         for r in roster}
+                for a in assignments:
+                    questions = self.questions(db, a['id'])
+                    total = sum(q['points'] for q in questions)
+                    latest = self.latest(db, a['id'])
+                    recips = {r['user_id']: r for r in db.execute(
+                        'SELECT user_id, submitted_at, late FROM assignment_recipients '
+                        'WHERE assignment_id=?', (a['id'],))}
+                    for uid, slot in slots.items():
+                        own = [r for r in latest if r['user_id'] == uid]
+                        sums = self.sums(own)
+                        recip = recips.get(uid)
+                        submitted_at = recip['submitted_at'] if recip else None
+                        status = ('submitted' if submitted_at else
+                                  ('in_progress' if own else 'not_started'))
+                        slot['assignments'].append({
+                            'id': a['id'], 'title': a['title'], 'dueAt': a['due_at'],
+                            'totalPoints': total, 'status': status,
+                            'score': sums['score'], 'scoredPoints': sums['totalScoredPoints'],
+                            'confirmedScore': sums['confirmedScore'],
+                            'pendingCount': sums['pendingCount'],
+                            'answeredCount': len(own), 'submittedAt': submitted_at,
+                            'late': bool(recip['late']) if recip else False})
+                        if status == 'submitted':
+                            slot['submitted'] += 1
+                        elif status == 'not_started':
+                            slot['notStarted'] += 1
+                        slot['pending'] += sums['pendingCount']
+                        if status == 'submitted' and sums['pendingCount'] == 0:
+                            slot['gradedPoints'] += sums['score']
+                            slot['gradedMax'] += total
+            students = []
+            for slot in slots.values():
+                percent = (round(slot['gradedPoints'] * 100 / slot['gradedMax'], 1)
+                           if slot['gradedMax'] else None)
+                students.append({**slot,
+                                 'averageScore': (round(slot['gradedPoints'], 1)
+                                                  if slot['gradedMax'] else None),
+                                 'averagePercent': percent})
+            return {'class': {'id': classroom['id'], 'name': classroom['name'],
+                              'studentCount': len(roster), 'assignmentCount': len(assignments)},
+                    'students': students}
+
         class_del = re.fullmatch(r'/api/classes/([1-9]\d{0,17})/delete', path)
         if method == 'POST' and class_del:
             # 刪除班級：只有建立者或管理員可以。有作業的班級先拒絕，避免作業變孤兒、
