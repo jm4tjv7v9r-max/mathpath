@@ -1729,6 +1729,13 @@ PAPER_QTYPES = ('選擇題', '填空題', '解答題', '證明題', '附加題')
 # 各題型在總分裡的預設比重：只用來把總分切給各分部，實際配分仍以挑到的題目為準。
 PAPER_QTYPE_WEIGHT = {'選擇題': 30, '填空題': 20, '解答題': 35, '證明題': 15, '附加題': 10}
 PAPER_DIFFICULTY = ('易', '中', '難')
+# 出卷的參考方向：題目用語、題型比例與難度參照哪一套課程。
+PAPER_REGIONS = ('全國', '北京', '澳門')
+PAPER_REGION_HINT = {
+    '全國': '內地通用課程標準與全國卷的命題風格，用語用內地慣用語。',
+    '北京': '北京市課程標準與北京中考／高考的命題風格，用語用內地慣用語。',
+    '澳門': '澳門課程標準與澳門學校測考慣用語（例如「求值」「化簡」與港澳數學用語）。',
+}
 PAPER_LEVEL_NAME = {1: '易', 2: '中', 3: '難'}
 PAPER_GEN_PROMPT = (
     '你是資深中學數學科老師，要為指定範圍出試卷題目。只回 JSON：'
@@ -1738,7 +1745,7 @@ PAPER_GEN_PROMPT = (
     '②所有題目 marks 加總必須剛好等於指定總分（先把配分算好再寫題目，不要最後才湊）；'
     '③選擇題 options 數量必須跟指定的一致（不要加 A. 前綴）；'
     '④若總分是 110 分，必須有「附加題」分部且剛好 10 分；'
-    '⑤題目要覆蓋指定測考範圍，難度按指定比例（易：中：難）分配；'
+    '⑤題目要覆蓋指定測考範圍，難度按指定比例（易：中：難）分配，用語與命題風格依「參考方向」；'
     '⑥每題都要標 difficulty，只能是「易」「中」「難」；'
     '⑦數學式一律 LaTeX，行內用 $...$；填空題的空白一律寫成 ______（六條底線），'
     '不要用 \\underline{\\hspace{2cm}} 這類排版指令；'
@@ -1782,8 +1789,8 @@ def paper_generation_spec(body):
     raw_difficulty = body.get('difficulty')
     difficulty = {}
     if raw_difficulty is None:
-        # 沒填就用一般測考常見的 6:3:1。
-        difficulty = {'易': 6, '中': 3, '難': 1}
+        # 沒填就用一般測考常見的 7:2:1。
+        difficulty = {'易': 7, '中': 2, '難': 1}
     else:
         if not isinstance(raw_difficulty, dict):
             fail(400, '難度比例格式不正確。')
@@ -1797,13 +1804,16 @@ def paper_generation_spec(body):
             'examKind': text(body.get('examKind') or '大測', '類型', 20),
             'term': text(body.get('term') or '第一段', '段', 20),
             'subject': text(body.get('subject') or '數學', '科目', 20),
-            'source': source, 'difficulty': difficulty, 'extraMarks': extra_marks}
+            'source': source, 'difficulty': difficulty, 'extraMarks': extra_marks,
+            'region': text(body.get('region') or '澳門', '參考方向', 20)}
     if spec['examKind'] not in ('練習', '小測', '大測', '考試'):
         fail(400, '類型只能是練習、小測、大測或考試。')
     if spec['term'] not in ('第一段', '第二段', '第三段'):
         fail(400, '段只能是第一段、第二段或第三段。')
     if spec['subject'] not in ('數學', '幾何'):
         fail(400, '科目只能是數學或幾何。')
+    if spec['region'] not in PAPER_REGIONS:
+        fail(400, f'參考方向只能是：{"、".join(PAPER_REGIONS)}。')
     return spec
 
 
@@ -1855,8 +1865,24 @@ def _paper_level_order(buckets, ratio):
         yield queues[best].pop(0)
 
 
+OPTION_LABEL_RE = re.compile(r'^\s*[(（]?[A-Ha-h]\s*[.、)．]\s*')
+
+
+def label_options(options):
+    """選項一律加上 A.／B.／C.… 前綴。
+
+    AI 有時自己加了、有時沒有；題庫來的也可能帶著舊標號。先拆掉再加，
+    才不會出現「A. A. …」。卷面沒有 A/B/C 的話，學生根本不知道要答哪一個。
+    """
+    out = []
+    for i, raw in enumerate(options or []):
+        body = OPTION_LABEL_RE.sub('', str(raw).strip(), count=1)
+        out.append(f'{OPTION_LETTERS[i] if i < len(OPTION_LETTERS) else i + 1}. {body}')
+    return out
+
+
 def paper_question_from_bank(q):
-    options = [f'{"ABCDEFGHIJ"[i]}. {opt}' for i, opt in enumerate(q.get('options') or [])]
+    options = label_options(q.get('options'))
     row = paper_format.Question(stem=(q.get('content') or q.get('title') or '').strip(),
                                 marks=float(q.get('points') or 0) or None, options=options)
     row.difficulty = PAPER_LEVEL_NAME.get(q.get('level'), '中')
@@ -2041,6 +2067,8 @@ def ai_generate_paper(app, spec, target, types=None, fix=None, note=None):
         '年級': spec['grade'], '類型': spec['examKind'], '段': spec['term'],
         '科目': spec['subject'], '測考範圍': spec['ranges'], '測考時間（分鐘）': spec['duration'],
         '題型要求': want, '總分': target,
+        '參考方向': spec.get('region') or '澳門',
+        '方向說明': PAPER_REGION_HINT.get(spec.get('region') or '澳門', ''),
         '難度比例（易：中：難）': f"{ratio['易']}：{ratio['中']}：{ratio['難']}"}
     if note:
         payload['補充說明'] = note
@@ -2056,7 +2084,7 @@ def ai_generate_paper(app, spec, target, types=None, fix=None, note=None):
             stem = str(q.get('stem') or '').strip()
             if not stem:
                 continue
-            options = [str(o).strip() for o in (q.get('options') or []) if str(o).strip()]
+            options = label_options([str(o).strip() for o in (q.get('options') or []) if str(o).strip()])
             try:
                 marks = float(q.get('marks') or 0)
             except (TypeError, ValueError):
@@ -2178,7 +2206,7 @@ def ai_generate_one(app, kind, marks, option_count, ranges, difficulty, avoid):
     stem = str(result.get('stem') or '').strip() if isinstance(result, dict) else ''
     if not stem:
         fail(502, 'AI 沒有產出題目，請再按一次「更換」。')
-    options = [str(o).strip() for o in (result.get('options') or []) if str(o).strip()]
+    options = label_options([str(o).strip() for o in (result.get('options') or []) if str(o).strip()])
     if kind == '選擇題':
         if len(options) != option_count:
             fail(502, f'AI 產生的選項是 {len(options)} 個，不是要求的 {option_count} 個；請再按一次「更換」。')

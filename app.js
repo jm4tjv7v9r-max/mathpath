@@ -3769,6 +3769,8 @@ const PAPER_GRADE_ALIAS={初一:'中一',初二:'中二',初三:'中三',高一:
 // 出卷的年級選項：高中分普通班／職業班，兩者課程不同，出卷要分開。
 const GEN_GRADES=['初一','初二','初三',
   '高一（普通班）','高一（職業班）','高二（普通班）','高二（職業班）','高三（普通班）','高三（職業班）'];
+// 出卷的參考方向：題目用語與命題風格依哪一套課程（後端 PAPER_REGIONS 要一致）。
+const PAPER_REGIONS=['全國','北京','澳門'];
 // 「高一（職業班）」→「高一」：入題庫時仍用「中四」這種統一寫法。
 const paperGradeBase=g=>String(g||'').replace(/[（(][^）)]*[）)]/g,'').trim();
 const bankGrade=g=>{const base=paperGradeBase(g);return PAPER_GRADES.includes(base)?base:(PAPER_GRADE_ALIAS[base]||'中三');};
@@ -4048,6 +4050,7 @@ async function generatePaperModal(){
       <div class="form-field"><label class="field-label" for="gen-kind">類型</label><select id="gen-kind">${['練習','小測','大測','考試'].map(k=>`<option ${k==='大測'?'selected':''}>${k}</option>`).join('')}</select></div>
       <div class="form-field"><label class="field-label" for="gen-term">段</label><select id="gen-term"><option>第一段</option><option>第二段</option><option>第三段</option></select></div>
       <div class="form-field"><label class="field-label" for="gen-subject">科目</label><select id="gen-subject"><option>數學</option><option>幾何</option></select></div>
+      <div class="form-field"><label class="field-label" for="gen-region">參考方向</label><select id="gen-region">${PAPER_REGIONS.map(r=>`<option ${r==='澳門'?'selected':''}>${r}</option>`).join('')}</select></div>
       <div class="form-field"><label class="field-label" for="gen-total">總分</label><input id="gen-total" type="number" min="10" max="300" value="100"></div>
     </div>
     <div class="gen-block" style="margin-top:14px">
@@ -4066,8 +4069,8 @@ async function generatePaperModal(){
           <label><input type="radio" name="gen-source" value="ai">全部由 AI 出題</label></div></div>
       <div class="gen-block"><p class="field-label">難度比例（易：中：難，合共 10）</p>
         <div class="gen-diff">
-          <input id="gen-diff-easy" type="number" min="0" max="10" value="6" aria-label="易的比例"><span>：</span>
-          <input id="gen-diff-mid" type="number" min="0" max="10" value="3" aria-label="中的比例"><span>：</span>
+          <input id="gen-diff-easy" type="number" min="0" max="10" value="7" aria-label="易的比例"><span>：</span>
+          <input id="gen-diff-mid" type="number" min="0" max="10" value="2" aria-label="中的比例"><span>：</span>
           <input id="gen-diff-hard" type="number" min="0" max="10" value="1" aria-label="難的比例">
           <span class="small-text gen-diff-sum" id="gen-diff-sum">合共 10</span></div></div>
     </div>
@@ -4156,7 +4159,8 @@ async function generatePaperModal(){
     const source=(document.querySelector('input[name=gen-source]:checked')||{}).value||'bank';
     return {templateId:tplId,ranges:list,duration:Number($('#gen-duration').value)||60,
             grade:$('#gen-grade').value,examKind:$('#gen-kind').value,term:$('#gen-term').value,
-            subject:$('#gen-subject').value,qtypes,totalPoints:total,difficulty,source,
+            subject:$('#gen-subject').value,region:$('#gen-region').value,
+            qtypes,totalPoints:total,difficulty,source,
             consentExternal:S.ai.mode==='external'};
   };
 

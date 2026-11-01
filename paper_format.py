@@ -719,6 +719,10 @@ def _render_into(tpl, sections: list[Section], title: str | None = None,
             _fill(np, [_heading_text(tpl_title, s.title, s.questions)], math_as_text)
         lines = lines_by_index[index] if index < len(lines_by_index) and lines_by_index[index] \
             else default_lines
+        # 選擇題／填空題的分數寫在分部標題（「每題 4 分，共 32 分」）就好，
+        # 每題前面再插一次「（4 分）」會很吵；解答題、證明題、附加題才逐題標分。
+        objective = any(k in (s.title or '') for k in ('選擇', '填空'))
+        section_show_marks = show_marks and not (objective and heading_marks)
 
         for q in s.questions:
             np = _clone(tpl, q_proto._p, sectpr)
@@ -726,7 +730,7 @@ def _render_into(tpl, sections: list[Section], title: str | None = None,
                 _fill(np, [f'{number}{punct}{sep}{q.stem}', _marks_text(marks_proto, q.marks)], math_as_text)
                 if marks_tab is not None:
                     np.paragraph_format.tab_stops.add_tab_stop(marks_tab, WD_TAB_ALIGNMENT.RIGHT)
-            elif q.marks is not None and show_marks:
+            elif q.marks is not None and section_show_marks:
                 _fill(np, [f'{number}{punct}{_marks_text("（0 分）", q.marks)}{sep}{q.stem}'], math_as_text)
             else:
                 _fill(np, [f'{number}{punct}{sep}{q.stem}'], math_as_text)

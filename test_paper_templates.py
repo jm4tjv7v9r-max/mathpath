@@ -977,6 +977,60 @@ class PaperLayoutTests(unittest.TestCase):
         self.assertNotIn('\t', rows[2], '最後一行只剩一個選項')
         self.assertIn('E.', rows[2])
 
+    def test_objective_sections_hide_per_question_marks(self):
+        """選擇題／填空題的分數寫在分部標題就好；解答題才逐題標分。"""
+        doc = Document()
+        doc.add_paragraph('測試中學 2026 年度第一段高一級(普通班)數學科大測一')
+        doc.add_paragraph('一、單項選擇題：（每題 4 分，共 4 分）')
+        doc.add_paragraph('1.（4 分）　題目（　　）')
+        doc.add_paragraph('A. 1\tB. 2\tC. 3\tD. 4')
+        doc.add_paragraph('二、解答題：（每題 8 分，共 8 分）')
+        doc.add_paragraph('9.（8 分）　題目')
+        buf = io.BytesIO()
+        doc.save(buf)
+        sections = [
+            paper_format.Section(title='一、選擇題', questions=[
+                paper_format.Question(stem='題目甲（　　）', marks=4,
+                                      options=['A. 1', 'B. 2', 'C. 3', 'D. 4'])]),
+            paper_format.Section(title='二、填空題', questions=[
+                paper_format.Question(stem='直徑為 ______ cm。', marks=4)]),
+            paper_format.Section(title='三、解答題', questions=[
+                paper_format.Question(stem='求 $x$。', marks=8)]),
+        ]
+        raw, _ = paper_format.render_with_sections(buf.getvalue(), sections, '高一 大測')
+        texts = [p.text for p in Document(io.BytesIO(raw)).paragraphs]
+        self.assertIn('1.\u3000題目甲（\u3000\u3000）', texts, '選擇題不應在題號前顯示分數')
+        self.assertFalse(any('1.（4 分）' in t for t in texts), '選擇題不應逐題標分')
+        self.assertFalse(any('2.（4 分）' in t for t in texts), '填空題不應逐題標分')
+        self.assertTrue(any(t.startswith('3.（8 分）') for t in texts), '解答題要逐題標分')
+
+    def test_objective_sections_hide_per_question_marks(self):
+        """選擇題／填空題的分數寫在分部標題就好；解答題才逐題標分。"""
+        doc = Document()
+        doc.add_paragraph('測試中學 2026 年度第一段高一級(普通班)數學科大測一')
+        doc.add_paragraph('一、單項選擇題：（每題 4 分，共 4 分）')
+        doc.add_paragraph('1.（4 分）　題目（　　）')
+        doc.add_paragraph('A. 1\tB. 2\tC. 3\tD. 4')
+        doc.add_paragraph('二、解答題：（每題 8 分，共 8 分）')
+        doc.add_paragraph('9.（8 分）　題目')
+        buf = io.BytesIO()
+        doc.save(buf)
+        sections = [
+            paper_format.Section(title='一、選擇題', questions=[
+                paper_format.Question(stem='題目甲（　　）', marks=4,
+                                      options=['A. 1', 'B. 2', 'C. 3', 'D. 4'])]),
+            paper_format.Section(title='二、填空題', questions=[
+                paper_format.Question(stem='直徑為 ______ cm。', marks=4)]),
+            paper_format.Section(title='三、解答題', questions=[
+                paper_format.Question(stem='求 $x$。', marks=8)]),
+        ]
+        raw, _ = paper_format.render_with_sections(buf.getvalue(), sections, '高一 大測')
+        texts = [p.text for p in Document(io.BytesIO(raw)).paragraphs]
+        self.assertIn('1.\u3000題目甲（\u3000\u3000）', texts, '選擇題不應在題號前顯示分數')
+        self.assertFalse(any('1.（4 分）' in t for t in texts), '選擇題不應逐題標分')
+        self.assertFalse(any('2.（4 分）' in t for t in texts), '填空題不應逐題標分')
+        self.assertTrue(any(t.startswith('3.（8 分）') for t in texts), '解答題要逐題標分')
+
     def test_title_only_replaces_the_chosen_fields(self):
         tpl = '培華中學 2026 年度第一段高一級(普通班)數學科大測一'
         meta = {'grade': '高二（職業班）', 'term': '第二段', 'kind': '練習', 'subject': '數學'}

@@ -918,7 +918,7 @@ html[data-theme=night] .topbar-link{color:#dbe6e6}
 .gen-tpl-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:12px;align-items:end}
 .gen-tpl-row .form-field{margin:0}
 /* 年級要放「高一（職業班）」這種長標籤，給它多一點寬度 */
-.gen-grid{display:grid;grid-template-columns:minmax(0,.9fr) minmax(0,1.35fr) minmax(0,.9fr) minmax(0,1fr) minmax(0,.9fr) minmax(0,.9fr);gap:12px}
+.gen-grid{display:grid;grid-template-columns:minmax(0,.85fr) minmax(0,1.45fr) minmax(0,.85fr) minmax(0,.95fr) minmax(0,.85fr) minmax(0,1fr) minmax(0,.8fr);gap:10px}
 .gen-grid .form-field{margin:0}
 .gen-grid .field-label{font-size:calc(12.5px*var(--fs));margin-bottom:6px;white-space:nowrap;
   overflow:hidden;text-overflow:ellipsis}

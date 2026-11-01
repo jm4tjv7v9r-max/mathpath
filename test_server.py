@@ -2765,6 +2765,24 @@ class PaperGenerateTests(unittest.TestCase):
         self.assertEqual(out['question']['difficulty'], '難')
         self.assertEqual(out['question']['stem'], '新題目（　　）')
 
+    def test_options_are_labelled_a_b_c_d(self):
+        """AI 沒給 A/B/C 時要自己補，否則卷面上學生不知道要答哪一個。"""
+        self.assertEqual(server.label_options(['$2<x<3$', 'A. 已標好', '(B) 也標好']),
+                         ['A. $2<x<3$', 'B. 已標好', 'C. 也標好'])
+
+    def test_region_is_validated_and_passed_through(self):
+        self.app.ai.call = lambda *a, **k: {'sections': [
+            {'title': '一、選擇題', 'qtype': '選擇題', 'questions': [
+                {'stem': f'題{i}', 'options': ['A', 'B', 'C', 'D'], 'marks': 10,
+                 'difficulty': '易', 'answer': 'A', 'steps': []} for i in range(10)]}]}
+        out = self.call('POST', '/api/papers/preview', self.payload(
+            source='ai', region='北京', qtypes=[{'type': '選擇題', 'optionCount': 4}]))
+        self.assertEqual(out['spec']['region'], '北京')
+        with self.assertRaises(server.APIError) as ctx:
+            self.call('POST', '/api/papers/preview', self.payload(region='上海'))
+        self.assertEqual(ctx.exception.status, 400)
+        self.assertIn('參考方向', ctx.exception.message)
+
     def test_practice_kind_and_class_suffixed_grade(self):
         """類型可以選「練習」；年級可以帶班別（高一（職業班））並原樣保存。"""
         self.app.ai.call = lambda *a, **k: {'sections': [
