@@ -1633,6 +1633,27 @@ def ai_figure_check(app, body):
             'question': reading['question'], 'figure': reading['figure'], 'method': 'AI 核對'}
 
 
+def attach_figures_from_body(sections, figures_in):
+    """把前端 AI 畫好、已轉成 PNG 的圖貼回題目（key = 全卷題號，1 開始）。
+
+    必須在排版之前呼叫，否則那份 docx 已經產生，貼了也沒用。
+    """
+    if not isinstance(figures_in, dict) or not figures_in:
+        return 0
+    parsed = {}
+    for key, item in figures_in.items():
+        raw = item.get('data') if isinstance(item, dict) else item
+        if not isinstance(raw, str) or not raw:
+            continue
+        try:
+            blob, _mime = decode_data_url(raw, ('image/png', 'image/jpeg', 'image/webp'), MAX_FIGURE)
+        except APIError:
+            continue
+        width = item.get('widthCm') if isinstance(item, dict) else None
+        parsed[str(key)] = {'blob': blob, 'cx': int(float(width) * 360000) if width else 0, 'cy': 0}
+    return paper_format.attach_figures(sections, parsed)
+
+
 def ai_figure_draft(app, body):
     """請 AI 先輸出圖形規格，再由程式畫成 SVG；畫完用幾何本身檢查，有問題就自動重畫。
 
@@ -6223,20 +6244,25 @@ class Application:
                     sections = sections_from_pdf_data(raw_sections)
                     if not sections:
                         fail(422, 'AI 在這份 PDF 裡讀不到題目（可能是掃描品質或版面太複雜）。')
+                    attached = attach_figures_from_body(sections, body.get('figures'))
                     output, report = paper_format.render_with_sections(
                         row['data'], sections, title, math_as_text=math_as_text,
                         numbering=numbering)
+                    report['figuresAttached'] = attached
                 else:
                     try:
-                        _, sections = paper_format.parse_content_bytes(data)
+                        preamble, sections = paper_format.parse_content_bytes(data)
                     except Exception:
                         fail(422, '讀不到這份 Word 的內容，請確認檔案沒有損壞。')
                     if not sections or not sum(len(s.questions) for s in sections):
                         fail(422, '這份 Word 裡找不到題目（要有「1. 題目」這種題號）。'
                                   '如果題目是圖片、表格或文字方塊，請改為上傳 PDF。')
-                    output, report = paper_format.render_bytes(
-                        row['data'], data, math_as_text=math_as_text,
-                        numbering=numbering)
+                    # 貼圖一定要在排版之前：排完再貼就貼不進那份 docx 了
+                    attached = attach_figures_from_body(sections, body.get('figures'))
+                    output, report = paper_format.render_with_sections(
+                        row['data'], sections, preamble[0] if preamble else None,
+                        math_as_text=math_as_text, numbering=numbering)
+                    report['figuresAttached'] = attached
                     # 外掛打出來的公式是 OLE 物件，解析讀不到，要讓老師知道
                     report['oleObjects'] = paper_format.count_ole_objects(data)
             except APIError:
@@ -6247,26 +6273,6 @@ class Application:
             except Exception as exc:
                 ai_log(f'卷面排版失敗：{exc}')
                 fail(422, '排版失敗：這份 Word 的結構讀不出來（可能是表格或文字方塊排版）。')
-            # 幾何題：前端用 AI 畫好、轉成 PNG 之後傳回來，這裡貼回對應題目
-            figures_in = body.get('figures')
-            if isinstance(figures_in, dict) and figures_in:
-                parsed = {}
-                for key, item in figures_in.items():
-                    raw = item.get('data') if isinstance(item, dict) else item
-                    if not isinstance(raw, str) or not raw:
-                        continue
-                    try:
-                        blob, _mime = decode_data_url(raw, ('image/png', 'image/jpeg', 'image/webp'),
-                                                      MAX_FIGURE)
-                    except APIError:
-                        continue
-                    width = item.get('widthCm') if isinstance(item, dict) else None
-                    parsed[str(key)] = {'blob': blob,
-                                        'cx': int(float(width) * 360000) if width else 0,
-                                        'cy': 0}
-                attached = paper_format.attach_figures(sections, parsed)
-                if attached:
-                    report['figures'] = report.get('figures', 0) + attached
             filename = (report.get('title') or '排版結果').replace('/', '／')[:60] + '.docx'
             return {'docx': 'data:' + DOCX_MIME + ';base64,' + base64.b64encode(output).decode(),
                     'filename': filename, 'stats': report,
