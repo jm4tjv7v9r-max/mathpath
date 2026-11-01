@@ -408,7 +408,8 @@ def validate_text_total(value, key='', depth=0):
         # 這些欄位放的是 base64 圖檔／PDF，不該算進「文字總長」——否則一張圖就會
         # 撞破 80,000 字的上限（紙本批改的 pages 是陣列，元素本身沒有 key，所以
         # 由下面的 list 分支把父層 key 傳下來）。
-        if key in ('image', 'dataUrl', 'figure', 'pages', 'file'):
+        if key in ('image', 'dataUrl', 'figure', 'figures', 'data', 'pages', 'file'):
+            # figures 是「題號 → 圖檔」的字典，整包都是 base64，跟 image 同一類
             return 0
         if '\x00' in value or re.search(r'[\ud800-\udfff]', value):
             fail(400, '文字不可包含空字元或無效 Unicode。')
