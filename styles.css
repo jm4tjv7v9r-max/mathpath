@@ -1054,3 +1054,18 @@ html[data-theme=night] .gen-preview-foot{background:#161c1e}
   font-size:calc(13px*var(--fs));line-height:1;padding:2px 6px;border-radius:999px}
 .gen-ref-del:hover{background:#fdeaea}
 html[data-theme=night] .gen-ref-chip{background:#1b2427;border-color:#2a3437}
+
+/* 批閱：批次給分清單（一次過把整班待批的題目給分） */
+.bulk-list{max-height:52dvh;overflow:auto;margin:0 -4px;padding:0 4px}
+.bulk-group{border:1px solid var(--line-soft);border-radius:10px;padding:10px 12px;
+  margin-bottom:10px;background:var(--surface-soft)}
+.bulk-head{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:4px}
+.bulk-head strong{font-size:calc(13.5px*var(--fs))}
+.bulk-head .text-button{margin-left:auto;white-space:nowrap}
+.bulk-row{display:flex;align-items:center;gap:10px;padding:5px 0;border-top:1px dashed var(--line-soft);cursor:pointer}
+.bulk-row:first-of-type{border-top:0}
+.bulk-who{flex:1;min-width:0;font-size:calc(13px*var(--fs));
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bulk-input{width:88px;flex:none;padding:6px 8px;text-align:center;
+  border:1px solid var(--border);border-radius:7px;color:#607c65;background:#fff}
+.bulk-input:focus{outline:2px solid #197c6833;border-color:var(--green)}
