@@ -191,10 +191,17 @@ class APITests(unittest.TestCase):
 
     def ai_assignment(self, question_ids, ai_grading=True, duration=None, kind='homework'):
         """建立一份作業並由教師決定是否啟用 AI 建議評分；回傳作業編號。"""
-        _, classroom, _ = self.request('POST', '/api/classes',
-                                       {'name': 'AI 測試班', 'studentIds': [self.student_id()]},
-                                       cookie=self.teacher, expect=200)
-        body = {'title': 'AI 作業', 'classId': classroom['class']['id'], 'questionIds': question_ids,
+        # 班名不可重複：同一個測試裡叫第二次時，沿用同一個班級。
+        _, listing, _ = self.request('GET', '/api/homework', cookie=self.teacher, expect=200)
+        existing = next((c for c in listing['classes'] if c['name'] == 'AI 測試班'), None)
+        if existing:
+            class_id = existing['id']
+        else:
+            _, classroom, _ = self.request('POST', '/api/classes',
+                                           {'name': 'AI 測試班', 'studentIds': [self.student_id()]},
+                                           cookie=self.teacher, expect=200)
+            class_id = classroom['class']['id']
+        body = {'title': 'AI 作業', 'classId': class_id, 'questionIds': question_ids,
                 'dueAt': '2099-01-01T00:00:00Z', 'aiGrading': ai_grading, 'kind': kind,
                 'durationMinutes': duration}
         _, created, _ = self.request('POST', '/api/assignments', body, cookie=self.teacher, expect=200)
@@ -248,6 +255,23 @@ class APITests(unittest.TestCase):
         for bad in (1, 0, 'true', None, [], {}, 'yes'):
             with self.subTest(bad=bad):
                 self.request('POST', '/api/login', {'username': 'student', 'password': 'Math1234!', 'remember': bad}, expect=400)
+
+    def test_question_import_can_skip_duplicates(self):
+        """新增題目要能擋重複；但還原／合併題庫不能去重，否則題數會變少。"""
+        q = {'title': '去重測試題', 'content': '稽核專用：解 $x^2-99=0$。',
+             'topic': '一元二次方程', 'subtopic': '因式分解法', 'level': 2, 'grade': '中三',
+             'points': 5, 'qtype': '解答題', 'answer': 'x=±3√11', 'steps': [], 'options': [],
+             'source': '校本', 'tags': [], 'hint': '', 'analysis': ''}
+        first = self.request('POST', '/api/questions/import',
+                             {'questions': [q], 'dedupe': True}, cookie=self.teacher, expect=200)[1]
+        second = self.request('POST', '/api/questions/import',
+                              {'questions': [q], 'dedupe': True}, cookie=self.teacher, expect=200)[1]
+        self.assertEqual(first['count'], 1)
+        self.assertEqual(second['count'], 0, '同一題不應該長出第二份')
+        self.assertEqual(len(second['skipped']), 1)
+        plain = self.request('POST', '/api/questions/import',
+                             {'questions': [q]}, cookie=self.teacher, expect=200)[1]
+        self.assertEqual(plain['count'], 1, '沒指定 dedupe 時要照樣寫入（還原用）')
 
     def test_question_figure_import_serving_and_validation(self):
         data_url = png_url()
@@ -2840,6 +2864,30 @@ class ContestTests(unittest.TestCase):
     def call(self, method, path, body=None, user=None):
         return self.app.dispatch(method, path, body or {}, self.teacher if user is None else user,
                                  None, '127.0.0.1')[0]
+
+    def guest(self, method, path, body=None):
+        """未登入的訪客。"""
+        return self.app.dispatch(method, path, body or {}, None, None, '127.0.0.1')[0]
+
+    def test_contests_are_public_for_guests(self):
+        """頂欄的「比賽」對未登入者也顯示，這支端點不能要求登入。"""
+        self.assertTrue(self.guest('GET', '/api/contests')['contests'])
+
+    def test_weekly_ingest_works_without_a_session(self):
+        """每週排程是外部程式，不會有 Cookie；靠權杖認證就夠。"""
+        import os
+        os.environ['MATH_INGEST_TOKEN'] = 'tok-audit'
+        try:
+            out = self.guest('POST', '/api/contests/ingest',
+                             {'token': 'tok-audit',
+                              'items': [{'title': '排程寫入測試', 'url': 'https://example.test/1'}]})
+            self.assertEqual(out['saved'], 1)
+            with self.assertRaises(server.APIError) as ctx:
+                self.guest('POST', '/api/contests/ingest',
+                           {'token': 'wrong', 'items': [{'title': 'x'}]})
+            self.assertEqual(ctx.exception.status, 403)
+        finally:
+            os.environ.pop('MATH_INGEST_TOKEN', None)
 
     def test_seeded_contests_have_three_regions(self):
         data = self.call('GET', '/api/contests')

@@ -6568,6 +6568,51 @@ class Application:
             login_user = self.user_public(row)
             login_user['isOwner'] = self.is_owner(row)
             return {'user': login_user, 'notice': self.notice(row)}, headers
+        # ── 公開端點：不需要登入 ──────────────────────────────────
+        if method == 'GET' and path == '/api/contests':
+            # 數學比賽清單：公開資料（不含個人資料），訪客也看得到（頂欄「比賽」對訪客也顯示）。
+            with self.db() as db:
+                rows = db.execute('SELECT * FROM competitions ORDER BY id DESC').fetchall()
+            updated = max((r['found_at'] for r in rows), default=None)
+            return {'contests': [contest_public(r) for r in rows],
+                    'updatedAt': updated}, headers
+
+        if method == 'POST' and path == '/api/contests/ingest':
+            # 每週排程（自動搜尋）用這個寫入；靠 MATH_INGEST_TOKEN 認證，
+            # 不是靠登入 session——排程是外部程式，不會有 Cookie。
+            expected = os.environ.get('MATH_INGEST_TOKEN', '').strip()
+            if not expected:
+                fail(403, '未設定 MATH_INGEST_TOKEN，暫不接受外部寫入。')
+            if not hmac.compare_digest(str(body.get('token') or ''), expected):
+                fail(403, '寫入權杖不正確。')
+            items = body.get('items')
+            if not isinstance(items, list) or not 1 <= len(items) <= 50:
+                fail(400, '一次最多寫入 50 筆比賽。')
+            saved = 0
+            with self.db() as db:
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    title = text(item.get('title') or '', '比賽名稱', 200)
+                    url = text(item.get('url') or '', '連結', 400, empty=True)
+                    db.execute(
+                        'INSERT INTO competitions(title,organizer,region,audience,deadline,event_date,'
+                        'url,summary,location,source,found_at) VALUES(?,?,?,?,?,?,?,?,?,?,?) '
+                        'ON CONFLICT(title,url) DO UPDATE SET organizer=excluded.organizer,'
+                        'region=excluded.region,audience=excluded.audience,deadline=excluded.deadline,'
+                        'event_date=excluded.event_date,summary=excluded.summary,'
+                        'location=excluded.location,source=excluded.source,found_at=excluded.found_at',
+                        (title, text(item.get('organizer') or '', '主辦', 120, empty=True),
+                         contest_region(item.get('region')),
+                         text(item.get('audience') or '', '參賽對象', 120, empty=True),
+                         item.get('deadline') or None, item.get('eventDate') or None, url,
+                         text(item.get('summary') or '', '說明', 600, empty=True),
+                         text(item.get('location') or '', '地點', 200, empty=True),
+                         text(item.get('source') or '每週自動搜尋', '來源', 200, empty=True),
+                         utc_now()))
+                    saved += 1
+            return {'saved': saved}, headers
+
         if user is None:
             fail(401, '請先登入。')
         homework_result = self.homework.dispatch(method, path, body, user, query)
@@ -6885,48 +6930,6 @@ class Application:
                     'events': [{'at': r['at'], 'ip': r['ip'], 'name': r['name'],
                                 'username': r['username'], 'role': r['role']} for r in rows]}, headers
 
-        if method == 'GET' and path == '/api/contests':
-            # 數學比賽清單：公開資料（不含個人資料），訪客也看得到。
-            with self.db() as db:
-                rows = db.execute('SELECT * FROM competitions ORDER BY id DESC').fetchall()
-            updated = max((r['found_at'] for r in rows), default=None)
-            return {'contests': [contest_public(r) for r in rows],
-                    'updatedAt': updated}, headers
-
-        if method == 'POST' and path == '/api/contests/ingest':
-            # 每週排程（自動搜尋）用這個寫入；要 MATH_INGEST_TOKEN，未設定就整支關閉。
-            expected = os.environ.get('MATH_INGEST_TOKEN', '').strip()
-            if not expected:
-                fail(403, '未設定 MATH_INGEST_TOKEN，暫不接受外部寫入。')
-            if not hmac.compare_digest(str(body.get('token') or ''), expected):
-                fail(403, '寫入權杖不正確。')
-            items = body.get('items')
-            if not isinstance(items, list) or not 1 <= len(items) <= 50:
-                fail(400, '一次最多寫入 50 筆比賽。')
-            saved = 0
-            with self.db() as db:
-                for item in items:
-                    if not isinstance(item, dict):
-                        continue
-                    title = text(item.get('title') or '', '比賽名稱', 200)
-                    url = text(item.get('url') or '', '連結', 400, empty=True)
-                    db.execute(
-                        'INSERT INTO competitions(title,organizer,region,audience,deadline,event_date,'
-                        'url,summary,location,source,found_at) VALUES(?,?,?,?,?,?,?,?,?,?,?) '
-                        'ON CONFLICT(title,url) DO UPDATE SET organizer=excluded.organizer,'
-                        'region=excluded.region,audience=excluded.audience,deadline=excluded.deadline,'
-                        'event_date=excluded.event_date,summary=excluded.summary,'
-                        'location=excluded.location,source=excluded.source,found_at=excluded.found_at',
-                        (title, text(item.get('organizer') or '', '主辦', 120, empty=True),
-                         contest_region(item.get('region')),
-                         text(item.get('audience') or '', '參賽對象', 120, empty=True),
-                         item.get('deadline') or None, item.get('eventDate') or None, url,
-                         text(item.get('summary') or '', '說明', 600, empty=True),
-                         text(item.get('location') or '', '地點', 200, empty=True),
-                         text(item.get('source') or '每週自動搜尋', '來源', 200, empty=True),
-                         utc_now()))
-                    saved += 1
-            return {'saved': saved}, headers
 
         if method == 'GET' and path == '/api/state':
             with self.db() as db:
@@ -7339,19 +7342,36 @@ class Application:
             return {'solved': solved, 'failed': failed}, headers
         if method == 'POST' and path == '/api/questions/import':
             self.teacher(user)
-            fields(body, ('questions',), ('questions',))
+            fields(body, ('questions', 'dedupe'), ('questions',))
             raw = body['questions']
             if not isinstance(raw, list) or not 1 <= len(raw) <= 100:
                 fail(400, '每批必須包含1至100題。')
+            if 'dedupe' in body and type(body['dedupe']) is not bool:
+                fail(400, 'dedupe 必須是布林值。')
+            # 去重是「新增題目」這種人工輸入才要的：還原備份、合併題庫必須原樣寫入，
+            # 否則還原出來的題數會比備份少。
+            dedupe = body.get('dedupe') is True
             prepared = []
             for item in raw:
                 q = question_valid(item)
                 figure, figure_mime = decode_figure(item.get('figure'))
                 prepared.append((q, figure, figure_mime))
+            saved, skipped = [], []
             with self.db() as db:
-                saved = [self.insert_question(db, q, figure, figure_mime)
-                         for q, figure, figure_mime in prepared]
-            return {'count': len(prepared),
+                existing = set()
+                if dedupe:
+                    existing = {question_fingerprint(question_content(r['payload']))
+                                for r in db.execute('SELECT payload FROM questions')}
+                for q, figure, figure_mime in prepared:
+                    if dedupe:
+                        mark = question_fingerprint(q.get('content') or q.get('title') or '')
+                        if mark in existing:
+                            skipped.append({'title': (q.get('title') or '')[:60],
+                                            'reason': '題庫已有相同題目'})
+                            continue
+                        existing.add(mark)
+                    saved.append(self.insert_question(db, q, figure, figure_mime))
+            return {'count': len(saved), 'skipped': skipped,
                     'questions': [self.question_public(q, user) for q in saved]}, headers
         match = re.fullmatch(r'/api/questions/([1-9]\d{0,17})/update', path)
         if method == 'POST' and match:

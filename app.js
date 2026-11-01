@@ -1994,7 +1994,7 @@ function aiDraftModal(draft,kind,qid){
     verified.source='AI 生成 · 教師已核驗';
     const target=viewTarget(),dialog=$('.modal'),b=$('#ai-draft-save');b.disabled=true;b.textContent='正在加入題庫…';
     try{
-      await api('/api/questions/import',{questions:[verified],teacher:true});
+      await api('/api/questions/import',{questions:[verified],teacher:true,dedupe:true});
       if(!viewMatches(target)||$('.modal')!==dialog)return;
       const state=await api('/api/state');if(!viewMatches(target)||$('.modal')!==dialog)return;
       S=state;loadBookmarks();shell();closeModal();
@@ -2656,7 +2656,10 @@ function newQuestionPage(){
     const btn=$('#newq-add');
     btn.disabled=true;btn.textContent='正在建立…';
     try{
-      await api('/api/questions/import',{questions:[draft]});
+      const made=await api('/api/questions/import',{questions:[draft],dedupe:true});
+      if(!made.count){
+        throw new Error(`題庫已經有這道題（${(made.skipped&&made.skipped[0]&&made.skipped[0].reason)||'內容相同'}），沒有重複加入。`);
+      }
       await refresh();bank();
       toast(`已新增題目「${draft.title}」，可以直接用來佈置作業。`);
     }catch(e){
@@ -2950,7 +2953,9 @@ async function autoImportPaper(){if(busy)return;if(!paperName.trim())return toas
     await refresh();drafts=[];paperText='';paperFile=null;importStage=1;
     toast(`已全自動匯入 ${r.count} 題（${r.method}）${cropped?`，並自動裁出 ${cropped} 題圖形`:''}，請在題庫核對題型與答案。`);bank();}catch(e){$('#parse-error').innerHTML=`<div class="inline-error">${esc(e.message)}</div>`;}finally{busy=false;if($('#auto-import-paper')){$('#auto-import-paper').disabled=false;$('#auto-import-paper').innerHTML=original;}}}
 
-async function saveDrafts(){if(busy)return;if(!$('#confirm-drafts').checked)return toast('請確認已核驗題目及評分依據。');if(!drafts.length)return toast('沒有可匯入的題目。');const rp=drafts.map(q=>isObjectiveQtype(q.qtype)?'':rubricProblem(q.rubric)).find(Boolean);if(rp)return $('#import-error').innerHTML=`<div class="inline-error">${esc(rp)}</div>`;busy=true;$('#save-drafts').disabled=true;try{const verified=drafts.map(q=>{const isChoice=q.qtype==='選擇題';const options=isChoice?(q.options||[]).map(o=>String(o||'').trim()).filter(Boolean):[];return {...q,options,rubric:isObjectiveQtype(q.qtype)?[]:cleanRubric(q.rubric),tags:(q.tags||[]).filter(t=>!/(?:待.*(?:確認|确认|核驗|核验|審核|审核))/.test(t))};});await api('/api/questions/import',{questions:verified});await refresh();importStage=3;importPage();toast('已成功保存到本地題庫。');}catch(e){$('#import-error').innerHTML=`<div class="inline-error">${esc(e.message)}</div>`;if($('#save-drafts'))$('#save-drafts').disabled=false;}finally{busy=false;}}
+async function saveDrafts(){if(busy)return;if(!$('#confirm-drafts').checked)return toast('請確認已核驗題目及評分依據。');if(!drafts.length)return toast('沒有可匯入的題目。');const rp=drafts.map(q=>isObjectiveQtype(q.qtype)?'':rubricProblem(q.rubric)).find(Boolean);if(rp)return $('#import-error').innerHTML=`<div class="inline-error">${esc(rp)}</div>`;busy=true;$('#save-drafts').disabled=true;try{const verified=drafts.map(q=>{const isChoice=q.qtype==='選擇題';const options=isChoice?(q.options||[]).map(o=>String(o||'').trim()).filter(Boolean):[];return {...q,options,rubric:isObjectiveQtype(q.qtype)?[]:cleanRubric(q.rubric),tags:(q.tags||[]).filter(t=>!/(?:待.*(?:確認|确认|核驗|核验|審核|审核))/.test(t))};});const imp=await api('/api/questions/import',{questions:verified,dedupe:true});await refresh();importStage=3;importPage();
+      const skip=(imp.skipped||[]).length;
+      toast(skip?`已保存 ${imp.count} 題；另有 ${skip} 題題庫已有，已略過。`:'已成功保存到本地題庫。');}catch(e){$('#import-error').innerHTML=`<div class="inline-error">${esc(e.message)}</div>`;if($('#save-drafts'))$('#save-drafts').disabled=false;}finally{busy=false;}}
 // 「新批閱」：教師批閱後學生還沒點開看過。用 reviewedAt 當版本號記在 localStorage，
 // 教師日後再改分數 reviewedAt 會變，就會重新標一次；只記這台裝置，不上傳。
 function reviewSeenMap(){
@@ -3621,9 +3626,10 @@ async function paperGradePage(){
         topic, grade:'中三', qtype:'解答題',
         points:q.points||5, level:2, source:`紙本批改 · ${key.title}`
       }));
-      const r=await api('/api/questions/import',{questions:payload});
+      const r=await api('/api/questions/import',{questions:payload,dedupe:true});
       await refresh();
-      toast(`已匯入 ${r.count||payload.length} 題到題庫（分類與難度請再到題庫調整）`);
+      const sk=(r.skipped||[]).length;
+      toast(sk?`已匯入 ${r.count} 題，${sk} 題題庫已有已略過。`:`已匯入 ${r.count||payload.length} 題到題庫（分類與難度請再到題庫調整）`);
     }catch(e){toast(e.message);if(btn)btn.disabled=false;}
   };
 

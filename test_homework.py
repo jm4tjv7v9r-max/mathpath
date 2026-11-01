@@ -1340,6 +1340,15 @@ class HomeworkTests(unittest.TestCase):
         self.assertEqual(summary['pendingReviewCount'], 0)
         self.assertEqual(self.detail(aid)['report']['pendingCount'], 0)
 
+    def test_class_names_must_be_unique_per_teacher(self):
+        """同一位教師底下班名不可重複；不同教師可以各自有「中三甲」。"""
+        self.call('POST', '/api/classes', {'name': '重名測試班'}, self.teacher)
+        with self.assertRaises(server.APIError) as ctx:
+            self.call('POST', '/api/classes', {'name': '重名測試班'}, self.teacher)
+        self.assertEqual(ctx.exception.status, 409)
+        made = self.call('POST', '/api/classes', {'name': '重名測試班'}, self.teacher2)
+        self.assertEqual(made['class']['name'], '重名測試班')
+
     def test_persistence_and_additive_legacy_migration(self):
         legacy_dir = Path(self.tmp.name) / 'legacy'
         legacy_dir.mkdir()

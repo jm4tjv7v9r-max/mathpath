@@ -861,6 +861,11 @@ class Homework:
             ids = self.ids(raw_ids, '學生編號', 1000) if raw_ids else []
             with self.app.db() as db:
                 db.execute('BEGIN IMMEDIATE')
+                # 同一位教師底下不允許同名：兩個「中三甲」在選單裡分不出來。
+                dup = db.execute('SELECT 1 FROM classes WHERE teacher_id=? AND name=?',
+                                 (user['id'], name)).fetchone()
+                if dup:
+                    self.fail(409, f'你已經有一個叫「{name}」的班級，請換一個名稱。')
                 for uid in ids:
                     row = db.execute('SELECT role FROM users WHERE id=?', (uid,)).fetchone()
                     if not row or row['role'] != 'student':
@@ -1002,6 +1007,10 @@ class Homework:
                 if row['teacher_id'] != user['id'] and not self.app.is_owner(user, db):
                     self.fail(403, '只能修改自己建立的班級。')
                 db.execute('BEGIN IMMEDIATE')
+                dup = db.execute('SELECT 1 FROM classes WHERE teacher_id=? AND name=? AND id<>?',
+                                 (row['teacher_id'], name, cid)).fetchone()
+                if dup:
+                    self.fail(409, f'你已經有一個叫「{name}」的班級，請換一個名稱。')
                 for uid in ids:
                     r = db.execute('SELECT role FROM users WHERE id=?', (uid,)).fetchone()
                     if not r or r['role'] != 'student':
