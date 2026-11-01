@@ -227,7 +227,8 @@ def build_template(spec: dict) -> bytes:
         p = doc.add_paragraph()
         p.alignment = WD_ALIGN_PARAGRAPH.CENTER
         p.paragraph_format.space_after = Pt(2)
-        _font(p.add_run(line), 10)
+        # 副標題（「(本題目卷共兩版，禁止使用計算機)」）在原卷是粗體，跟著做
+        _font(p.add_run(line), 12, True)
 
     if spec['infoLine']:
         p = doc.add_paragraph()

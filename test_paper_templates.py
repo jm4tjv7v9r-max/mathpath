@@ -580,7 +580,7 @@ class LatexExportTests(unittest.TestCase):
         head = tex.split(r'\end{center}', 1)[0]
         self.assertIn('禁止使用計算機', head, '副標題要跟卷名一起置中')
         self.assertIn('姓名', head)
-        self.assertIn(r'{\small ', head)
+        self.assertIn(r'{\small\bfseries ', head, '副標題要粗體（跟原卷一致）')
 
     def test_fill_in_blanks_are_solid_rules(self):
         tex = self.build(['A. 1'], stem='斜率 $k=$____________。')

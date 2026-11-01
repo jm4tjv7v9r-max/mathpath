@@ -19,10 +19,11 @@ DEFAULT_PREAMBLE = r"""% !TEX program = xelatex
 \usepackage[margin=1.27cm]{geometry}
 \usepackage{amsmath,amssymb}
 \usepackage{enumitem}
+\usepackage{needspace}
 \setlength{\parindent}{0pt}
 \pagestyle{plain}
 % 大題標題靠左（ctex 預設置中，跟原卷不一致）
-\ctexset{section/format=\normalsize\bfseries\raggedright,section/aftertitle=\smallskip}
+\ctexset{section/format=\normalsize\bfseries\raggedright,section/aftertitle=\smallskip,section/beforeskip=8pt}
 """
 
 ESCAPES = {
@@ -46,30 +47,36 @@ BLANK_RE = re.compile(r'(?:\\_){3,}|[_＿]{3,}')
 SPACE_RUN_RE = re.compile(r'[ \u3000]{2,}')
 
 
-def _blank_rule(m) -> str:
+# 題目裡的答題空位 6.1em ≈ 2.6cm（12pt）；卷頭「姓名：____」那一行位置不夠，用短一點
+BLANK_EM_QUESTION = 6.1
+BLANK_EM_HEADER = 3.4
+
+
+def _blank_rule(m, min_em: float = BLANK_EM_QUESTION) -> str:
     count = len(m.group(0).replace('\\', ''))
-    return r'\rule[-0.6pt]{%.2fem}{0.6pt}' % (count * 0.5)
+    return r'\rule[-0.6pt]{%.2fem}{0.6pt}' % max(count * 0.5, min_em)
 
 
-def _space_run(m) -> str:
-    return r'\hspace{%.2fem}' % (len(m.group(0)) * 0.5)
+def _space_run(m, factor: float = 0.5) -> str:
+    return r'\hspace{%.2fem}' % (len(m.group(0)) * factor)
 
 
-def text_of(text: str) -> str:
+def text_of(text: str, min_em: float = BLANK_EM_QUESTION,
+            space_factor: float = 0.5) -> str:
     out, pos = [], 0
     for m in SPACE_RUN_RE.finditer(text):
-        out.append(_inline(text[pos:m.start()]))
-        out.append(_space_run(m))
+        out.append(_inline(text[pos:m.start()], min_em))
+        out.append(_space_run(m, space_factor))
         pos = m.end()
-    out.append(_inline(text[pos:]))
+    out.append(_inline(text[pos:], min_em))
     return ''.join(out)
 
 
-def _inline(text: str) -> str:
+def _inline(text: str, min_em: float = BLANK_EM_QUESTION) -> str:
     out, pos = [], 0
     for m in BLANK_RE.finditer(text):
         out.append(escape_text(text[pos:m.start()]))
-        out.append(_blank_rule(m))
+        out.append(_blank_rule(m, min_em))
         pos = m.end()
     out.append(escape_text(text[pos:]))
     return ''.join(out)
@@ -102,7 +109,8 @@ def _merge_degree(pieces: list[list[str]]) -> list[list[str]]:
     return merged
 
 
-def tex_of(text: str) -> str:
+def tex_of(text: str, min_em: float = BLANK_EM_QUESTION,
+           space_factor: float = 0.5) -> str:
     """文字與 $公式$ 混排：公式修正後原樣，其餘轉義。"""
     out = []
     for kind, value in _merge_degree(_pieces(text)):
@@ -110,7 +118,7 @@ def tex_of(text: str) -> str:
             body = normalize_math(value).strip()
             out.append(f'${body}$' if body else '')
         else:
-            out.append(text_of(value))
+            out.append(text_of(value, min_em, space_factor))
     return ''.join(out)
 
 
@@ -168,14 +176,15 @@ def to_tex(title: str | None, sections, marks_position: str = 'none',
         block = []
         if title:
             block.append(r'{\Large\bfseries ' + tex_of(title) + '}')
-        block += [r'{\small ' + tex_of(s) + '}' for s in subs]
+        block += [r'{\small\bfseries ' + tex_of(s, BLANK_EM_HEADER, 0.3) + '}' for s in subs]
         lines += [r'\begin{center}', ' \\\\ '.join(block), r'\end{center}', '']
 
     number = 0
     for section in sections:
         if section.title:
-            lines += ['', r'\section*{' + tex_of(section.title) + '}', '']
-        lines.append(r'\begin{enumerate}[leftmargin=*,itemsep=4pt,topsep=2pt,start=%d]'
+            lines += ['', r'\Needspace{3\baselineskip}',
+                      r'\section*{' + tex_of(section.title) + '}', '']
+        lines.append(r'\begin{enumerate}[leftmargin=*,itemsep=2pt,topsep=1pt,start=%d]'
                      % (number + 1))
         for q in section.questions:
             number += 1

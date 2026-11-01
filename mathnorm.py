@@ -118,7 +118,8 @@ def _blank_repl(kind: str):
         if kind == 'unwrap':
             return m.group(1) or ''
         spec = m.group(1) if m.groups() else ''
-        cm = blank_cm(spec) if kind == 'cm' else 2.0
+        # 一排底線（`\_\_\_`）沒有寫長度：用 2.6cm，跟一般試卷的答題空位差不多
+        cm = blank_cm(spec) if kind == 'cm' else 2.6
         return f'{BLANK_OPEN}{int(round(cm * 10)):02d}{BLANK_CLOSE}'
     return repl
 
