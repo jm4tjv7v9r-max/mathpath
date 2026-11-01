@@ -3766,13 +3766,18 @@ function layoutTemplateHtml(list,current){
 let paperFilter={q:'',year:'',grade:'',term:''};
 const PAPER_GRADES=['中一','中二','中三','中四','中五','中六'];
 const PAPER_GRADE_ALIAS={初一:'中一',初二:'中二',初三:'中三',高一:'中四',高二:'中五',高三:'中六'};
-const bankGrade=g=>PAPER_GRADES.includes(g)?g:(PAPER_GRADE_ALIAS[g]||'中三');
+// 出卷的年級選項：高中分普通班／職業班，兩者課程不同，出卷要分開。
+const GEN_GRADES=['初一','初二','初三',
+  '高一（普通班）','高一（職業班）','高二（普通班）','高二（職業班）','高三（普通班）','高三（職業班）'];
+// 「高一（職業班）」→「高一」：入題庫時仍用「中四」這種統一寫法。
+const paperGradeBase=g=>String(g||'').replace(/[（(][^）)]*[）)]/g,'').trim();
+const bankGrade=g=>{const base=paperGradeBase(g);return PAPER_GRADES.includes(base)?base:(PAPER_GRADE_ALIAS[base]||'中三');};
 // 卷名裡通常就寫了年份／級別／學段，保存時先幫老師填好
 function guessPaperMeta(title){
   const s=String(title||'');
   return {title:s||'未命名試卷',
     year:(s.match(/20\d{2}/)||[''])[0],
-    grade:(s.match(/高[一二三]|初[一二三]|中[一二三四五六]/)||[''])[0],
+    grade:(s.match(/(?:高[一二三]|初[一二三]|中[一二三四五六])(?:[（(][^）)]*[）)])?/)||[''])[0],
     term:(s.match(/第[一二三四]段/)||[''])[0]};
 }
 const PAPER_IMPORT_KEY='mathpath_paper_import';
@@ -4029,17 +4034,17 @@ async function generatePaperModal(){
       <div class="form-field"><label class="field-label" for="gen-template">範本</label>
         <select id="gen-template">${tpls.map(t=>`<option value="${t.id}">${esc(t.name)}</option>`).join('')}</select></div>
       <div class="form-field">
-        <button type="button" class="secondary" id="gen-upload">${icon('file')}上傳新範本（.docx）</button>
-        <input type="file" id="gen-tpl-file" accept=".docx" hidden></div>
+        <button type="button" class="secondary" id="gen-upload">${icon('file')}上傳新範本（.docx／.pdf）</button>
+        <input type="file" id="gen-tpl-file" accept=".docx,.pdf" hidden></div>
     </div>
-    ${tpls.length?'':'<p class="field-hint" style="margin:6px 0 0">還沒有範本；先上傳一份學校的空白卷（.docx），版式會原樣沿用。</p>'}
+    ${tpls.length?'':'<p class="field-hint" style="margin:6px 0 0">還沒有範本；先上傳一份學校的空白卷（.docx 或 .pdf），版式會原樣沿用。</p>'}
     <div class="form-field"><label class="field-label">測考範圍（可加多個）</label>
       <div id="gen-ranges">${rangeRow()}</div>
       <button type="button" class="text-button" id="gen-add-range">＋ 增加範圍</button></div>
     <div class="gen-grid">
       <div class="form-field"><label class="field-label" for="gen-duration">時間（分鐘）</label><input id="gen-duration" type="number" min="10" max="300" value="60"></div>
-      <div class="form-field"><label class="field-label" for="gen-grade">年級</label><select id="gen-grade">${['初一','初二','初三','高一','高二','高三'].map(g=>`<option>${g}</option>`).join('')}</select></div>
-      <div class="form-field"><label class="field-label" for="gen-kind">類型</label><select id="gen-kind"><option>小測</option><option selected>大測</option><option>考試</option></select></div>
+      <div class="form-field"><label class="field-label" for="gen-grade">年級</label><select id="gen-grade">${GEN_GRADES.map(g=>`<option>${g}</option>`).join('')}</select></div>
+      <div class="form-field"><label class="field-label" for="gen-kind">類型</label><select id="gen-kind">${['練習','小測','大測','考試'].map(k=>`<option ${k==='大測'?'selected':''}>${k}</option>`).join('')}</select></div>
       <div class="form-field"><label class="field-label" for="gen-term">段</label><select id="gen-term"><option>第一段</option><option>第二段</option><option>第三段</option></select></div>
       <div class="form-field"><label class="field-label" for="gen-subject">科目</label><select id="gen-subject"><option>數學</option><option>幾何</option></select></div>
       <div class="form-field"><label class="field-label" for="gen-total">總分</label><input id="gen-total" type="number" min="10" max="300" value="100"></div>
@@ -4073,12 +4078,19 @@ async function generatePaperModal(){
   $('#gen-upload').onclick=()=>$('#gen-tpl-file').click();
   $('#gen-tpl-file').onchange=async e=>{
     const file=e.target.files[0];if(!file)return;
+    // PDF 沒有結構，要靠 AI 讀版面；走外部模型前先明確問一次。
+    const isPdf=/pdf$/i.test(file.name||'')||file.type===PDF_MIME;
+    if(isPdf&&S.ai.mode==='external'&&
+       !confirm('PDF 範本要先交給 AI 分析版面（整份檔案會上傳到外部模型）。要繼續嗎？')){
+      e.target.value='';return;
+    }
     const btn=$('#gen-upload');const old=btn.innerHTML;
-    btn.disabled=true;btn.innerHTML='上傳中…';
+    btn.disabled=true;btn.innerHTML=isPdf?'AI 分析版面中…':'上傳中…';
     try{
-      const data=await fileData(file,[DOCX_MIME],12);
+      const data=await fileData(file,isPdf?[PDF_MIME]:[DOCX_MIME],12);
       const res=await api('/api/paper-templates',{
-        name:(file.name||'').replace(/\.docx$/i,'')||'未命名範本',file:data});
+        name:(file.name||'').replace(/\.(docx|pdf)$/i,'')||'未命名範本',
+        file:data,consentExternal:isPdf&&S.ai.mode==='external'});
       const sel=$('#gen-template');
       const opt=document.createElement('option');
       opt.value=res.template.id;opt.textContent=res.template.name;

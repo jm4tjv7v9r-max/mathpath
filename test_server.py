@@ -2725,6 +2725,26 @@ class PaperGenerateTests(unittest.TestCase):
         self.assertIn('不符合要求', ctx.exception.message)
 
 
+    def test_practice_kind_and_class_suffixed_grade(self):
+        """類型可以選「練習」；年級可以帶班別（高一（職業班））並原樣保存。"""
+        self.app.ai.call = lambda *a, **k: {'sections': [
+            {'title': '一、選擇題', 'qtype': '選擇題', 'questions': [
+                {'stem': f'題{i}', 'options': ['A', 'B', 'C', 'D'], 'marks': 5,
+                 'difficulty': '易', 'answer': 'A', 'steps': []} for i in range(20)]}]}
+        out = self.call('POST', '/api/papers/generate', self.payload(
+            source='ai', examKind='練習', grade='高一（職業班）',
+            qtypes=[{'type': '選擇題', 'optionCount': 4}]))
+        self.assertEqual(out['paper']['grade'], '高一（職業班）')
+        self.assertEqual(out['spec']['examKind'], '練習')
+        self.assertIn('練習', out['paper']['title'])
+
+    def test_unknown_kind_is_rejected(self):
+        with self.assertRaises(server.APIError) as ctx:
+            self.call('POST', '/api/papers/generate', self.payload(examKind='模擬考'))
+        self.assertEqual(ctx.exception.status, 400)
+        self.assertIn('類型', ctx.exception.message)
+
+
 class ContestTests(unittest.TestCase):
     """數學比賽清單：內建整理資料 + 每週排程寫入（要權杖）。"""
 
