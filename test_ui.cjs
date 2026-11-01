@@ -518,7 +518,7 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   assert.ok(noteCreated&&noteCreated.title==='收齊作業','應送出提醒標題');
   assert.match(noteCreated.date,/^\d{4}-\d{2}-\d{2}$/,'提醒須帶日期');
   assert.match(await page.locator('.cal-note').innerText(),/收齊作業/);
-  assert.match(await page.locator('.cal-mark.note').first().innerText(),/1 則提醒/,'日曆格子應標出提醒');
+  assert.match(await page.locator('.cal-mark.note').first().innerText(),/收齊作業/,'日曆格子要直接寫出提醒內容，不是只寫「1 則提醒」');
   await page.screenshot({path:path.join(__dirname,'..','MathPath-日曆提醒.png'),fullPage:true});
   await page.locator('[data-note-del="41"]').click();
   await page.waitForFunction(()=>document.querySelectorAll('.cal-note').length===0);

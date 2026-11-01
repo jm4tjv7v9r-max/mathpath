@@ -923,7 +923,13 @@ if(hwPub.length)marks.push(`<span class="cal-mark hw">${countIds(hwPub)} 項作�
 if(hwDue.length)marks.push(`<span class="cal-mark due">${countIds(hwDue)} 項作業截止</span>`);
 if(qzPub.length)marks.push(`<span class="cal-mark quiz">${countIds(qzPub)} 項測驗</span>`);
 if(qzDue.length)marks.push(`<span class="cal-mark due">${countIds(qzDue)} 項測驗截止</span>`);
-if(noteList.length)marks.push(`<span class="cal-mark note">${noteList.length} 則提醒</span>`);
+if(noteList.length){
+  // 日曆格只寫「事項本身」的簡短文字，不要寫「1 則提醒」這種沒有資訊的計數。
+  const first=(noteList[0].title||'').trim();
+  const brief=first.length>6?first.slice(0,6)+'…':first;
+  const more=noteList.length>1?` +${noteList.length-1}`:'';
+  marks.push(`<span class="cal-mark note" title="${esc(noteList.map(n=>n.title).join('、'))}">${esc(brief)}${more}</span>`);
+}
 return `<button class="cal-cell${date===todayStr?' today':''}${date===calSelected?' selected':''}" data-cal-date="${date}"><span class="cal-day">${d}</span><span class="cal-marks">${marks.join('')}</span></button>`;}).join('');
 const selEvents=byDate[calSelected]||[];
 // 「本月作業／本月測驗」算的是幾份作業，不是幾筆事件：同一份作業的「發布」與「截止」
@@ -3719,7 +3725,7 @@ async function leaderboardPage(month){
   $('#main').innerHTML=`<div class="fade-in">${heading('LEADERBOARD','排行榜','每月每年級前 10 名。只顯示姓名、座號與分數——作答內容不會公開。',
     `<label class="field-label" for="board-month" style="margin:0 8px 0 0">月份</label><input id="board-month" type="month" value="${m}" style="max-width:170px">`)}
     <p class="small-text" style="margin:0 0 6px">開學至今：${esc(data.termStart)} 起算 · 上月：${esc(data.prevMonth)}</p>
-    <div class="board-tabs segmented" style="width:max-content;margin:14px 0 4px"><button data-board-tab="score" class="active">得分榜</button><button data-board-tab="progress">進步榜</button></div>
+    <div class="board-tabs segmented text" style="margin:14px 0 4px"><button data-board-tab="score" class="active">得分榜</button><button data-board-tab="progress">進步榜</button></div>
     <div id="board-body">${block('score',scoreTable)}</div></div>`;
   $('#board-month').onchange=e=>leaderboardPage(e.target.value||m);
   const body=$('#board-body');
@@ -4837,7 +4843,7 @@ function weakTopic(){const graded=S.attempts.filter(a=>a.status==='graded'&&a.sc
 function weakTopicPanel(){const wt=weakTopic();return `<section class="panel right-panel"><h2>${icon('target')}最需要鞏固</h2>${wt?`<p class="field-hint">依已批閱作答計算，不代表完整能力診斷。</p><div class="knowledge-row"><span>${esc(wt.topic)}</span><span>${wt.percent}%</span></div><div class="progress-track"><div class="progress-fill gold" style="width:${wt.percent}%"></div></div><p class="field-hint">已批閱 ${wt.n} 次。先重做錯題，再做同知識點的相似題，最後挑戰進階題。</p><button class="secondary wide" data-topic="${esc(wt.topic)}">開始針對練習 ${icon('arrow')}</button>`:`<p class="field-hint">還沒有已批閱的作答。完成作業或練習後，這裡會指出最需要鞏固的知識點。</p>`}</section>`;}
 function homeworkMetrics(items){return `<div class="metric-row">${items.map(([label,value,foot])=>`<div class="metric"><div class="metric-label">${label}</div><div class="metric-value">${value}</div><div class="metric-foot">${foot}</div></div>`).join('')}</div>`;}
 // 數學比賽：每週二早上由排程自動搜尋，這裡只負責顯示；預設排序是澳門 → 中國 → 外國。
-let contestData=null, contestQuery='', contestRegion='', contestSort='open';
+let contestData=null, contestQuery='', contestRegion='', contestSort='open', contestView='list';
 const CONTEST_REGION_ORDER={'澳門':0,'中國':1,'外國':2};
 function contestStatus(c){
   if(!c.deadline)return 'pending';            // 主辦還沒公佈報名期
@@ -4876,7 +4882,7 @@ function renderContests(){
   if(!box)return;
   const count=$('#contest-count');if(count)count.textContent=`${list.length} 項`;
   if(!list.length){box.innerHTML=empty('沒有符合的比賽','換個關鍵字或把地區改成「全部地區」。');return;}
-  box.innerHTML=`<div class="record-list">${list.map(c=>{
+  box.innerHTML=`<div class="record-list${contestView==='grid'?' two-col':''}">${list.map(c=>{
     const st=contestStatus(c), left=daysLeft(c.deadline);
     const deadlineText=c.deadline
       ?`${esc(c.deadline)}${st==='open'&&left!==null?`（還有 ${left} 天）`:'（已截止）'}`
@@ -4911,13 +4917,22 @@ async function contestsPage(){
       <label class="search-field">${icon('search')}<input id="contest-search" placeholder="搜尋比賽、主辦或關鍵字…" aria-label="搜尋比賽"></label>
       <select id="contest-region" aria-label="地區"><option value="">全部地區</option>${['澳門','中國','外國'].map(r=>`<option ${contestRegion===r?'selected':''}>${r}</option>`).join('')}</select>
       <select id="contest-sort" aria-label="排序"><option value="open" ${contestSort==='open'?'selected':''}>可報名優先</option><option value="region" ${contestSort==='region'?'selected':''}>地區優先</option><option value="date" ${contestSort==='date'?'selected':''}>截止日期</option><option value="title" ${contestSort==='title'?'selected':''}>名稱</option></select>
+      <div class="segmented text contest-view" role="group" aria-label="顯示方式">
+        <button data-contest-view="list" class="${contestView==='list'?'active':''}">單欄</button>
+        <button data-contest-view="grid" class="${contestView==='grid'?'active':''}">雙欄</button>
+      </div>
     </div>
     <div id="contest-list">${empty('正在讀取比賽清單','從網站伺服器取得最新資料。')}</div>
-    <p class="field-hint">預設「可報名優先」：可以報名的排前面，其次是待公佈，最後是已截止。「地區優先」＝澳門 → 中國 → 外國。資料由每週排程自動整理，報名日期與資格請以主辦機構公佈為準。</p>
+    <p class="field-hint">預設「可報名優先」：可以報名的排前面，其次是待公佈，最後是已截止。「地區優先」＝澳門 → 中國 → 外國；右邊可切換「單欄／雙欄」顯示。資料由每週排程自動整理，報名日期與資格請以主辦機構公佈為準。</p>
     </section></div>`;
   $('#contest-search').addEventListener('input',e=>{contestQuery=e.target.value;renderContests();});
   $('#contest-region').addEventListener('change',e=>{contestRegion=e.target.value;renderContests();});
   $('#contest-sort').addEventListener('change',e=>{contestSort=e.target.value;renderContests();});
+  $$('[data-contest-view]').forEach(b=>b.onclick=()=>{
+    contestView=b.dataset.contestView;
+    $$('[data-contest-view]').forEach(x=>x.classList.toggle('active',x===b));
+    renderContests();
+  });
   try{
     const data=await api('/api/contests');
     if(!viewMatches(target))return;
