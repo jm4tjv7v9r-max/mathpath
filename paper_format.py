@@ -26,6 +26,7 @@ from docx.shared import Emu
 from docx.text.paragraph import Paragraph
 
 import omml
+import mathnorm
 
 # ── 角色判定 ──────────────────────────────────────────────────────────
 SECTION_RE = re.compile(r'^\s*(甲部|乙部|丙部|丁部|第[一二三四]部分|Part\s*[A-D]|[一二三四五六七八九十]+、)')
@@ -313,6 +314,19 @@ def _run(p, text, rpr=None):
     return run
 
 
+# 填空的底線：mathnorm 已經把 `\underline{\hspace{2cm}}` 這類寫法換成帶寬度的記號，
+# 這裡畫成一條真正的底線（連續的全角空白 + 底線格式），長度照原本要求的公分。
+BLANK_MARK_RE = mathnorm.BLANK_MARK_RE
+
+
+def _blank_run(p, digits, rpr=None):
+    cm = (int(digits) / 10) if digits else 2.0
+    count = max(2, min(30, round(cm / 0.37)))
+    run = _run(p, '\u3000' * count, rpr)
+    run.underline = True
+    return run
+
+
 MATH_RE = re.compile(r'\$([^$]+)\$')
 
 
@@ -337,14 +351,20 @@ def _write(p, cells: list[str], rpr=None, math_as_text: bool = False):
     for index, cell in enumerate(cells):
         if index:
             _run(p, '\t', rpr)
-        for kind, value in split_math(cell or ''):
-            if kind == 'math':
-                if math_as_text:
-                    _run(p, f'${value}$', rpr)
-                else:
-                    p._p.append(omml.latex_to_omml(value))
-            elif value:
-                _run(p, value, rpr)
+        # 先把「空白」寫法換成記號，再依記號切段：底線畫成真正的底線，
+        # 其餘照舊拆 $...$ 轉 Word 方程式。
+        for piece_index, piece in enumerate(BLANK_MARK_RE.split(mathnorm.normalize_blanks(cell or ''))):
+            if piece_index % 2:
+                _blank_run(p, piece, rpr)
+                continue
+            for kind, value in split_math(piece):
+                if kind == 'math':
+                    if math_as_text:
+                        _run(p, f'${value}$', rpr)
+                    else:
+                        p._p.append(omml.latex_to_omml(value))
+                elif value:
+                    _run(p, value, rpr)
 
 
 def _fill(p, cells: list[str], math_as_text: bool = False):
@@ -424,6 +444,41 @@ def _clone(doc, prototype_el, before):
     return Paragraph(el, doc)
 
 
+# 卷頭裡哪一行是「卷名」：換卷時只換那一行，校名、學年、姓名班別那幾行要原樣保留。
+TITLE_HINTS = ('測驗', '考試', '試卷', '測', '卷', 'Test', 'Exam')
+
+
+def _title_index(head) -> int | None:
+    """挑最像卷名的那一段；都沒線索就沿用第一段（舊行為）。"""
+    scored = []
+    for i, p in enumerate(head):
+        text = (p.text or '').strip()
+        if not text or not p.runs:
+            continue
+        score = sum(1 for hint in TITLE_HINTS if hint in text)
+        scored.append((score, i))
+    if not scored:
+        return None
+    best = max(score for score, _ in scored)
+    if best == 0:
+        return scored[0][1]
+    return max(i for score, i in scored if score == best)
+
+
+NUM_LEAD_RE = re.compile(r'^\s*\d{1,3}\s*([.、)．])(\t|\u3000| {1,})?')
+
+
+def number_style(proto_text: str) -> tuple[str, str]:
+    """沿用範本的題號寫法：`9.` / `9、` / `9．`，以及題號後面接 tab 還是空白。
+
+    範本用 tab 對齊時，這裡若硬寫全角空白，題幹就會整排偏掉——這就是「沒有照範本」。
+    """
+    m = NUM_LEAD_RE.match(proto_text or '')
+    if not m:
+        return '.', '\u3000'
+    return m.group(1), (m.group(2) or '\u3000')
+
+
 def _marks_text(prototype_right: str, marks: float | None) -> str:
     if marks is None:
         return ''
@@ -435,18 +490,48 @@ def _marks_text(prototype_right: str, marks: float | None) -> str:
     return f'{raw[0]}{marks:g}{space}分{raw[-1]}'
 
 
+HEADING_PREFIX_RE = re.compile(
+    r'^\s*(第[一二三四五六七八九十]+部分|第[一二三四五六七八九十]+部|[甲乙丙丁戊己庚辛]部|'
+    r'[甲乙丙丁戊己庚辛]|[一二三四五六七八九十]+[、.．)）]|Part\s*[A-Z])')
+BRACKET_RE = re.compile(r'([（(])([^（）()]*)([)）])\s*$')
+EACH_MARKS_RE = re.compile(r'每[題小]\s*[\d.]+\s*分')
+TOTAL_MARKS_RE = re.compile(r'共\s*[\d.]+\s*分')
+
+
 def _heading_text(template_title: str, new_title: str, questions) -> str:
-    if not new_title or '（' in new_title or '(' in new_title:
+    """照範本寫分部標題：編號（一、／甲部／第一部分）與括號裡的配分說明都沿用範本。
+
+    只更新數字（每題 X 分、共 Y 分），不動老師原本的措辭——這樣換一份卷，
+    看起來仍然是同一份卷的格式。
+    """
+    if not new_title:
         return new_title
+    tpl = (template_title or '').strip()
+    new = new_title.strip()
+    new_prefix = HEADING_PREFIX_RE.match(new)
+    body = new[new_prefix.end():].strip() if new_prefix else new
+    prefix = new_prefix.group(0).strip() if new_prefix else ''
+    tpl_prefix = HEADING_PREFIX_RE.match(tpl) if tpl else None
+    if tpl_prefix:
+        prefix = tpl_prefix.group(0).strip()
+    gap = '' if prefix.endswith(('、', '.', '．')) else '\u3000'
+    heading = f'{prefix}{gap}{body}' if prefix else body
+
+    m = BRACKET_RE.search(tpl) if tpl else None
     marks = [q.marks for q in questions if q.marks is not None]
-    if not marks or not template_title:
-        return new_title
-    if template_title.strip()[:2] != new_title.strip()[:2] or '（' not in template_title:
-        return new_title
-    total = sum(marks)
+    if not m or not marks or '分' not in m.group(2):
+        return heading
+    before = tpl[tpl_prefix.end() if tpl_prefix else 0:m.start()]
+    colon = '：' if before.rstrip().endswith(('：', ':')) else ''
+    inner = m.group(2)
+    out = inner
     if len(set(marks)) == 1:
-        return f'{new_title.strip()}（每題 {marks[0]:g} 分，共 {total:g} 分）'
-    return f'{new_title.strip()}（共 {total:g} 分）'
+        out = EACH_MARKS_RE.sub(f'每題 {marks[0]:g} 分', out)
+    out = TOTAL_MARKS_RE.sub(f'共 {sum(marks):g} 分', out)
+    if out == inner and not re.search(r'每[題小]|共', inner):
+        # 範本只寫「（20 分）」這種總分：直接把那個數字換成新的總分
+        out = re.sub(r'[\d.]+\s*分', f'{sum(marks):g} 分', inner, count=1)
+    return f'{heading}{colon}{m.group(1)}{out}{m.group(3)}'
 
 
 def count_formulas(sections: list[Section]) -> int:
@@ -494,7 +579,12 @@ def _render_into(tpl, sections: list[Section], title: str | None = None,
 
     q_proto = proto['question']
     pos = marks_position(q_proto.text)
+    punct, sep = number_style(q_proto.text)
     marks_proto = q_proto.text.split('\t')[-1] if pos == 'trailing' else ''
+    # 範本把配分寫在分部標題（「每題 4 分」）而不是題號旁邊時，題幹就不要再插一次配分，
+    # 否則每題都會多出「（4 分）」，跟範本長得不一樣。
+    heading_marks = any('分' in (b.text or '') for b in blocks if b.role == 'section')
+    show_marks = pos != 'none' or not heading_marks
     # 範本的「配分靠右」若只靠預設 tab，位置會飄；補一個貼右邊界的定位點。
     marks_tab = None
     if pos == 'trailing' and not _tab_stops(q_proto):
@@ -525,10 +615,9 @@ def _render_into(tpl, sections: list[Section], title: str | None = None,
         if p.text.strip():
             p.alignment = WD_ALIGN_PARAGRAPH.CENTER
     if title:
-        for p in cloned_head:
-            if classify(p.text, p) == 'other' and p.runs:
-                _fill(p, [title], math_as_text)
-                break
+        target = _title_index(cloned_head)
+        if target is not None:
+            _fill(cloned_head[target], [title], math_as_text)
 
     number = 1
     template_headings = [b.text for b in blocks if b.role == 'section']
@@ -543,13 +632,13 @@ def _render_into(tpl, sections: list[Section], title: str | None = None,
         for q in s.questions:
             np = _clone(tpl, q_proto._p, sectpr)
             if pos == 'trailing':
-                _fill(np, [f'{number}.　{q.stem}', _marks_text(marks_proto, q.marks)], math_as_text)
+                _fill(np, [f'{number}{punct}{sep}{q.stem}', _marks_text(marks_proto, q.marks)], math_as_text)
                 if marks_tab is not None:
                     np.paragraph_format.tab_stops.add_tab_stop(marks_tab, WD_TAB_ALIGNMENT.RIGHT)
-            elif q.marks is not None:
-                _fill(np, [f'{number}.{_marks_text("（0 分）", q.marks)}　{q.stem}'], math_as_text)
+            elif q.marks is not None and show_marks:
+                _fill(np, [f'{number}{punct}{_marks_text("（0 分）", q.marks)}{sep}{q.stem}'], math_as_text)
             else:
-                _fill(np, [f'{number}.　{q.stem}'], math_as_text)
+                _fill(np, [f'{number}{punct}{sep}{q.stem}'], math_as_text)
             number += 1
 
             for extra in q.lines:

@@ -169,6 +169,72 @@ class PaperTemplateTests(unittest.TestCase):
         self.assertEqual(equations, 2, '公式要原樣帶進輸出')
         self.assertEqual(doc.paragraphs[0].text, '中三數學 小測', '卷名要換成新卷的')
 
+    def test_blank_placeholders_become_underlines_not_garbage(self):
+        """AI 常把填空寫成 $\\underline{\\hspace{2cm}}$；套版後不能變成 underline_hspace2cm。"""
+        doc = Document()
+        doc.add_paragraph('中三數學 小測')
+        doc.add_paragraph('一、填空題（每題 5 分，共 10 分）')
+        doc.add_paragraph('1.\t題目一（　　）')
+        doc.add_paragraph('2.\t題目二（　　）')
+        buf = io.BytesIO()
+        doc.save(buf)
+        sections = [paper_format.Section(title='一、填空題', questions=[
+            paper_format.Question(stem=r'半徑為 $4$ cm，則直徑為 $\underline{\hspace{2cm}}$ cm。', marks=5),
+            paper_format.Question(stem=r'半徑為 $5$ cm，則周長為 ______ cm。', marks=5),
+        ])]
+        raw, _ = paper_format.render_with_sections(buf.getvalue(), sections, '中三數學 小測')
+        out = Document(io.BytesIO(raw))
+        text = '\n'.join(p.text for p in out.paragraphs)
+        self.assertNotIn('underline', text.lower(), '不能留下 LaTeX 指令殘骸')
+        self.assertNotIn('hspace', text.lower(), '不能留下 LaTeX 指令殘骸')
+        blanks = [r for p in out.paragraphs for r in p.runs if r.underline]
+        self.assertEqual(len(blanks), 2, '兩種空白寫法都要畫成底線')
+        self.assertEqual(blanks[0].text.strip('\u3000'), '', '底線底下不該有文字')
+        self.assertTrue(blanks[0].text, '底線要有長度')
+
+    def test_question_numbering_and_heading_follow_the_template(self):
+        """範本用「1.<tab>」與「（每題 3 分，共 30 分）」，輸出就要照這個寫法。"""
+        doc = Document()
+        doc.add_paragraph('中三數學 小測')
+        doc.add_paragraph('一、單項選擇題（每題 3 分，共 30 分）')
+        doc.add_paragraph('1.\t題目一（　　）')
+        doc.add_paragraph('2.\t題目二（　　）')
+        buf = io.BytesIO()
+        doc.save(buf)
+        sections = [paper_format.Section(title='一、選擇題', questions=[
+            paper_format.Question(stem='題目甲（　　）', marks=5,
+                                  options=['A. 1', 'B. 2', 'C. 3', 'D. 4']),
+            paper_format.Question(stem='題目乙（　　）', marks=5,
+                                  options=['A. 1', 'B. 2', 'C. 3', 'D. 4']),
+        ])]
+        raw, _ = paper_format.render_with_sections(buf.getvalue(), sections, '中三數學 小測')
+        out = Document(io.BytesIO(raw))
+        text = '\n'.join(p.text for p in out.paragraphs)
+        self.assertIn('一、選擇題（每題 5 分，共 10 分）', text, '配分說明要沿用範本措辭並更新數字')
+        first = [p for p in out.paragraphs if p.text.startswith('1.')][0]
+        self.assertIn('\t', first.text, '範本用 tab 對齊，輸出也要用 tab')
+        self.assertNotIn('1.　', first.text, '不要換成全角空白')
+
+    def test_header_keeps_the_school_line_and_only_replaces_the_title(self):
+        """卷頭第一行是校名／學年，換卷時不可以被卷名蓋掉。"""
+        doc = Document()
+        doc.add_paragraph('某某中學  2026／2027 學年  第一段測驗')
+        doc.add_paragraph('初三數學  測驗卷')
+        doc.add_paragraph('姓名：______  班別：______')
+        doc.add_paragraph('一、選擇題（每題 4 分）')
+        doc.add_paragraph('1.\t題目（　　）')
+        buf = io.BytesIO()
+        doc.save(buf)
+        sections = [paper_format.Section(title='一、選擇題', questions=[
+            paper_format.Question(stem='題目甲（　　）', marks=4, options=['A. 1', 'B. 2']),
+        ])]
+        raw, _ = paper_format.render_with_sections(buf.getvalue(), sections, '初三數學  第二段測驗')
+        out = Document(io.BytesIO(raw))
+        texts = [p.text for p in out.paragraphs]
+        self.assertEqual(texts[0], '某某中學  2026／2027 學年  第一段測驗', '校名那行要原樣保留')
+        self.assertEqual(texts[1], '初三數學  第二段測驗', '卷名要換在標題那行')
+        self.assertEqual(texts[2], '姓名：______  班別：______', '資料行要原樣保留')
+
     def test_template_example_formulas_do_not_leak_into_output(self):
         """範本的選項行夾著範例公式時，套版後不能拖在每一行後面。"""
         template = self.call('POST', '/api/paper-templates',
