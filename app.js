@@ -4494,6 +4494,27 @@ function scoreCheckHtml(score){
   </div>`;
 }
 
+// AI 回傳的是 SVG；Word 要的是點陣圖，所以在瀏覽器用 canvas 轉成 PNG。
+function svgToPng(svg,widthPx=900){
+  return new Promise((resolve,reject)=>{
+    const blob=new Blob([svg],{type:'image/svg+xml;charset=utf-8'});
+    const url=URL.createObjectURL(blob);
+    const img=new Image();
+    img.onload=()=>{
+      const ratio=img.height&&img.width?img.height/img.width:0.75;
+      const canvas=document.createElement('canvas');
+      canvas.width=widthPx;canvas.height=Math.round(widthPx*ratio);
+      const ctx=canvas.getContext('2d');
+      ctx.fillStyle='#ffffff';ctx.fillRect(0,0,canvas.width,canvas.height);
+      ctx.drawImage(img,0,0,canvas.width,canvas.height);
+      URL.revokeObjectURL(url);
+      resolve({data:canvas.toDataURL('image/png'),widthCm:7.5});
+    };
+    img.onerror=()=>{URL.revokeObjectURL(url);reject(new Error('圖形轉檔失敗'));};
+    img.src=url;
+  });
+}
+
 async function paperLayoutPage(){
   // 卷面排版是教師功能：學生連入口都不該看到，直接回題庫（側欄也不會出現）
   if(S.user?.role!=='teacher')return bank();
@@ -4579,12 +4600,29 @@ async function paperLayoutPage(){
     // 只切換選中的樣式：整頁重畫會把① ② 已經選好的檔案清空，老師得重揀一次
     $$('.layout-tpl').forEach(el=>el.classList.toggle('active',el.contains(r)));
   });
-  $$('[data-del-tpl]').forEach(b=>b.onclick=async()=>{
-    if(!confirm('刪除這個範本？已排好的檔案不受影響。'))return;
-    try{await fetch('/api/paper-templates/'+b.dataset.delTpl,{method:'DELETE',credentials:'same-origin'})
-      .then(async r=>{const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.error||'刪除失敗');});
-      toast('已刪除');paperLayoutPage();
-    }catch(e){toast(e.message);}
+  // 刪除範本：不用 confirm()——內嵌預覽的 iframe 常常直接封鎖對話框，
+  // 按下去會「完全沒有反應」。改成兩段式：第一次按變成「再按一次刪除」。
+  $$('[data-del-tpl]').forEach(b=>{
+    let armed=false,timer=null;
+    const reset=()=>{armed=false;b.disabled=false;b.textContent='刪除';};
+    b.onclick=async ev=>{
+      ev.preventDefault();ev.stopPropagation();
+      if(!armed){
+        armed=true;b.textContent='再按一次刪除';
+        timer=setTimeout(reset,4000);
+        return;
+      }
+      clearTimeout(timer);
+      b.disabled=true;b.textContent='刪除中…';
+      try{
+        const r=await fetch('/api/paper-templates/'+b.dataset.delTpl,{method:'DELETE',credentials:'same-origin'});
+        const d=await r.json().catch(()=>({}));
+        if(!r.ok)throw new Error(d.error||'刪除失敗');
+        if(String(sessionStorage.getItem('layoutTemplate')||'')===String(b.dataset.delTpl))
+          sessionStorage.removeItem('layoutTemplate');
+        toast('已刪除');paperLayoutPage();
+      }catch(e){toast(e.message);reset();}
+    };
   });
   $('#tpl-save').onclick=async()=>{
     const file=$('#tpl-file').files[0];
@@ -4624,6 +4662,10 @@ async function paperLayoutPage(){
         <div><strong>排好了</strong><span class="small-text">${st.sections||0} 個分部 · ${st.questions||0} 題 · ${st.formulas||0} 條公式${st.figures?` · ${st.figures} 張圖`:''}${st.tables?` · ⚠️ 範本有 ${st.tables} 個表格未帶入`:''}${st.oleObjects?` · ⚠️ 有 ${st.oleObjects} 個 Word 公式物件（MathType 等）讀不到（請先轉成 Word 方程式或 PDF）`:''}</span></div>
         <button class="primary" id="dl-paper">下載 ${esc(res.filename)}</button></div>
       ${scoreCheckHtml(st.score)}
+      ${(res.geometry||[]).length?`<div class="geo-ask">
+        <div><strong>有 ${res.geometry.length} 題看起來需要圖，但目前沒有圖</strong>
+          <span class="small-text">第 ${res.geometry.map(g=>g.number).join('、')} 題。AI 會先算座標、再照座標畫圖，畫完自查一次。</span></div>
+        <button class="secondary" id="draw-geo">AI 畫圖並重新下載</button></div>`:''}
       <div class="panel" style="margin-top:12px;padding:12px">
         <p class="field-hint" style="margin:0 0 8px">保存到「我的試卷」：之後可以搜尋、按年份／級別／學段篩選，也能一鍵匯入題庫。</p>
         <div class="layout-row">
@@ -4639,6 +4681,29 @@ async function paperLayoutPage(){
         <div id="save-paper-result" class="small-text" style="margin-top:8px"></div>
       </div>`;
       if((st.score?.warnings||[]).length)toast('⚠️ '+st.score.warnings[0]);
+      const drawBtn=$('#draw-geo');
+      if(drawBtn)drawBtn.onclick=async()=>{
+        const list=res.geometry||[];
+        if(!list.length)return;
+        const old=drawBtn.textContent;drawBtn.disabled=true;
+        try{
+          const figures={};
+          for(let i=0;i<list.length;i++){
+            drawBtn.textContent=`畫圖中… ${i+1}/${list.length}`;
+            const fig=await api('/api/questions/ai-figure',{
+              content:list[i].stem,topic:'幾何',qtype:'解答題',
+              consentExternal:S.ai?.mode==='external'});
+            figures[list[i].number]=await svgToPng(fig.svg);
+          }
+          drawBtn.textContent='重新排版中…';
+          const again=await apiJob(`/api/paper-templates/${tid}/apply`,
+            {file:data,consentExternal:isPdf,mathAsText,numbering,figures},
+            job=>{drawBtn.textContent=`重新排版中… ${Math.round(job.elapsed||0)} 秒`;});
+          const a=document.createElement('a');a.href=again.docx;a.download=again.filename;a.click();
+          toast(`已加入 ${Object.keys(figures).length} 張圖，重新下載`);
+        }catch(e){toast(e.message);}
+        drawBtn.disabled=false;drawBtn.textContent=old;
+      };
       $('#dl-paper').onclick=()=>{const a=document.createElement('a');a.href=res.docx;a.download=res.filename;a.click();};
       $('#save-paper').onclick=async()=>{
         const btn=$('#save-paper');const old=btn.textContent;btn.disabled=true;btn.textContent='保存中…';

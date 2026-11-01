@@ -1090,3 +1090,10 @@ html[data-theme=night] .nav-item .count.due{background:#3a2c1d;color:#e0b083}
 .score-pill.bad{border-color:#b8453b;color:#b8453b}
 .score-line{display:flex;gap:6px;align-items:flex-start;font-size:calc(12.5px*var(--fs));color:#8a5a1a}
 .score-line .icon{width:14px;height:14px;flex:0 0 auto;margin-top:2px}
+
+/* 卷面排版：提示有幾何題沒有圖 */
+.geo-ask{margin-top:12px;border:1px solid var(--border);border-radius:10px;padding:10px 12px;
+  display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap;
+  background:var(--color-background-secondary,#f7f6f2)}
+.geo-ask strong{display:block;font-size:calc(13.5px*var(--fs))}
+.geo-ask .small-text{display:block;margin-top:2px}

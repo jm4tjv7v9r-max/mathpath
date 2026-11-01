@@ -1103,6 +1103,8 @@ def _render_into(tpl, sections: list[Section], title: str | None = None,
                     blob = io.BytesIO(fig['blob'])
                     if fig.get('cx') and fig.get('cy'):
                         run.add_picture(blob, width=Emu(fig['cx']), height=Emu(fig['cy']))
+                    elif fig.get('cx'):
+                        run.add_picture(blob, width=Emu(fig['cx']))   # 只給寬度就按比例縮放
                     else:
                         run.add_picture(blob)
                 except Exception:
@@ -1118,11 +1120,11 @@ def _render_into(tpl, sections: list[Section], title: str | None = None,
                 for row in pack_options(opts, columns):
                     op = _clone(tpl, proto['option']._p, sectpr)
                     _fill(op, row, math_as_text)
-                    if columns != tpl_columns:
-                        # 欄數跟範本不一樣時，範本帶過來的定位點會讓欄位歪掉，重設。
-                        op.paragraph_format.tab_stops.clear_all()
-                        if columns > 1:
-                            _column_stops(op, tpl, columns)
+                    # 一律用我們自己算的定位點：範本帶過來的定位點常常是「手動拉的」，
+                    # 欄寬不均，B、C 兩個選項就會黏在一起。自己算 = 每行每一欄都對齊。
+                    op.paragraph_format.tab_stops.clear_all()
+                    if columns > 1:
+                        _column_stops(op, tpl, columns)
 
             if 'answer_line' in proto and lines and not q.options:
                 for _ in range(lines):
@@ -1336,6 +1338,56 @@ def render_with_sections(template_bytes: bytes, sections: list[Section],
     buf = io.BytesIO()
     tpl.save(buf)
     return buf.getvalue(), report
+
+
+# 排版時「這題看起來需要圖」的粗略判斷：卷面排版拿到的是純文字，
+# 沒有題庫的知識點，只能靠題幹用語。命中的題目會請老師決定要不要 AI 畫圖。
+GEOMETRY_HINTS = ('如圖', '圖中', '圖所示', '三角形', '四邊形', '梯形', '平行四邊形',
+                  '菱形', '矩形', '正方形', '圓', '弧', '切線', '弦', '半徑', '直徑',
+                  '∠', '垂直', '平行', '面積', '體積', '表面積', '坐標', '向量',
+                  '全等', '相似', '中線', '角平分', '外接圓', '內切圓')
+
+
+def looks_geometry(text: str) -> bool:
+    t = text or ''
+    return any(h in t for h in GEOMETRY_HINTS)
+
+
+def geometry_candidates(sections: list[Section]) -> list[dict]:
+    """列出「看起來需要圖、但目前沒有圖」的題目（供卷面排版提示 AI 畫圖）。"""
+    out = []
+    number = 0
+    for section in sections:
+        for q in section.questions:
+            number += 1
+            if q.figures:
+                continue
+            if looks_geometry(q.stem) or any(looks_geometry(o) for o in q.options):
+                out.append({'number': number, 'stem': q.stem[:80]})
+    return out
+
+
+def attach_figures(sections: list[Section], figures: dict) -> int:
+    """把前端 AI 畫好、已轉成 PNG 的圖貼回對應題目（key = 全卷題號，1 開始）。"""
+    flat = [q for section in sections for q in section.questions]
+    count = 0
+    for key, value in (figures or {}).items():
+        try:
+            index = int(key) - 1
+        except (TypeError, ValueError):
+            continue
+        if not 0 <= index < len(flat):
+            continue
+        if not isinstance(value, dict):
+            continue
+        blob = value.get('blob')
+        if not isinstance(blob, (bytes, bytearray)) or not blob:
+            continue
+        flat[index].figures.append({'blob': bytes(blob),
+                                    'cx': int(value.get('cx') or 0),
+                                    'cy': int(value.get('cy') or 0)})
+        count += 1
+    return count
 
 
 def render_bytes(template_bytes: bytes, content_bytes: bytes,

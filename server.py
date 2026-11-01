@@ -6193,7 +6193,8 @@ class Application:
         match = re.fullmatch(r'/api/paper-templates/([1-9]\d{0,17})/apply', path)
         if match and method == 'POST':
             self.teacher(user)
-            fields(body, ('file', 'consentExternal', 'mathAsText', 'async', 'numbering'), ('file',))
+            fields(body, ('file', 'consentExternal', 'mathAsText', 'async', 'numbering',
+                          'figures'), ('file',))
             math_as_text = bool(body.get('mathAsText'))
             # 題號：'continuous' 全卷連續（預設）；'section' 每個分部由 1 重編
             numbering = 'section' if body.get('numbering') == 'section' else 'continuous'
@@ -6246,10 +6247,32 @@ class Application:
             except Exception as exc:
                 ai_log(f'卷面排版失敗：{exc}')
                 fail(422, '排版失敗：這份 Word 的結構讀不出來（可能是表格或文字方塊排版）。')
+            # 幾何題：前端用 AI 畫好、轉成 PNG 之後傳回來，這裡貼回對應題目
+            figures_in = body.get('figures')
+            if isinstance(figures_in, dict) and figures_in:
+                parsed = {}
+                for key, item in figures_in.items():
+                    raw = item.get('data') if isinstance(item, dict) else item
+                    if not isinstance(raw, str) or not raw:
+                        continue
+                    try:
+                        blob, _mime = decode_data_url(raw, ('image/png', 'image/jpeg', 'image/webp'),
+                                                      MAX_FIGURE)
+                    except APIError:
+                        continue
+                    width = item.get('widthCm') if isinstance(item, dict) else None
+                    parsed[str(key)] = {'blob': blob,
+                                        'cx': int(float(width) * 360000) if width else 0,
+                                        'cy': 0}
+                attached = paper_format.attach_figures(sections, parsed)
+                if attached:
+                    report['figures'] = report.get('figures', 0) + attached
             filename = (report.get('title') or '排版結果').replace('/', '／')[:60] + '.docx'
             return {'docx': 'data:' + DOCX_MIME + ';base64,' + base64.b64encode(output).decode(),
                     'filename': filename, 'stats': report,
                     # 順便把題目內容帶回去，前端按「保存到我的試卷」就不用再上傳一次
+                    # 哪些題看起來需要圖但還沒有圖（讓前端決定要不要叫 AI 畫）
+                    'geometry': paper_format.geometry_candidates(sections),
                     'content': {'title': report.get('title'),
                                 'sections': paper_format.sections_to_dict(sections)}}, headers
 
