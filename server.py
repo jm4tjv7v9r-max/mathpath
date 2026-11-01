@@ -8232,9 +8232,11 @@ class Handler(BaseHTTPRequestHandler):
             body = {}
             if self.command != 'GET':
                 self.same_origin()
-                if self.command != 'POST':
-                    fail(405, '僅支援 GET 和 POST。')
-                if path in RESTORE_UPLOADS:
+                # DELETE 也放行：範本、題目等資源的刪除走 DELETE（dispatch 本來就支援），
+                # 之前這一關只認 GET／POST，前端按「刪除」會拿到「僅支援 GET 和 POST」。
+                if self.command not in ('POST', 'DELETE'):
+                    fail(405, '僅支援 GET、POST 與 DELETE。')
+                if self.command == 'POST' and path in RESTORE_UPLOADS:
                     # 還原檔案可能很大，先驗身分再串流寫入暫存檔，不整份讀進記憶體。
                     restore_app = self.server.app
                     restore_user, _ = restore_app.current_user(self.headers.get('Cookie'))
@@ -8243,7 +8245,10 @@ class Handler(BaseHTTPRequestHandler):
                     restore_app.require_owner(restore_user)
                     self.handle_restore(path, parsed.query, restore_user)
                     return
-                body = self.read_json()
+                # DELETE 沒有 body：read_json() 會因為「沒有 Content-Length」而回 400，
+                # 所以只有 POST 才解析 JSON。
+                if self.command == 'POST':
+                    body = self.read_json()
             app = self.server.app
             user, token_hash = app.current_user(self.headers.get('Cookie'))
             image_route = re.fullmatch(r'/api/attempts/([1-9]\d{0,17})/image', path)
