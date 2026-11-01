@@ -180,10 +180,18 @@ def to_tex_plan(plan: dict, preamble: str | None = None,
     這樣「下載 Word」和「下載 .tex」排出來才會是同一份卷。
     """
     lines = [(preamble or DEFAULT_PREAMBLE).rstrip(), '', r'\begin{document}', '']
-    head = [str(h) for h in (plan.get('head') or []) if str(h).strip()]
-    if head:
-        block = [r'{\Large\bfseries ' + tex_of(head[0]) + '}']
-        block += [r'{\small\bfseries ' + tex_of(h, 0, 0.3) + '}' for h in head[1:]]
+    block = []
+    for item in plan.get('head') or []:
+        text = (item.get('text') if isinstance(item, dict) else str(item)) or ''
+        if text.strip():
+            if not block:
+                block.append(r'{\Large\bfseries ' + tex_of(text) + '}')
+            else:
+                block.append(r'{\small\bfseries ' + tex_of(text, 0, 0.3) + '}')
+        if isinstance(item, dict) and item.get('rule'):
+            # 範本在「姓名／學號」那一行下面有一條橫線，LaTeX 也要畫
+            block.append(r'\rule{\linewidth}{0.4pt}')
+    if block:
         lines += [r'\begin{center}', ' \\\\ '.join(block), r'\end{center}', '']
 
     for section in plan.get('sections') or []:

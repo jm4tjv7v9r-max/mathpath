@@ -1236,6 +1236,37 @@ class PaperLayoutTests(unittest.TestCase):
         self.assertEqual(len(rows), 2)
         self.assertEqual(stops[0], stops[1], '兩題的選項欄位要一樣')
 
+    def test_head_rule_is_kept_in_word_and_tex(self):
+        """範本在資料行下面有一條橫線，Word 與 .tex 都要保留。"""
+        from docx.oxml import OxmlElement
+        from docx.oxml.ns import qn
+        doc = Document()
+        doc.add_paragraph('測試卷')
+        info = doc.add_paragraph('高一 ＿ 班 姓名：＿＿＿')
+        rule = doc.add_paragraph()
+        ppr = rule._p.get_or_add_pPr()
+        pbdr = OxmlElement('w:pBdr')
+        bottom = OxmlElement('w:bottom')
+        bottom.set(qn('w:val'), 'single')
+        pbdr.append(bottom)
+        ppr.append(pbdr)
+        doc.add_paragraph('一、選擇題（每題 4 分，共 4 分）')
+        doc.add_paragraph('1.\t題目（　　）')
+        buf = io.BytesIO()
+        doc.save(buf)
+        raw_tpl = buf.getvalue()
+        sections = [paper_format.Section(title='一、選擇題', questions=[
+            paper_format.Question(stem='題目（　　）', marks=4)])]
+
+        raw, _ = paper_format.render_with_sections(raw_tpl, sections, '測試卷')
+        out = Document(io.BytesIO(raw))
+        self.assertTrue(any('w:pBdr' in p._p.xml for p in out.paragraphs),
+                        'Word 的卷頭橫線不見了')
+
+        plan = paper_format.layout_plan(Document(io.BytesIO(raw_tpl)), sections, '測試卷')
+        self.assertTrue(any(item.get('rule') for item in plan['head']))
+        self.assertIn(r'\rule{\linewidth}', latex_export.to_tex_plan(plan))
+
     def test_score_summary_flags_wrong_total_and_odd_choice_marks(self):
         good = [paper_format.Section(title='一、選擇題', questions=[
             paper_format.Question(stem='甲', marks=4) for _ in range(5)]),

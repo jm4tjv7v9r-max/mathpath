@@ -1231,7 +1231,15 @@ def layout_plan(tpl, sections: list[Section], title: str | None = None,
             number += 1
         out_sections.append({'heading': heading, 'marksPos': sec_pos, 'questions': questions})
 
-    return {'head': [h for h in head if h.strip()],
+    # 卷頭逐段保留（含「資料行下面那條橫線」），LaTeX 才畫得出一樣的線
+    head_items = []
+    for i, p in enumerate(head_paras):
+        text = head[i]
+        is_rule = blocks[head_idx[i]].role == 'rule' or has_bottom_border(p)
+        if text.strip() or is_rule:
+            head_items.append({'text': text, 'rule': is_rule})
+
+    return {'head': head_items,
             'sections': out_sections,
             'score': paper_score_summary(sections),
             'closing': [paragraphs[i].text for i in tail_idx
