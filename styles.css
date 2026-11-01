@@ -950,8 +950,20 @@ html[data-theme=night] .topbar-link{color:#dbe6e6}
 /* 數學比賽：右側地區徽章與官方連結 */
 /* 教師首頁「近七日事項」：今天那筆放大加粗換色 */
 .week-list{padding:0 22px 18px;display:flex;flex-direction:column;gap:8px}
-.week-item{display:flex;align-items:center;gap:12px;padding:10px 12px;
-  border:1px solid var(--border);border-radius:10px;background:var(--paper)}
+.week-item{display:flex;align-items:center;gap:12px;padding:10px 12px;width:100%;text-align:left;
+  font:inherit;color:inherit;cursor:pointer;
+  border:1px solid var(--border);border-radius:10px;background:var(--paper);transition:border-color .15s,background .15s}
+.week-item:hover{border-color:#bcd6c8;background:var(--surface-soft)}
+.week-more{margin-left:6px;font-weight:400;color:var(--muted);font-size:calc(12.5px*var(--fs))}
+/* 按下某一天彈出的詳情：時間／地點／出處 + 完整內容 */
+.day-detail{border-top:1px solid var(--line-soft);padding:13px 0}
+.day-detail:first-of-type{border-top:0;padding-top:4px}
+.day-detail>strong{font-size:calc(15.5px*var(--fs))}
+.day-facts{display:flex;flex-wrap:wrap;gap:8px 18px;margin:8px 0 0}
+.day-facts div{display:flex;align-items:baseline;gap:6px}
+.day-facts dt{color:var(--muted);font-size:calc(12.5px*var(--fs))}
+.day-facts dd{margin:0;font-size:calc(13.5px*var(--fs));font-weight:600}
+.day-note{margin:9px 0 0;line-height:1.85;white-space:pre-wrap;color:var(--muted-2)}
 .week-date{font-variant-numeric:tabular-nums;color:var(--muted);font-size:calc(13px*var(--fs));flex:none;min-width:46px}
 .week-body{display:flex;flex-direction:column;gap:2px;min-width:0}
 .week-body strong{font-size:calc(15px*var(--fs))}

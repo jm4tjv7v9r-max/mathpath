@@ -940,7 +940,7 @@ $('#main').innerHTML=`<div class="fade-in">${heading('SCHEDULE','日曆','一眼
 ${error?`<div class="inline-error">${esc(error)}</div>`:''}
 <div class="cal-weekdays">${['日','一','二','三','四','五','六'].map(d=>`<span>${d}</span>`).join('')}</div>
 <div class="cal-grid">${grid}</div></section>
-<section class="panel panel-pad" style="margin-top:20px"><h2>${icon('file')}${esc(calSelected)}</h2>${detail}<div class="divider-text"><span>提醒事項</span></div>${selNotes.length?selNotes.map(n=>`<div class="cal-note"><span class="cal-event-tag note">提醒</span><div><strong>${esc(n.title)}</strong>${n.note?`<p class="field-hint">${esc(n.note)}</p>`:''}</div><button class="icon-btn" data-note-del="${n.id}" title="刪除提醒" aria-label="刪除提醒">${icon('trash')}</button></div>`).join(''):'<p class="field-hint">這一天還沒有提醒事項。</p>'}<form id="note-form" style="margin-top:14px"><div class="form-grid"><div class="form-field"><label class="field-label" for="note-title">新增提醒標題</label><input id="note-title" maxlength="120" placeholder="例如：收齊作業、教研會議" required></div><div class="form-field"><label class="field-label" for="note-body">內容（可留空）</label><input id="note-body" maxlength="2000" placeholder="例如：下午三點前完成"></div></div><p class="field-hint">提醒事項只會出現在你自己的日曆，不會顯示給學生或其他教師。</p><p class="error-text" id="note-error"></p><button class="secondary" type="submit">${icon('check')}加入 ${esc(calSelected)} 的提醒</button></form></section></div>`;
+<section class="panel panel-pad" style="margin-top:20px"><h2>${icon('file')}${esc(calSelected)}</h2>${detail}<div class="divider-text"><span>提醒事項</span></div>${selNotes.length?selNotes.map(n=>`<div class="cal-note"><span class="cal-event-tag note">提醒</span><div><strong>${esc(n.title)}</strong>${noteMeta(n)?`<p class="field-hint">${esc(noteMeta(n))}</p>`:''}${n.note?`<p class="field-hint">${esc(n.note)}</p>`:''}</div><button class="icon-btn" data-note-del="${n.id}" title="刪除提醒" aria-label="刪除提醒">${icon('trash')}</button></div>`).join(''):'<p class="field-hint">這一天還沒有提醒事項。</p>'}<form id="note-form" style="margin-top:14px"><div class="form-grid"><div class="form-field"><label class="field-label" for="note-title">新增提醒標題</label><input id="note-title" maxlength="120" placeholder="例如：收齊作業、教研會議" required></div><div class="form-field"><label class="field-label" for="note-body">內容（可留空）</label><input id="note-body" maxlength="2000" placeholder="例如：下午三點前完成"></div></div><p class="field-hint">提醒事項只會出現在你自己的日曆，不會顯示給學生或其他教師。</p><p class="error-text" id="note-error"></p><button class="secondary" type="submit">${icon('check')}加入 ${esc(calSelected)} 的提醒</button></form></section></div>`;
 $('#cal-prev').onclick=()=>{calCursor=new Date(y,m-1,1);calendarPage();};
 $('#cal-next').onclick=()=>{calCursor=new Date(y,m+1,1);calendarPage();};
 $('#cal-today').onclick=()=>{calCursor=new Date(now.getFullYear(),now.getMonth(),1);calSelected=calFmt(now);calendarPage();};
@@ -4996,16 +4996,58 @@ async function renderWeekAhead(){
     const notes=data.notes||[];
     const head=`<div class="panel-heading"><h2>${icon('clock')}近七日事項 <span class="small-text">${notes.length} 項</span></h2><button class="text-button" data-page="calendar">打開日曆 ${icon('arrow')}</button></div>`;
     if(!notes.length){box.innerHTML=head+'<p class="field-hint" style="padding:0 22px 18px">未來七天沒有安排。</p>';return;}
-    box.innerHTML=head+`<div class="week-list">${notes.map(n=>{
-      const isToday=n.date===from;
-      const meta=[n.startTime,n.location].filter(Boolean).join(' · ')||'全天';
-      return `<article class="week-item${isToday?' today':''}">
-        <span class="week-date">${esc(n.date.slice(5))}</span>
-        <div class="week-body"><strong>${esc(n.title)}</strong>
-          <small>${esc(meta)}${n.note?` · ${esc(n.note)}`:''}</small></div>
+    // 同一天可能有好幾項：列表按「日」合併，只寫重點，細節留給點開之後的視窗。
+    const groups=[];const index=new Map();
+    notes.forEach(n=>{
+      if(!index.has(n.date)){const g={date:n.date,items:[]};index.set(n.date,g);groups.push(g);}
+      index.get(n.date).items.push(n);
+    });
+    groups.sort((a,b)=>a.date.localeCompare(b.date));
+    box.innerHTML=head+`<div class="week-list">${groups.map(g=>{
+      const isToday=g.date===from;
+      const times=g.items.map(n=>n.startTime).filter(Boolean).sort();
+      const places=[...new Set(g.items.map(n=>n.location).filter(Boolean))];
+      const meta=g.items.length>1
+        ? `共 ${g.items.length} 項${times.length?` · ${times[0].split(/[–—-]/)[0]} 起`:''}${places.length?` · ${places[0]}`:''}`
+        : ([g.items[0].startTime,g.items[0].location].filter(Boolean).join(' · ')||'全天');
+      const first=(g.items[0].title||'').trim();
+      const brief=first.length>16?first.slice(0,16)+'…':first;
+      return `<button type="button" class="week-item${isToday?' today':''}" data-week-date="${g.date}">
+        <span class="week-date">${esc(g.date.slice(5))}</span>
+        <div class="week-body"><strong>${esc(brief)}${g.items.length>1?`<span class="week-more">等 ${g.items.length} 項</span>`:''}</strong>
+          <small>${esc(meta)}</small></div>
         ${isToday?'<span class="week-today">今天</span>':''}
-      </article>`;}).join('')}</div>`;
+      </button>`;}).join('')}</div>`;
+    $$('[data-week-date]',box).forEach(btn=>{
+      btn.onclick=()=>dayDetailModal(btn.dataset.weekDate,
+        notes.filter(n=>n.date===btn.dataset.weekDate));
+    });
   }catch(e){box.innerHTML='';}
+}
+// 提醒事項的「時間 · 地點 · 出處」，日曆與彈出視窗共用同一組欄位。
+function noteMeta(n){
+  return [n.startTime,n.location,n.source].filter(Boolean).join(' · ');
+}
+// 按下某一天：把當天所有事項的完整內容一次列出來。
+function dayDetailModal(date,notes){
+  const [,mm,dd]=date.split('-');
+  const rows=(notes||[]).map(n=>{
+    const facts=[['時間',n.startTime],['地點',n.location],['出處',n.source]].filter(([,v])=>v);
+    return `<div class="day-detail">
+      <strong>${esc(n.title)}</strong>
+      ${facts.length?`<dl class="day-facts">${facts.map(([k,v])=>`<div><dt>${k}</dt><dd>${esc(v)}</dd></div>`).join('')}</dl>`:''}
+      ${n.note?`<p class="day-note">${esc(n.note)}</p>`:'<p class="field-hint" style="margin:8px 0 0">沒有補充說明。</p>'}
+    </div>`;}).join('');
+  modal(`<p class="eyebrow">SCHEDULE</p><h2>${Number(mm)} 月 ${Number(dd)} 日的事項</h2>
+    <p class="modal-intro">共 ${(notes||[]).length} 項。按「打開日曆」可以看同一個月的其他日子。</p>
+    ${rows}
+    <button class="secondary wide" id="day-open-calendar" style="margin-top:14px">${icon('calendar')}打開日曆 ${icon('arrow')}</button>`);
+  const btn=$('#day-open-calendar');
+  if(btn)btn.onclick=()=>{
+    // 連月份一起跳過去，否則跨月的那幾天會被日曆重設回本月。
+    const [y,m]=date.split('-').map(Number);
+    closeModal();calCursor=new Date(y,m-1,1);calSelected=date;navigate('calendar');
+  };
 }
 async function homeworkPage(){beginView();page='homework';assignmentContext=null;mockContext=null;currentQuestion=null;stopQuizClock();shell();const target=viewTarget();const teacher=S.user?.role==='teacher';$('#main').innerHTML=heading('ASSIGN · REVIEW · GROW',teacher?'作業與成績':'我的作業',teacher?'把每次作業，轉化為可跟進的學習回饋。':'領取作業，寫下思考，每次提交都有下一步建議。');if(!S.user){$('#main').innerHTML+=`<section class="hero homework-hero"><div><p class="eyebrow">MathPath · 數學作業研習室</p><h2>從一份作業，看見每個學生的進步。</h2><p>教師佈置 · 學生手寫 · AI 建議批閱 · 成績統計 · 個別學習建議</p><button class="primary" id="homework-login">登入作業空間 ${icon('arrow')}</button><button class="secondary" data-page="bank" style="margin-left:10px">瀏覽題庫</button><button class="secondary" data-page="guide" style="margin-left:10px">新手上路</button></div></section><div class="homework-features">${[['import','教師佈置作業','建立班級，選題與截止日期，發布後保存題目及學生名單快照。'],['practice','學生寫下思考','逐題保存文字或手稿，完成所有題目後正式提交。'],['growth','批閱與學習建議','AI 接入後可建議評分；教師覆核，分數與每次建議分開記錄。']].map(([i,t,p])=>`<section class="panel"><div class="feature-icon">${icon(i)}</div><h2>${t}</h2><p>${p}</p></section>`).join('')}</div><div class="import-warning" style="margin-top:22px">資料保存在網站伺服器；實際位置由管理員確認。作業分數與 AI 建議須教師覆核；自主練習可即時核對文字答案，未接入 AI 的手稿待批閱。</div>`;$('#homework-login').onclick=()=>loginModal(homeworkPage);return;}$('#main').innerHTML+='<section class="panel">'+empty('正在讀取作業','從網站伺服器讀取班級與作業紀錄。')+'</section>';try{const data=await api('/api/homework');if(!viewMatches(target))return;HW=data;const a=HW.assignments;const submitted=teacher?a.reduce((n,v)=>n+v.submittedCount,0):a.filter(v=>v.myStatus==='submitted').length;$('#main').innerHTML=`<div class="fade-in">${heading('ASSIGN · REVIEW · GROW',teacher?'作業與成績':'我的作業',teacher?'佈置、批阅、統計，用具體建議引導每個學生的下一步。':'依次完成作業，回看回饋，再鞏固最需要練習的知識點。',teacher?`<button class="secondary" id="import-calendar">${icon('upload')}匯入行事曆</button><button class="secondary" id="class-grades">${icon('list')}學生成績</button><button class="secondary" id="create-class">${icon('bank')}建立班級</button><button class="primary" id="create-assignment">${icon('import')}佈置作業</button>`:`<button class="secondary" id="refresh-homework">${icon('undo')}重新整理</button>`)}${homeworkMetrics([['已發布作業',a.length,'只顯示你有權查看的作業'],['我的班級',HW.classes.length,teacher?'班級名單由教師建立':'作業只對指定學生開放'],[teacher?'正式提交人次':'已正式提交',submitted,'逐題保存後，需正式提交作業'],['AI 批閱服務',S.ai.configured?'已配置':'待接入',S.ai.configured?'建議分數仍需教師覆核':'手稿待批 · 文字規則核對']])}${teacher?'<section class="panel" id="week-ahead" style="margin-bottom:18px"></section>':''}<div class="homework-layout"><section><div class="section-head"><h2>${teacher?'已發布的作業':'待辦與已交作業'}</h2><div class="section-head-actions"><span class="small-text">${a.length} 份</span><button class="secondary" data-page="calendar">${icon('calendar')}查看日曆</button></div></div><div class="assignment-list">${a.length?a.map(v=>`<article class="panel assignment-card"><div class="assignment-card-head"><span class="assignment-icon">${icon('file')}</span><div><span class="badge">${esc(v.className)}</span><h2>${mathText(v.title)}</h2></div><span class="badge ${new Date(v.dueAt)<new Date()?'l2':''}">${teacher?'已發布':statusText(v.myStatus)}</span></div><div class="assignment-meta"><span>${v.questionCount} 題 · ${v.totalPoints} 分</span><span>${icon('clock')}截止 ${dateText(v.dueAt)}</span>${teacher?'':dueSoonBadge(v.dueAt,v.myStatus)}</div><div class="assignment-bottom"><span class="small-text">${v.kind==='quiz'?'測驗':'作業'}${v.durationMinutes?` · 限時 ${v.durationMinutes} 分鐘`:''} · ${teacher?`已交 ${v.submittedCount} / ${v.studentCount} 人 · 全題已評 ${v.gradedCount} 人`:`目前已評得分 ${scoreText(v.myScore)} · 教師確認 ${scoreText(v.myConfirmedScore)}`}</span>${!teacher&&S.attempts.some(a=>a.assignmentId===v.id&&isNewReview(a))?NEW_REVIEW_BADGE:''}<div style="display:flex;gap:8px;align-items:center">${teacher&&(v.teacherId===S.user?.id||S.user?.isOwner)?`<button class="text-button" data-del-assign="${v.id}" data-del-title="${esc(v.title)}" style="font-size:calc(13px*var(--fs));color:#b8453b">刪除</button>`:''}<button class="primary" ${teacher?'data-results':'data-assignment'}="${v.id}">${teacher?'查看成績與建議':v.myStatus==='submitted'?'查看批閱與建議':'開始／繼續作業'} ${icon('arrow')}</button></div></div></article>`).join(''):`<section class="panel">${empty(teacher?'還沒有發布作業':'目前沒有指派給你的作業',teacher?'先建立班級，再从題庫選題發布。':'教師發布到你的班級後，作業會出現在這裡。')}</section>`}</div></section><aside class="right-stack">${teacher?'':weakTopicPanel()}<section class="panel right-panel"><h2>${icon('bank')}${teacher?'我的班級':'所屬班級'}</h2>${HW.classes.length?HW.classes.map(c=>{const canDel=teacher&&(c.teacherId===S.user?.id||S.user?.isOwner);return `<div class="class-mini"><div><strong>${esc(c.name)}</strong><span>${c.studentCount} 位學生</span></div><div style="display:flex;gap:10px">${teacher?`<button class="text-button" data-manage-class="${c.id}" style="font-size:calc(13px*var(--fs))">管理學生</button>`:''}${canDel?`<button class="text-button" data-del-class="${c.id}" data-del-name="${esc(c.name)}" style="font-size:calc(13px*var(--fs));color:#b8453b">刪除</button>`:''}</div></div>`;}).join(''):'<p class="field-hint">尚未加入班級。</p>'}${teacher?`<button class="text-button" id="class-manage-link" style="font-size:calc(14px*var(--fs))">建立班級 ${icon('arrow')}</button>`:''}</section><section class="panel right-panel tip-panel"><h2>${icon('bulb')}分數不是學習的終點</h2><p>每次作答都有學習建議：<br>做得好的地方 → 需要留意 → 下一步練習。<br><br>待批阅不當零分；AI 建議分與教師確認分分開保存。</p></section><section class="panel right-panel"><h2>${icon('lock')}運行狀態</h2><p class="field-hint">資料保存在網站伺服器；實際位置由管理員確認。AI ${S.ai.configured?'已配置，仍需真實效果核驗':'尚未接入，不產生假評分'}。</p></section></aside></div></div>`;if(teacher){if(teacher)renderWeekAhead();
   const calBtn=$('#import-calendar');
