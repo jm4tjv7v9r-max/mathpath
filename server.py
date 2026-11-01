@@ -5398,6 +5398,23 @@ class Application:
         except sqlite3.Error as exc:
             ai_log(f'分數異動紀錄寫入失敗：{exc}')
 
+    def suggest_attempt(self, db, row, q, score, feedback, steps, flags=None, ai_score=None):
+        """只寫入 AI 建議分，**不**確認為教師分數。
+
+        教師沒開「自動確認」時，一鍵 AI 批閱走這條：分數先填好、旗標照樣標，
+        但 teacher_reviewed 仍是 0，老師要自己確認（逐題或批次給分）才算數。
+        """
+        suggestion = self.homework.rule_suggestion(db, q, {
+            'score': score, 'max_score': row['max_score'], 'status': 'graded',
+            'feedback': feedback, 'method': 'ai-advisory'})
+        db.execute('UPDATE attempts SET score=?,status=?,feedback=?,method=?,ai_steps=?,ai_score=?,'
+                   'suggestion=?,review_flags=? WHERE id=? AND teacher_reviewed=0',
+                   (score, 'graded', feedback, 'ai-advisory',
+                    json.dumps(steps or [], ensure_ascii=False),
+                    score if ai_score is None else ai_score,
+                    json.dumps(suggestion, ensure_ascii=False),
+                    json.dumps(flags or [], ensure_ascii=False), row['id']))
+
     def confirm_attempt(self, db, row, user, score, feedback='', method='teacher-reviewed',
                         prefix='教師已覆核', ai_score=None, ai_steps=None):
         """教師確認一題分數：單題覆核與一鍵 AI 批閱共用。
@@ -5607,6 +5624,13 @@ class Application:
                   'ruleScore': row['rule_score'], 'confirmedScore': row['teacher_confirmed_score'],
                   'skipped': bool(row['skipped']) if 'skipped' in row.keys() else False,
                   'suggestion': json.loads(row['suggestion'])}
+        # 「還要不要老師處理」的統一判定：待批，或 AI 給了建議但未經教師確認。
+        # 前端用它篩「等待批閱」，才不會出現「徽章有數字、清單卻是空」的情況。
+        result['needsReview'] = bool(
+            row['assignment_id'] is not None and (
+                row['status'] == 'pending'
+                or ('ai_score' in row.keys() and row['ai_score'] is not None
+                    and not row['teacher_reviewed'])))
         if lite:
             # 列表只帶摘要：一個班 5 份作業就有 620 筆，其中「學習建議」一項就佔 45%。
             # 打開批閱視窗時再由 /api/attempts/{id} 取完整內容。
@@ -7751,8 +7775,9 @@ class Application:
             if not self.ai.configured:
                 fail(409, '尚未設定 AI 模型；請設定伺服器環境變數後再試。')
             self.ai.consent(body.get('consentExternal'))
+            auto_confirm = bool(assignment['ai_auto_confirm']) if 'ai_auto_confirm' in assignment.keys() else False
             pending, skipped = rows[:ai_review_limit()], []
-            reviewed, failed = [], []
+            reviewed, graded, failed = [], [], []
             for row in pending:
                 q = questions.get(row['question_id'])
                 if q is None:
@@ -7764,8 +7789,10 @@ class Application:
                 try:
                     if row['ai_score'] is not None:
                         score = row['ai_score']
-                        feedback = '採用先前 AI 建議分數，由教師一鍵確認。'
+                        feedback = ('採用先前 AI 建議分數。' if not auto_confirm
+                                    else '採用先前 AI 建議分數，由教師一鍵確認。')
                         steps = json.loads(row['ai_steps'])
+                        _flags = json.loads(row['review_flags']) if row['review_flags'] else []
                         ai_score = None
                     else:
                         image_url = self.attempt_image_url(row)
@@ -7778,13 +7805,21 @@ class Application:
                         if not fresh or fresh['teacher_reviewed']:
                             skipped.append(row['id'])
                             continue
-                        self.confirm_attempt(db, fresh, user, score, feedback, prefix='AI 批閱（教師一鍵批閱）',
-                                             ai_score=ai_score, ai_steps=steps)
-                    reviewed.append(row['id'])
+                        if auto_confirm:
+                            self.confirm_attempt(db, fresh, user, score, feedback,
+                                                 prefix='AI 批閱（教師一鍵批閱）',
+                                                 ai_score=ai_score, ai_steps=steps)
+                        else:
+                            # 只給建議：分數先填好，但等教師確認才算正式成績。
+                            self.suggest_attempt(db, fresh, q, score, feedback, steps,
+                                                 flags=_flags, ai_score=ai_score)
+                    (reviewed if auto_confirm else graded).append(row['id'])
                 except APIError as exc:
                     ai_log(f'一鍵批閱失敗 attempt={row["id"]}: {exc.message}')
                     failed.append({'attemptId': row['id'], 'error': exc.message})
-            return {'reviewed': len(reviewed), 'failed': len(failed), 'skipped': len(skipped),
+            return {'reviewed': len(reviewed), 'graded': len(graded),
+                    'autoConfirm': auto_confirm,
+                    'failed': len(failed), 'skipped': len(skipped),
                     'remaining': max(0, len(rows) - len(pending)),
                     'errors': failed[:5]}, headers
         match = re.fullmatch(r'/api/attempts/([1-9]\d{0,17})', path)

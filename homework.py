@@ -73,6 +73,10 @@ class Homework:
             # 是否使用 AI 建議評分：由教師在佈置作業時決定，學生不可自行選擇。
             # 舊資料一律視為不啟用（0），避免未經教師同意的 AI 批改。
             db.execute('ALTER TABLE assignments ADD COLUMN ai_grading INTEGER NOT NULL DEFAULT 0')
+        if 'ai_auto_confirm' not in assignment_columns:
+            # AI 批閱後要不要直接把分數確認為教師分數。
+            # 預設 0（只給建議）：一鍵 AI 批閱只寫入建議分，教師仍要逐題或批次確認。
+            db.execute('ALTER TABLE assignments ADD COLUMN ai_auto_confirm INTEGER NOT NULL DEFAULT 0')
         for name, sql in (
             ('resubmitted_at', 'ALTER TABLE assignment_recipients ADD COLUMN resubmitted_at TEXT'),
             ('submit_count', 'ALTER TABLE assignment_recipients ADD COLUMN submit_count INTEGER NOT NULL DEFAULT 0'),
@@ -466,6 +470,7 @@ class Homework:
                 'className': row['class_name'], 'teacherId': row['teacher_id'],
                 'durationMinutes': row['duration_minutes'] if 'duration_minutes' in row.keys() else None,
                 'aiGrading': self.ai_grading(row),
+                'aiAutoConfirm': bool(row['ai_auto_confirm']) if 'ai_auto_confirm' in row.keys() else False,
                 'dueAt': row['due_at'], 'createdAt': row['created_at'], 'questionCount': len(questions),
                 'totalPoints': sum(q['points'] for q in questions), 'studentCount': total,
                 'submittedCount': None, 'gradedCount': None, 'status': 'published',
@@ -1087,7 +1092,7 @@ class Homework:
         if method == 'POST' and path == '/api/assignments':
             self.app.teacher(user)
             self.fields(body, ('title', 'classId', 'questionIds', 'dueAt', 'description', 'allowLate', 'kind',
-                               'durationMinutes', 'aiGrading'),
+                               'durationMinutes', 'aiGrading', 'aiAutoConfirm'),
                         ('title', 'classId', 'questionIds', 'dueAt'))
             title = self.text(body['title'], '作業標題', 200)
             kind = body.get('kind', 'homework')
@@ -1106,6 +1111,12 @@ class Homework:
                 self.fail(400, 'aiGrading 必須是布林值。')
             if ai_grading and not self.app.ai.configured:
                 self.fail(409, '尚未接入 AI 模型，無法啟用 AI 建議評分。')
+            # AI 批閱後是否自動確認為教師分數；沒有啟用 AI 時這個選項沒有意義。
+            ai_auto_confirm = body.get('aiAutoConfirm', False)
+            if type(ai_auto_confirm) is not bool:
+                self.fail(400, 'aiAutoConfirm 必須是布林值。')
+            if ai_auto_confirm and not ai_grading:
+                self.fail(400, '要啟用「AI 批閱後自動確認」，必須先啟用 AI 建議評分。')
             duration = body.get('durationMinutes')
             if duration is not None:
                 duration = self.number(duration, '作答時間（分鐘）', 1, 300, True)
@@ -1123,8 +1134,8 @@ class Homework:
                 if any(not self.recommendable(q) for q in questions):
                     self.fail(400, '作業題必須已有答案，且已完成教師核驗。')
                 self.deadline(due)
-                cur = db.execute('INSERT INTO assignments(teacher_id,class_id,class_name,title,description,due_at,created_at,allow_late,kind,duration_minutes,ai_grading) '
-                                 'VALUES(?,?,?,?,?,?,?,?,?,?,?)', (user['id'], cid, classroom['name'], title, description, due, self.utc_now(), int(allow_late), kind, duration, int(ai_grading)))
+                cur = db.execute('INSERT INTO assignments(teacher_id,class_id,class_name,title,description,due_at,created_at,allow_late,kind,duration_minutes,ai_grading,ai_auto_confirm) '
+                                 'VALUES(?,?,?,?,?,?,?,?,?,?,?,?)', (user['id'], cid, classroom['name'], title, description, due, self.utc_now(), int(allow_late), kind, duration, int(ai_grading), int(ai_auto_confirm)))
                 aid = cur.lastrowid
                 db.executemany('INSERT INTO assignment_questions(assignment_id,question_id,position,payload) VALUES(?,?,?,?)',
                                [(aid, q['id'], i, json.dumps(q, ensure_ascii=False)) for i, q in enumerate(questions)])

@@ -77,9 +77,12 @@ class HomeworkTests(unittest.TestCase):
     def student_attempt(self, aid, attempt_id):
         return next(a for a in self.detail(aid)['attempts'] if a['id'] == attempt_id)
 
-    def ai_assignment(self, questions=(1,)):
-        """建立一份教師已啟用 AI 建議評分的作業（呼叫前需先 configure_ai）。"""
-        return self.assignment(questions, aiGrading=True)
+    def ai_assignment(self, questions=(1,), auto_confirm=False):
+        """建立一份教師已啟用 AI 建議評分的作業（呼叫前需先 configure_ai）。
+
+        auto_confirm=False 是預設：一鍵 AI 批閱只給建議，分數要教師確認。
+        """
+        return self.assignment(questions, aiGrading=True, aiAutoConfirm=auto_confirm)
 
     def calendar(self, frm, to, user=None):
         return self.app.dispatch('GET', '/api/calendar', {}, self.student if user is None else user,
@@ -319,7 +322,8 @@ class HomeworkTests(unittest.TestCase):
 
     def test_teacher_one_click_ai_review_all(self):
         self.configure_ai()
-        aid = self.ai_assignment((1, 2))
+        # 這條測的是「自動確認」模式：教師明確開啟後，一鍵批閱才直接算正式分數。
+        aid = self.ai_assignment((1, 2), auto_confirm=True)
         suggestion = {'strength': 'a', 'focus': 'b', 'nextStep': 'c'}
         with patch.object(self.app.ai, 'call', side_effect=[self.ai_result(), suggestion,
                                                             self.ai_result(), suggestion]):
@@ -352,7 +356,7 @@ class HomeworkTests(unittest.TestCase):
 
     def test_one_click_ai_review_uses_existing_ai_score_and_survives_failure(self):
         self.configure_ai()
-        aid = self.ai_assignment((1, 2))
+        aid = self.ai_assignment((1, 2), auto_confirm=True)
         suggestion = {'strength': 'a', 'focus': 'b', 'nextStep': 'c'}
         # 第一題已由 AI 建議評分（尚未教師確認）。
         with patch.object(self.app.ai, 'call', side_effect=[self.ai_result(), suggestion]):
@@ -372,7 +376,7 @@ class HomeworkTests(unittest.TestCase):
         self.assertIn('採用先前 AI 建議分數', self.student_attempt(aid, first['id'])['feedback'])
         self.assertEqual(self.student_attempt(aid, second['id'])['score'], 4)
         # 模型失敗時其他題仍要批閱完成，並回報錯誤。
-        aid2 = self.ai_assignment((1, 2))
+        aid2 = self.ai_assignment((1, 2), auto_confirm=True)
         self.app.ai.configured = False
         self.attempt(aid2, qid=1, answer='x=2')
         self.attempt(aid2, qid=2, answer='x=3或4')
@@ -605,7 +609,7 @@ class HomeworkTests(unittest.TestCase):
     def test_ai_review_can_target_one_student_and_skips_blank(self):
         """一鍵 AI 批閱可以只針對一位學生；標示「不會」的空白題不丟給模型。"""
         self.configure_ai()
-        aid = self.ai_assignment((1,))
+        aid = self.ai_assignment((1,), auto_confirm=True)
         with patch.object(self.app.ai, 'call', return_value=self.ai_result()):
             self.attempt(aid)                                  # 學生 1：正常作答，有 AI 建議分
         self.call('POST', '/api/attempts', {'questionId': 1, 'skipped': True, 'assignmentId': aid},
@@ -1340,6 +1344,33 @@ class HomeworkTests(unittest.TestCase):
         self.assertEqual(summary['confirmedAverage'], 5)
         self.assertEqual(summary['pendingReviewCount'], 0)
         self.assertEqual(self.detail(aid)['report']['pendingCount'], 0)
+
+    def test_ai_review_only_suggests_unless_auto_confirm(self):
+        """預設「AI 只給建議」：一鍵 AI 批閱只填分數，不確認為教師分數。"""
+        self.app.ai.configured = True
+        self.app.ai.call = lambda *a, **k: {
+            'score': 4, 'feedback': '大致正確',
+            'steps': [{'label': '列式', 'earned': 2, 'max': 3, 'comment': 'ok'},
+                      {'label': '結論', 'earned': 2, 'max': 3, 'comment': 'ok'}]}
+        plain = self.assignment(questions=(1,), aiGrading=True)
+        auto = self.assignment(questions=(1,), aiGrading=True, aiAutoConfirm=True)
+        self.attempt(plain, qid=1)
+        self.attempt(auto, qid=1)
+        out = self.call('POST', f'/api/assignments/{plain}/ai-review', {}, self.teacher)
+        self.assertEqual(out['autoConfirm'], False)
+        self.assertEqual(out['graded'], 1, '只給建議：分數填好但不算已批')
+        self.assertEqual(out['reviewed'], 0)
+        out2 = self.call('POST', f'/api/assignments/{auto}/ai-review', {}, self.teacher)
+        self.assertEqual(out2['autoConfirm'], True)
+        self.assertEqual(out2['reviewed'], 1, '開了自動確認才會標記已批閱')
+        detail = self.call('GET', f'/api/assignments/{plain}', None, self.teacher)
+        row = detail['attempts'][0]
+        self.assertEqual(row['aiScore'], 4)
+        self.assertFalse(row['teacherReviewed'])
+        self.assertTrue(row['needsReview'], 'AI 預批但未確認 → 仍算待批')
+        self.assertEqual(row['confirmedScore'], None)
+        state = self.call('GET', '/api/state', None, self.teacher)
+        self.assertEqual(state['pendingReviews'], 1, '徽章只算真正待確認的那一題')
 
     def test_ai_grading_quality_stats_counts_teacher_changes(self):
         """AI 批改品質：用教師改過分的案例算「AI 偏高還是偏低、哪個知識點不準」。"""
