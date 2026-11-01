@@ -779,6 +779,23 @@ def _set_total_marks(text: str, value: float) -> str:
     return TOTAL_MARKS_RE.sub(lambda m: f'共 {value:g} 分', text)
 
 
+OBJECTIVE_RE = re.compile(r'選擇|填空')
+
+
+def _strip_each_marks(text: str, total: float | None) -> str:
+    """「每題 11 分，共 33 分」→「共 33 分」。
+
+    解答題、證明題的題目長短不一，寫「每題 X 分」反而不準（老師自己也常寫錯），
+    統一只留總分；選擇題、填空題才保留「每題 X 分」。
+    """
+    cleaned = re.sub(r'每[題小]\s*[\d.]+\s*分\s*[，,、]?\s*', '', text or '').strip()
+    if not cleaned:
+        return f'共 {total:g} 分' if total is not None else ''
+    if '分' not in cleaned and total is not None:
+        cleaned = f'{cleaned}共 {total:g} 分'
+    return cleaned
+
+
 def _heading_text(template_title: str, new_title: str, questions) -> str:
     """照範本寫分部標題：編號（一、／甲部／第一部分）與括號裡的配分說明都沿用範本。
 
@@ -842,15 +859,59 @@ def _heading_text(template_title: str, new_title: str, questions) -> str:
             return heading
         value = float(re.search(r'[\d.]+', each.group(0)).group(0))
         out = _set_total_marks(_set_each_marks(inner, value), value * len(questions))
+        if not OBJECTIVE_RE.search(new):
+            out = _strip_each_marks(out, value * len(questions))
         return f'{heading}{colon}{open_ch}{out}{close_ch}'
     out = inner
     if len(set(marks)) == 1:
         out = _set_each_marks(out, marks[0])
     out = _set_total_marks(out, sum(marks))
+    if not OBJECTIVE_RE.search(new):
+        # 解答／證明／附加題：只留總分
+        out = _strip_each_marks(out, sum(marks))
     if out == inner and not re.search(r'每[題小]|共', inner):
         # 範本只寫「（20 分）」這種總分：直接把那個數字換成新的總分
         out = re.sub(r'[\d.]+\s*分', f'{sum(marks):g} 分', inner, count=1)
     return f'{heading}{colon}{open_ch}{out}{close_ch}'
+
+
+PAPER_TARGET_SCORE = 110
+
+
+def paper_score_summary(sections: list[Section], target: float = PAPER_TARGET_SCORE) -> dict:
+    """算總分，並檢查「總分＝110」「選擇題每題分數是不是整數」。
+
+    這兩件事等卷子印出來才發現就太遲了，所以在排版時先算好、先警告。
+    """
+    total = 0.0
+    choice_total = 0.0
+    choice_count = 0
+    missing = 0
+    for section in sections:
+        title = section.title or ''
+        is_choice = '選擇' in title
+        for q in section.questions:
+            if q.marks is None:
+                missing += 1
+                continue
+            total += q.marks
+            if is_choice:
+                choice_total += q.marks
+                choice_count += 1
+    each = (choice_total / choice_count) if choice_count else None
+    even = each is not None and abs(each - round(each)) < 1e-9
+    warnings = []
+    if abs(total - target) > 1e-9:
+        warnings.append(f'全卷總分 {total:g} 分，不是 {target} 分。')
+    if choice_count and not even:
+        warnings.append(f'選擇題共 {choice_total:g} 分、{choice_count} 題，'
+                        f'平均 {each:.2f} 分（不是整數）。')
+    if missing:
+        warnings.append(f'有 {missing} 題沒有配分，總分算不準。')
+    return {'total': total, 'target': target, 'ok': abs(total - target) <= 1e-9,
+            'choice': {'total': choice_total, 'count': choice_count,
+                       'each': each, 'even': even},
+            'warnings': warnings}
 
 
 def count_formulas(sections: list[Section]) -> int:
@@ -973,6 +1034,16 @@ def _render_into(tpl, sections: list[Section], title: str | None = None,
             _fill(cloned_head[target], [line], math_as_text)
             _sync_head(cloned_head, target, line)
 
+    # 選項欄數全卷只用一個：每題各自算的話，長選項那題會變成 2 欄，
+    # 選項字母就跟第一題對不齊（老師一眼就看到）。
+    opt_width_cm = (_text_width(tpl, proto['option']) / 360000
+                    if 'option' in proto else 0)
+    opt_columns = None
+    if 'option' in proto:
+        widths = [option_layout(label_options(q.options), opt_width_cm)
+                  for sec in sections for q in sec.questions if q.options]
+        opt_columns = min(widths) if widths else None
+
     number = 1
     restart = numbering == 'section' or (numbering == 'auto' and restarts_numbering(blocks))
     template_headings = [b.text for b in blocks if b.role == 'section']
@@ -1043,8 +1114,7 @@ def _render_into(tpl, sections: list[Section], title: str | None = None,
                 # 真的不夠寬才退成每行 2 個 —— 5 個選項就變成 2、2、1。
                 opts = label_options(q.options)
                 tpl_columns = option_columns(proto['option'])
-                width_cm = _text_width(tpl, proto['option']) / 360000
-                columns = option_layout(opts, width_cm)
+                columns = opt_columns or option_layout(opts, opt_width_cm)
                 for row in pack_options(opts, columns):
                     op = _clone(tpl, proto['option']._p, sectpr)
                     _fill(op, row, math_as_text)
@@ -1072,6 +1142,7 @@ def _render_into(tpl, sections: list[Section], title: str | None = None,
             'questions': sum(len(s.questions) for s in sections),
             'formulas': count_formulas(sections),
             'figures': sum(len(q.figures) for s in sections for q in s.questions),
+            'score': paper_score_summary(sections),
             'tables': len(tpl.tables)}
 
 
@@ -1162,6 +1233,7 @@ def layout_plan(tpl, sections: list[Section], title: str | None = None,
 
     return {'head': [h for h in head if h.strip()],
             'sections': out_sections,
+            'score': paper_score_summary(sections),
             'closing': [paragraphs[i].text for i in tail_idx
                         if (paragraphs[i].text or '').strip()]}
 

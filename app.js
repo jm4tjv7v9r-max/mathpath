@@ -4478,6 +4478,22 @@ async function paperAssignModal(paperId){
     }catch(e){toast(e.message);btn.disabled=false;btn.textContent=old;}
   };
 }
+// 分數檢查：總分要 110；選擇題「總分 ÷ 題數」要是整數，否則會出現半分的題。
+function scoreCheckHtml(score){
+  if(!score||score.total===undefined)return '';
+  const c=score.choice||{};
+  const fmt=n=>Number.isInteger(Number(n))?String(Number(n)):Number(n).toFixed(2).replace(/0+$/,'').replace(/\.$/,'');
+  const totalOk=!!score.ok, eachOk=!c.count||!!c.even;
+  const good=totalOk&&eachOk&&!(score.warnings||[]).length;
+  return `<div class="score-check ${good?'ok':'warn'}">
+    <div class="score-head">${icon(good?'check':'warn')}<strong>分數檢查</strong>
+      <span class="score-pill ${totalOk?'ok':'bad'}">總分 ${fmt(score.total)} 分${totalOk?'　＝ '+fmt(score.target)+' 分':'　（要求 '+fmt(score.target)+' 分）'}</span>
+      ${c.count?`<span class="score-pill ${eachOk?'ok':'bad'}">選擇題 ${fmt(c.total)} 分 ÷ ${c.count} 題 ＝ ${fmt(c.each)} 分${eachOk?'':'（不是整數）'}</span>`:''}
+    </div>
+    ${(score.warnings||[]).map(w=>`<div class="score-line">${icon('warn')}<span>${esc(w)}</span></div>`).join('')}
+  </div>`;
+}
+
 async function paperLayoutPage(){
   // 卷面排版是教師功能：學生連入口都不該看到，直接回題庫（側欄也不會出現）
   if(S.user?.role!=='teacher')return bank();
@@ -4607,6 +4623,7 @@ async function paperLayoutPage(){
       $('#paper-result').innerHTML=`<div class="layout-result">
         <div><strong>排好了</strong><span class="small-text">${st.sections||0} 個分部 · ${st.questions||0} 題 · ${st.formulas||0} 條公式${st.figures?` · ${st.figures} 張圖`:''}${st.tables?` · ⚠️ 範本有 ${st.tables} 個表格未帶入`:''}${st.oleObjects?` · ⚠️ 有 ${st.oleObjects} 個 Word 公式物件（MathType 等）讀不到（請先轉成 Word 方程式或 PDF）`:''}</span></div>
         <button class="primary" id="dl-paper">下載 ${esc(res.filename)}</button></div>
+      ${scoreCheckHtml(st.score)}
       <div class="panel" style="margin-top:12px;padding:12px">
         <p class="field-hint" style="margin:0 0 8px">保存到「我的試卷」：之後可以搜尋、按年份／級別／學段篩選，也能一鍵匯入題庫。</p>
         <div class="layout-row">
@@ -4621,6 +4638,7 @@ async function paperLayoutPage(){
         <datalist id="paper-term-list">${['第一段','第二段','第三段'].map(t=>`<option>${t}</option>`).join('')}</datalist>
         <div id="save-paper-result" class="small-text" style="margin-top:8px"></div>
       </div>`;
+      if((st.score?.warnings||[]).length)toast('⚠️ '+st.score.warnings[0]);
       $('#dl-paper').onclick=()=>{const a=document.createElement('a');a.href=res.docx;a.download=res.filename;a.click();};
       $('#save-paper').onclick=async()=>{
         const btn=$('#save-paper');const old=btn.textContent;btn.disabled=true;btn.textContent='保存中…';

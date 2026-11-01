@@ -1180,6 +1180,88 @@ class PaperLayoutTests(unittest.TestCase):
         texts = [p.text for p in Document(io.BytesIO(raw)).paragraphs]
         self.assertEqual(texts[-1], '— 試卷完 —')
 
+    def test_solution_heading_drops_each_question_marks(self):
+        """解答題／證明題的標題只留「共 X 分」，不要「每題 X 分」。"""
+        doc = Document()
+        doc.add_paragraph('測試卷')
+        doc.add_paragraph('一、解答題：(共 20 分)')
+        doc.add_paragraph('1.\t題目。')
+        buf = io.BytesIO()
+        doc.save(buf)
+        sections = [paper_format.Section(title='一、解答題（每題 10 分，共 20 分）', questions=[
+            paper_format.Question(stem='甲。', marks=10),
+            paper_format.Question(stem='乙。', marks=10)])]
+        raw, _ = paper_format.render_with_sections(buf.getvalue(), sections, '測試卷')
+        texts = [p.text for p in Document(io.BytesIO(raw)).paragraphs]
+        self.assertIn('一、解答題：(共 20 分)', texts)
+        self.assertFalse(any('每題' in t for t in texts), '解答題不該出現「每題 X 分」')
+
+    def test_choice_heading_keeps_each_question_marks(self):
+        """選擇題仍然保留「每題 X 分」（分數寫在標題）。"""
+        doc = Document()
+        doc.add_paragraph('測試卷')
+        doc.add_paragraph('一、單項選擇題：(每題 4 分，共 8 分)')
+        doc.add_paragraph('1.\t題目（　　）')
+        doc.add_paragraph('A. 1\tB. 2')
+        buf = io.BytesIO()
+        doc.save(buf)
+        sections = [paper_format.Section(title='一、選擇題', questions=[
+            paper_format.Question(stem='甲（　　）', marks=4, options=['A. 1', 'B. 2']),
+            paper_format.Question(stem='乙（　　）', marks=4, options=['A. 1', 'B. 2'])])]
+        raw, _ = paper_format.render_with_sections(buf.getvalue(), sections, '測試卷')
+        texts = [p.text for p in Document(io.BytesIO(raw)).paragraphs]
+        self.assertIn('一、單項選擇題：(每題 4 分，共 8 分)', texts)
+
+    def test_option_columns_are_the_same_for_every_question(self):
+        """長選項那一題不可以自己變成 2 欄，否則選項字母跟第一題對不齊。"""
+        doc = Document()
+        doc.add_paragraph('測試卷')
+        doc.add_paragraph('一、選擇題（每題 4 分，共 8 分）')
+        doc.add_paragraph('1.\t題目（　　）')
+        doc.add_paragraph('A. 1\tB. 2\tC. 3\tD. 4')
+        buf = io.BytesIO()
+        doc.save(buf)
+        long_opt = '甲乙丙丁戊己庚辛壬癸' * 2
+        sections = [paper_format.Section(title='一、選擇題', questions=[
+            paper_format.Question(stem='甲（　　）', marks=4,
+                                  options=['A. 1', 'B. 2', 'C. 3', 'D. 4']),
+            paper_format.Question(stem='乙（　　）', marks=4,
+                                  options=['A. ' + long_opt, 'B. ' + long_opt,
+                                           'C. ' + long_opt, 'D. ' + long_opt])])]
+        raw, _ = paper_format.render_with_sections(buf.getvalue(), sections, '測試卷')
+        rows = [p for p in Document(io.BytesIO(raw)).paragraphs
+                if p.text.strip().startswith('A.')]
+        stops = [[round(t.position.cm, 2) for t in (r.paragraph_format.tab_stops or [])]
+                 for r in rows]
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(stops[0], stops[1], '兩題的選項欄位要一樣')
+
+    def test_score_summary_flags_wrong_total_and_odd_choice_marks(self):
+        good = [paper_format.Section(title='一、選擇題', questions=[
+            paper_format.Question(stem='甲', marks=4) for _ in range(5)]),
+            paper_format.Section(title='二、解答題', questions=[
+                paper_format.Question(stem='乙', marks=90)])]
+        summary = paper_format.paper_score_summary(good)
+        self.assertTrue(summary['ok'])
+        self.assertEqual(summary['warnings'], [])
+
+        bad = [paper_format.Section(title='一、選擇題', questions=[
+            paper_format.Question(stem='甲', marks=5) for _ in range(7)]),
+            paper_format.Section(title='二、解答題', questions=[
+                paper_format.Question(stem='乙', marks=65)])]
+        summary = paper_format.paper_score_summary(bad)
+        self.assertFalse(summary['ok'])
+        self.assertTrue(any('110' in w for w in summary['warnings']))
+
+        odd = [paper_format.Section(title='一、選擇題', questions=[
+            paper_format.Question(stem='甲', marks=5) for _ in range(6)] +
+            [paper_format.Question(stem='乙', marks=4)]),
+            paper_format.Section(title='二、解答題', questions=[
+                paper_format.Question(stem='丙', marks=76)])]
+        summary = paper_format.paper_score_summary(odd)
+        self.assertFalse(summary['choice']['even'])
+        self.assertTrue(any('不是整數' in w for w in summary['warnings']))
+
     def test_objective_sections_hide_per_question_marks(self):
         """選擇題／填空題的分數寫在分部標題就好；解答題才逐題標分。"""
         doc = Document()
