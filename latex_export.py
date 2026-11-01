@@ -194,14 +194,16 @@ def to_tex_plan(plan: dict, preamble: str | None = None,
         questions = section.get('questions') or []
         if not questions:
             continue
-        lines.append(r'\begin{enumerate}[leftmargin=*,itemsep=3pt,topsep=2pt,start=%d]'
+        lines.append(r'\begin{enumerate}[leftmargin=*,itemsep=3pt,topsep=2pt,labelsep=0.35em,start=%d]'
                      % int(questions[0].get('number') or 1))
         pos = section.get('marksPos') or 'none'
         for q in questions:
             stem = tex_of(q.get('stem') or '')
             marks = '' if q.get('marks') is None else f'（{q["marks"]:g} 分）'
             if marks and pos == 'leading':
-                body = r'\textbf{' + marks + '}　' + stem
+                # 配分後面只留一個普通空格：全角空白在 LaTeX 會拉出一大段縫，
+                # 看起來像「12.（11 分）　　　已知…」
+                body = marks + ' ' + stem
             elif marks and pos == 'trailing':
                 body = stem + r'\hfill ' + marks
             else:
@@ -238,14 +240,14 @@ def to_tex(title: str | None, sections, marks_position: str = 'none',
         if section.title:
             lines += ['', r'\Needspace{3\baselineskip}',
                       r'\section*{' + tex_of(section.title) + '}', '']
-        lines.append(r'\begin{enumerate}[leftmargin=*,itemsep=3pt,topsep=2pt,start=%d]'
+        lines.append(r'\begin{enumerate}[leftmargin=*,itemsep=3pt,topsep=2pt,labelsep=0.35em,start=%d]'
                      % (number + 1))
         for q in section.questions:
             number += 1
             stem = tex_of(q.stem)
             marks = '' if q.marks is None else f'（{q.marks:g} 分）'
             if marks and marks_position == 'leading':
-                body = r'\textbf{' + marks + '}　' + stem
+                body = marks + ' ' + stem
             elif marks:
                 body = stem + r'\hfill ' + marks
             else:
