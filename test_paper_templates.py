@@ -157,6 +157,28 @@ class PaperTemplateTests(unittest.TestCase):
         listed = self.call('GET', '/api/paper-templates')
         self.assertIn(template['id'], [t['id'] for t in listed['templates']])
 
+    def test_upload_rejects_a_docx_without_questions(self):
+        """沒有題號的 Word 不是試卷：上傳時就要擋住，不要等到排版才報錯。"""
+        doc = Document()
+        doc.add_paragraph('這只是一份說明文件')
+        doc.add_paragraph('沒有任何題目')
+        buf = io.BytesIO()
+        doc.save(buf)
+        result = self.call('POST', '/api/paper-templates',
+                           {'name': '不是試卷', 'file': data_url(buf.getvalue())}, expect=400)
+        self.assertIn('找不到題目', result['error'])
+
+    def test_apply_rejects_a_content_word_without_questions(self):
+        """新卷沒有題目時不可以回一份「排好了」的空卷。"""
+        template = self.upload()['template']
+        doc = Document()
+        doc.add_paragraph('只有卷名')
+        buf = io.BytesIO()
+        doc.save(buf)
+        result = self.call('POST', f"/api/paper-templates/{template['id']}/apply",
+                           {'file': data_url(buf.getvalue())}, expect=422)
+        self.assertIn('找不到題目', result['error'])
+
     def test_apply_returns_docx_with_formulas(self):
         template = self.upload()['template']
         out = self.call('POST', f"/api/paper-templates/{template['id']}/apply",
@@ -218,7 +240,7 @@ class PaperTemplateTests(unittest.TestCase):
         self.assertNotIn('1.　', first.text, '不要換成全角空白')
 
     def test_header_keeps_the_school_line_and_only_replaces_the_title(self):
-        """卷頭第一行是校名／學年，換卷時不可以被卷名蓋掉。"""
+        """卷頭第一行是校名／學年，換卷時不可以被卷名蓋掉；但學段要跟新卷一致。"""
         doc = Document()
         doc.add_paragraph('某某中學  2026／2027 學年  第一段測驗')
         doc.add_paragraph('初三數學  測驗卷')
@@ -233,7 +255,9 @@ class PaperTemplateTests(unittest.TestCase):
         raw, _ = paper_format.render_with_sections(buf.getvalue(), sections, '初三數學  第二段測驗')
         out = Document(io.BytesIO(raw))
         texts = [p.text for p in out.paragraphs]
-        self.assertEqual(texts[0], '某某中學  2026／2027 學年  第一段測驗', '校名那行要原樣保留')
+        # 校名、學年原樣保留；只有學段跟著新卷換（否則卷名寫第二段、抬頭寫第一段）
+        self.assertEqual(texts[0], '某某中學  2026／2027 學年  第二段測驗',
+                         '校名與學年要保留，學段要跟新卷一致')
         self.assertEqual(texts[1], '初三數學  第二段測驗', '卷名要換在標題那行')
         self.assertEqual(texts[2], '姓名：______  班別：______', '資料行要原樣保留')
 
@@ -519,6 +543,14 @@ class LatexExportTests(unittest.TestCase):
         tex = self.build(long)
         line = next(l for l in tex.splitlines() if 'A. ' in l)
         self.assertNotIn('B. ', line, '太長就不要硬塞同一行')
+
+    def test_five_options_keep_their_letters_once(self):
+        """五個選項要排成一行（或 2、2、1），而且不可以出現「E. E. 5」。"""
+        tex = self.build(['A. 1', 'B. 2', 'C. 3', 'D. 4', 'E. 5'])
+        rows = [l for l in tex.splitlines() if r'\makebox' in l]
+        self.assertEqual(len(rows), 1, '五個短選項要打橫一行')
+        self.assertIn(r'{E. 5}', rows[0])
+        self.assertNotIn('E. E', tex)
 
     def test_degree_and_units_become_real_latex(self):
         tex = self.build(['A. $30\\degree$', 'B. 90$\\degree$'])
@@ -977,32 +1009,115 @@ class PaperLayoutTests(unittest.TestCase):
         self.assertNotIn('\t', rows[2], '最後一行只剩一個選項')
         self.assertIn('E.', rows[2])
 
-    def test_objective_sections_hide_per_question_marks(self):
-        """選擇題／填空題的分數寫在分部標題就好；解答題才逐題標分。"""
+    def test_heading_marks_are_recomputed_when_new_paper_has_no_marks(self):
+        """新卷沒寫配分時，分部標題仍要保留範本的「每題 X 分」，總分按題數重算。"""
         doc = Document()
-        doc.add_paragraph('測試中學 2026 年度第一段高一級(普通班)數學科大測一')
-        doc.add_paragraph('一、單項選擇題：（每題 4 分，共 4 分）')
-        doc.add_paragraph('1.（4 分）　題目（　　）')
+        doc.add_paragraph('測試卷')
+        doc.add_paragraph('一、單項選擇題（每題 4 分，共 20 分）')
+        doc.add_paragraph('1.\t題目（　　）')
         doc.add_paragraph('A. 1\tB. 2\tC. 3\tD. 4')
-        doc.add_paragraph('二、解答題：（每題 8 分，共 8 分）')
-        doc.add_paragraph('9.（8 分）　題目')
+        buf = io.BytesIO()
+        doc.save(buf)
+        sections = [paper_format.Section(title='一、選擇題', questions=[
+            paper_format.Question(stem='甲（　　）', options=['A. 1', 'B. 2']),
+            paper_format.Question(stem='乙（　　）', options=['A. 1', 'B. 2']),
+        ])]
+        raw, _ = paper_format.render_with_sections(buf.getvalue(), sections, '測試卷')
+        texts = [p.text for p in Document(io.BytesIO(raw)).paragraphs]
+        self.assertIn('一、單項選擇題（每題 4 分，共 8 分）', texts,
+                      '配分不能整段消失，總分要按實際題數重算')
+
+    def test_numbering_restarts_in_each_section_like_the_template(self):
+        """範本每個分部都由 1. 開始，輸出就跟著重編（不會出現填空題由 3. 開始）。"""
+        doc = Document()
+        doc.add_paragraph('測試卷')
+        doc.add_paragraph('一、選擇題（每題 4 分，共 4 分）')
+        doc.add_paragraph('1.\t題目（　　）')
+        doc.add_paragraph('A. 1\tB. 2')
+        doc.add_paragraph('二、填空題（每題 4 分，共 4 分）')
+        doc.add_paragraph('1.\t計算 ＿＿＿。')
         buf = io.BytesIO()
         doc.save(buf)
         sections = [
             paper_format.Section(title='一、選擇題', questions=[
-                paper_format.Question(stem='題目甲（　　）', marks=4,
-                                      options=['A. 1', 'B. 2', 'C. 3', 'D. 4'])]),
+                paper_format.Question(stem='甲（　　）', options=['A. 1', 'B. 2'])]),
             paper_format.Section(title='二、填空題', questions=[
-                paper_format.Question(stem='直徑為 ______ cm。', marks=4)]),
-            paper_format.Section(title='三、解答題', questions=[
-                paper_format.Question(stem='求 $x$。', marks=8)]),
+                paper_format.Question(stem='計算 ＿＿＿。')]),
         ]
-        raw, _ = paper_format.render_with_sections(buf.getvalue(), sections, '高一 大測')
+        raw, _ = paper_format.render_with_sections(buf.getvalue(), sections, '測試卷')
         texts = [p.text for p in Document(io.BytesIO(raw)).paragraphs]
-        self.assertIn('1.\u3000題目甲（\u3000\u3000）', texts, '選擇題不應在題號前顯示分數')
-        self.assertFalse(any('1.（4 分）' in t for t in texts), '選擇題不應逐題標分')
-        self.assertFalse(any('2.（4 分）' in t for t in texts), '填空題不應逐題標分')
-        self.assertTrue(any(t.startswith('3.（8 分）') for t in texts), '解答題要逐題標分')
+        self.assertTrue(any(t.startswith('1.') for t in texts), '第一個分部由 1. 開始')
+        numbered = [t for t in texts if re.match(r'^\d+\.', t)]
+        self.assertEqual(len(numbered), 2)
+        self.assertTrue(numbered[1].startswith('1.'), '第二個分部要重新由 1. 開始')
+
+    def test_five_options_from_a_word_file_are_all_kept(self):
+        """A–E 五個選項的卷很常見；E 不可以被併進題幹。"""
+        doc = Document()
+        doc.add_paragraph('一、選擇題')
+        doc.add_paragraph('1. 下列何者正確？（　　）')
+        for letter in 'ABCDE':
+            doc.add_paragraph(f'{letter}. {letter} 選項')
+        buf = io.BytesIO()
+        doc.save(buf)
+        _, sections = paper_format.parse_content_bytes(buf.getvalue())
+        options = sections[0].questions[0].options
+        self.assertEqual(len(options), 5, f'E 選項被吃掉了：{options}')
+        self.assertTrue(options[-1].startswith('E.'))
+        self.assertNotIn('E. E', sections[0].questions[0].stem)
+
+    def test_underscore_lines_are_answer_space(self):
+        """範本用「＿＿＿＿」而不是段落下框線時，解答題也要留出答題空間。"""
+        doc = Document()
+        doc.add_paragraph('測試卷')
+        doc.add_paragraph('一、解答題（每題 10 分，共 10 分）')
+        doc.add_paragraph('1.\t求證：平行線同位角相等。')
+        doc.add_paragraph('＿＿＿＿＿＿＿＿＿＿')
+        doc.add_paragraph('＿＿＿＿＿＿＿＿＿＿')
+        buf = io.BytesIO()
+        doc.save(buf)
+        sections = [paper_format.Section(title='一、解答題', questions=[
+            paper_format.Question(stem='求證：平行線同位角相等。', marks=10)])]
+        raw, _ = paper_format.render_with_sections(buf.getvalue(), sections, '測試卷')
+        texts = [p.text for p in Document(io.BytesIO(raw)).paragraphs]
+        self.assertEqual(sum(1 for t in texts if t.startswith('＿')), 2,
+                         '範本有兩行答題橫線，輸出也要有兩行')
+
+    def test_figures_in_the_content_are_kept(self):
+        """題目裡的圖（幾何圖、函數圖）不可以整段消失。"""
+        png = base64.b64decode(
+            b'iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAYAAACNMs+9AAAAFUlEQVR42mNkYPhfz0AEYBxVSF+F'
+            b'AB1kBP+EZ0KzAAAAAElFTkSuQmCC')
+        doc = Document()
+        doc.add_paragraph('測試卷')
+        doc.add_paragraph('一、解答題（每題 10 分，共 10 分）')
+        doc.add_paragraph('1.\t如圖，求 $x$ 的值。(10 分)')
+        doc.add_picture(io.BytesIO(png))
+        buf = io.BytesIO()
+        doc.save(buf)
+        content = buf.getvalue()
+
+        _, sections = paper_format.parse_content_bytes(content)
+        self.assertEqual(len(sections[0].questions[0].figures), 1, '圖要跟著題目走')
+
+        tpl = Document()
+        tpl.add_paragraph('測試卷')
+        tpl.add_paragraph('一、解答題（每題 10 分，共 10 分）')
+        tpl.add_paragraph('1.\t題目。(10 分)')
+        tbuf = io.BytesIO()
+        tpl.save(tbuf)
+
+        raw, report = paper_format.render_bytes(tbuf.getvalue(), content)
+        self.assertEqual(report['figures'], 1)
+        blips = sum(1 for p in Document(io.BytesIO(raw)).paragraphs
+                    for _ in p._p.iter(
+                        '{http://schemas.openxmlformats.org/drawingml/2006/main}blip'))
+        self.assertEqual(blips, 1, '輸出的卷要有那張圖')
+
+    def test_marks_at_the_end_of_a_short_stem_stay_trailing(self):
+        """「1. 題目。(10 分)」這種短題目不可以被誤判成「配分在題號後」。"""
+        self.assertEqual(paper_format.marks_position('1. 題目。(10 分)'), 'trailing')
+        self.assertEqual(paper_format.marks_position('1.（4 分）題目（　　）'), 'leading')
 
     def test_objective_sections_hide_per_question_marks(self):
         """選擇題／填空題的分數寫在分部標題就好；解答題才逐題標分。"""

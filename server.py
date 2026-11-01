@@ -6102,6 +6102,11 @@ class Application:
                     spec = paper_format.analyze_bytes(data)
                 except Exception:
                     fail(400, '讀不到這份 Word 的版面，請確認檔案沒有損壞。')
+                # 沒有題號段落 = 不是試卷，存下來只會在排版時才報錯，這裡先擋住
+                if not (spec.get('counts') or {}).get('question'):
+                    fail(400, '這份檔案裡找不到題目段落（要有「1. 題目」這種題號），'
+                              '看起來不是試卷。請上傳一份有題號的試卷，'
+                              '或改用 PDF（圖片／表格排版的卷請用 PDF）。')
             with self.db() as db:
                 cur = db.execute('INSERT INTO paper_templates(owner_id,name,data,spec,created_at) '
                                  'VALUES(?,?,?,?,?)',
@@ -6161,10 +6166,16 @@ class Application:
                         _, sections = paper_format.parse_content_bytes(data)
                     except Exception:
                         fail(422, '讀不到這份 Word 的內容，請確認檔案沒有損壞。')
+                    if not sections or not sum(len(s.questions) for s in sections):
+                        fail(422, '這份 Word 裡找不到題目（要有「1. 題目」這種題號）。'
+                                  '如果題目是圖片、表格或文字方塊，請改為上傳 PDF。')
                     output, report = paper_format.render_bytes(
                         row['data'], data, math_as_text=math_as_text)
                     # 外掛打出來的公式是 OLE 物件，解析讀不到，要讓老師知道
                     report['oleObjects'] = paper_format.count_ole_objects(data)
+            except APIError:
+                # 上面自己拋的 422／400 要原樣傳出去，不能被下面包成「結構讀不出來」
+                raise
             except SystemExit as exc:
                 fail(400, str(exc) or '範本裡找不到題目段落（長得像「1. …」）。')
             except Exception as exc:

@@ -125,9 +125,15 @@ LINE_UNITS = 76
 
 
 def fit_columns(options: list[str], per_line: int = 4) -> int:
-    """一行放幾個：目標 4 個，選項太長就降成 3、2、1。"""
+    """一行放幾個：先試「全部塞一行」（5 個選項就 5 個一行），真的不夠寬才降成 2 個一行。
+
+    5 個選項用「4 + 1」排會有一行只剩一個，看起來很怪；2、2、1 才是老師要的樣子。
+    """
     widest = max((_units(o) for o in options), default=1)
-    for n in range(max(1, min(4, per_line)), 0, -1):
+    count = len(options)
+    if count and widest * count <= LINE_UNITS:
+        return count
+    for n in (per_line, 3, 2):
         if widest <= LINE_UNITS / n:
             return n
     return 1
@@ -141,8 +147,10 @@ def option_lines(options: list[str], per_line: int = 4) -> list[str]:
     for start in range(0, len(options), columns):
         cells = []
         for offset, opt in enumerate(options[start:start + columns]):
-            cleaned = re.sub(r'^\s*[(（]?[A-Da-d]\s*[.、)．]\s*', '', opt)
-            label = 'ABCDEFGH'[(start + offset) % 8]
+            # 選項字母 A–H 都要認得（5 個選項的卷很常見），否則會變成「E. E. 5」
+            cleaned = re.sub(r'^\s*[(（]?[A-Ha-h]\s*[.、)．]\s*', '', opt)
+            index = start + offset
+            label = chr(65 + index) if index < 26 else str(index + 1)
             cells.append(r'\makebox[%.3f\linewidth][l]{%s. %s}'
                          % (width, label, tex_of(cleaned)))
         lines.append(''.join(cells))

@@ -4505,7 +4505,7 @@ async function paperLayoutPage(){
     </section>
     <section class="panel panel-pad">
       <h2 style="margin-bottom:6px">② 新卷</h2>
-      <p class="field-hint">上傳內容正確、排版未整理的卷（.docx 或 .pdf）。Word 的方程式會原樣保留；PDF 會先由 AI 轉寫成題目。</p>
+      <p class="field-hint">上傳內容正確、排版未整理的卷（.docx 或 .pdf）。Word 的方程式會原樣保留；PDF 會先由 AI 轉寫成題目（需在 ① 勾選「送給外部 AI 分析」）。</p>
       <div class="layout-row">
         <input id="paper-file" type="file" accept=".docx,.pdf">
         <button class="primary" id="paper-apply">排版並下載</button>
@@ -4552,7 +4552,10 @@ async function paperLayoutPage(){
   bindFileChip('#tpl-file','#tpl-file-chip');
   bindFileChip('#paper-file','#paper-file-chip');
   $$('input[name=layout-tpl]').forEach(r=>r.onchange=()=>{
-    sessionStorage.setItem('layoutTemplate',r.value);paperLayoutPage();});
+    sessionStorage.setItem('layoutTemplate',r.value);
+    // 只切換選中的樣式：整頁重畫會把① ② 已經選好的檔案清空，老師得重揀一次
+    $$('.layout-tpl').forEach(el=>el.classList.toggle('active',el.contains(r)));
+  });
   $$('[data-del-tpl]').forEach(b=>b.onclick=async()=>{
     if(!confirm('刪除這個範本？已排好的檔案不受影響。'))return;
     try{await fetch('/api/paper-templates/'+b.dataset.delTpl,{method:'DELETE',credentials:'same-origin'})
@@ -4563,7 +4566,7 @@ async function paperLayoutPage(){
   $('#tpl-save').onclick=async()=>{
     const file=$('#tpl-file').files[0];
     if(!file)return toast('請先選擇範本檔（.docx）。');
-    const name=($('#tpl-name').value||'').trim()||(file.name||'').replace(/\.docx$/i,'')||'未命名範本';
+    const name=($('#tpl-name').value||'').trim()||(file.name||'').replace(/\.(docx|pdf)$/i,'')||'未命名範本';
     const btn=$('#tpl-save');const old=btn.textContent;btn.disabled=true;btn.textContent='儲存中…';
     try{
       const isPdf=/pdf$/i.test(file.name||'')||file.type===PDF_MIME;
@@ -4593,7 +4596,7 @@ async function paperLayoutPage(){
       if(!guess.year)guess.year=String(new Date().getFullYear());
       // 一次寫完再綁事件：用 innerHTML += 會把上面剛綁好的下載按鈕換掉，點了沒反應
       $('#paper-result').innerHTML=`<div class="layout-result">
-        <div><strong>排好了</strong><span class="small-text">${st.sections||0} 個分部 · ${st.questions||0} 題 · ${st.formulas||0} 條公式${st.tables?` · ⚠️ 範本有 ${st.tables} 個表格未帶入`:''}${st.oleObjects?` · ⚠️ 有 ${st.oleObjects} 個 Word 公式物件（MathType 等）讀不到（請先轉成 Word 方程式或 PDF）`:''}</span></div>
+        <div><strong>排好了</strong><span class="small-text">${st.sections||0} 個分部 · ${st.questions||0} 題 · ${st.formulas||0} 條公式${st.figures?` · ${st.figures} 張圖`:''}${st.tables?` · ⚠️ 範本有 ${st.tables} 個表格未帶入`:''}${st.oleObjects?` · ⚠️ 有 ${st.oleObjects} 個 Word 公式物件（MathType 等）讀不到（請先轉成 Word 方程式或 PDF）`:''}</span></div>
         <button class="primary" id="dl-paper">下載 ${esc(res.filename)}</button></div>
       <div class="panel" style="margin-top:12px;padding:12px">
         <p class="field-hint" style="margin:0 0 8px">保存到「我的試卷」：之後可以搜尋、按年份／級別／學段篩選，也能一鍵匯入題庫。</p>
@@ -4643,7 +4646,7 @@ async function paperLayoutPage(){
   marks.onchange=()=>localStorage.setItem('mathpath_tex_marks',marks.value);
   $('#tex-apply').onclick=async()=>{
     const file=$('#paper-file').files[0];
-    if(!file)return toast('請先在上方「新卷」選一份 .docx。');
+    if(!file)return toast('請先在上方「新卷」選一份 .docx 或 PDF。');
     const btn=$('#tex-apply');const old=btn.textContent;btn.disabled=true;btn.textContent='產生中…';
     try{
       const isPdf=/pdf$/i.test(file.name||'')||file.type===PDF_MIME;

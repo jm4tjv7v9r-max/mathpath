@@ -31,10 +31,18 @@ import mathnorm
 # ── 角色判定 ──────────────────────────────────────────────────────────
 SECTION_RE = re.compile(r'^\s*(甲部|乙部|丙部|丁部|第[一二三四]部分|Part\s*[A-D]|[一二三四五六七八九十]+、)')
 QUESTION_RE = re.compile(r'^\s*(\d{1,3})\s*[.、)．]')
-OPTION_RE = re.compile(r'[(（]?([A-Da-d])\s*[.、)．]')
+OPTION_RE = re.compile(r'[(（]?([A-Ha-h])\s*[.、)．]')
 MARKS_RE = re.compile(r'[（(]\s*(\d+(?:\.\d+)?)\s*分\s*[)）]')
+# 配分緊貼題號（`1.（4 分）題目`）才算 leading
+LEADING_MARKS_RE = re.compile(r'^\s*\d{1,3}\s*[.、)．]\s*[（(]\s*\d+(?:\.\d+)?\s*分')
 # 一行裡有多個選項（「A. … B. …」）時，要拆成獨立選項
-OPTION_SPLIT_RE = re.compile(r'(?=\s*[(（]?[A-Da-d]\s*[.、)．])')
+OPTION_SPLIT_RE = re.compile(r'(?=\s*[(（]?[A-Ha-h]\s*[.、)．])')
+# 一整行都是底線＝答題空間（很多範本不用段落下框線，直接打「＿＿＿＿」）
+UNDERSCORE_LINE_RE = re.compile(r'^[_＿﹍]{3,}$')
+# 段落裡的圖片：a:blip 的 r:embed 指向文件裡的圖片資源
+A_BLIP = '{http://schemas.openxmlformats.org/drawingml/2006/main}blip'
+R_EMBED = '{http://schemas.openxmlformats.org/officeDocument/2006/relationships}embed'
+WP_EXTENT = '{http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing}extent'
 
 
 def split_options(text: str) -> list[str]:
@@ -57,6 +65,8 @@ def classify(text: str, p) -> str:
     t = text.strip()
     if not t:
         return 'answer_line' if has_bottom_border(p) else 'blank'
+    if UNDERSCORE_LINE_RE.match(t):
+        return 'answer_line'
     if SECTION_RE.match(t):
         return 'section'
     if QUESTION_RE.match(t):
@@ -115,11 +125,18 @@ def read_blocks(doc) -> list[Block]:
 
 
 def marks_position(question_text: str) -> str:
-    """配分寫在題號後面（leading）、推到右邊（trailing），還是根本沒有。"""
-    if MARKS_RE.search(question_text[:16]):
+    """配分寫在題號後面（leading）、推到右邊（trailing），還是根本沒有。
+
+    「leading」要真的緊貼題號（`1.（4 分）題目`）。以前只看前 16 個字有沒有配分，
+    短題目（`1. 題目。(10 分)`）就會被誤判成 leading，輸出變成「1.（10 分）\t題目」。
+    """
+    text = question_text or ''
+    if LEADING_MARKS_RE.match(text):
         return 'leading'
-    if '\t' in question_text and MARKS_RE.search(question_text.split('\t')[-1]):
+    if '\t' in text and MARKS_RE.search(text.split('\t')[-1]):
         return 'trailing'
+    if MARKS_RE.search(text):
+        return 'trailing'          # 配分寫在題幹最後（沒有 tab 也一樣靠右）
     return 'none'
 
 
@@ -210,6 +227,7 @@ class Question:
     marks: float | None = None
     options: list[str] = field(default_factory=list)
     lines: list[str] = field(default_factory=list)      # 小題或續行
+    figures: list[dict] = field(default_factory=list)   # 題目裡的圖（blob + 原始尺寸）
 
     def __post_init__(self):
         # 所有建立題目的路徑（Word 解析、PDF 轉寫、題庫組卷、讀回存檔）都會經過這裡，
@@ -237,6 +255,29 @@ def sections_from_json(path: str) -> tuple[str | None, list[Section], str | None
     return data.get('title'), sections, data.get('closing')
 
 
+def paragraph_figures(doc, p) -> list[dict]:
+    """段落裡的圖片（Word 的 drawing／舊式 pict 都算）：回傳 blob 與原始尺寸（EMU）。
+
+    以前整段文字是空的就直接跳過，結果題目裡的圖（幾何圖、函數圖）全部消失，
+    老師只看到一排沒有圖的題目——這是最容易被投訴的一種「排版錯」。
+    """
+    out = []
+    body = p._p
+    for blip in body.iter(A_BLIP):
+        rid = blip.get(R_EMBED)
+        if not rid:
+            continue
+        part = doc.part.related_parts.get(rid)
+        blob = getattr(part, 'blob', None)
+        if not blob:
+            continue
+        extent = next(body.iter(WP_EXTENT), None)
+        cx = int(extent.get('cx') or 0) if extent is not None else 0
+        cy = int(extent.get('cy') or 0) if extent is not None else 0
+        out.append({'blob': blob, 'cx': cx, 'cy': cy})
+    return out
+
+
 def _only_with_stem(sections: list[Section]) -> list[Section]:
     """題號後面沒有文字（整題是圖、或題號自己佔一行）的不要留成空白題。
 
@@ -244,7 +285,9 @@ def _only_with_stem(sections: list[Section]) -> list[Section]:
     """
     out = []
     for section in sections:
-        questions = [q for q in section.questions if (q.stem or '').strip()]
+        # 整題只有圖的題目要留下來，不然題目會整題不見
+        questions = [q for q in section.questions
+                     if (q.stem or '').strip() or q.figures]
         if questions:
             out.append(Section(title=section.title, questions=questions))
     return out
@@ -256,8 +299,11 @@ def parse_content(path: str) -> tuple[list[str], list[Section]]:
     sections: list[Section] = []
     current: Section | None = None
     for p in doc.paragraphs:
+        figs = paragraph_figures(doc, p)
         text = omml.omml_latex_of_paragraph(p).strip() or p.text.strip()
         if not text:
+            if figs and current and current.questions:
+                current.questions[-1].figures.extend(figs)
             continue
         role = classify(text, p)
         if role == 'section':
@@ -278,6 +324,10 @@ def parse_content(path: str) -> tuple[list[str], list[Section]]:
             current.questions[-1].stem += text
         else:
             preamble.append(text)
+            continue
+        # 圖跟著它所屬的題目走（題幹、選項、續行都算）
+        if figs and current and current.questions:
+            current.questions[-1].figures.extend(figs)
     return preamble, _only_with_stem(sections)
 
 
@@ -547,6 +597,31 @@ def _fill_title(template_text: str, meta: dict | None, fallback: str) -> str:
     return out.strip() or fallback
 
 
+def _sync_head(head, target: int, title_text: str):
+    """卷頭其他行也跟著換學段／年級。
+
+    範本第一行常常是「培華中學 2025/2026 學年 第一段測驗」，卷名那行換成第二段之後，
+    第一行還寫著「第一段」——一份卷兩個學段，是最容易被投訴的那種錯。
+    """
+    term = TITLE_TERM_RE.search(title_text or '')
+    grade = TITLE_GRADE_RE.search(title_text or '')
+    if not term and not grade:
+        return
+    for i, p in enumerate(head):
+        if i == target:
+            continue
+        old = p.text or ''
+        if not old.strip() or '姓名' in old or '學號' in old:
+            continue
+        new = old
+        if term:
+            new = TITLE_TERM_RE.sub(term.group(0), new, count=1)
+        if grade:
+            new = TITLE_GRADE_RE.sub(grade.group(0), new, count=1)
+        if new != old:
+            _fill(p, [new])
+
+
 NUM_LEAD_RE = re.compile(r'^\s*\d{1,3}\s*([.、)．])(\t|\u3000| {1,})?')
 
 
@@ -572,12 +647,38 @@ def _marks_text(prototype_right: str, marks: float | None) -> str:
     return f'{raw[0]}{marks:g}{space}分{raw[-1]}'
 
 
+def restarts_numbering(blocks) -> bool:
+    """範本的題號是不是「每個分部重新由 1 開始」。
+
+    澳門／內地多數試卷都是這樣（一、選擇題 1–8；二、填空題 1–6）。
+    照範本重編，才不會出現「填空題由 9. 開始」這種一眼就看得出的錯。
+    """
+    starts: list[int | None] = []
+    for b in blocks:
+        if b.role == 'section':
+            starts.append(None)
+        elif b.role == 'question' and starts and starts[-1] is None:
+            m = re.match(r'\s*(\d{1,3})', b.text or '')
+            starts[-1] = int(m.group(1)) if m else None
+    numbers = [n for n in starts if n is not None]
+    return len(numbers) >= 2 and all(n == 1 for n in numbers)
+
+
 HEADING_PREFIX_RE = re.compile(
     r'^\s*(第[一二三四五六七八九十]+部分|第[一二三四五六七八九十]+部|[甲乙丙丁戊己庚辛]部|'
     r'[甲乙丙丁戊己庚辛]|[一二三四五六七八九十]+[、.．)）]|Part\s*[A-Z])')
 BRACKET_RE = re.compile(r'([（(])([^（）()]*)([)）])\s*$')
-EACH_MARKS_RE = re.compile(r'每[題小]\s*[\d.]+\s*分')
+EACH_MARKS_RE = re.compile(r'(每[題小])\s*[\d.]+\s*分')
 TOTAL_MARKS_RE = re.compile(r'共\s*[\d.]+\s*分')
+
+
+def _set_each_marks(text: str, value: float) -> str:
+    """把「每題 4 分／每小題 4 分」的數字換掉，保留老師原本寫的「每題／每小題」。"""
+    return EACH_MARKS_RE.sub(lambda m: f'{m.group(1)} {value:g} 分', text)
+
+
+def _set_total_marks(text: str, value: float) -> str:
+    return TOTAL_MARKS_RE.sub(lambda m: f'共 {value:g} 分', text)
 
 
 def _heading_text(template_title: str, new_title: str, questions) -> str:
@@ -606,21 +707,40 @@ def _heading_text(template_title: str, new_title: str, questions) -> str:
     gap = '' if prefix.endswith(('、', '.', '．')) else '\u3000'
     heading = f'{prefix}{gap}{body}' if prefix else body
 
-    m = BRACKET_RE.search(tpl) if tpl else None
-    marks = [q.marks for q in questions if q.marks is not None]
-    if not m or not marks or '分' not in m.group(2):
+    # 括號裡的配分說明：新卷自己寫了就用新卷的，否則沿用範本的。
+    # （兩組都留會變成「（每題 5 分）（每題 4 分，共 8 分）」這種重複。）
+    new_b = BRACKET_RE.search(body)
+    tpl_b = BRACKET_RE.search(tpl) if tpl else None
+    if new_b and '分' in new_b.group(2):
+        bare = body[:new_b.start()].rstrip()
+        heading = f'{prefix}{gap}{bare}' if prefix else bare
+        bracket = new_b
+        colon = '：' if bare.endswith(('：', ':')) else ''
+    elif tpl_b and '分' in tpl_b.group(2):
+        bracket = tpl_b
+        before = tpl[tpl_prefix.end() if tpl_prefix else 0:tpl_b.start()]
+        colon = '：' if before.rstrip().endswith(('：', ':')) else ''
+    else:
         return heading
-    before = tpl[tpl_prefix.end() if tpl_prefix else 0:m.start()]
-    colon = '：' if before.rstrip().endswith(('：', ':')) else ''
-    inner = m.group(2)
+    inner = bracket.group(2)
+    marks = [q.marks for q in questions if q.marks is not None]
+    if not marks:
+        # 新卷沒寫配分時，沿用範本的「每題 X 分」，總分按實際題數重算。
+        # 少了這一步，整個分部的配分說明會整段消失，卷面看起來就像漏了分數。
+        each = EACH_MARKS_RE.search(inner)
+        if not each or not questions:
+            return heading
+        value = float(re.search(r'[\d.]+', each.group(0)).group(0))
+        out = _set_total_marks(_set_each_marks(inner, value), value * len(questions))
+        return f'{heading}{colon}{bracket.group(1)}{out}{bracket.group(3)}'
     out = inner
     if len(set(marks)) == 1:
-        out = EACH_MARKS_RE.sub(f'每題 {marks[0]:g} 分', out)
-    out = TOTAL_MARKS_RE.sub(f'共 {sum(marks):g} 分', out)
+        out = _set_each_marks(out, marks[0])
+    out = _set_total_marks(out, sum(marks))
     if out == inner and not re.search(r'每[題小]|共', inner):
         # 範本只寫「（20 分）」這種總分：直接把那個數字換成新的總分
         out = re.sub(r'[\d.]+\s*分', f'{sum(marks):g} 分', inner, count=1)
-    return f'{heading}{colon}{m.group(1)}{out}{m.group(3)}'
+    return f'{heading}{colon}{bracket.group(1)}{out}{bracket.group(3)}'
 
 
 def count_formulas(sections: list[Section]) -> int:
@@ -633,8 +753,15 @@ def count_formulas(sections: list[Section]) -> int:
 
 
 def sections_to_dict(sections: list[Section]) -> list[dict]:
-    """存檔用：Section/Question 轉成純 dict（我的試卷、匯入題庫都吃這個）。"""
-    return [asdict(s) for s in sections]
+    """存檔用：Section/Question 轉成純 dict（我的試卷、匯入題庫都吃這個）。
+
+    圖片的二進位內容不進 JSON（存檔只存文字），所以這裡逐欄挑，不用 asdict。
+    """
+    return [{'title': s.title,
+             'questions': [{'stem': q.stem, 'marks': q.marks,
+                            'options': list(q.options), 'lines': list(q.lines)}
+                           for q in s.questions]}
+            for s in sections]
 
 
 def sections_from_dict(data) -> list[Section]:
@@ -709,16 +836,20 @@ def _render_into(tpl, sections: list[Section], title: str | None = None,
         if target is not None:
             line = _fill_title(cloned_head[target].text, meta, title)
             _fill(cloned_head[target], [line], math_as_text)
+            _sync_head(cloned_head, target, line)
 
     number = 1
+    restart = restarts_numbering(blocks)
     template_headings = [b.text for b in blocks if b.role == 'section']
     for index, s in enumerate(sections):
+        if restart:
+            # 範本每個分部都由 1 開始，就跟著重編（不再全卷連續）
+            number = 1
         if s.title and 'section' in proto:
             np = _clone(tpl, proto['section']._p, sectpr)
             tpl_title = template_headings[index] if index < len(template_headings) else ''
             _fill(np, [_heading_text(tpl_title, s.title, s.questions)], math_as_text)
-        lines = lines_by_index[index] if index < len(lines_by_index) and lines_by_index[index] \
-            else default_lines
+        lines = lines_by_index[index] if index < len(lines_by_index) else default_lines
         # 選擇題／填空題的分數寫在分部標題（「每題 4 分，共 32 分」）就好，
         # 每題前面再插一次「（4 分）」會很吵；解答題、證明題、附加題才逐題標分。
         objective = any(k in (s.title or '') for k in ('選擇', '填空'))
@@ -727,8 +858,10 @@ def _render_into(tpl, sections: list[Section], title: str | None = None,
         for q in s.questions:
             np = _clone(tpl, q_proto._p, sectpr)
             if pos == 'trailing':
-                _fill(np, [f'{number}{punct}{sep}{q.stem}', _marks_text(marks_proto, q.marks)], math_as_text)
-                if marks_tab is not None:
+                marks_txt = _marks_text(marks_proto, q.marks)
+                cells = [f'{number}{punct}{sep}{q.stem}'] + ([marks_txt] if marks_txt else [])
+                _fill(np, cells, math_as_text)
+                if marks_txt and marks_tab is not None:
                     np.paragraph_format.tab_stops.add_tab_stop(marks_tab, WD_TAB_ALIGNMENT.RIGHT)
             elif q.marks is not None and section_show_marks:
                 _fill(np, [f'{number}{punct}{_marks_text("（0 分）", q.marks)}{sep}{q.stem}'], math_as_text)
@@ -739,6 +872,21 @@ def _render_into(tpl, sections: list[Section], title: str | None = None,
             for extra in q.lines:
                 ep = _clone(tpl, q_proto._p, sectpr)
                 _fill(ep, [extra], math_as_text)
+
+            # 題目裡的圖：沿用範本題目段落的格式，原尺寸放回題幹下面
+            for fig in q.figures:
+                fp = _clone(tpl, q_proto._p, sectpr)
+                _wipe(fp)
+                run = fp.add_run()
+                try:
+                    blob = io.BytesIO(fig['blob'])
+                    if fig.get('cx') and fig.get('cy'):
+                        run.add_picture(blob, width=Emu(fig['cx']), height=Emu(fig['cy']))
+                    else:
+                        run.add_picture(blob)
+                except Exception:
+                    # 個別圖片壞掉（例如 EMF/WMF 不支援）不要讓整份卷失敗
+                    pass
 
             if q.options and 'option' in proto:
                 # 選項一律打橫排：先試「全部塞一行」（5 個選項就 5 個一行），
@@ -768,6 +916,7 @@ def _render_into(tpl, sections: list[Section], title: str | None = None,
     return {'title': title, 'sections': len(sections),
             'questions': sum(len(s.questions) for s in sections),
             'formulas': count_formulas(sections),
+            'figures': sum(len(q.figures) for s in sections for q in s.questions),
             'tables': len(tpl.tables)}
 
 
@@ -808,8 +957,11 @@ def parse_content_bytes(data: bytes) -> tuple[list[str], list[Section]]:
     sections: list[Section] = []
     current: Section | None = None
     for p in doc.paragraphs:
+        figs = paragraph_figures(doc, p)
         text = omml.omml_latex_of_paragraph(p).strip() or p.text.strip()
         if not text:
+            if figs and current and current.questions:
+                current.questions[-1].figures.extend(figs)
             continue
         role = classify(text, p)
         if role == 'section':
@@ -830,6 +982,10 @@ def parse_content_bytes(data: bytes) -> tuple[list[str], list[Section]]:
             current.questions[-1].stem += text
         else:
             preamble.append(text)
+            continue
+        # 圖跟著它所屬的題目走（題幹、選項、續行都算）
+        if figs and current and current.questions:
+            current.questions[-1].figures.extend(figs)
     return preamble, _only_with_stem(sections)
 
 
