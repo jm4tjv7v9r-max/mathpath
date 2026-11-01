@@ -1097,3 +1097,13 @@ html[data-theme=night] .nav-item .count.due{background:#3a2c1d;color:#e0b083}
   background:var(--color-background-secondary,#f7f6f2)}
 .geo-ask strong{display:block;font-size:calc(13.5px*var(--fs))}
 .geo-ask .small-text{display:block;margin-top:2px}
+
+/* 幾何題清單：讓老師自己勾要畫哪幾題 */
+.geo-ask{flex-direction:column;align-items:stretch;gap:10px}
+.geo-list{display:flex;flex-direction:column;gap:6px;max-height:240px;overflow:auto;
+  border-top:1px solid var(--border-tertiary,#e6e3da);padding-top:8px}
+.geo-item{display:flex;gap:8px;align-items:flex-start;font-size:calc(13px*var(--fs));cursor:pointer}
+.geo-item input{margin-top:3px;flex:0 0 auto}
+.geo-no{flex:0 0 auto;color:var(--ink-soft,#6b6a63)}
+.geo-stem{flex:1;line-height:1.5}
+.geo-actions{display:flex;justify-content:flex-end}

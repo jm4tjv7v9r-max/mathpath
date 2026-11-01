@@ -4664,8 +4664,13 @@ async function paperLayoutPage(){
       ${scoreCheckHtml(st.score)}
       ${(res.geometry||[]).length?`<div class="geo-ask">
         <div><strong>有 ${res.geometry.length} 題看起來需要圖，但目前沒有圖</strong>
-          <span class="small-text">第 ${res.geometry.map(g=>g.number).join('、')} 題。AI 會先算座標、再照座標畫圖，畫完自查一次。</span></div>
-        <button class="secondary" id="draw-geo">AI 畫圖並重新下載</button></div>`:''}
+          <span class="small-text">勾選要畫的題目。AI 會先算座標、再照座標畫圖，畫完自查一次；沒勾的不會動。</span></div>
+        <div class="geo-list">${res.geometry.map(g=>`<label class="geo-item">
+          <input type="checkbox" data-geo="${g.number}" checked>
+          <span class="geo-no">${g.number}.</span>
+          <span class="geo-stem">${esc(String(g.stem||'').replace(/\$/g,''))}</span></label>`).join('')}</div>
+        <div class="geo-actions"><button class="secondary" id="draw-geo">為已選的 ${res.geometry.length} 題畫圖</button></div>
+      </div>`:''}
       <div class="panel" style="margin-top:12px;padding:12px">
         <p class="field-hint" style="margin:0 0 8px">保存到「我的試卷」：之後可以搜尋、按年份／級別／學段篩選，也能一鍵匯入題庫。</p>
         <div class="layout-row">
@@ -4682,9 +4687,18 @@ async function paperLayoutPage(){
       </div>`;
       if((st.score?.warnings||[]).length)toast('⚠️ '+st.score.warnings[0]);
       const drawBtn=$('#draw-geo');
+      const geoBoxes=$$('[data-geo]');
+      const pickedGeo=()=>geoBoxes.filter(b=>b.checked).map(b=>Number(b.dataset.geo));
+      const syncGeoBtn=()=>{const n=pickedGeo().length;
+        drawBtn.textContent=n?`為已選的 ${n} 題畫圖`:'請先勾選題目';
+        drawBtn.disabled=!n;};
+      geoBoxes.forEach(b=>b.onchange=syncGeoBtn);
+      if(geoBoxes.length)syncGeoBtn();
       if(drawBtn)drawBtn.onclick=async()=>{
-        const list=res.geometry||[];
-        if(!list.length)return;
+        const all=res.geometry||[];
+        const picked=pickedGeo();
+        const list=all.filter(g=>picked.includes(g.number));
+        if(!list.length)return toast('請先勾選要畫圖的題目。');
         const old=drawBtn.textContent;drawBtn.disabled=true;
         try{
           const figures={};
