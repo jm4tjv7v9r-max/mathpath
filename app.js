@@ -4515,6 +4515,13 @@ async function paperLayoutPage(){
         <input id="paper-math-text" type="checkbox">
         數學符號用 LaTeX 代碼輸出（<code>$…$</code>，不轉成 Word 方程式）
       </label>
+      <label class="small-text" style="display:flex;gap:8px;align-items:center;margin-top:8px">
+        題號
+        <select id="paper-numbering" style="padding:6px 8px;border:1px solid var(--border);border-radius:8px;background:var(--paper);color:var(--ink)">
+          <option value="continuous">全卷連續（1、2、3…）</option>
+          <option value="section">每個分部由 1 重新開始</option>
+        </select>
+      </label>
       <div id="paper-result" style="margin-top:12px"></div>
     </section>
     <section class="panel panel-pad" style="margin-top:16px">
@@ -4587,8 +4594,10 @@ async function paperLayoutPage(){
       if(isPdf&&!$('#pdf-consent').checked)throw new Error('PDF 需要先勾選「送給外部 AI 分析」。');
       const data=await fileData(file,[DOCX_MIME,PDF_MIME],12);
       const mathAsText=$('#paper-math-text').checked;
+      const numbering=$('#paper-numbering').value;
+      localStorage.setItem('mathpath_numbering',numbering);
       const res=await apiJob(`/api/paper-templates/${tid}/apply`,
-        {file:data,consentExternal:isPdf,mathAsText},
+        {file:data,consentExternal:isPdf,mathAsText,numbering},
         job=>{btn.textContent=`排版中… ${Math.round(job.elapsed||0)} 秒`;});
       const st=res.stats||{};
       // 保存到「我的試卷」：年份／級別／學段先從卷名猜，老師改一下就能存
@@ -4639,6 +4648,8 @@ async function paperLayoutPage(){
   const mathText=$('#paper-math-text');
   mathText.checked=localStorage.getItem('mathpath_math_text')==='1';
   mathText.onchange=()=>localStorage.setItem('mathpath_math_text',mathText.checked?'1':'0');
+  const numberingSel=$('#paper-numbering');
+  numberingSel.value=localStorage.getItem('mathpath_numbering')||'continuous';
   const pre=$('#tex-preamble'), marks=$('#tex-marks');
   pre.value=localStorage.getItem('mathpath_tex_preamble')||'';
   pre.oninput=()=>localStorage.setItem('mathpath_tex_preamble',pre.value);

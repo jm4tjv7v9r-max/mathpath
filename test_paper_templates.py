@@ -1027,8 +1027,8 @@ class PaperLayoutTests(unittest.TestCase):
         self.assertIn('一、單項選擇題（每題 4 分，共 8 分）', texts,
                       '配分不能整段消失，總分要按實際題數重算')
 
-    def test_numbering_restarts_in_each_section_like_the_template(self):
-        """範本每個分部都由 1. 開始，輸出就跟著重編（不會出現填空題由 3. 開始）。"""
+    def test_numbering_is_continuous_by_default_and_can_restart(self):
+        """預設全卷連續（1、2、3…）；選「每個分部重編」才由 1. 重新開始。"""
         doc = Document()
         doc.add_paragraph('測試卷')
         doc.add_paragraph('一、選擇題（每題 4 分，共 4 分）')
@@ -1046,10 +1046,15 @@ class PaperLayoutTests(unittest.TestCase):
         ]
         raw, _ = paper_format.render_with_sections(buf.getvalue(), sections, '測試卷')
         texts = [p.text for p in Document(io.BytesIO(raw)).paragraphs]
-        self.assertTrue(any(t.startswith('1.') for t in texts), '第一個分部由 1. 開始')
         numbered = [t for t in texts if re.match(r'^\d+\.', t)]
         self.assertEqual(len(numbered), 2)
-        self.assertTrue(numbered[1].startswith('1.'), '第二個分部要重新由 1. 開始')
+        self.assertTrue(numbered[1].startswith('2.'), '預設全卷連續：第二個分部接 2.')
+
+        raw, _ = paper_format.render_with_sections(buf.getvalue(), sections, '測試卷',
+                                                   numbering='section')
+        texts = [p.text for p in Document(io.BytesIO(raw)).paragraphs]
+        numbered = [t for t in texts if re.match(r'^\d+\.', t)]
+        self.assertTrue(numbered[1].startswith('1.'), '選了「每分部重編」才由 1. 開始')
 
     def test_five_options_from_a_word_file_are_all_kept(self):
         """A–E 五個選項的卷很常見；E 不可以被併進題幹。"""
@@ -1118,6 +1123,49 @@ class PaperLayoutTests(unittest.TestCase):
         """「1. 題目。(10 分)」這種短題目不可以被誤判成「配分在題號後」。"""
         self.assertEqual(paper_format.marks_position('1. 題目。(10 分)'), 'trailing')
         self.assertEqual(paper_format.marks_position('1.（4 分）題目（　　）'), 'leading')
+
+    def test_tab_separated_options_without_letters_are_labelled(self):
+        """Word 卷的選項常常只用 tab 分欄、沒有 A./B./C.：要切得開，也要補上字母。"""
+        doc = Document()
+        doc.add_paragraph('一、選擇題')
+        doc.add_paragraph('1. 下列何者正確？（　　）')
+        doc.add_paragraph('甲\t乙\t丙\t丁')
+        buf = io.BytesIO()
+        doc.save(buf)
+        _, sections = paper_format.parse_content_bytes(buf.getvalue())
+        self.assertEqual(len(sections[0].questions[0].options), 4, '要用 tab 切成四個選項')
+
+        labelled = paper_format.label_options(sections[0].questions[0].options)
+        self.assertEqual([o[:2] for o in labelled], ['A.', 'B.', 'C.', 'D.'])
+
+    def test_template_title_is_kept_when_the_new_title_only_repeats_it(self):
+        """卷名只寫「高一大測（第一段）」時，範本的校名／年度要留著。"""
+        doc = Document()
+        doc.add_paragraph('培華中學 2026 年度第一段高一級(普通班)數學科大測一')
+        doc.add_paragraph('一、選擇題（每題 4 分，共 4 分）')
+        doc.add_paragraph('1.\t題目（　　）')
+        buf = io.BytesIO()
+        doc.save(buf)
+        sections = [paper_format.Section(title='一、選擇題', questions=[
+            paper_format.Question(stem='題目（　　）', marks=4)])]
+        raw, _ = paper_format.render_with_sections(buf.getvalue(), sections, '高一大測（第一段）')
+        texts = [p.text for p in Document(io.BytesIO(raw)).paragraphs]
+        self.assertEqual(texts[0], '培華中學 2026 年度第一段高一級(普通班)數學科大測一')
+
+    def test_template_closing_line_is_kept(self):
+        """範本卷尾的「— 試卷完 —」要留在最後。"""
+        doc = Document()
+        doc.add_paragraph('測試卷')
+        doc.add_paragraph('一、選擇題（每題 4 分，共 4 分）')
+        doc.add_paragraph('1.\t題目（　　）')
+        doc.add_paragraph('— 試卷完 —')
+        buf = io.BytesIO()
+        doc.save(buf)
+        sections = [paper_format.Section(title='一、選擇題', questions=[
+            paper_format.Question(stem='題目（　　）', marks=4)])]
+        raw, _ = paper_format.render_with_sections(buf.getvalue(), sections, '測試卷')
+        texts = [p.text for p in Document(io.BytesIO(raw)).paragraphs]
+        self.assertEqual(texts[-1], '— 試卷完 —')
 
     def test_objective_sections_hide_per_question_marks(self):
         """選擇題／填空題的分數寫在分部標題就好；解答題才逐題標分。"""

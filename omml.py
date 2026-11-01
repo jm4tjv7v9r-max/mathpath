@@ -443,13 +443,21 @@ def omml_to_latex(el) -> str:
 
 
 def omml_latex_of_paragraph(p) -> str:
-    """把段落內的方程式抽成 LaTeX，其餘文字照原樣，方程式用 $...$ 包住。"""
+    """把段落內的方程式抽成 LaTeX，其餘文字照原樣，方程式用 $...$ 包住。
+
+    定位點（w:tab）要保留成 `\\t`：選擇題的選項常常是「公式 TAB 公式 TAB …」，
+    少了 tab 就分不出四個選項，整行會被當成一個選項塞進題幹。
+    """
     out = []
     for child in p._p:
         local = etree.QName(child).localname
         if local == 'r':
-            texts = child.findall(f'{{{W_NS}}}t')
-            out.append(''.join(t.text or '' for t in texts))
+            for node in child:
+                kind = etree.QName(node).localname
+                if kind == 't':
+                    out.append(node.text or '')
+                elif kind == 'tab':
+                    out.append('\t')
         elif local in ('oMath', 'oMathPara'):
             latex = omml_to_latex(child)
             if latex:

@@ -6132,8 +6132,10 @@ class Application:
         match = re.fullmatch(r'/api/paper-templates/([1-9]\d{0,17})/apply', path)
         if match and method == 'POST':
             self.teacher(user)
-            fields(body, ('file', 'consentExternal', 'mathAsText', 'async'), ('file',))
+            fields(body, ('file', 'consentExternal', 'mathAsText', 'async', 'numbering'), ('file',))
             math_as_text = bool(body.get('mathAsText'))
+            # 題號：'continuous' 全卷連續（預設）；'section' 每個分部由 1 重編
+            numbering = 'section' if body.get('numbering') == 'section' else 'continuous'
             if body.get('async'):
                 # PDF 轉寫要 10–40 秒，交給背景工作跑，前端輪詢 /api/jobs/{id}
                 return {'jobId': self.start_job(
@@ -6160,7 +6162,8 @@ class Application:
                     if not sections:
                         fail(422, 'AI 在這份 PDF 裡讀不到題目（可能是掃描品質或版面太複雜）。')
                     output, report = paper_format.render_with_sections(
-                        row['data'], sections, title, math_as_text=math_as_text)
+                        row['data'], sections, title, math_as_text=math_as_text,
+                        numbering=numbering)
                 else:
                     try:
                         _, sections = paper_format.parse_content_bytes(data)
@@ -6170,7 +6173,8 @@ class Application:
                         fail(422, '這份 Word 裡找不到題目（要有「1. 題目」這種題號）。'
                                   '如果題目是圖片、表格或文字方塊，請改為上傳 PDF。')
                     output, report = paper_format.render_bytes(
-                        row['data'], data, math_as_text=math_as_text)
+                        row['data'], data, math_as_text=math_as_text,
+                        numbering=numbering)
                     # 外掛打出來的公式是 OLE 物件，解析讀不到，要讓老師知道
                     report['oleObjects'] = paper_format.count_ole_objects(data)
             except APIError:

@@ -15,14 +15,14 @@ import re
 MATH_RE = re.compile(r'\$([^$]+)\$')
 
 DEFAULT_PREAMBLE = r"""% !TEX program = xelatex
-\documentclass[11pt,a4paper]{ctexart}
+\documentclass[12pt,a4paper]{ctexart}
 \usepackage[margin=1.27cm]{geometry}
 \usepackage{amsmath,amssymb}
 \usepackage{enumitem}
 \setlength{\parindent}{0pt}
 \pagestyle{plain}
 % 大題標題靠左（ctex 預設置中，跟原卷不一致）
-\ctexset{section/format=\Large\bfseries\raggedright}
+\ctexset{section/format=\normalsize\bfseries\raggedright,section/aftertitle=\smallskip}
 """
 
 ESCAPES = {
@@ -40,14 +40,15 @@ def escape_text(text: str) -> str:
 
 
 # 填空的底線：`\_\_\_\_` 連著寫，LaTeX 會在每個底線之間留空隙，看起來像斷掉的虛線。
-# 換成一條實線（長度照原本的底線數）。
-BLANK_RE = re.compile(r'[_＿]{3,}')
+# 換成一條實線（長度照原本的底線數）。Word 卷常常是「\_\_\_\_」這種帶反斜線的寫法。
+BLANK_RE = re.compile(r'(?:\\_){3,}|[_＿]{3,}')
 # 連續空白（姓名班別那一行靠它對齊）：LaTeX 會把多個空格併成一個，這裡還原成固定寬度
 SPACE_RUN_RE = re.compile(r'[ \u3000]{2,}')
 
 
 def _blank_rule(m) -> str:
-    return r'\rule[-0.6pt]{%.2fem}{0.6pt}' % (len(m.group(0)) * 0.5)
+    count = len(m.group(0).replace('\\', ''))
+    return r'\rule[-0.6pt]{%.2fem}{0.6pt}' % (count * 0.5)
 
 
 def _space_run(m) -> str:

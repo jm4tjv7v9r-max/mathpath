@@ -50,6 +50,36 @@ def split_options(text: str) -> list[str]:
     return parts if len(parts) > 1 else [text.strip()]
 
 
+OPTION_LABEL_RE = re.compile(r'^\s*[(（]?[A-Ha-h]\s*[.、)．]\s*')
+
+
+def _tabbed_options(text: str) -> list[str]:
+    """「公式 TAB 公式 TAB 公式」這種沒有字母的選項行：按 tab 切開。
+
+    切不出兩格、格數太多、或某一格長得像整段文字，就當它不是選項行。
+    """
+    if '\t' not in text:
+        return []
+    cells = [c.strip() for c in text.split('\t') if c.strip()]
+    if len(cells) < 2 or len(cells) > 6 or any(len(c) > 80 for c in cells):
+        return []
+    return cells
+
+
+def label_options(options: list[str]) -> list[str]:
+    """選項沒有「A.／B.／…」前綴時自動補上——Word 卷常只用 tab 分欄。
+
+    只有全部都已經有字母才原樣保留，避免出現「A. 1、2、C. 3」這種半套。
+    """
+    opts = [str(o).strip() for o in options or []]
+    if not opts:
+        return opts
+    if all(OPTION_LABEL_RE.match(o) for o in opts):
+        return opts
+    return [f'{chr(65 + i)}. {OPTION_LABEL_RE.sub("", o)}' if i < 26 else o
+            for i, o in enumerate(opts)]
+
+
 def has_bottom_border(p) -> bool:
     ppr = p._p.pPr
     if ppr is None:
@@ -320,6 +350,9 @@ def parse_content(path: str) -> tuple[list[str], list[Section]]:
             current.questions.append(Question(stem=stem, marks=marks))
         elif role == 'option' and current and current.questions:
             current.questions[-1].options.extend(split_options(text))
+        elif current and current.questions and _tabbed_options(text):
+            # 很多 Word 卷的選項沒有 A./B./C./D.，只用 tab 分欄（公式 TAB 公式 TAB …）
+            current.questions[-1].options.extend(_tabbed_options(text))
         elif current and current.questions:
             current.questions[-1].stem += text
         else:
@@ -512,13 +545,15 @@ def _clone(doc, prototype_el, before):
 
 # 卷頭裡哪一行是「卷名」：換卷時只換那一行，校名、學年、姓名班別那幾行要原樣保留。
 TITLE_HINTS = ('測驗', '考試', '試卷', '測', '卷', 'Test', 'Exam')
+# 這幾種是「說明行」，不是卷名（「(本題目卷共兩版，禁止使用計算機)」也含「卷」）
+TITLE_NOTES = ('禁止', '本題目卷', '共兩版', '共兩頁', '注意', '考試時間', '作答時間', '滿分')
 
 
 def _title_index(head) -> int | None:
     """挑最像卷名的那一段；都沒線索就沿用第一段（舊行為）。
 
     要認得「高一級(普通班)數學科大測」這種寫法，也要避開「姓名／學號」那一行
-    （它同樣有「高一」，但它不是卷名）。
+    （它同樣有「高一」，但它不是卷名），以及「禁止使用計算機」這種說明行。
     """
     scored = []
     for i, p in enumerate(head):
@@ -536,6 +571,10 @@ def _title_index(head) -> int | None:
             score += 2
         if any(hint in text for hint in TITLE_HINTS):
             score += 1
+        if any(note in text for note in TITLE_NOTES):
+            score -= 3
+        if '標題' in text or '卷名' in text:
+            score += 2      # PDF 範本生成的佔位標題
         scored.append((score, i))
     if not scored:
         return None
@@ -579,7 +618,13 @@ def _fill_title(template_text: str, meta: dict | None, fallback: str) -> str:
             if tail:
                 # 範本在年級後面有括號：有班別就換內容（括號與「級」沿用範本寫法），沒有就整段拿掉
                 suffix, open_ch, _, close_ch = tail.groups()
-                repl = f'{suffix}{open_ch}{klass}{close_ch}' if klass else suffix
+                if klass:
+                    repl = f'{suffix}{open_ch}{klass}{close_ch}'
+                elif meta.get('keepClass'):
+                    # 卷面排版：新卷卷名只寫「高一」，範本的「(普通班)」要留住
+                    repl = f'{suffix}{open_ch}{tail.group(3)}{close_ch}'
+                else:
+                    repl = suffix
                 out = out[:tail.start()] + repl + out[tail.end():]
 
     term = str(meta.get('term') or '').strip()
@@ -620,6 +665,59 @@ def _sync_head(head, target: int, title_text: str):
             new = TITLE_GRADE_RE.sub(grade.group(0), new, count=1)
         if new != old:
             _fill(p, [new])
+
+
+def _title_has_fields(text: str) -> bool:
+    """範本標題裡有沒有「年級／學段／類別／科目」這些可以替換的位置。"""
+    t = text or ''
+    return bool(TITLE_GRADE_RE.search(t) or TITLE_TERM_RE.search(t)
+                or TITLE_KIND_RE.search(t) or TITLE_SUBJECT_RE.search(t))
+
+
+def _title_fields_fit(tpl_line: str, meta: dict) -> bool:
+    """新卷卷名裡的每個欄位，範本標題是不是都有位置可以放。
+
+    有位置 → 只換那幾個欄位（校名、年度原樣保留）；
+    有欄位放不進去（例如新卷寫「第二段」，範本標題根本沒有學段）→ 整行用新卷的卷名。
+    """
+    t = tpl_line or ''
+    checks = []
+    if meta.get('grade'):
+        checks.append(bool(TITLE_GRADE_RE.search(t)))
+    if meta.get('term'):
+        checks.append(bool(TITLE_TERM_RE.search(t)))
+    if meta.get('kind'):
+        checks.append(bool(TITLE_KIND_RE.search(t)))
+    if meta.get('subject'):
+        checks.append(bool(TITLE_SUBJECT_RE.search(t)))
+    return bool(checks) and all(checks)
+
+
+def _meta_from_title(title: str) -> dict | None:
+    """從新卷卷名抽出「年級／學段／類別／科目」，用來只換範本標題裡對應的位置。
+
+    卷面排版時老師只給一份新卷（卷名可能是「高一大測（第一段）」），
+    範本標題卻是「培華中學 2026 年度第一段高一級(普通班)數學科大測一」：
+    整行換掉會丟了校名與年度，所以只換這幾個欄位。
+    """
+    s = str(title or '')
+    if not s:
+        return None
+    meta = {}
+    grade = TITLE_GRADE_RE.search(s)
+    term = TITLE_TERM_RE.search(s)
+    kind = TITLE_KIND_RE.search(s)
+    subject = TITLE_SUBJECT_RE.search(s)
+    if grade:
+        meta['grade'] = grade.group(0)
+        meta['keepClass'] = True      # 卷名沒寫班別時，範本的「(普通班)」要保留
+    if term:
+        meta['term'] = term.group(0)
+    if kind:
+        meta['kind'] = kind.group(0)
+    if subject:
+        meta['subject'] = subject.group(0)
+    return meta or None
 
 
 NUM_LEAD_RE = re.compile(r'^\s*\d{1,3}\s*([.、)．])(\t|\u3000| {1,})?')
@@ -697,25 +795,33 @@ def _heading_text(template_title: str, new_title: str, questions) -> str:
     tpl_prefix = HEADING_PREFIX_RE.match(tpl) if tpl else None
     if tpl_prefix:
         prefix = tpl_prefix.group(0).strip()
+
+    # 先把新卷標題尾端的「（每題 5 分，共 35 分）」拆下來，
+    # 剩下的「選擇題」才能拿去跟範本的「單項選擇題」比對。
+    new_b = BRACKET_RE.search(body)
+    has_new_bracket = bool(new_b and '分' in new_b.group(2))
+    bare_body = body[:new_b.start()].rstrip() if has_new_bracket else body
+
     # 範本自己寫「單項選擇題」，就照範本的寫法（只要它認得我們這個題型）
-    if body and tpl_prefix:
+    if bare_body and tpl_prefix:
         tpl_body = tpl[tpl_prefix.end():]
-        if body in tpl_body:
+        if bare_body in tpl_body:
             named = re.split(r'[（(：:]', tpl_body)[0].strip()
             if named:
-                body = named
+                bare_body = named
     gap = '' if prefix.endswith(('、', '.', '．')) else '\u3000'
-    heading = f'{prefix}{gap}{body}' if prefix else body
+    heading = f'{prefix}{gap}{bare_body}' if prefix else bare_body
 
     # 括號裡的配分說明：新卷自己寫了就用新卷的，否則沿用範本的。
     # （兩組都留會變成「（每題 5 分）（每題 4 分，共 8 分）」這種重複。）
-    new_b = BRACKET_RE.search(body)
     tpl_b = BRACKET_RE.search(tpl) if tpl else None
-    if new_b and '分' in new_b.group(2):
-        bare = body[:new_b.start()].rstrip()
-        heading = f'{prefix}{gap}{bare}' if prefix else bare
+    if has_new_bracket:
         bracket = new_b
-        colon = '：' if bare.endswith(('：', ':')) else ''
+        colon = '：' if bare_body.endswith(('：', ':')) else ''
+        if not colon and tpl_b:
+            # 範本寫「單項選擇題：(每題 4 分…)」，冒號要留著
+            before = tpl[tpl_prefix.end() if tpl_prefix else 0:tpl_b.start()]
+            colon = '：' if before.rstrip().endswith(('：', ':')) else ''
     elif tpl_b and '分' in tpl_b.group(2):
         bracket = tpl_b
         before = tpl[tpl_prefix.end() if tpl_prefix else 0:tpl_b.start()]
@@ -723,6 +829,10 @@ def _heading_text(template_title: str, new_title: str, questions) -> str:
     else:
         return heading
     inner = bracket.group(2)
+    # 括號用範本的寫法（半角「(…)」還是全角「（…）」），看起來才像同一份卷
+    open_ch, close_ch = bracket.group(1), bracket.group(3)
+    if bracket is new_b and tpl_b is not None:
+        open_ch, close_ch = tpl_b.group(1), tpl_b.group(3)
     marks = [q.marks for q in questions if q.marks is not None]
     if not marks:
         # 新卷沒寫配分時，沿用範本的「每題 X 分」，總分按實際題數重算。
@@ -732,7 +842,7 @@ def _heading_text(template_title: str, new_title: str, questions) -> str:
             return heading
         value = float(re.search(r'[\d.]+', each.group(0)).group(0))
         out = _set_total_marks(_set_each_marks(inner, value), value * len(questions))
-        return f'{heading}{colon}{bracket.group(1)}{out}{bracket.group(3)}'
+        return f'{heading}{colon}{open_ch}{out}{close_ch}'
     out = inner
     if len(set(marks)) == 1:
         out = _set_each_marks(out, marks[0])
@@ -740,7 +850,7 @@ def _heading_text(template_title: str, new_title: str, questions) -> str:
     if out == inner and not re.search(r'每[題小]|共', inner):
         # 範本只寫「（20 分）」這種總分：直接把那個數字換成新的總分
         out = re.sub(r'[\d.]+\s*分', f'{sum(marks):g} 分', inner, count=1)
-    return f'{heading}{colon}{bracket.group(1)}{out}{bracket.group(3)}'
+    return f'{heading}{colon}{open_ch}{out}{close_ch}'
 
 
 def count_formulas(sections: list[Section]) -> int:
@@ -782,8 +892,12 @@ def _render_into(tpl, sections: list[Section], title: str | None = None,
                  closing: str | None = None,
                  options_per_line: int = DEFAULT_OPTIONS_PER_LINE,
                  math_as_text: bool = False,
-                 meta: dict | None = None) -> dict:
-    """把內容套進一個已開啟的 Document（不存檔，讓呼叫端決定存哪裡）。"""
+                 meta: dict | None = None,
+                 numbering: str = 'continuous') -> dict:
+    """把內容套進一個已開啟的 Document（不存檔，讓呼叫端決定存哪裡）。
+
+    numbering：'continuous'（全卷連續，預設）或 'section'（每個分部由 1 重編）。
+    """
     blocks = read_blocks(tpl)
     paragraphs = tpl.paragraphs
 
@@ -801,7 +915,6 @@ def _render_into(tpl, sections: list[Section], title: str | None = None,
     # 範本把配分寫在分部標題（「每題 4 分」）而不是題號旁邊時，題幹就不要再插一次配分，
     # 否則每題都會多出「（4 分）」，跟範本長得不一樣。
     heading_marks = any('分' in (b.text or '') for b in blocks if b.role == 'section')
-    show_marks = pos != 'none' or not heading_marks
     # 範本的「配分靠右」若只靠預設 tab，位置會飄；補一個貼右邊界的定位點。
     marks_tab = None
     if pos == 'trailing' and not _tab_stops(q_proto):
@@ -810,6 +923,11 @@ def _render_into(tpl, sections: list[Section], title: str | None = None,
     # 卷頭：第一個分部之前的所有段落（標題、副標、資料行、橫線）
     first_section = next((i for i, b in enumerate(blocks) if b.role == 'section'), len(blocks))
     head_idx = [i for i in range(first_section) if blocks[i].role in ('other', 'rule', 'blank')]
+    # 卷尾：最後一題之後的段落（「— 試卷完 —」之類）
+    last_body = max((i for i, b in enumerate(blocks) if b.role in ('question', 'answer_line')),
+                    default=-1)
+    tail_idx = [i for i in range(last_body + 1, len(blocks))
+                if blocks[i].role in ('other', 'rule')]
 
     lines_by_index: list[int | None] = []
     for b in blocks:
@@ -819,6 +937,16 @@ def _render_into(tpl, sections: list[Section], title: str | None = None,
             lines_by_index[-1] = b.lines_after
     default_lines = next((n for n in lines_by_index if n), 0)
 
+    # 每個分部的配分寫法（照範本）：選擇題寫在標題、解答題寫在題號後面是很常見的混排，
+    # 全卷只用一個 pos 會讓其中一種分部的配分整段消失。
+    sec_marks: list[dict] = []
+    for b in blocks:
+        if b.role == 'section':
+            sec_marks.append({'pos': None, 'proto': '', 'heading': b.text or ''})
+        elif b.role == 'question' and sec_marks and sec_marks[-1]['pos'] is None:
+            sec_marks[-1]['pos'] = marks_position(b.text)
+            sec_marks[-1]['proto'] = b.text.split('\t')[-1] if '\t' in b.text else b.text
+
     body = tpl.element.body
     sectpr = body.find(qn('w:sectPr'))
     for child in list(body):
@@ -827,43 +955,65 @@ def _render_into(tpl, sections: list[Section], title: str | None = None,
         body.remove(child)
 
     cloned_head = [_clone(tpl, paragraphs[i]._p, sectpr) for i in head_idx]
-    # 卷頭整塊置中：卷名、副標題、姓名班別那幾行
+    # 卷頭置中：卷名、副標題；但「姓名／學號／成績」那一行照範本原樣（它通常靠左排滿一行）
     for p in cloned_head:
-        if p.text.strip():
+        text = p.text or ''
+        if text.strip() and not any(k in text for k in ('姓名', '學號', '班別', '班　')):
             p.alignment = WD_ALIGN_PARAGRAPH.CENTER
     if title:
         target = _title_index(cloned_head)
         if target is not None:
-            line = _fill_title(cloned_head[target].text, meta, title)
+            tpl_line = cloned_head[target].text
+            use_meta = meta if meta is not None else _meta_from_title(title)
+            if use_meta and not _title_fields_fit(tpl_line, use_meta):
+                # 範本標題放不下新卷的欄位（或根本沒有這些位置）→ 整行用新卷的卷名
+                use_meta, line = None, title
+            else:
+                line = _fill_title(tpl_line, use_meta, title)
             _fill(cloned_head[target], [line], math_as_text)
             _sync_head(cloned_head, target, line)
 
     number = 1
-    restart = restarts_numbering(blocks)
+    restart = numbering == 'section' or (numbering == 'auto' and restarts_numbering(blocks))
     template_headings = [b.text for b in blocks if b.role == 'section']
     for index, s in enumerate(sections):
         if restart:
-            # 範本每個分部都由 1 開始，就跟著重編（不再全卷連續）
+            # 老師選了「每分部重編」：每個分部都由 1 開始
             number = 1
         if s.title and 'section' in proto:
             np = _clone(tpl, proto['section']._p, sectpr)
             tpl_title = template_headings[index] if index < len(template_headings) else ''
             _fill(np, [_heading_text(tpl_title, s.title, s.questions)], math_as_text)
         lines = lines_by_index[index] if index < len(lines_by_index) else default_lines
-        # 選擇題／填空題的分數寫在分部標題（「每題 4 分，共 32 分」）就好，
-        # 每題前面再插一次「（4 分）」會很吵；解答題、證明題、附加題才逐題標分。
+        # 配分寫法照這個分部在範本裡的樣子：
+        # 選擇題／填空題寫在標題（「每題 4 分」），解答題才逐題標「（12 分）」。
+        sec = sec_marks[index] if index < len(sec_marks) else None
         objective = any(k in (s.title or '') for k in ('選擇', '填空'))
-        section_show_marks = show_marks and not (objective and heading_marks)
+        sec_heading_marks = '分' in ((sec or {}).get('heading') or '') or '分' in (s.title or '')
+        if sec is None:
+            # 範本的分部比新卷少（例如 PDF 範本只認得一個分部原型）：
+            # 客觀題把分數留在標題，其餘逐題標，總之不要讓配分消失
+            sec_pos = 'none' if (objective and sec_heading_marks) else 'leading'
+        else:
+            sec_pos = sec['pos'] or pos
+            if objective and sec_heading_marks:
+                # 選擇題／填空題的分數已經寫在分部標題（「每題 4 分」），逐題再標一次很吵
+                sec_pos = 'none'
+            elif sec_pos == 'none' and not sec_heading_marks:
+                sec_pos = 'leading'
+        sec_marks_tab = None
+        if sec_pos == 'trailing' and marks_tab is not None:
+            sec_marks_tab = marks_tab
 
         for q in s.questions:
             np = _clone(tpl, q_proto._p, sectpr)
-            if pos == 'trailing':
-                marks_txt = _marks_text(marks_proto, q.marks)
+            if sec_pos == 'trailing':
+                marks_txt = _marks_text((sec or {}).get('proto') or marks_proto, q.marks)
                 cells = [f'{number}{punct}{sep}{q.stem}'] + ([marks_txt] if marks_txt else [])
                 _fill(np, cells, math_as_text)
-                if marks_txt and marks_tab is not None:
-                    np.paragraph_format.tab_stops.add_tab_stop(marks_tab, WD_TAB_ALIGNMENT.RIGHT)
-            elif q.marks is not None and section_show_marks:
+                if marks_txt and sec_marks_tab is not None:
+                    np.paragraph_format.tab_stops.add_tab_stop(sec_marks_tab, WD_TAB_ALIGNMENT.RIGHT)
+            elif sec_pos == 'leading' and q.marks is not None:
                 _fill(np, [f'{number}{punct}{_marks_text("（0 分）", q.marks)}{sep}{q.stem}'], math_as_text)
             else:
                 _fill(np, [f'{number}{punct}{sep}{q.stem}'], math_as_text)
@@ -891,10 +1041,11 @@ def _render_into(tpl, sections: list[Section], title: str | None = None,
             if q.options and 'option' in proto:
                 # 選項一律打橫排：先試「全部塞一行」（5 個選項就 5 個一行），
                 # 真的不夠寬才退成每行 2 個 —— 5 個選項就變成 2、2、1。
+                opts = label_options(q.options)
                 tpl_columns = option_columns(proto['option'])
                 width_cm = _text_width(tpl, proto['option']) / 360000
-                columns = option_layout(q.options, width_cm)
-                for row in pack_options(q.options, columns):
+                columns = option_layout(opts, width_cm)
+                for row in pack_options(opts, columns):
                     op = _clone(tpl, proto['option']._p, sectpr)
                     _fill(op, row, math_as_text)
                     if columns != tpl_columns:
@@ -911,6 +1062,10 @@ def _render_into(tpl, sections: list[Section], title: str | None = None,
         cp = _clone(tpl, proto['other']._p, sectpr)
         _fill(cp, [closing], math_as_text)
 
+    # 卷尾（「— 試卷完 —」、頁尾說明）照範本原樣帶回來
+    for i in tail_idx:
+        _clone(tpl, paragraphs[i]._p, sectpr)
+
     if tpl.tables:
         print(f'⚠️ 範本有 {len(tpl.tables)} 個表格，內容未帶入輸出', file=sys.stderr)
     return {'title': title, 'sections': len(sections),
@@ -923,9 +1078,10 @@ def _render_into(tpl, sections: list[Section], title: str | None = None,
 def render_sections(template_path: str, sections: list[Section], out_path: str,
                     title: str | None = None, closing: str | None = None,
                     options_per_line: int = DEFAULT_OPTIONS_PER_LINE,
-                    math_as_text: bool = False) -> dict:
+                    math_as_text: bool = False, numbering: str = 'continuous') -> dict:
     tpl = Document(template_path)
-    report = _render_into(tpl, sections, title, closing, options_per_line, math_as_text)
+    report = _render_into(tpl, sections, title, closing, options_per_line, math_as_text,
+                          numbering=numbering)
     tpl.save(out_path)
     report['out'] = str(Path(out_path).resolve())
     return report
@@ -978,6 +1134,9 @@ def parse_content_bytes(data: bytes) -> tuple[list[str], list[Section]]:
             current.questions.append(Question(stem=stem, marks=marks))
         elif role == 'option' and current and current.questions:
             current.questions[-1].options.extend(split_options(text))
+        elif current and current.questions and _tabbed_options(text):
+            # 很多 Word 卷的選項沒有 A./B./C./D.，只用 tab 分欄（公式 TAB 公式 TAB …）
+            current.questions[-1].options.extend(_tabbed_options(text))
         elif current and current.questions:
             current.questions[-1].stem += text
         else:
@@ -993,14 +1152,16 @@ def render_with_sections(template_bytes: bytes, sections: list[Section],
                          title: str | None = None,
                          options_per_line: int = DEFAULT_OPTIONS_PER_LINE,
                          math_as_text: bool = False,
-                         meta: dict | None = None) -> tuple[bytes, dict]:
+                         meta: dict | None = None,
+                         numbering: str = 'continuous') -> tuple[bytes, dict]:
     """已經有 Section 物件時用這個（例如 PDF 由 AI 轉寫出來的內容）。
 
     meta 帶 year／term／grade／kind／subject 時，卷頭標題只換這幾個位置，
     其餘（校名、年度、卷別…）照範本原文保留。
     """
     tpl = Document(io.BytesIO(template_bytes))
-    report = _render_into(tpl, sections, title, None, options_per_line, math_as_text, meta)
+    report = _render_into(tpl, sections, title, None, options_per_line, math_as_text, meta,
+                          numbering=numbering)
     buf = io.BytesIO()
     tpl.save(buf)
     return buf.getvalue(), report
@@ -1008,12 +1169,13 @@ def render_with_sections(template_bytes: bytes, sections: list[Section],
 
 def render_bytes(template_bytes: bytes, content_bytes: bytes,
                  options_per_line: int = DEFAULT_OPTIONS_PER_LINE,
-                 math_as_text: bool = False) -> tuple[bytes, dict]:
+                 math_as_text: bool = False,
+                 numbering: str = 'continuous') -> tuple[bytes, dict]:
     """伺服器用：兩份 docx 的 bytes 進，排好版的 docx bytes 出。"""
     tpl = Document(io.BytesIO(template_bytes))
     preamble, sections = parse_content_bytes(content_bytes)
     report = _render_into(tpl, sections, preamble[0] if preamble else None,
-                          None, options_per_line, math_as_text)
+                          None, options_per_line, math_as_text, numbering=numbering)
     buf = io.BytesIO()
     tpl.save(buf)
     return buf.getvalue(), report
