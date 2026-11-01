@@ -884,7 +884,9 @@ function shell(){// 「新手上路」放最後——那是第一次來看的，
       if(!g.children)return navRow(g.id,g.label,page===g.id,false);
       const inside=g.children.some(([c])=>c===page);
       const open=g.key in navOpen?navOpen[g.key]:inside;
-      const head=`<button class="nav-item nav-parent" data-nav-toggle="${g.key}" aria-expanded="${open}" aria-controls="nav-${g.key}">${icon(g.iconId)}<span>${g.label}</span><span class="chev">${icon('chevron')}</span></button>`;
+      // 「批閱」有待批的作答時顯示數量，老師不必自己點進去找。
+      const badge=g.key==='review'&&S.pendingReviews?`<span class="count due" title="待批閱 ${S.pendingReviews} 題">${S.pendingReviews}</span>`:'';
+      const head=`<button class="nav-item nav-parent" data-nav-toggle="${g.key}" aria-expanded="${open}" aria-controls="nav-${g.key}">${icon(g.iconId)}<span>${g.label}</span>${badge}<span class="chev">${icon('chevron')}</span></button>`;
       const kids=`<div class="nav-children" id="nav-${g.key}"${open?'':' hidden'}>${g.children.map(([c,l,ic])=>navRow(c,l,page===c,true,ic)).join('')}</div>`;
       return head+kids;
     }).join('');
@@ -5665,6 +5667,7 @@ function bulkScoreModal(assignmentId){
       }
       closeModal();
       toast(`已為 ${done} 筆作答給分。`);
+      await refresh();
       resultsPage(assignmentId);
     }catch(e){
       err.textContent=done?`已存 ${done} 筆，之後失敗：${e.message}`:e.message;

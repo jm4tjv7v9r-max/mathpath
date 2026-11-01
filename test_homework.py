@@ -1340,6 +1340,24 @@ class HomeworkTests(unittest.TestCase):
         self.assertEqual(summary['pendingReviewCount'], 0)
         self.assertEqual(self.detail(aid)['report']['pendingCount'], 0)
 
+    def test_pending_review_count_drives_the_nav_badge(self):
+        """側欄「批閱」的待批數量：手寫作答才算待批，批完要歸零。"""
+        png = ('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ'
+               'AAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==')
+        aid = self.assignment()
+        before = self.call('GET', '/api/state', None, self.teacher)['pendingReviews']
+        self.call('POST', '/api/attempts', {'assignmentId': aid, 'questionId': 2, 'image': png},
+                  self.student)
+        after = self.call('GET', '/api/state', None, self.teacher)['pendingReviews']
+        self.assertEqual(after, before + 1, '手寫作答要算一筆待批')
+        detail = self.call('GET', f'/api/assignments/{aid}', None, self.teacher)
+        pid = [a['id'] for a in detail['attempts'] if a['status'] == 'pending'][0]
+        self.call('POST', f'/api/attempts/{pid}/review', {'score': 4, 'feedback': 'ok'}, self.teacher)
+        done = self.call('GET', '/api/state', None, self.teacher)['pendingReviews']
+        self.assertEqual(done, before, '批完要歸零')
+        self.assertEqual(self.call('GET', '/api/state', None, self.student)['pendingReviews'], 0,
+                         '學生端不需要這個數字')
+
     def test_class_names_must_be_unique_per_teacher(self):
         """同一位教師底下班名不可重複；不同教師可以各自有「中三甲」。"""
         self.call('POST', '/api/classes', {'name': '重名測試班'}, self.teacher)

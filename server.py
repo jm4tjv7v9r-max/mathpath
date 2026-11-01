@@ -6960,6 +6960,21 @@ class Application:
                             students[sid] = dict(db.execute('SELECT id,name,username,seat FROM users WHERE id=?',
                                                             (sid,)).fetchone())
                         attempt['student'] = students[sid]
+                # 待批數量：教師側欄的「批閱」徽章要用。只算每題最新一筆，
+                # 否則同一位學生重答幾次就會重複計數。
+                pending_reviews = 0
+                if user['role'] == 'teacher':
+                    seen = set()
+                    for r in rows:            # rows 已按 id DESC，第一次遇到就是最新
+                        if r['assignment_id'] is None:
+                            continue
+                        key = (r['assignment_id'], r['user_id'], r['question_id'])
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        if r['status'] == 'pending' or (r['ai_score'] is not None
+                                                        and not r['teacher_reviewed']):
+                            pending_reviews += 1
                 own = [r for r in rows if r['user_id'] == user['id']]
                 # 紙本累計要在連線還開著時算（下面 return 時 with 已結束）。
                 paper = self.paper_stats(db, user['id']) if user['role'] == 'student' else {}
@@ -6970,6 +6985,7 @@ class Application:
             stats = self.stats(own)
             stats.update(paper)
             return {'user': payload_user, 'questions': questions, 'attempts': attempts,
+                    'pendingReviews': pending_reviews,
                     'stats': stats, 'ai': self.ai.public(), 'topics': TOPICS, 'grades': GRADES,
                     'topicTree': TOPIC_TREE,
                     'notice': self.notice(user), 'minutesNotice': '分鐘數僅按同日相鄰提交間隔估算，不是正式學習計時。'}, headers
