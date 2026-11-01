@@ -180,6 +180,29 @@ def _font(run, size, bold=False):
     fonts.set(qn('w:hAnsi'), EN)
 
 
+INFO_BLANK_RE = re.compile(r'[_＿]{2,}')
+
+
+def _ensure_info_blanks(line: str) -> str:
+    """「姓名：____ 學號：____ 日期：__月__日 成績：____」這些空位不能掉。
+
+    AI 讀 PDF 版面時，那些空位在原檔是畫出來的橫線，抄成文字就只剩空白，
+    排出來的卷頭變成「姓名：  學號：」，老師一眼就看出不對。
+    """
+    if not line:
+        return ''
+    if INFO_BLANK_RE.search(line):
+        return line
+    out = line
+    for label, width in (('姓名：', 5), ('學號：', 4), ('成績：', 5)):
+        if label in out:
+            out = out.replace(label, label + '＿' * width, 1)
+    if '日期：' in out:
+        out = out.replace('日期：', '日期：＿＿', 1)
+        out = re.sub(r'月[ \u3000]*日', '月＿＿日', out, count=1)
+    return out
+
+
 def _bottom_rule(paragraph):
     ppr = paragraph._p.get_or_add_pPr()
     pbdr = OxmlElement('w:pBdr')
@@ -233,7 +256,7 @@ def build_template(spec: dict) -> bytes:
     if spec['infoLine']:
         p = doc.add_paragraph()
         p.paragraph_format.space_after = Pt(2)
-        _font(p.add_run(spec['infoLine']), 11)
+        _font(p.add_run(_ensure_info_blanks(spec['infoLine'])), 12)
         rule = doc.add_paragraph()
         rule.paragraph_format.space_after = Pt(6)
         _bottom_rule(rule)
@@ -241,7 +264,7 @@ def build_template(spec: dict) -> bytes:
     heading = doc.add_paragraph()
     heading.alignment = (WD_ALIGN_PARAGRAPH.CENTER if spec['section']['align'] == 'center'
                          else WD_ALIGN_PARAGRAPH.LEFT)
-    heading.paragraph_format.space_before = Pt(10)
+    heading.paragraph_format.space_before = Pt(14)
     heading.paragraph_format.space_after = Pt(2)
     _font(heading.add_run('一、題目'), spec['section']['sizePt'], spec['section']['bold'])
 

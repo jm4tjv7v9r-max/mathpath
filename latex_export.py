@@ -23,7 +23,7 @@ DEFAULT_PREAMBLE = r"""% !TEX program = xelatex
 \setlength{\parindent}{0pt}
 \pagestyle{plain}
 % 大題標題靠左（ctex 預設置中，跟原卷不一致）
-\ctexset{section/format=\normalsize\bfseries\raggedright,section/aftertitle=\smallskip,section/beforeskip=8pt}
+\ctexset{section/format=\normalsize\bfseries\raggedright,section/aftertitle=\smallskip,section/beforeskip=14pt}
 """
 
 ESCAPES = {
@@ -48,7 +48,7 @@ SPACE_RUN_RE = re.compile(r'[ \u3000]{2,}')
 
 
 # 題目裡的答題空位 6.1em ≈ 2.6cm（12pt）；卷頭「姓名：____」那一行位置不夠，用短一點
-BLANK_EM_QUESTION = 6.1
+BLANK_EM_QUESTION = 7.1
 BLANK_EM_HEADER = 3.4
 
 
@@ -184,7 +184,7 @@ def to_tex(title: str | None, sections, marks_position: str = 'none',
         if section.title:
             lines += ['', r'\Needspace{3\baselineskip}',
                       r'\section*{' + tex_of(section.title) + '}', '']
-        lines.append(r'\begin{enumerate}[leftmargin=*,itemsep=2pt,topsep=1pt,start=%d]'
+        lines.append(r'\begin{enumerate}[leftmargin=*,itemsep=3pt,topsep=2pt,start=%d]'
                      % (number + 1))
         for q in section.questions:
             number += 1
