@@ -4062,6 +4062,15 @@ async function generatePaperModal(){
       </div>
       <div class="gen-chips">${['選擇題','填空題','解答題','證明題','附加題'].map(chip).join('')}</div>
     </div>
+    <div class="gen-block" style="margin-top:12px">
+      <div class="gen-block-head">
+        <p class="field-label">參考文檔（選填，可多份）</p>
+        <button type="button" class="text-button" id="gen-ref-add">＋ 加入 PDF／圖片</button>
+      </div>
+      <p class="field-hint" style="margin:0">舊卷、課程文件或題目截圖都可以：PDF 直接抽文字，圖片交給 AI 讀成摘要，出題時一併參考。</p>
+      <div id="gen-ref-list" class="gen-ref-list"></div>
+      <input type="file" id="gen-ref-file" accept=".pdf,.jpg,.jpeg,.png,.webp,.heic,.heif" multiple hidden>
+    </div>
     <div class="gen-pair">
       <div class="gen-block"><p class="field-label">題目來源</p>
         <div class="gen-inline">
@@ -4137,6 +4146,34 @@ async function generatePaperModal(){
     const box=[...document.querySelectorAll('.gen-qtype')].find(x=>x.value==='附加題');
     if(box&&!box.checked){box.checked=true;syncOptions();}
   };
+  // 參考文檔：上傳後立刻換成文字（PDF 抽文、圖片請視覺模型寫摘要），出題時一併交給 AI。
+  const refs=[];
+  const renderRefs=()=>{
+    const box=$('#gen-ref-list');if(!box)return;
+    box.innerHTML=refs.map((r,i)=>`<span class="gen-ref-chip">${esc(r.name)}<span class="small-text">${r.chars} 字</span><button type="button" class="gen-ref-del" data-ref-del="${i}" aria-label="移除 ${esc(r.name)}">✕</button></span>`).join('');
+    $$('[data-ref-del]',box).forEach(b=>b.onclick=()=>{refs.splice(Number(b.dataset.refDel),1);renderRefs();});
+  };
+  $('#gen-ref-add').onclick=()=>$('#gen-ref-file').click();
+  $('#gen-ref-file').onchange=async e=>{
+    const files=[...(e.target.files||[])];
+    if(!files.length)return;
+    const btn=$('#gen-ref-add');const old=btn.innerHTML;
+    for(const file of files){
+      if(refs.length>=5){toast('最多 5 份參考文檔。');break;}
+      btn.disabled=true;btn.innerHTML='讀取中…';
+      try{
+        const fixed=await normalizeHeicFile(file);
+        const data=await readAsDataUrl(fixed||file);
+        const res=await api('/api/papers/refs',{file:data,filename:file.name,
+          consentExternal:S.ai.mode==='external'});
+        refs.push({name:file.name,kind:res.kind,chars:res.chars,text:res.text});
+        renderRefs();
+      }catch(err){toast(`${file.name}：${err.message}`);}
+      finally{btn.disabled=false;btn.innerHTML=old;}
+    }
+    e.target.value='';
+  };
+
   // 把表單內容整理成一份請求；「列出題目」與「確定生成」都用同一份設定。
   const formPayload=()=>{
     const err=$('#gen-error');err.textContent='';
@@ -4160,11 +4197,54 @@ async function generatePaperModal(){
     return {templateId:tplId,ranges:list,duration:Number($('#gen-duration').value)||60,
             grade:$('#gen-grade').value,examKind:$('#gen-kind').value,term:$('#gen-term').value,
             subject:$('#gen-subject').value,region:$('#gen-region').value,
+            reference:refs.map(r=>`【${r.name}】\n${r.text}`).join('\n\n').slice(0,6000),
             qtypes,totalPoints:total,difficulty,source,
             consentExternal:S.ai.mode==='external'};
   };
 
   let plan=null, base=null;   // plan＝預覽中的題目（每題有 on 表示是否選用）；base＝這份卷的設定
+
+  // 雙向細目表：知識點 × 難度，順便核對難度比例是否符合要求。
+  const blueprintHtml=()=>{
+    if(!plan)return '';
+    const levels=['易','中','難'];
+    const chosen=plan.flatMap(sec=>sec.questions.filter(q=>q.on).map(q=>({...q,qtype:sec.qtype})));
+    if(!chosen.length)return '<p class="field-hint">還沒有選任何題目。</p>';
+    const rows=new Map();
+    chosen.forEach(q=>{
+      const topic=(q.topic||'').trim()||'（未標知識點）';
+      if(!rows.has(topic))rows.set(topic,{易:[0,0],中:[0,0],難:[0,0]});
+      const cell=rows.get(topic)[levels.includes(q.difficulty)?q.difficulty:'中'];
+      cell[0]+=1;cell[1]+=Number(q.marks)||0;
+    });
+    const totals={易:[0,0],中:[0,0],難:[0,0]};
+    const body=[...rows.entries()].map(([topic,cells])=>{
+      levels.forEach(l=>{totals[l][0]+=cells[l][0];totals[l][1]+=cells[l][1];});
+      const n=levels.reduce((a,l)=>a+cells[l][0],0),m=levels.reduce((a,l)=>a+cells[l][1],0);
+      const tds=levels.map(l=>cells[l][0]
+        ?`<td>${cells[l][0]} 題<span class="bp-mark">${cells[l][1]} 分</span></td>`:'<td class="bp-zero">—</td>').join('');
+      return `<tr><th scope="row">${esc(topic)}</th>${tds}<td><strong>${n} 題</strong><span class="bp-mark">${m} 分</span></td></tr>`;
+    }).join('');
+    const tn=levels.reduce((a,l)=>a+totals[l][0],0),tm=levels.reduce((a,l)=>a+totals[l][1],0);
+    const ratio=base.difficulty||{易:7,中:2,難:1};
+    const sum=(ratio.易+ratio.中+ratio.難)||10;
+    const exact=levels.map(l=>tn*ratio[l]/sum);
+    const expect=exact.map(v=>Math.floor(v));
+    let rest=tn-expect.reduce((a,b)=>a+b,0);
+    exact.map((v,i)=>[v-Math.floor(v),i]).sort((a,b)=>b[0]-a[0])
+      .forEach(([,i])=>{if(rest>0){expect[i]+=1;rest-=1;}});
+    const ok=levels.every((l,i)=>totals[l][0]===expect[i]);
+    const diff=levels.map((l,i)=>totals[l][0]-expect[i]).reduce((a,b)=>a+Math.abs(b),0);
+    const actual=levels.map(l=>`${l} ${totals[l][0]}`).join('：');
+    const want=levels.map((l,i)=>`${l} ${expect[i]}`).join('：');
+    const foot=`<tr class="bp-total"><th scope="row">合計</th>${levels.map(l=>`<td>${totals[l][0]} 題<span class="bp-mark">${totals[l][1]} 分</span></td>`).join('')}<td><strong>${tn} 題</strong><span class="bp-mark">${tm} 分</span></td></tr>`;
+    return `<table class="bp-table">
+        <caption>雙向細目表（知識點 × 難度）</caption>
+        <thead><tr><th scope="col">知識點</th>${levels.map(l=>`<th scope="col">${l}</th>`).join('')}<th scope="col">小計</th></tr></thead>
+        <tbody>${body}${foot}</tbody>
+      </table>
+      <p class="bp-check ${ok?'ok':'bad'}">難度分佈：要求 ${want}；實際 ${actual}${ok?'，符合 ✓':`，相差 ${diff} 題`}</p>`;
+  };
 
   const syncTotals=()=>{
     if(!plan)return;
@@ -4177,6 +4257,8 @@ async function generatePaperModal(){
     if(note)note.textContent=sum===base.totalPoints?'':`（確定後會調整為 ${base.totalPoints} 分）`;
     const btn=$('#gen-confirm');
     if(btn)btn.disabled=!chosen.length;
+    const bp=$('#gen-blueprint');
+    if(bp)bp.innerHTML=blueprintHtml();
   };
 
   const renderPlan=()=>{
@@ -4200,6 +4282,7 @@ async function generatePaperModal(){
       </div>`;}).join('');
     box.innerHTML=`<p class="eyebrow">STEP 2 / 2</p><h2>確認題目</h2>
       <p class="modal-intro">共 ${n} 題。可以取消勾選不要的題目，或按「更換」請 AI 重出那一題；按「確定」才排版存檔。</p>
+      <div id="gen-blueprint" class="gen-blueprint"></div>
       <div class="gen-preview">${rows}</div>
       <div class="gen-preview-foot">
         <span class="small-text">已選 <b id="gen-picked">0</b> / ${n} 題 · 合計 <b id="gen-marks">0</b> 分<span id="gen-marks-note"></span></span>

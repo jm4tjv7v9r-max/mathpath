@@ -1027,3 +1027,30 @@ html[data-theme=night] .contest-status.closed{background:#26302c;color:#a8c4b8}
   position:sticky;bottom:0;background:#fff}
 .gen-foot-actions{display:flex;gap:8px;flex-wrap:wrap}
 html[data-theme=night] .gen-preview-foot{background:#161c1e}
+
+/* 一鍵生成試卷：雙向細目表（知識點 × 難度） */
+.gen-blueprint{margin:2px 0 10px}
+.bp-table{width:100%;border-collapse:collapse;font-size:calc(12.5px*var(--fs))}
+.bp-table caption{caption-side:top;text-align:left;font-weight:700;font-size:calc(13px*var(--fs));
+  color:var(--ink);padding-bottom:6px}
+.bp-table th,.bp-table td{border:1px solid var(--line-soft);padding:5px 8px;text-align:center}
+.bp-table thead th{background:var(--surface);color:var(--muted);font-weight:600;white-space:nowrap}
+.bp-table tbody th{text-align:left;font-weight:600;white-space:nowrap;max-width:220px;overflow:hidden;text-overflow:ellipsis}
+.bp-table .bp-zero{color:#b9c7bf}
+.bp-mark{display:block;font-size:calc(11px*var(--fs));color:var(--muted);font-weight:400}
+.bp-total th,.bp-total td{background:var(--surface-soft);font-weight:700}
+.bp-check{margin:6px 0 0;font-size:calc(12.5px*var(--fs))}
+.bp-check.ok{color:var(--green-dark)}
+.bp-check.bad{color:#b8453b}
+
+/* 一鍵生成試卷：參考文檔清單 */
+.gen-ref-list{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
+.gen-ref-list:empty{display:none}
+.gen-ref-chip{display:inline-flex;align-items:center;gap:8px;padding:5px 6px 5px 11px;
+  border:1px solid var(--line-soft);border-radius:999px;background:#fff;
+  font-size:calc(12.5px*var(--fs));color:var(--muted-2);max-width:100%}
+.gen-ref-chip .small-text{color:var(--muted)}
+.gen-ref-del{border:0;background:none;cursor:pointer;color:#b8453b;
+  font-size:calc(13px*var(--fs));line-height:1;padding:2px 6px;border-radius:999px}
+.gen-ref-del:hover{background:#fdeaea}
+html[data-theme=night] .gen-ref-chip{background:#1b2427;border-color:#2a3437}

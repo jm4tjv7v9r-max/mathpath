@@ -29,6 +29,12 @@ SYMBOLS = {
 }
 BLACKBOARD = {'R': 'ℝ', 'N': 'ℕ', 'Z': 'ℤ', 'Q': 'ℚ', 'C': 'ℂ'}
 NARY = {'sum': '∑', 'prod': '∏', 'int': '∫', 'iint': '∬', 'oint': '∮'}
+# 矩陣類環境：AI 出題很常寫 \begin{pmatrix}1&2\\3&4\end{pmatrix}，
+# 不處理的話 Word 那邊會原樣吐出「beginpmatrix1&2\3&4endpmatrix」這種亂碼。
+MATRIX_ENVS = ('matrix', 'pmatrix', 'bmatrix', 'Bmatrix', 'vmatrix', 'Vmatrix',
+               'smallmatrix', 'array', 'cases')
+MATRIX_DELIMS = {'pmatrix': ('(', ')'), 'bmatrix': ('[', ']'), 'Bmatrix': ('{', '}'),
+                 'vmatrix': ('|', '|'), 'Vmatrix': ('‖', '‖'), 'cases': ('{', '')}
 FUNCS = {'sin', 'cos', 'tan', 'cot', 'sec', 'csc', 'log', 'ln', 'lg',
          'arcsin', 'arccos', 'arctan', 'max', 'min', 'lim'}
 
@@ -191,6 +197,26 @@ class _Parser:
                     self.take()
                 return [_run(BLACKBOARD.get(letter, letter))]
             return []
+        if name in ('begin', 'end'):
+            env = ''
+            self.skip_spaces()
+            if self.peek() == '{':
+                self.take()
+                start = self.i
+                while self.peek() and self.peek() != '}':
+                    self.take()
+                env = self.s[start:self.i]
+                if self.peek() == '}':
+                    self.take()
+            if name == 'end':
+                return []
+            body = self.raw_env_body(env)
+            if env in MATRIX_ENVS:
+                return [_matrix(body, env)]
+            sub = _Parser(body)
+            nodes = sub.parse()
+            self.warnings.extend(sub.warnings)
+            return nodes
         if name in NARY:
             sub = sup = []
             while self.peek() in ('_', '^'):
@@ -214,6 +240,19 @@ class _Parser:
             return [_run(' ')]
         self.warnings.append(f'未知指令 \\{name}，當作文字處理')
         return [_run(name)]
+
+    def raw_env_body(self, env: str) -> str:
+        """讀到對應的 \\end{env} 為止，回傳中間的原始字串（& 與 \\\\ 由呼叫端切）。"""
+        marker = '\\end{' + env + '}'
+        idx = self.s.find(marker, self.i)
+        if idx < 0:
+            body = self.s[self.i:]
+            self.i = len(self.s)
+            self.warnings.append(f'\\begin{{{env}}} 沒有對應的 \\end')
+            return body
+        body = self.s[self.i:idx]
+        self.i = idx + len(marker)
+        return body
 
     def seq_until_right(self):
         nodes = []
@@ -246,6 +285,40 @@ class _Parser:
         if sub is not None:
             return [_el('sSub', e, _el('sub', *sub))]
         return [_el('sSup', e, _el('sup', *sup))]
+
+
+def _matrix(body: str, env: str):
+    """把矩陣環境的內容（& 分欄、\\\\ 分行）變成 OMML 矩陣。"""
+    rows = re.split(r'\\\\\s*(?:\[[^\]]*\])?', body)
+    parsed, width = [], 0
+    for row in rows:
+        cells = row.split('&')
+        if not any(c.strip() for c in cells):
+            continue
+        nodes = []
+        for cell in cells:
+            sub = _Parser(cell)
+            nodes.append(_el('e', *sub.parse()))
+        parsed.append(nodes)
+        width = max(width, len(nodes))
+    if not parsed:
+        return _run('')
+    matrix = _el('m')
+    if width:
+        mcs = _el('mcs')
+        mc = _el('mc')
+        mc.append(_el('mcPr', _el('count', val=str(width)), _el('mcJc', val='center')))
+        mcs.append(mc)
+        matrix.append(_el('mPr', mcs))
+    for nodes in parsed:
+        while len(nodes) < width:
+            nodes.append(_el('e'))
+        matrix.append(_el('mr', *nodes))
+    beg, end = MATRIX_DELIMS.get(env, ('', ''))
+    if not beg and not end:
+        return matrix
+    return _el('d', _el('dPr', _el('begChr', val=beg), _el('endChr', val=end)),
+               _el('e', matrix))
 
 
 def latex_to_omml(latex: str, warnings: list[str] | None = None):

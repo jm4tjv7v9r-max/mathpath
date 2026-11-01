@@ -2783,6 +2783,26 @@ class PaperGenerateTests(unittest.TestCase):
         self.assertEqual(ctx.exception.status, 400)
         self.assertIn('參考方向', ctx.exception.message)
 
+    def test_difficulty_mismatch_triggers_another_attempt(self):
+        """難度比例不符要自動再要一次，直到符合為止。"""
+        calls = []
+
+        def fake(*a, **k):
+            calls.append(1)
+            levels = ['易'] * 10 if len(calls) == 1 else ['易'] * 7 + ['中'] * 2 + ['難'] * 1
+            return {'sections': [{'title': '一、選擇題', 'qtype': '選擇題', 'questions': [
+                {'stem': f'題{i}', 'options': ['A', 'B', 'C', 'D'], 'marks': 10,
+                 'difficulty': levels[i], 'topic': '一元二次方程',
+                 'answer': 'A', 'steps': []} for i in range(10)]}]}
+
+        self.app.ai.call = fake
+        out = self.call('POST', '/api/papers/preview', self.payload(
+            source='ai', difficulty={'易': 7, '中': 2, '難': 1},
+            qtypes=[{'type': '選擇題', 'optionCount': 4}]))
+        self.assertEqual(len(calls), 2, '難度不符要再要一次')
+        levels = [q['difficulty'] for q in out['sections'][0]['questions']]
+        self.assertEqual((levels.count('易'), levels.count('中'), levels.count('難')), (7, 2, 1))
+
     def test_practice_kind_and_class_suffixed_grade(self):
         """類型可以選「練習」；年級可以帶班別（高一（職業班））並原樣保存。"""
         self.app.ai.call = lambda *a, **k: {'sections': [

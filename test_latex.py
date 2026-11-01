@@ -9,6 +9,7 @@ import zlib
 from pathlib import Path
 
 import latex
+import omml
 import server
 import test_server
 
@@ -134,3 +135,40 @@ class LatexCompileTests(unittest.TestCase):
             self.assertEqual(proc.returncode, 0, f'XeLaTeX 編譯失敗：\n{proc.stdout[-2000:]}\n{log[-1500:]}')
             self.assertTrue((root / 'questions.pdf').exists())
             self.assertGreater((root / 'questions.pdf').stat().st_size, 2000)
+
+
+class MatrixOmmlTests(unittest.TestCase):
+    """矩陣：AI 很常寫 \\begin{pmatrix}...\\end{pmatrix}，Word 那邊不能吐出「beginpmatrix」這種字。"""
+
+    def convert(self, tex):
+        warnings = []
+        el = omml.latex_to_omml(tex, warnings)
+        return el, warnings
+
+    def test_pmatrix_becomes_a_real_matrix(self):
+        el, warnings = self.convert(r'\begin{pmatrix}1&2\\3&4\end{pmatrix}')
+        self.assertEqual(warnings, [])
+        tags = [e.tag.split('}')[-1] for e in el.iter()]
+        self.assertIn('m', tags, '要變成 Word 的矩陣物件')
+        self.assertIn('mr', tags, '要有列')
+        rows = [e for e in el.iter() if e.tag.endswith('}mr')]
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(len([e for e in rows[0] if e.tag.endswith('}e')]), 2)
+
+    def test_matrix_keeps_its_delimiters(self):
+        el, _ = self.convert(r'\begin{vmatrix}a&b\\c&d\end{vmatrix}')
+        chars = [e.get('{http://schemas.openxmlformats.org/officeDocument/2006/math}val')
+                 for e in el.iter() if e.tag.endswith('}begChr')]
+        self.assertEqual(chars, ['|'])
+
+    def test_text_around_matrix_is_preserved(self):
+        el, _ = self.convert(r'A=\begin{pmatrix}1&2\\3&4\end{pmatrix}')
+        text = ''.join(t.text or '' for t in el.iter() if t.tag.endswith('}t'))
+        self.assertIn('A=', text)
+        self.assertNotIn('begin', text, '不能留下 LaTeX 指令殘骸')
+
+    def test_matrix_with_power(self):
+        el, warnings = self.convert(r'\begin{pmatrix}1&0\\0&1\end{pmatrix}^{2}')
+        self.assertEqual(warnings, [])
+        tags = [e.tag.split('}')[-1] for e in el.iter()]
+        self.assertIn('sSup', tags, '矩陣的次方要變成上標')

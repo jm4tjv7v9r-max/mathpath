@@ -1740,16 +1740,17 @@ PAPER_LEVEL_NAME = {1: '易', 2: '中', 3: '難'}
 PAPER_GEN_PROMPT = (
     '你是資深中學數學科老師，要為指定範圍出試卷題目。只回 JSON：'
     '{sections:[{title:str,qtype:str,questions:[{stem:str,options:[str],marks:number,'
-    'difficulty:"易"|"中"|"難",answer:str,steps:[str]}]}],totalPoints:number}。'
+    'difficulty:"易"|"中"|"難",topic:str,answer:str,steps:[str]}]}],totalPoints:number}。'
     '規則：①每個分部只放一種題型，title 用「一、選擇題」這種格式；'
     '②所有題目 marks 加總必須剛好等於指定總分（先把配分算好再寫題目，不要最後才湊）；'
     '③選擇題 options 數量必須跟指定的一致（不要加 A. 前綴）；'
     '④若總分是 110 分，必須有「附加題」分部且剛好 10 分；'
     '⑤題目要覆蓋指定測考範圍，難度按指定比例（易：中：難）分配，用語與命題風格依「參考方向」；'
-    '⑥每題都要標 difficulty，只能是「易」「中」「難」；'
+    '⑥每題都要標 difficulty（只能是「易」「中」「難」）與 topic（該題考的中文知識點，例如「一元二次方程」「矩陣的乘法」）；'
     '⑦數學式一律 LaTeX，行內用 $...$；填空題的空白一律寫成 ______（六條底線），'
     '不要用 \\underline{\\hspace{2cm}} 這類排版指令；'
-    '⑧answer 寫最終答案，steps 寫 2 至 4 步關鍵過程。'
+    '⑧answer 寫最終答案，steps 寫 2 至 4 步關鍵過程；'
+    '⑨若提供「參考資料」，題型比例、用語與難度要參考它，但不要照抄題目。'
 )
 
 
@@ -1805,7 +1806,8 @@ def paper_generation_spec(body):
             'term': text(body.get('term') or '第一段', '段', 20),
             'subject': text(body.get('subject') or '數學', '科目', 20),
             'source': source, 'difficulty': difficulty, 'extraMarks': extra_marks,
-            'region': text(body.get('region') or '澳門', '參考方向', 20)}
+            'region': text(body.get('region') or '澳門', '參考方向', 20),
+            'reference': text(body.get('reference') or '', '參考資料', 6000, empty=True)}
     if spec['examKind'] not in ('練習', '小測', '大測', '考試'):
         fail(400, '類型只能是練習、小測、大測或考試。')
     if spec['term'] not in ('第一段', '第二段', '第三段'):
@@ -1886,6 +1888,7 @@ def paper_question_from_bank(q):
     row = paper_format.Question(stem=(q.get('content') or q.get('title') or '').strip(),
                                 marks=float(q.get('points') or 0) or None, options=options)
     row.difficulty = PAPER_LEVEL_NAME.get(q.get('level'), '中')
+    row.topic = (q.get('topic') or q.get('subtopic') or '').strip()
     row.bank_id = q.get('id')
     return row
 
@@ -2072,6 +2075,8 @@ def ai_generate_paper(app, spec, target, types=None, fix=None, note=None):
         '難度比例（易：中：難）': f"{ratio['易']}：{ratio['中']}：{ratio['難']}"}
     if note:
         payload['補充說明'] = note
+    if spec.get('reference'):
+        payload['參考資料'] = spec['reference']
     result = app.ai.call(instruction, payload)
     sections = []
     for sec in (result.get('sections') if isinstance(result, dict) else None) or []:
@@ -2092,6 +2097,7 @@ def ai_generate_paper(app, spec, target, types=None, fix=None, note=None):
             row = paper_format.Question(stem=stem, marks=marks or None, options=options)
             level = str(q.get('difficulty') or '').strip()
             row.difficulty = level if level in PAPER_DIFFICULTY else '中'
+            row.topic = str(q.get('topic') or '').strip()[:40]
             rows.append(row)
         if rows:
             sections.append(paper_format.Section(title=str(sec.get('title') or '') or None, questions=rows))
@@ -2104,8 +2110,41 @@ def ai_generate_paper(app, spec, target, types=None, fix=None, note=None):
     return sections, problems, warnings
 
 
+def _merge_ai(groups, ai_sections, spec, open_types):
+    """把 AI 出的那一份併進題庫挑到的題目（回新的 dict，不改原本的）。"""
+    merged = {k: list(v) for k, v in groups.items()}
+    for sec in ai_sections:
+        title_text = sec.title or ''
+        kind = next((t['type'] for t in spec['qtypes'] if t['type'] in title_text), None)
+        if kind is None:
+            kind = open_types[0]['type'] if open_types else '解答題'
+        merged.setdefault(kind, []).extend(sec.questions)
+    return merged
+
+
+def _groups_to_sections(groups):
+    sections = []
+    for kind in PAPER_QTYPES:
+        items = groups.get(kind) or []
+        if items:
+            sections.append(paper_format.Section(
+                title=f'{CN_NUMBERS[len(sections)]}、{kind}', questions=items))
+    return sections
+
+
+def _difficulty_fix(counts, expect, ratio):
+    return (f'難度分佈不符：要求易 {ratio["易"]}：中 {ratio["中"]}：難 {ratio["難"]}'
+            f'（{expect["易"]}/{expect["中"]}/{expect["難"]} 題），'
+            f'你給的是易 {counts["易"]}：中 {counts["中"]}：難 {counts["難"]} 題；'
+            '請把部分題目的 difficulty 調整成要求的分佈，題數與配分不變')
+
+
 def build_generated_sections(app, spec):
-    """題庫優先 + AI 補足 → 回（分部清單, 來源統計, 提醒）。"""
+    """題庫優先 + AI 補足 → 回（分部清單, 來源統計, 提醒）。
+
+    難度比例是硬要求：AI 出的那一份若難度分佈不符，會帶著「哪裡不符」再要一次，
+    最多試 3 次；真的一直做不到才退回提示（不會讓老師卡在那裡）。
+    """
     groups = {}          # 題型 -> [Question]
     bank_count = 0
     ai_count = 0
@@ -2130,33 +2169,36 @@ def build_generated_sections(app, spec):
         if spec['source'] == 'bank' and remaining < spec['totalPoints']:
             note = (f'題庫已提供 {spec["totalPoints"] - remaining:g} 分的題目，'
                     f'這次只需要補足 {remaining:g} 分，不要出整份卷。')
-        ai_sections, problems, notes = ai_generate_paper(
-            app, spec, remaining, open_types, note=note)
-        if problems:
+        fix = None
+        for attempt in range(3):
             ai_sections, problems, notes = ai_generate_paper(
-                app, spec, remaining, open_types, fix=problems, note=note)
-        if problems:
-            fail(422, 'AI 產出的卷面不符合要求：' + '；'.join(problems[:4]) + '。可以再按一次生成。')
-        # 配分由程式重新分配，總分一定等於要求，附加題一定剛好。
-        extra = [s for s in ai_sections if '附加' in (s.title or '')]
-        main = [s for s in ai_sections if s not in extra]
-        extra_marks = spec.get('extraMarks') or 0
-        if extra and extra_marks:
-            paper_marks_normalize(extra, extra_marks)
-        paper_marks_normalize(main, remaining - (extra_marks if extra else 0))
-        for sec in ai_sections:
-            title_text = sec.title or ''
-            kind = next((t['type'] for t in spec['qtypes'] if t['type'] in title_text), None)
-            if kind is None:
-                kind = open_types[0]['type'] if open_types else '解答題'
-            groups.setdefault(kind, []).extend(sec.questions)
-            ai_count += len(sec.questions)
-    sections = []
-    for kind in PAPER_QTYPES:
-        items = groups.get(kind) or []
-        if items:
-            sections.append(paper_format.Section(
-                title=f'{CN_NUMBERS[len(sections)]}、{kind}', questions=items))
+                app, spec, remaining, open_types, fix=fix, note=note)
+            if problems:
+                fix = problems
+                if attempt < 2:
+                    continue
+                fail(422, 'AI 產出的卷面不符合要求：' + '；'.join(problems[:4]) + '。可以再按一次生成。')
+            # 配分由程式重新分配，總分一定等於要求，附加題一定剛好。
+            extra = [s for s in ai_sections if '附加' in (s.title or '')]
+            main = [s for s in ai_sections if s not in extra]
+            extra_marks = spec.get('extraMarks') or 0
+            if extra and extra_marks:
+                paper_marks_normalize(extra, extra_marks)
+            paper_marks_normalize(main, remaining - (extra_marks if extra else 0))
+            merged = _merge_ai(groups, ai_sections, spec, open_types)
+            counts = paper_difficulty_counts(_groups_to_sections(merged))
+            expect = paper_difficulty_expect(counts, spec['difficulty'])
+            if counts == expect or attempt == 2:
+                groups = merged
+                if counts != expect:
+                    warnings.append(
+                        '難度比例：要求易 {易}：中 {中}：難 {難}，實際是易 {a}：中 {b}：難 {c} 題'
+                        '（已重試仍做不到，可手動換題或調整難度比例）。'.format(
+                            **spec['difficulty'], a=counts['易'], b=counts['中'], c=counts['難']))
+                break
+            fix = [_difficulty_fix(counts, expect, spec['difficulty'])]
+        ai_count = sum(len(v) for v in groups.values()) - bank_count
+    sections = _groups_to_sections(groups)
     if not sections:
         fail(422, '題庫裡沒有符合這個範圍的題目，AI 也沒有產出可用的題目；'
                   '請放寬範圍，或改用「全部由 AI 出題」。')
@@ -2167,7 +2209,7 @@ def build_generated_sections(app, spec):
     warnings.extend(notes)
     if problems:
         fail(422, '卷面不符合要求：' + '；'.join(problems[:4]) + '。可以再按一次生成。')
-    return sections, {'bank': bank_count, 'ai': ai_count}, warnings
+    return sections, {'bank': bank_count, 'ai': max(0, ai_count)}, warnings
 
 
 def paper_preview_payload(sections):
@@ -2178,11 +2220,18 @@ def paper_preview_payload(sections):
         for q in sec.questions:
             rows.append({'stem': q.stem, 'options': list(q.options or []), 'lines': list(q.lines or []),
                          'marks': q.marks, 'difficulty': getattr(q, 'difficulty', '') or '',
+                         'topic': getattr(q, 'topic', '') or '',
                          'bankId': getattr(q, 'bank_id', None)})
         qtype = next((k for k in PAPER_QTYPES if k in (sec.title or '')), '解答題')
         out.append({'title': sec.title, 'qtype': qtype, 'questions': rows})
     return out
 
+
+REF_INSTRUCTION = (
+    '這是一份數學科參考資料（可能是舊卷、課程文件或題目截圖）。請用 200 至 400 字整理：'
+    '①涵蓋的知識點與題型；②題目難度與配分習慣；③用語與格式特點（例如「單項選擇題」「每題 4 分」）。'
+    '只回 JSON：{summary:str}。不要逐題抄錄。'
+)
 
 PAPER_ONE_PROMPT = (
     '你是資深中學數學科老師。只出一題，只回 JSON：'
@@ -6154,6 +6203,32 @@ class Application:
                 facets = {'years': distinct('year'), 'grades': distinct('grade'),
                           'terms': distinct('term')}
             return {'papers': [paper_public(r) for r in rows], 'facets': facets}, headers
+
+        if method == 'POST' and path == '/api/papers/refs':
+            # 參考文檔：PDF 抽文字；圖片交給視覺模型寫成摘要，出題時一併參考。
+            self.teacher(user)
+            fields(body, ('file', 'filename', 'consentExternal'), ('file',))
+            data, mime = decode_data_url(
+                body['file'], ('application/pdf', 'image/jpeg', 'image/png',
+                               'image/webp', 'image/heic', 'image/heif'), 12 * 1024 * 1024)
+            if mime == 'application/pdf':
+                text_value = ' '.join((pdf_text(data, empty_ok=True) or '').split())[:2500]
+                if not text_value:
+                    fail(422, '這份 PDF 沒有文字層（可能是掃描檔），請改為上傳截圖。')
+                return {'kind': 'pdf', 'chars': len(text_value), 'text': text_value}, headers
+            if not self.ai.configured:
+                fail(409, '尚未設定 AI 模型；圖片類參考文檔需要視覺模型。')
+            if not self.ai.vision:
+                fail(409, '尚未設定視覺模型；請改為上傳 PDF。')
+            self.ai.consent(body.get('consentExternal'))
+            result = self.ai.call(REF_INSTRUCTION,
+                                  {'filename': text(body.get('filename') or '參考圖片', '檔名', 80, empty=True)},
+                                  image=body['file'], model=self.ai.vision)
+            summary = str(result.get('summary') or '').strip() if isinstance(result, dict) else ''
+            if not summary:
+                fail(502, '讀不出這份參考文檔的內容，請換一張較清晰的圖。')
+            summary = summary[:1200]
+            return {'kind': 'image', 'chars': len(summary), 'text': summary}, headers
 
         if method == 'POST' and path == '/api/papers/preview':
             # 先列出題目讓老師逐題挑選／更換；按「確定」才真的排版存檔。
