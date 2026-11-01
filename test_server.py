@@ -330,7 +330,8 @@ class APITests(unittest.TestCase):
                                       'streak': 0, 'minutes': 0,
                                       # 紙本批改的累計獨立呈現，不混進做題數與正確率
                                       'paperCount': 0, 'paperAverage': None, 'paperLastAt': None})
-        self.assertEqual(state['ai'], {'configured': False, 'model': '', 'vision': '', 'draw': '', 'drawCustom': False, 'mode': 'off', 'source': 'none', 'thinking': False})
+        self.assertEqual(state['ai'], {'configured': False, 'model': '', 'vision': '', 'draw': '', 'drawCustom': False, 'reasoning': '', 'mode': 'off', 'source': 'none',
+                                 'thinking': False})
         for q in state['questions']:
             self.assertNotIn('answer', q)
             self.assertNotIn('steps', q)
@@ -833,7 +834,8 @@ class APITests(unittest.TestCase):
         self.request('POST', path, {'baseUrl': 'http://127.0.0.1:11434/v1', 'model': 'm'},
                      cookie=self.student, expect=403)
         _, body, _ = self.request('GET', path, cookie=self.teacher, expect=200)
-        self.assertEqual(body['active'], {'configured': False, 'model': '', 'vision': '', 'draw': '', 'drawCustom': False, 'mode': 'off', 'source': 'none', 'thinking': False})
+        self.assertEqual(body['active'], {'configured': False, 'model': '', 'vision': '', 'draw': '', 'drawCustom': False, 'reasoning': '', 'mode': 'off', 'source': 'none',
+                                 'thinking': False})
         self.assertTrue(body['canEdit'], '本機且未設權杖時應可編輯')
         self.assertFalse(body['tokenRequired'])
         self.assertFalse(body['env']['keySet'])
@@ -4583,6 +4585,37 @@ class StyleTests(unittest.TestCase):
         bad = [f"{r['theme']}：{r['fg']} on {r['bg']} = {r['ratio']}"
                for r in rows if r['ratio'] < check_contrast.MIN_RATIO]
         self.assertEqual(bad, [], '配色對比度不足：' + '；'.join(bad))
+
+
+
+class ReasoningRoutingTests(unittest.TestCase):
+    """推理模型只給幾何／向量的證明與解答題用，其餘照用文字模型。"""
+
+    def make(self, **extra):
+        ai = server.AIClient()
+        values = {'base_url': 'https://api.example.com/v1', 'model': 'chat-model', 'api_key': 'k'}
+        values.update(extra)
+        ai.configure(values)
+        return ai
+
+    def test_reasoning_model_is_used_for_geometry_proofs_only(self):
+        ai = self.make(reasoning_model='reasoner')
+        self.assertEqual(ai.reasoning, 'reasoner')
+        self.assertEqual(ai.pick_model('三角形', '證明題'), 'reasoner')
+        self.assertEqual(ai.pick_model('立體圖形', '解答題'), 'reasoner')
+        self.assertIsNone(ai.pick_model('三角形', '選擇題'), '選擇題不需要推理模型')
+        self.assertIsNone(ai.pick_model('代數', '解答題'), '非幾何題不需要推理模型')
+        self.assertIsNone(ai.pick_model('', '證明題'), '沒有知識點就不要亂升級')
+
+    def test_blank_reasoning_model_keeps_the_default(self):
+        ai = self.make()
+        self.assertEqual(ai.reasoning, '')
+        self.assertIsNone(ai.pick_model('幾何', '證明題'))
+
+    def test_public_reports_the_reasoning_model(self):
+        ai = self.make(reasoning_model='reasoner')
+        self.assertEqual(ai.public()['reasoning'], 'reasoner')
+        self.assertEqual(self.make().public()['reasoning'], '')
 
 
 if __name__ == '__main__':

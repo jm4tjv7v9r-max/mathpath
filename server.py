@@ -672,6 +672,20 @@ def figure_needed(topic):
     """這道題需不需要圖形：只針對幾何與向量題材。"""
     return topic in FIGURE_TOPICS
 
+
+# 推理模型只在「真的要長鏈推理」時才值得用：幾何證明、立體幾何、軌跡這一類。
+# 選擇題、填空題、一般計算用一般模型就好——推理模型的輸出 token 是 3～5 倍。
+REASONING_TOPICS = ('幾何', '三角形', '四邊形與多邊形', '圓', '立體圖形',
+                    '坐標幾何', '軌跡與幾何證明', '向量', '三角學')
+REASONING_QTYPES = ('證明題', '解答題')
+
+
+def needs_reasoning(topic, qtype):
+    """這道題值不值得動用推理模型（幾何／向量的證明與解答）。"""
+    if not topic:
+        return False
+    return topic in REASONING_TOPICS and qtype in REASONING_QTYPES
+
 # 第一階段只要求模型輸出「結構化規格」，由程式負責繪圖。
 # 理由：讓模型邊算座標邊寫 SVG 語法是最容易出錯的做法；改成模型只做它擅長的
 # 「讀題、列條件、給數學座標」，座標換算、比例、標註避讓、標記繪製全部由程式做，
@@ -1678,8 +1692,12 @@ def ai_figure_draft(app, body):
     if best['issues']:
         notice = ('AI 畫好後自動檢查仍有以下疑慮，請務必人工核對：'
                   + '；'.join(best['issues']) + '。')
+    # 三步：① 算座標（spec）② 照座標出圖（svg）③ 自查（把圖上的元素跟題目逐項比對）。
+    # 自查結果照實回報，不因為「有畫出來」就當成通過。
     return {'svg': best['svg'], 'spec': best['spec'], 'issues': best['issues'],
-            'rounds': rounds, 'method': 'AI 生成', 'notice': notice}
+            'rounds': rounds, 'method': 'AI 生成', 'notice': notice,
+            'selfCheck': {'ok': not best['issues'], 'issues': best['issues'],
+                          'checked': rounds}}
 
 
 def ai_answer_draft(app, body):
@@ -3517,6 +3535,8 @@ def env_ai_config():
             # 畫圖是「讀題 → 輸出座標」的推理工作，對模型能力比批改敏感得多；
             # 可以用 MATH_AI_DRAW_MODEL 指定較強的模型，沒設定就沿用文字模型。
             'draw_model': os.environ.get('MATH_AI_DRAW_MODEL', ''),
+            # 推理模型：只給「幾何證明／立體幾何」這類長鏈推理用，留空＝不啟用
+            'reasoning_model': os.environ.get('MATH_AI_REASONING_MODEL', ''),
             'thinking': os.environ.get('MATH_AI_THINKING', 'off').strip().lower() != 'off',
             'source': 'env'}
 
@@ -3668,6 +3688,7 @@ class AIClient:
         self.slots = threading.BoundedSemaphore(ai_concurrency())
         self.truncated = False
         self.draw = ''
+        self.reasoning = ''
         self.quota = AIQuota()
         self.metrics = Metrics()
         self.configure(env_ai_config())
@@ -3685,6 +3706,10 @@ class AIClient:
         with self.lock:
             self.base, self.model, self.key, self.vision = base, model, key, vision
             self.draw = draw
+            # 推理模型不走 validate_ai_config（它只管端點合法性），這裡單獨收斂長度與控制字元
+            raw_reasoning = str(values.get('reasoning_model') or '')
+            self.reasoning = ('' if any(c in raw_reasoning for c in '\r\n')
+                              else raw_reasoning.strip()[:200])
             self.configured, self.mode, self.endpoint = bool(base and model), mode, endpoint
             self.thinking = thinking
             self.source = (values.get('source') or 'env') if self.configured else 'none'
@@ -3694,7 +3719,17 @@ class AIClient:
                 'vision': self.vision if self.configured else '',
                 'draw': (self.draw or self.model) if self.configured else '',
                 'drawCustom': bool(self.draw) if self.configured else False,
+                'reasoning': self.reasoning if self.configured else '',
                 'mode': self.mode, 'source': self.source, 'thinking': self.thinking}
+
+    def pick_model(self, topic=None, qtype=None):
+        """按題型挑模型；回 None 表示用預設的文字模型。
+
+        只有設定了推理模型、而且這題是幾何類的證明／解答，才換成推理模型。
+        """
+        if self.reasoning and needs_reasoning(topic, qtype):
+            return self.reasoning
+        return None
 
     def probe(self, vision=False):
         """以最小請求驗證端點；失敗直接拋錯，不偽造成功。"""
@@ -5156,6 +5191,7 @@ class Application:
         return {'base_url': saved.get('ai_base_url', ''), 'model': saved.get('ai_model', ''),
                 'api_key': saved.get('ai_api_key', ''), 'vision_model': saved.get('ai_vision_model', ''),
                 'draw_model': saved.get('ai_draw_model', ''),
+                'reasoning_model': saved.get('ai_reasoning_model', ''),
                 'thinking': saved.get('ai_thinking', 'off') == 'on',
                 'source': 'saved'}
 
@@ -5228,7 +5264,8 @@ class Application:
             'percent 是該評分標準學生達成的百分比（0 至 100 的數字）；comment 是該項一至兩句評語。'
             'feedback 用二至四句說明整體表現與下一步改進方向。' + tail + self.calibration_notes(q),
             {'question': q, 'rubric': planned, 'answerText': answer, 'ruleCheck': rule_hint(rule)},
-            image=image, model=(self.ai.vision or self.ai.model) if image else None)
+            image=image, model=(self.ai.vision or self.ai.model) if image else
+            self.ai.pick_model(q.get('topic'), q.get('qtype')))
         try:
             if not isinstance(result, dict):
                 raise ValueError()
@@ -5324,7 +5361,8 @@ class Application:
             'score 介乎 0 至 points；steps 是解題步驟，各步 max 加總等於 points、earned 加總等於 score。'
             '輸出前請再檢查一次這兩項加總。' + tail + self.calibration_notes(q),
             {'question': q, 'answerText': answer, 'ruleCheck': rule_hint(rule)}, image=image,
-            model=(self.ai.vision or self.ai.model) if image else None)
+            model=(self.ai.vision or self.ai.model) if image else
+            self.ai.pick_model(q.get('topic'), q.get('qtype')))
         try:
             if not isinstance(result, dict):
                 raise ValueError()
@@ -5356,7 +5394,8 @@ class Application:
                 '返回 {score:number,changed:bool,reason:str}；score 介乎 0 至 points。',
                 {'question': q, 'answerText': answer,
                  'firstPass': {'score': score, 'feedback': feedback, 'steps': steps}},
-                image=image, model=(self.ai.vision or self.ai.model) if image else None)
+                image=image, model=(self.ai.vision or self.ai.model) if image else
+            self.ai.pick_model(q.get('topic'), q.get('qtype')))
             if not isinstance(result, dict):
                 return score, feedback
             new_score = number(result['score'], '覆核分數', 0, q['points'])
@@ -6897,14 +6936,17 @@ class Application:
                         'tokenRequired': expected, 'invalidSaved': bool(getattr(self.ai, 'invalid_saved', False)),
                         'env': {'baseUrl': env['base_url'], 'model': env['model'],
                                 'visionModel': env['vision_model'], 'drawModel': env['draw_model'],
+                                'reasoningModel': env['reasoning_model'],
                                 'keySet': bool(env['api_key']),
                                 'thinking': env['thinking']},
                         'saved': None if not saved else {'baseUrl': saved['base_url'], 'model': saved['model'],
                                                          'visionModel': saved['vision_model'],
                                                          'drawModel': saved['draw_model'],
+                                                         'reasoningModel': saved['reasoning_model'],
                                                          'keySet': bool(saved['api_key']),
                                                          'thinking': saved['thinking']}}, headers
-            fields(body, ('baseUrl', 'model', 'visionModel', 'drawModel', 'apiKey', 'clearKey', 'thinking',
+            fields(body, ('baseUrl', 'model', 'visionModel', 'drawModel', 'reasoningModel',
+                          'apiKey', 'clearKey', 'thinking',
                           'adminToken'), ())
             self.require_ai_admin(ip, body.get('adminToken'))
             for key in ('clearKey', 'thinking'):
@@ -6917,6 +6959,7 @@ class Application:
             model = text(body.get('model', ''), '文字模型', 200, empty=True)
             vision_model = text(body.get('visionModel', ''), '視覺模型', 200, empty=True)
             draw_model = text(body.get('drawModel', ''), '繪圖模型', 200, empty=True)
+            reasoning_model = text(body.get('reasoningModel', ''), '推理模型', 200, empty=True)
             if 'apiKey' in body:
                 api_key = text(body['apiKey'], 'API 金鑰', 8192, empty=True, strip=False)
             elif body.get('clearKey'):
@@ -6927,12 +6970,14 @@ class Application:
             try:
                 validate_ai_config({'base_url': base_url, 'model': model,
                                     'api_key': api_key, 'vision_model': vision_model,
-                                    'draw_model': draw_model, 'thinking': thinking})
+                                    'draw_model': draw_model, 'thinking': thinking,
+                                    'reasoning_model': reasoning_model})
             except ValueError as exc:
                 fail(400, str(exc))
             if base_url and model:
                 pairs = (('ai_base_url', base_url), ('ai_model', model),
                          ('ai_vision_model', vision_model), ('ai_draw_model', draw_model),
+                         ('ai_reasoning_model', reasoning_model),
                          ('ai_api_key', api_key),
                          ('ai_thinking', 'on' if thinking else 'off'))
             else:
@@ -6946,7 +6991,8 @@ class Application:
             self.reload_ai()
             return {'active': self.ai.public(), 'saved': None if not pairs else
                     {'baseUrl': base_url, 'model': model, 'visionModel': vision_model,
-                     'drawModel': draw_model, 'keySet': bool(api_key), 'thinking': thinking}}, headers
+                     'drawModel': draw_model, 'reasoningModel': reasoning_model,
+                     'keySet': bool(api_key), 'thinking': thinking}}, headers
         if method == 'POST' and path == '/api/ai-config/test':
             self.teacher(user)
             fields(body, ('baseUrl', 'model', 'visionModel', 'apiKey', 'vision', 'thinking', 'adminToken'),
