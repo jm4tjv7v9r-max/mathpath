@@ -5593,7 +5593,7 @@ class Application:
         return (viewer is not None and viewer['role'] != 'teacher'
                 and row['assignment_id'] is not None and not row['teacher_reviewed'])
 
-    def attempt_public(self, db, row, viewer=None, question_cache=None):
+    def attempt_public(self, db, row, viewer=None, question_cache=None, lite=False):
         q = self.homework.question_for_attempt(db, row, question_cache)
         result = {'id': row['id'], 'questionId': q['id'], 'questionTitle': q['title'], 'topic': q['topic'],
                   'score': row['score'], 'maxScore': row['max_score'], 'status': row['status'],
@@ -5607,6 +5607,13 @@ class Application:
                   'ruleScore': row['rule_score'], 'confirmedScore': row['teacher_confirmed_score'],
                   'skipped': bool(row['skipped']) if 'skipped' in row.keys() else False,
                   'suggestion': json.loads(row['suggestion'])}
+        if lite:
+            # 列表只帶摘要：一個班 5 份作業就有 620 筆，其中「學習建議」一項就佔 45%。
+            # 打開批閱視窗時再由 /api/attempts/{id} 取完整內容。
+            result['answerText'] = ''
+            result['steps'] = []
+            result['suggestion'] = None
+            result['lite'] = True
         if viewer is not None and viewer['role'] == 'teacher':
             # 「建議覆核」是請教師優先確認的訊號，只給教師看，不是學生的成績資訊。
             raw_flags = row['review_flags'] if 'review_flags' in row.keys() else None
@@ -6978,7 +6985,8 @@ class Application:
                     attempts_truncated = True
                 # 同一題常被整班重複作答、同一位學生也有多筆作答，兩者都做快取，
                 # 免得載入一次頁面就變成上百次查詢（作答累積後整個網站都會變慢）。
-                attempts = [self.attempt_public(db, r, user, qcache) for r in rows]
+                attempts = [self.attempt_public(db, r, user, qcache,
+                                                lite=user['role'] == 'teacher') for r in rows]
                 if user['role'] == 'teacher':
                     students = {}
                     for attempt, row in zip(attempts, rows):
@@ -7738,6 +7746,17 @@ class Application:
             return {'reviewed': len(reviewed), 'failed': len(failed), 'skipped': len(skipped),
                     'remaining': max(0, len(rows) - len(pending)),
                     'errors': failed[:5]}, headers
+        match = re.fullmatch(r'/api/attempts/([1-9]\d{0,17})', path)
+        if method == 'GET' and match:
+            # 單筆作答詳情：批閱視窗用（列表是精簡版，答案全文／詳解／建議在這裡取）。
+            with self.db() as db:
+                row = db.execute('SELECT * FROM attempts WHERE id=?', (int(match[1]),)).fetchone()
+                if not row:
+                    fail(404, '找不到作答紀錄。')
+                if not self.homework.can_access_attempt(db, row, user):
+                    fail(403, '只能查看自己的作答。')
+                return {'attempt': self.attempt_public(db, row, user)}, headers
+
         match = re.fullmatch(r'/api/attempts/([1-9]\d{0,17})/review', path)
         if method == 'POST' and match:
             self.teacher(user)

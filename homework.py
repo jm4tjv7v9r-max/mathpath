@@ -904,7 +904,7 @@ class Homework:
                 cache, students = {}, {}
                 items = []
                 for r in picked:
-                    item = self.app.attempt_public(db, r, user, cache)
+                    item = self.app.attempt_public(db, r, user, cache, lite=True)
                     sid = r['user_id']
                     if sid not in students:
                         found = db.execute('SELECT id,name,username,seat FROM users WHERE id=?',

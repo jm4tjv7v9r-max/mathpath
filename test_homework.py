@@ -1341,6 +1341,25 @@ class HomeworkTests(unittest.TestCase):
         self.assertEqual(summary['pendingReviewCount'], 0)
         self.assertEqual(self.detail(aid)['report']['pendingCount'], 0)
 
+    def test_teacher_list_is_lite_and_detail_endpoint_has_the_full_answer(self):
+        """列表只帶摘要（省頻寬），答案全文／詳解由 /api/attempts/{id} 取。"""
+        aid = self.assignment(questions=(1,))
+        at = self.attempt(aid, qid=1, answer='x=2 或 x=3')
+        state = self.call('GET', '/api/state', None, self.teacher)
+        row = [a for a in state['attempts'] if a['id'] == at['id']][0]
+        self.assertTrue(row.get('lite'), '教師列表要是精簡版')
+        self.assertEqual(row['answerText'], '')
+        self.assertTrue(row.get('student'), '列表要帶學生姓名')
+        full = self.call('GET', f"/api/attempts/{at['id']}", None, self.teacher)['attempt']
+        self.assertIn('x=2', full['answerText'], '詳情端點要回完整作答')
+        self.assertFalse(full.get('lite'))
+        own = [a for a in self.call('GET', '/api/state', None, self.student)['attempts']
+               if a['id'] == at['id']][0]
+        self.assertIn('x=2', own['answerText'], '學生看自己的作答仍是完整版')
+        with self.assertRaises(server.APIError) as ctx:
+            self.call('GET', f"/api/attempts/{at['id']}", None, self.other)
+        self.assertEqual(ctx.exception.status, 403, '旁人不能看別人的作答')
+
     def test_state_caps_teacher_attempts_and_reviews_can_page(self):
         """教師的 /api/state 只帶前 N 筆（待批優先），其餘由 /api/reviews 分頁取。"""
         import server as _server
