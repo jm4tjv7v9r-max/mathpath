@@ -4057,6 +4057,39 @@ async function loginLogModal(){
       <thead><tr><th>帳號</th><th>身分</th><th>登入時間</th><th>IP</th></tr></thead>
       <tbody>${rows||'<tr><td colspan="4">還沒有登入紀錄。</td></tr>'}</tbody></table></div>`,true);
 }
+// AI 批改品質：老師最想知道「AI 準不準、哪裡不準」。
+// 只看「教師改過分」的案例——沒改分不代表 AI 一定對，但改了一定有原因。
+async function aiQualityModal(){
+  let d;
+  try{d=await api('/api/ai-grading/stats');}catch(e){return toast(e.message);}
+  const sign=v=>v==null?'—':`${v>0?'+':''}${v} 分`;
+  const tone=v=>v==null?'':(v<0?'style="color:#b8453b"':'style="color:#1f7a52"');
+  const head=`<p class="eyebrow">AI GRADING</p><h2>AI 批改品質</h2>
+    <p class="modal-intro">用「教師改過分」的案例看 AI 判得準不準。平均調整為正＝AI 給低了（教師調高），為負＝AI 給高了。</p>`;
+  if(!d.total){
+    return modal(`${head}<div class="hint-box">${icon('help')}還沒有 AI 批改紀錄。先在佈置作業時啟用「AI 建議評分」，學生提交後再回來看。</div>`,true);
+  }
+  const metric=(label,value,foot)=>`<div class="metric"><div class="metric-label">${label}</div><div class="metric-value">${value}</div><div class="metric-foot">${foot}</div></div>`;
+  const rows=(d.byTopic||[]).map(t=>`<tr>
+      <td>${esc(t.topic)}${t.qtype?` <span class="small-text">${esc(t.qtype)}</span>`:''}</td>
+      <td>${t.n}</td>
+      <td>${t.raised} / ${t.lowered}</td>
+      <td ${tone(t.avgDelta)}>${sign(t.avgDelta)}</td></tr>`).join('');
+  modal(`${head}
+    <div class="metric-row">${[
+      metric('AI 批改題數', d.total, `已由 AI 給分的作答`),
+      metric('教師已覆核', d.reviewed, d.reviewed?`覆核率 ${Math.round(d.reviewed*100/d.total)}%`:'還沒有人覆核'),
+      metric('教師改分比例', d.changeRate==null?'—':d.changeRate+'%', `改高 ${d.raised} 題 · 改低 ${d.lowered} 題`),
+      metric('平均調整', sign(d.avgDelta), d.avgDelta==null?'沒有改分紀錄':(d.avgDelta<0?'AI 偏高':'AI 偏低'))
+    ].join('')}</div>
+    ${d.flagged?`<div class="hint-box">${icon('help')}有 <strong>${d.flagged}</strong> 題被系統標記「建議覆核」（AI 分數與規則核對衝突），建議優先看。</div>`:''}
+    ${rows?`<table class="board-table" style="margin-top:14px">
+      <thead><tr><th>知識點</th><th>改分次數</th><th>調高 / 調低</th><th>平均調整</th></tr></thead>
+      <tbody>${rows}</tbody></table>
+      <p class="field-hint">只列改分最多的前 12 個知識點。同一知識點反覆被調低，通常代表 AI 對這類題目給分偏寬。</p>`
+    :'<p class="field-hint">還沒有教師改分的紀錄，所以看不出個別知識點的偏差。</p>'}
+    <button class="secondary wide" style="margin-top:14px" data-page="homework">前往作業與成績 ${icon('arrow')}</button>`,true);
+}
 // 一鍵生成試卷：選範本 → 填範圍與配分 → AI 出題（伺服器會逐項核對）→ 排版存檔
 async function generatePaperModal(){
   let tpls=[];
@@ -4828,14 +4861,15 @@ function bindDataAdmin(){
   };
   loadAdminStats();
 }
-function settingsPage(){page='settings';shell();$('#main').innerHTML=`<div class="fade-in">${heading('STORAGE & PRIVACY','設定與隱私','資料保存在網站伺服器；實際位置由管理員確認。AI 服務由管理員配置。')}<div class="settings-layout"><section class="panel settings-panel"><h2>${icon('lock')}AI 批閱服務</h2><div class="settings-status"><strong><i class="status-dot"></i>${S.ai.configured?`已配置${S.ai.mode==='local'?'本地':'外部'}模型`:'尚未接入 AI 服務'}</strong><p>${S.ai.configured?'可用於拆題、生成相似或進階題、作答建議評分。模型：'+esc(S.ai.model):'現有題庫、規則拆題、手寫保存、教師批閱仍可使用。未接入時，不會生成假的 AI 成績或評語。'}</p></div>${S.user?.role==='teacher'?`<button class="secondary wide" id="ai-config-link" style="font-size:calc(14px*var(--fs));margin-bottom:16px">${icon('ai')}前往模型端點設定</button>`:''}<details class="settings-details"><summary>管理員配置（環境變數，部署參考）</summary><p class="info-note">由伺服器環境變數設定相容的 AI 介面，密鑰不會保存於瀏覽器。建議優先使用校內本地視覺模型。</p><pre class="code-block">MATH_AI_BASE_URL=http://127.0.0.1:11434/v1
+function settingsPage(){page='settings';shell();$('#main').innerHTML=`<div class="fade-in">${heading('STORAGE & PRIVACY','設定與隱私','資料保存在網站伺服器；實際位置由管理員確認。AI 服務由管理員配置。')}<div class="settings-layout"><section class="panel settings-panel"><h2>${icon('lock')}AI 批閱服務</h2><div class="settings-status"><strong><i class="status-dot"></i>${S.ai.configured?`已配置${S.ai.mode==='local'?'本地':'外部'}模型`:'尚未接入 AI 服務'}</strong><p>${S.ai.configured?'可用於拆題、生成相似或進階題、作答建議評分。模型：'+esc(S.ai.model):'現有題庫、規則拆題、手寫保存、教師批閱仍可使用。未接入時，不會生成假的 AI 成績或評語。'}</p></div>${S.user?.role==='teacher'?`<button class="secondary wide" id="ai-config-link" style="font-size:calc(14px*var(--fs));margin-bottom:8px">${icon('ai')}前往模型端點設定</button><button class="text-button" id="ai-quality" style="font-size:calc(14px*var(--fs));margin-bottom:16px">查看 AI 批改品質 ${icon('arrow')}</button>`:''}<details class="settings-details"><summary>管理員配置（環境變數，部署參考）</summary><p class="info-note">由伺服器環境變數設定相容的 AI 介面，密鑰不會保存於瀏覽器。建議優先使用校內本地視覺模型。</p><pre class="code-block">MATH_AI_BASE_URL=http://127.0.0.1:11434/v1
 MATH_AI_MODEL=你的文字模型名稱
 MATH_AI_VISION_MODEL=你的視覺模型名稱
 MATH_AI_DRAW_MODEL=你的繪圖模型名稱（選用，留空沿用文字模型）
 MATH_AI_API_KEY=伺服器端密鑰（若需要）</pre><p class="info-note">上述是配置格式示例，並非已安裝的模型。設定後需重新啟動伺服器；真實模型須由學校部署並測試。</p></details><div class="import-warning">作業的 AI 評分只是建議，不應直接決定正式考試成績；無法辨認的手寫、複雜證明及特殊解法，必須交由教師覆核。自主練習與自助模擬測驗由 AI 即時評分並記錄分數，不需教師批閱，分數只作個人練習紀錄。</div></section><div><section class="panel settings-panel"><h2>資料保護</h2><details class="settings-details"><summary>我們如何保護資料</summary><ul><li>資料保存在網站伺服器；實際位置由管理員確認。</li><li>學生僅可讀取自己的作答；教師可查看及批閱。</li><li>手寫圖片受登入與角色權限保護。</li><li>外部 AI 作答與試卷傳送需逐次明確同意。</li><li>收藏只保存於本瀏覽器，不跨裝置同步。</li><li>正式部署需 HTTPS、存取限制與獨立學生帳戶。</li></ul></details>${S.user?.role==='teacher'?`<button class="secondary wide" id="manage-teachers" style="font-size:calc(14px*var(--fs));margin-bottom:8px">${icon('edit')}教師帳號</button><button class="secondary wide" id="manage-students" style="font-size:calc(14px*var(--fs));margin-bottom:8px">${icon('list')}學生帳號</button><button class="secondary wide" id="login-log" style="font-size:calc(14px*var(--fs));margin-bottom:14px">${icon('clock')}登入紀錄</button>`:''}${S.user?.role==='teacher'?`<button class="text-button" id="deployment-help" style="font-size:calc(14px*var(--fs))">查看啟動與內網使用方式 ${icon('arrow')}</button>`:''}</section><section class="panel settings-panel" style="margin-top:20px"><h2>帳戶密碼</h2>${S.user?`<form id="password-form"><div class="form-field"><label class="field-label" for="old-password">目前密碼</label><input id="old-password" type="password" autocomplete="current-password" required maxlength="256"></div><div class="form-field"><label class="field-label" for="new-password">新密碼（至少10字）</label><input id="new-password" type="password" autocomplete="new-password" minlength="10" maxlength="256" required></div><p class="error-text" id="password-error"></p><button class="secondary" type="submit">更新密碼 ${icon('lock')}</button></form>`:`<p class="info-note">登入後可更換演示帳戶密碼。</p><button class="secondary" data-action="login">登入帳戶</button>`}</section></div></div>${dataAdminHtml()}</div>`;if($('#deployment-help'))$('#deployment-help').onclick=deploymentHelp;if($('#ai-config-link'))$('#ai-config-link').onclick=()=>navigate('ai');if($('#manage-teachers'))$('#manage-teachers').onclick=()=>manageUsers('teacher');
 if($('#manage-students'))$('#manage-students').onclick=()=>manageUsers('student');
 if($('#manage-users'))$('#manage-users').onclick=manageUsers;
-if($('#login-log'))$('#login-log').onclick=loginLogModal;bindDataAdmin();if($('#password-form'))$('#password-form').onsubmit=async e=>{e.preventDefault();const btn=$('[type="submit"]',e.target);btn.disabled=true;try{const r=await api('/api/change-password',{oldPassword:$('#old-password').value,newPassword:$('#new-password').value});await refresh();settingsPage();toast(r.notice);}catch(err){$('#password-error').textContent=err.message;btn.disabled=false;}};}
+if($('#login-log'))$('#login-log').onclick=loginLogModal;
+if($('#ai-quality'))$('#ai-quality').onclick=aiQualityModal;bindDataAdmin();if($('#password-form'))$('#password-form').onsubmit=async e=>{e.preventDefault();const btn=$('[type="submit"]',e.target);btn.disabled=true;try{const r=await api('/api/change-password',{oldPassword:$('#old-password').value,newPassword:$('#new-password').value});await refresh();settingsPage();toast(r.notice);}catch(err){$('#password-error').textContent=err.message;btn.disabled=false;}};}
 function randomPassword(){const chars='ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';const a=new Uint32Array(12);crypto.getRandomValues(a);return[...a].map(n=>chars[n%chars.length]).join('');}
 const BULK_FIELD_NAMES={name:'姓名',username:'學號',seat:'班內號',password:'密碼'};
 const BULK_HEADERS={name:/^(姓名|名字|名稱|名称|學生|学生|name)$/i,username:/^(學號|学号|帳號|帐号|账号|登入帳號|登入帐号|username|account|login|id)$/i,seat:/^(班內號|班内号|班號|班号|座號|座号|seat|no|number)$/i,password:/^(密碼|密码|password|passwd|pass|pwd)$/i};

@@ -1341,6 +1341,34 @@ class HomeworkTests(unittest.TestCase):
         self.assertEqual(summary['pendingReviewCount'], 0)
         self.assertEqual(self.detail(aid)['report']['pendingCount'], 0)
 
+    def test_ai_grading_quality_stats_counts_teacher_changes(self):
+        """AI 批改品質：用教師改過分的案例算「AI 偏高還是偏低、哪個知識點不準」。"""
+        self.app.ai.configured = True
+        self.app.ai.call = lambda *a, **k: {
+            'score': 4, 'feedback': '大致正確',
+            'steps': [{'label': '列式', 'earned': 2, 'max': 3, 'comment': 'ok'},
+                      {'label': '結論', 'earned': 2, 'max': 3, 'comment': 'ok'}]}
+        aid = self.assignment(questions=(1, 2), aiGrading=True)
+        for qid in (1, 2):
+            self.attempt(aid, qid=qid)
+        stats = self.call('GET', '/api/ai-grading/stats', None, self.teacher)
+        self.assertEqual(stats['total'], 2, '兩題都由 AI 給分')
+        self.assertEqual(stats['reviewed'], 0)
+        detail = self.call('GET', f'/api/assignments/{aid}', None, self.teacher)
+        ids = [a['id'] for a in detail['attempts']]
+        self.call('POST', f'/api/attempts/{ids[0]}/review',
+                  {'score': 6, 'feedback': '其實全對'}, self.teacher)
+        self.call('POST', f'/api/attempts/{ids[1]}/review',
+                  {'score': 4, 'feedback': '同意'}, self.teacher)
+        stats = self.call('GET', '/api/ai-grading/stats', None, self.teacher)
+        self.assertEqual(stats['reviewed'], 2)
+        self.assertEqual(stats['changed'], 1, '只有改過分的那題算進去')
+        self.assertEqual(stats['raised'], 1)
+        self.assertEqual(stats['lowered'], 0)
+        self.assertEqual(stats['avgDelta'], 2.0)
+        self.assertTrue(stats['byTopic'], '要按知識點列出偏差')
+        self.assertEqual(stats['byTopic'][0]['avgDelta'], 2.0)
+
     def test_teacher_list_is_lite_and_detail_endpoint_has_the_full_answer(self):
         """列表只帶摘要（省頻寬），答案全文／詳解由 /api/attempts/{id} 取。"""
         aid = self.assignment(questions=(1,))
