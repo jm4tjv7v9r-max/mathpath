@@ -4526,7 +4526,7 @@ async function paperLayoutPage(){
     </section>
     <section class="panel panel-pad" style="margin-top:16px">
       <h2 style="margin-bottom:6px">③ 或直接要 LaTeX（Overleaf）</h2>
-      <p class="field-hint">同一份 Word，直接輸出 .tex：題號連續、選擇題選項打橫（一行 4 個，太長自動變 2 個）、公式全部轉成 LaTeX。用 XeLaTeX 編譯。</p>
+      <p class="field-hint">同一份 Word，直接輸出 .tex：題號連續、選擇題選項打橫（一行 4 個，太長自動變 2 個）、公式全部轉成 LaTeX。用 XeLaTeX 編譯。會沿用 ① 選定的範本，卷頭、大題標題、配分與卷尾都跟「排版並下載」的 Word 一樣。</p>
       <div class="layout-row">
         <label class="small-text">配分位置
           <select id="tex-marks" style="margin-left:6px;padding:6px 8px;border:1px solid var(--border);border-radius:8px;background:var(--paper);color:var(--ink)">
@@ -4663,7 +4663,10 @@ async function paperLayoutPage(){
       const isPdf=/pdf$/i.test(file.name||'')||file.type===PDF_MIME;
       if(isPdf&&!$('#pdf-consent').checked)throw new Error('PDF 需要先勾選「送給外部 AI 分析」。');
       const data=await fileData(file,[DOCX_MIME,PDF_MIME],12);
-      const body={file:data,marksPosition:marks.value,consentExternal:isPdf};
+      const body={file:data,marksPosition:marks.value,consentExternal:isPdf,
+                  numbering:$('#paper-numbering').value};
+      // 有選範本就跟 Word 用同一份版面（卷頭、大題標題、配分、卷尾）
+      const tplId=pick();if(tplId)body.templateId=tplId;
       if(pre.value.trim())body.preamble=pre.value;
       const res=await apiJob('/api/papers/to-tex',body,
         job=>{btn.textContent=`產生中… ${Math.round(job.elapsed||0)} 秒`;});

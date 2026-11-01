@@ -386,6 +386,19 @@ class PaperTemplateTests(unittest.TestCase):
         self.assertEqual(out['stats']['questions'], 2)
         self.assertTrue(out['filename'].endswith('.tex'))
 
+    def test_to_tex_with_a_template_matches_the_word_output(self):
+        """.tex 也要用範本的卷頭與大題標題，跟「排版並下載」的 Word 一致。"""
+        template = self.upload()['template']
+        out = self.call('POST', '/api/papers/to-tex',
+                        {'file': data_url(content_docx()), 'templateId': template['id']})
+        tex = out['tex']
+        # 卷名用範本那一行（不是新卷自己的卷名）
+        self.assertIn('中三數學 小測', tex)
+        # 大題標題照範本措辭，並更新配分
+        self.assertIn(r'\section*{一、', tex)
+        # 選擇題分數寫在標題，逐題不再重複標
+        self.assertNotIn(r'\textbf{（4 分）}', tex.split(r'\section*{二、')[0])
+
     def test_to_tex_uses_custom_preamble(self):
         preamble = '\\documentclass{article}\n\\usepackage{amsmath}'
         out = self.call('POST', '/api/papers/to-tex',

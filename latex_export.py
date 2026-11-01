@@ -42,7 +42,7 @@ def escape_text(text: str) -> str:
 
 # 填空的底線：`\_\_\_\_` 連著寫，LaTeX 會在每個底線之間留空隙，看起來像斷掉的虛線。
 # 換成一條實線（長度照原本的底線數）。Word 卷常常是「\_\_\_\_」這種帶反斜線的寫法。
-BLANK_RE = re.compile(r'(?:\\_){3,}|[_＿]{3,}')
+BLANK_RE = re.compile(r'(?:\\_){2,}|[_＿]{2,}')
 # 連續空白（姓名班別那一行靠它對齊）：LaTeX 會把多個空格併成一個，這裡還原成固定寬度
 SPACE_RUN_RE = re.compile(r'[ \u3000]{2,}')
 
@@ -53,8 +53,14 @@ BLANK_EM_HEADER = 3.4
 
 
 def _blank_rule(m, min_em: float = BLANK_EM_QUESTION) -> str:
-    count = len(m.group(0).replace('\\', ''))
-    return r'\rule[-0.6pt]{%.2fem}{0.6pt}' % max(count * 0.5, min_em)
+    """底線長度：全角「＿」算 1em、半角「_」算 0.5em；題目再套一個下限。
+
+    卷頭那一行（姓名／學號／日期）用原長就好（min_em=0），否則幾條 3cm 的線
+    會把整行擠到換行。
+    """
+    body = m.group(0).replace('\\', '')
+    natural = sum(1.0 if ch == '＿' else 0.5 for ch in body)
+    return r'\rule[-0.6pt]{%.2fem}{0.6pt}' % max(natural, min_em, 1.0)
 
 
 def _space_run(m, factor: float = 0.5) -> str:
@@ -166,6 +172,54 @@ def option_lines(options: list[str], per_line: int = 4) -> list[str]:
     return lines
 
 
+def to_tex_plan(plan: dict, preamble: str | None = None,
+                options_per_line: int = 4) -> str:
+    """用 paper_format.layout_plan() 的結果出 .tex。
+
+    卷頭、分部標題、逐題配分、卷尾全部照 plan（也就是照 Word 檔那一份判斷），
+    這樣「下載 Word」和「下載 .tex」排出來才會是同一份卷。
+    """
+    lines = [(preamble or DEFAULT_PREAMBLE).rstrip(), '', r'\begin{document}', '']
+    head = [str(h) for h in (plan.get('head') or []) if str(h).strip()]
+    if head:
+        block = [r'{\Large\bfseries ' + tex_of(head[0]) + '}']
+        block += [r'{\small\bfseries ' + tex_of(h, 0, 0.3) + '}' for h in head[1:]]
+        lines += [r'\begin{center}', ' \\\\ '.join(block), r'\end{center}', '']
+
+    for section in plan.get('sections') or []:
+        heading = section.get('heading')
+        if heading:
+            lines += ['', r'\Needspace{3\baselineskip}',
+                      r'\section*{' + tex_of(heading) + '}', '']
+        questions = section.get('questions') or []
+        if not questions:
+            continue
+        lines.append(r'\begin{enumerate}[leftmargin=*,itemsep=3pt,topsep=2pt,start=%d]'
+                     % int(questions[0].get('number') or 1))
+        pos = section.get('marksPos') or 'none'
+        for q in questions:
+            stem = tex_of(q.get('stem') or '')
+            marks = '' if q.get('marks') is None else f'（{q["marks"]:g} 分）'
+            if marks and pos == 'leading':
+                body = r'\textbf{' + marks + '}　' + stem
+            elif marks and pos == 'trailing':
+                body = stem + r'\hfill ' + marks
+            else:
+                body = stem
+            lines.append(r'\item ' + body)
+            for extra in q.get('lines') or []:
+                lines += ['', tex_of(extra)]
+            if q.get('options'):
+                lines.append(r'\par ' + '\\\\\n'.join(option_lines(q['options'], options_per_line)))
+        lines.append(r'\end{enumerate}')
+
+    for extra in plan.get('closing') or []:
+        lines += ['', r'\begin{center}' + tex_of(extra) + r'\end{center}']
+
+    lines += ['', r'\end{document}', '']
+    return '\n'.join(lines)
+
+
 def to_tex(title: str | None, sections, marks_position: str = 'none',
            preamble: str | None = None, options_per_line: int = 4,
            subtitle_lines: list[str] | None = None) -> str:
@@ -176,7 +230,7 @@ def to_tex(title: str | None, sections, marks_position: str = 'none',
         block = []
         if title:
             block.append(r'{\Large\bfseries ' + tex_of(title) + '}')
-        block += [r'{\small\bfseries ' + tex_of(s, BLANK_EM_HEADER, 0.3) + '}' for s in subs]
+        block += [r'{\small\bfseries ' + tex_of(s, 0, 0.3) + '}' for s in subs]
         lines += [r'\begin{center}', ' \\\\ '.join(block), r'\end{center}', '']
 
     number = 0

@@ -1075,6 +1075,97 @@ def _render_into(tpl, sections: list[Section], title: str | None = None,
             'tables': len(tpl.tables)}
 
 
+def layout_plan(tpl, sections: list[Section], title: str | None = None,
+                meta: dict | None = None, numbering: str = 'continuous') -> dict:
+    """把「這份卷排出來會長怎樣」抽成純資料：Word 與 LaTeX 都吃同一份。
+
+    卷頭（換過標題）、分部標題（沿用範本措辭）、逐題配分（照範本寫法）、卷尾，
+    全部照範本的判斷走。兩個輸出口共用，才不會出現「Word 排對了、.tex 卻換了
+    標題、配分還多標一次」這種兩份不一致。
+    """
+    blocks = read_blocks(tpl)
+    paragraphs = tpl.paragraphs
+    proto: dict[str, Paragraph] = {}
+    for i, b in enumerate(blocks):
+        if b.role not in proto:
+            proto[b.role] = paragraphs[i]
+    if 'question' not in proto:
+        raise SystemExit('範本裡找不到題目段落（長得像「1. …」）')
+    pos = marks_position(proto['question'].text)
+
+    sec_marks: list[dict] = []
+    for b in blocks:
+        if b.role == 'section':
+            sec_marks.append({'pos': None, 'heading': b.text or ''})
+        elif b.role == 'question' and sec_marks and sec_marks[-1]['pos'] is None:
+            sec_marks[-1]['pos'] = marks_position(b.text)
+
+    first_section = next((i for i, b in enumerate(blocks) if b.role == 'section'), len(blocks))
+    head_idx = [i for i in range(first_section) if blocks[i].role in ('other', 'rule', 'blank')]
+    last_body = max((i for i, b in enumerate(blocks) if b.role in ('question', 'answer_line')),
+                    default=-1)
+    tail_idx = [i for i in range(last_body + 1, len(blocks)) if blocks[i].role in ('other', 'rule')]
+
+    head_paras = [paragraphs[i] for i in head_idx]
+    head = [p.text or '' for p in head_paras]
+    if title and head:
+        target = _title_index(head_paras)
+        if target is not None:
+            tpl_line = head[target]
+            use_meta = meta if meta is not None else _meta_from_title(title)
+            if use_meta and not _title_fields_fit(tpl_line, use_meta):
+                line = title
+            else:
+                line = _fill_title(tpl_line, use_meta, title)
+            head[target] = line
+            # 其他行的學段／年級跟著換（跟 Word 的 _sync_head 同一條規則）
+            term = TITLE_TERM_RE.search(line)
+            grade = TITLE_GRADE_RE.search(line)
+            for i, text in enumerate(head):
+                if i == target or not text.strip() or '姓名' in text or '學號' in text:
+                    continue
+                new = text
+                if term:
+                    new = TITLE_TERM_RE.sub(term.group(0), new, count=1)
+                if grade:
+                    new = TITLE_GRADE_RE.sub(grade.group(0), new, count=1)
+                head[i] = new
+
+    template_headings = [b.text for b in blocks if b.role == 'section']
+    restart = numbering == 'section' or (numbering == 'auto' and restarts_numbering(blocks))
+    number = 1
+    out_sections = []
+    for index, s in enumerate(sections):
+        if restart:
+            number = 1
+        heading = None
+        if s.title:
+            tpl_title = template_headings[index] if index < len(template_headings) else ''
+            heading = _heading_text(tpl_title, s.title, s.questions)
+        sec = sec_marks[index] if index < len(sec_marks) else None
+        objective = any(k in (s.title or '') for k in ('選擇', '填空'))
+        sec_heading_marks = '分' in ((sec or {}).get('heading') or '') or '分' in (s.title or '')
+        sec_pos = (sec or {}).get('pos') or pos
+        if objective and sec_heading_marks:
+            sec_pos = 'none'          # 選擇／填空：分數寫在標題，逐題不再標
+        elif sec_pos == 'none' and not sec_heading_marks:
+            sec_pos = 'leading'       # 標題沒寫分，至少逐題標出來
+        questions = []
+        for q in s.questions:
+            questions.append({
+                'number': number, 'stem': q.stem, 'marks': q.marks,
+                'options': label_options(q.options), 'lines': list(q.lines),
+                'figures': len(q.figures),
+            })
+            number += 1
+        out_sections.append({'heading': heading, 'marksPos': sec_pos, 'questions': questions})
+
+    return {'head': [h for h in head if h.strip()],
+            'sections': out_sections,
+            'closing': [paragraphs[i].text for i in tail_idx
+                        if (paragraphs[i].text or '').strip()]}
+
+
 def render_sections(template_path: str, sections: list[Section], out_path: str,
                     title: str | None = None, closing: str | None = None,
                     options_per_line: int = DEFAULT_OPTIONS_PER_LINE,

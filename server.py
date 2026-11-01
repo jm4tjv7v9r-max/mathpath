@@ -39,6 +39,7 @@ from urllib.request import Request, build_opener, HTTPRedirectHandler, ProxyHand
 from urllib.error import URLError, HTTPError
 import zlib
 
+from docx import Document
 from dataadmin import MAX_UPLOAD_BYTES, DataAdmin
 from homework import Homework
 from mock import MockExams
@@ -6023,8 +6024,8 @@ class Application:
         # ---------- 卷面排版：直接輸出 LaTeX（Overleaf 用） ----------
         if method == 'POST' and path == '/api/papers/to-tex':
             self.teacher(user)
-            fields(body, ('file', 'preamble', 'marksPosition', 'consentExternal', 'async'),
-                   ('file',))
+            fields(body, ('file', 'preamble', 'marksPosition', 'consentExternal', 'async',
+                          'templateId', 'numbering'), ('file',))
             if body.get('async'):
                 return {'jobId': self.start_job(
                     user, lambda: self.dispatch(method, path, {**body, 'async': False},
@@ -6059,8 +6060,29 @@ class Application:
                 fail(422, '這份 Word 裡找不到題目（題號要長得像「1. …」）。')
             title = head[0] if head else None
             subtitle = [line for line in head[1:] if str(line).strip()]
-            tex = latex_export.to_tex(title, sections, position, preamble,
-                                      subtitle_lines=subtitle)
+            # 選了範本就跟 Word 用同一份版面計劃：卷頭、大題標題、配分、卷尾都一致
+            template_id = body.get('templateId')
+            plan = None
+            if template_id:
+                with self.db() as db:
+                    tpl_row = db.execute('SELECT * FROM paper_templates WHERE id=?',
+                                         (number(template_id, '範本', 1, 10 ** 18, True),)).fetchone()
+                    if tpl_row is None:
+                        fail(404, '找不到這個範本。')
+                    if tpl_row['owner_id'] != user['id'] and not self.is_owner(user, db):
+                        fail(403, '只有建立者或管理員可以使用這個範本。')
+                try:
+                    plan = paper_format.layout_plan(
+                        Document(io.BytesIO(tpl_row['data'])), sections, title,
+                        numbering=('section' if body.get('numbering') == 'section'
+                                   else 'continuous'))
+                except SystemExit as exc:
+                    fail(400, str(exc) or '範本裡找不到題目段落（長得像「1. …」）。')
+            if plan is not None:
+                tex = latex_export.to_tex_plan(plan, preamble)
+            else:
+                tex = latex_export.to_tex(title, sections, position, preamble,
+                                          subtitle_lines=subtitle)
             filename = (title or '試卷').replace('/', '／')[:60] + '.tex'
             return {'tex': tex, 'filename': filename,
                     'stats': {'sections': len(sections),
