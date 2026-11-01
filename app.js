@@ -4029,7 +4029,8 @@ async function generatePaperModal(){
   const rangeRow=(v='')=>`<div class="range-row"><input class="range-input" value="${esc(v)}" maxlength="120" placeholder="例如：直線的傾斜角與斜率"><button type="button" class="text-button range-del" aria-label="刪除這個範圍">✕</button></div>`;
   const chip=(t)=>`<label class="gen-chip${['選擇題','填空題','解答題'].includes(t)?' on':''}"><input type="checkbox" class="gen-qtype" value="${t}" ${['選擇題','填空題','解答題'].includes(t)?'checked':''}>${t}</label>`;
   modal(`<p class="eyebrow">AI PAPER</p><h2>一鍵生成試卷</h2>
-    <p class="modal-intro">選範本 → 填範圍與配分 → 生成。預設先從題庫挑題，分數不夠才由 AI 補；配分由程式核算，總分一定等於你填的分數。</p>
+    <p class="modal-intro">選範本 → 填範圍與配分 → 挑題目 → 確定。預設先從題庫挑題，分數不夠才由 AI 補；配分由程式核算，總分一定等於你填的分數。</p>
+    <div id="gen-form-step">
     <div class="gen-tpl-row">
       <div class="form-field"><label class="field-label" for="gen-template">範本</label>
         <select id="gen-template">${tpls.map(t=>`<option value="${t.id}">${esc(t.name)}</option>`).join('')}</select></div>
@@ -4072,7 +4073,9 @@ async function generatePaperModal(){
     </div>
     <p class="field-hint" style="margin-top:12px">總分填 110 分時，附加題固定 10 分（會自動勾選）。</p>
     <p class="error-text" id="gen-error"></p>
-    <button class="primary wide" id="gen-submit">生成試卷 ${icon('spark')}</button>`,'large gen-modal');
+    <button class="primary wide" id="gen-submit">列出題目 ${icon('spark')}</button>
+    </div>
+    <div id="gen-preview-step" hidden></div>`,'large gen-modal');
   const ranges=$('#gen-ranges');
   // 直接在這個視窗上傳範本：不必先跳去「卷面排版」，上傳完自動選好。
   $('#gen-upload').onclick=()=>$('#gen-tpl-file').click();
@@ -4131,50 +4134,145 @@ async function generatePaperModal(){
     const box=[...document.querySelectorAll('.gen-qtype')].find(x=>x.value==='附加題');
     if(box&&!box.checked){box.checked=true;syncOptions();}
   };
-  $('#gen-submit').onclick=async()=>{
-    const btn=$('#gen-submit');const err=$('#gen-error');err.textContent='';
+  // 把表單內容整理成一份請求；「列出題目」與「確定生成」都用同一份設定。
+  const formPayload=()=>{
+    const err=$('#gen-error');err.textContent='';
     const tplId=Number($('#gen-template').value||0);
-    if(!tplId){err.textContent='請先上傳或選一個範本。';return;}
+    if(!tplId){err.textContent='請先上傳或選一個範本。';return null;}
     const list=[...ranges.querySelectorAll('.range-input')].map(i=>i.value.trim()).filter(Boolean);
-    if(!list.length){err.textContent='請至少填一個測考範圍。';return;}
+    if(!list.length){err.textContent='請至少填一個測考範圍。';return null;}
     const qtypes=[...document.querySelectorAll('.gen-qtype')].filter(x=>x.checked).map(x=>({type:x.value}));
-    if(!qtypes.length){err.textContent='請至少選一種題型。';return;}
+    if(!qtypes.length){err.textContent='請至少選一種題型。';return null;}
     const total=Number($('#gen-total').value)||100;
     if(total===110&&!qtypes.some(t=>t.type==='附加題')){
-      err.textContent='總分 110 分時一定要有附加題（固定 10 分）。';return;}
+      err.textContent='總分 110 分時一定要有附加題（固定 10 分）。';return null;}
     const opt=document.querySelector('input[name=gen-opt]:checked');
     qtypes.forEach(t=>{if(t.type==='選擇題')t.optionCount=Number(opt?opt.value:4);});
     const difficulty={易:Number($('#gen-diff-easy').value)||0,
                       中:Number($('#gen-diff-mid').value)||0,
                       難:Number($('#gen-diff-hard').value)||0};
     if(difficulty.易+difficulty.中+difficulty.難!==10){
-      err.textContent=`難度比例（易：中：難）相加要等於 10，現在是 ${difficulty.易+difficulty.中+difficulty.難}。`;return;}
+      err.textContent=`難度比例（易：中：難）相加要等於 10，現在是 ${difficulty.易+difficulty.中+difficulty.難}。`;return null;}
     const source=(document.querySelector('input[name=gen-source]:checked')||{}).value||'bank';
-    const old=btn.innerHTML;btn.disabled=true;
-    btn.textContent=source==='bank'?'挑題中…（題庫不足才會請 AI）':'AI 出題中…（約 20–60 秒）';
+    return {templateId:tplId,ranges:list,duration:Number($('#gen-duration').value)||60,
+            grade:$('#gen-grade').value,examKind:$('#gen-kind').value,term:$('#gen-term').value,
+            subject:$('#gen-subject').value,qtypes,totalPoints:total,difficulty,source,
+            consentExternal:S.ai.mode==='external'};
+  };
+
+  let plan=null, base=null;   // plan＝預覽中的題目（每題有 on 表示是否選用）；base＝這份卷的設定
+
+  const syncTotals=()=>{
+    if(!plan)return;
+    const all=plan.flatMap(s=>s.questions);
+    const chosen=all.filter(q=>q.on);
+    const sum=chosen.reduce((n,q)=>n+(Number(q.marks)||0),0);
+    const picked=$('#gen-picked'), marks=$('#gen-marks'), note=$('#gen-marks-note');
+    if(picked)picked.textContent=chosen.length;
+    if(marks)marks.textContent=sum;
+    if(note)note.textContent=sum===base.totalPoints?'':`（確定後會調整為 ${base.totalPoints} 分）`;
+    const btn=$('#gen-confirm');
+    if(btn)btn.disabled=!chosen.length;
+  };
+
+  const renderPlan=()=>{
+    const box=$('#gen-preview-step');if(!box)return;
+    let n=0;
+    const rows=plan.map((sec,si)=>{
+      const on=sec.questions.filter(q=>q.on).length;
+      return `<div class="gen-sec">
+        <p class="gen-sec-title">${esc(sec.title||sec.qtype||'題目')}<span class="small-text">　${on} / ${sec.questions.length} 題</span></p>
+        ${sec.questions.map((q,qi)=>{
+          n+=1;
+          return `<div class="gen-qrow${q.on?'':' off'}" data-row="${si}-${qi}">
+            <label class="gen-qcheck"><input type="checkbox" data-check="${si}-${qi}" ${q.on?'checked':''} aria-label="選用第 ${n} 題"></label>
+            <div class="gen-qbody">
+              <p class="gen-qmeta">第 ${n} 題 · ${q.marks} 分${q.difficulty?` · ${q.difficulty}`:''}${q.bankId?' · 題庫':''}</p>
+              <p class="gen-qstem">${mathText(q.stem)}</p>
+              ${(q.options||[]).length?`<p class="gen-qopts">${q.options.map(o=>mathText(o)).join('　')}</p>`:''}
+            </div>
+            <button type="button" class="text-button gen-qreplace" data-replace="${si}-${qi}">更換</button>
+          </div>`;}).join('')}
+      </div>`;}).join('');
+    box.innerHTML=`<p class="eyebrow">STEP 2 / 2</p><h2>確認題目</h2>
+      <p class="modal-intro">共 ${n} 題。可以取消勾選不要的題目，或按「更換」請 AI 重出那一題；按「確定」才排版存檔。</p>
+      <div class="gen-preview">${rows}</div>
+      <div class="gen-preview-foot">
+        <span class="small-text">已選 <b id="gen-picked">0</b> / ${n} 題 · 合計 <b id="gen-marks">0</b> 分<span id="gen-marks-note"></span></span>
+        <span class="gen-foot-actions">
+          <button class="secondary" id="gen-back">返回修改</button>
+          <button class="primary" id="gen-confirm">確定生成試卷</button>
+        </span>
+      </div>`;
+    $$('[data-check]',box).forEach(el=>el.onchange=()=>{
+      const [si,qi]=el.dataset.check.split('-').map(Number);
+      plan[si].questions[qi].on=el.checked;
+      const row=$(`[data-row="${si}-${qi}"]`,box);
+      if(row)row.classList.toggle('off',!el.checked);
+      const head=row&&row.parentElement.querySelector('.gen-sec-title .small-text');
+      if(head){const sec=plan[si];head.textContent=`　${sec.questions.filter(q=>q.on).length} / ${sec.questions.length} 題`;}
+      syncTotals();
+    });
+    $$('[data-replace]',box).forEach(el=>el.onclick=()=>replaceQuestion(el.dataset.replace,el));
+    $('#gen-back').onclick=()=>{$('#gen-preview-step').hidden=true;$('#gen-form-step').hidden=false;};
+    $('#gen-confirm').onclick=confirmGenerate;
+    syncTotals();
+  };
+
+  const replaceQuestion=async (key,btn)=>{
+    const [si,qi]=key.split('-').map(Number);
+    const q=plan[si].questions[qi];
+    const old=btn.textContent;btn.disabled=true;btn.textContent='更換中…';
     try{
-      const res=await api('/api/papers/generate',{
-        templateId:Number($('#gen-template').value),
-        ranges:list,
-        duration:Number($('#gen-duration').value)||60,
-        grade:$('#gen-grade').value,
-        examKind:$('#gen-kind').value,
-        term:$('#gen-term').value,
-        subject:$('#gen-subject').value,
-        qtypes,
-        totalPoints:total,
-        difficulty, source,
+      const res=await api('/api/papers/replace',{
+        qtype:plan[si].qtype||'解答題',marks:q.marks,
+        optionCount:(base.qtypes.find(t=>t.type==='選擇題')||{}).optionCount||4,
+        ranges:base.ranges,difficulty:q.difficulty||'中',
+        avoid:plan.flatMap(s=>s.questions.map(x=>x.stem)).slice(0,12),
         consentExternal:S.ai.mode==='external'});
+      plan[si].questions[qi]={...res.question,on:q.on};
+      renderPlan();
+      toast('已更換一題');
+    }catch(e){toast(e.message);btn.disabled=false;btn.textContent=old;}
+  };
+
+  const confirmGenerate=async ()=>{
+    const btn=$('#gen-confirm');
+    const chosen=plan.map(s=>({title:s.title,questions:s.questions.filter(q=>q.on)
+        .map(q=>({stem:q.stem,marks:q.marks,options:q.options||[],lines:q.lines||[]}))}))
+      .filter(s=>s.questions.length);
+    if(!chosen.length)return toast('請至少保留一題。');
+    const old=btn.textContent;btn.disabled=true;btn.textContent='排版中…';
+    try{
+      const res=await api('/api/papers/generate',{...base,sections:chosen});
       const a=document.createElement('a');a.href=res.docx;a.download=res.filename;a.click();
       closeModal();
-      const used=res.sources||{bank:0,ai:0};
-      const parts=[used.bank?`題庫 ${used.bank} 題`:'',used.ai?`AI 新出 ${used.ai} 題`:''].filter(Boolean);
-      toast(`已生成「${res.paper.title}」（${res.paper.questionCount} 題${parts.length?'：'+parts.join('、'):''}），已存進我的試卷`);
+      toast(`已生成「${res.paper.title}」（${res.paper.questionCount} 題），已存進我的試卷`);
       if((res.warnings||[]).length)setTimeout(()=>toast(res.warnings[0]),2600);
       papersPage();
-    }catch(e){err.textContent=e.message;btn.disabled=false;btn.innerHTML=old;}
+    }catch(e){toast(e.message);btn.disabled=false;btn.textContent=old;}
+  };
+
+  $('#gen-submit').onclick=async()=>{
+    const payload=formPayload();
+    if(!payload)return;
+    const btn=$('#gen-submit');const old=btn.innerHTML;
+    btn.disabled=true;
+    btn.textContent=payload.source==='bank'?'挑題中…（題庫不足才會請 AI）':'AI 出題中…（約 20–60 秒）';
+    try{
+      const res=await api('/api/papers/preview',payload);
+      base=payload;
+      plan=(res.sections||[]).map(s=>({...s,questions:(s.questions||[]).map(q=>({...q,on:true}))}));
+      if(!plan.length)throw new Error('沒有產生任何題目，請調整範圍或改用「全部由 AI 出題」。');
+      if((res.warnings||[]).length)toast(res.warnings[0]);
+      $('#gen-form-step').hidden=true;
+      $('#gen-preview-step').hidden=false;
+      renderPlan();
+    }catch(e){toast(e.message);}
+    btn.disabled=false;btn.innerHTML=old;
   };
 }
+
 // 從「我的試卷」直接出作業：用這份卷匯入題庫的那批題目。
 // 作業端點有硬條件（每題要有答案、且不能掛「待核驗」），所以在這裡先檢查並說清楚。
 async function paperAssignModal(paperId){

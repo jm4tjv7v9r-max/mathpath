@@ -6,6 +6,7 @@
 import base64
 import io
 import json
+import re
 import tempfile
 import time
 import unittest
@@ -210,7 +211,8 @@ class PaperTemplateTests(unittest.TestCase):
         raw, _ = paper_format.render_with_sections(buf.getvalue(), sections, '中三數學 小測')
         out = Document(io.BytesIO(raw))
         text = '\n'.join(p.text for p in out.paragraphs)
-        self.assertIn('一、選擇題（每題 5 分，共 10 分）', text, '配分說明要沿用範本措辭並更新數字')
+        self.assertIn('一、單項選擇題（每題 5 分，共 10 分）', text,
+                      '標題要沿用範本的寫法（單項選擇題）並更新配分數字')
         first = [p for p in out.paragraphs if p.text.startswith('1.')][0]
         self.assertIn('\t', first.text, '範本用 tab 對齊，輸出也要用 tab')
         self.assertNotIn('1.　', first.text, '不要換成全角空白')
@@ -938,6 +940,59 @@ class PunctuationTests(unittest.TestCase):
         tex = latex_export.to_tex('卷', [section])
         self.assertIn('解方程 $x^{2}=1$.', tex)
         self.assertNotIn('。', tex)
+
+
+class PaperLayoutTests(unittest.TestCase):
+    """選項排法與卷頭標題：選項先打橫，不夠寬就 2、2、1；標題只換老師選的欄位。"""
+
+    def build(self, options):
+        doc = Document()
+        doc.add_paragraph('測試卷')
+        doc.add_paragraph('一、選擇題（每題 4 分）')
+        doc.add_paragraph('1.\t題目（　　）')
+        doc.add_paragraph('A. 1\tB. 2\tC. 3\tD. 4')
+        buf = io.BytesIO()
+        doc.save(buf)
+        sections = [paper_format.Section(title='一、選擇題', questions=[
+            paper_format.Question(stem='下列何者正確？（　　）', marks=4, options=options)])]
+        raw, _ = paper_format.render_with_sections(buf.getvalue(), sections, '測試卷')
+        return [p.text for p in Document(io.BytesIO(raw)).paragraphs]
+
+    def option_rows(self, lines):
+        return [t for t in lines if re.match(r'^[A-E]\.\s', t)]
+
+    def test_five_short_options_stay_on_one_line(self):
+        lines = self.build(['A. $1:1$', 'B. $2:1$', 'C. $1:2$', 'D. $4:1$', 'E. $1:4$'])
+        rows = self.option_rows(lines)
+        self.assertEqual(len(rows), 1, '五個短選項要打橫排在同一行')
+        self.assertIn('E.', rows[0])
+
+    def test_five_options_split_two_two_one(self):
+        lines = self.build(['A. 半徑與面積成正比', 'B. 面積與半徑平方成正比',
+                            'C. 周長與半徑平方成正比', 'D. 以上皆非', 'E. 無法判斷'])
+        rows = self.option_rows(lines)
+        self.assertEqual(len(rows), 3, '放不下就分成 2、2、1 三行')
+        self.assertEqual(rows[0].count('\t'), 1)
+        self.assertEqual(rows[1].count('\t'), 1)
+        self.assertNotIn('\t', rows[2], '最後一行只剩一個選項')
+        self.assertIn('E.', rows[2])
+
+    def test_title_only_replaces_the_chosen_fields(self):
+        tpl = '培華中學 2026 年度第一段高一級(普通班)數學科大測一'
+        meta = {'grade': '高二（職業班）', 'term': '第二段', 'kind': '練習', 'subject': '數學'}
+        self.assertEqual(paper_format._fill_title(tpl, meta, '備用'),
+                         '培華中學 2026 年度第二段高二級(職業班)數學科練習一')
+
+    def test_title_drops_class_when_grade_has_none(self):
+        tpl = '培華中學 2026 年度第一段高一級(普通班)數學科大測一'
+        meta = {'grade': '初一', 'term': '第三段', 'kind': '考試', 'subject': '幾何'}
+        self.assertEqual(paper_format._fill_title(tpl, meta, '備用'),
+                         '培華中學 2026 年度第三段初一級幾何科考試一')
+
+    def test_title_without_placeholders_is_left_alone(self):
+        self.assertEqual(paper_format._fill_title('某某中學 數學測驗',
+                                                  {'grade': '高一（普通班）'}, '備用'),
+                         '某某中學 數學測驗')
 
 
 class QueryPathTests(unittest.TestCase):

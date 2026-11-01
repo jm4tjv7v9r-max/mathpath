@@ -422,6 +422,22 @@ def fit_columns(options: list[str], per_line: int, width_cm: float) -> int:
     return 1
 
 
+def option_layout(options: list[str], width_cm: float) -> int:
+    """選擇題的選項一律先打橫排；真的放不下才退成每行 2 個。
+
+    5 個選項就是「一行 5 個」；不夠寬時變 2、2、1（不會出現 4、1 這種尾巴孤零零的排法）。
+    """
+    count = len(options)
+    if count <= 1:
+        return 1
+    widest = max((_units(o) for o in options), default=1)
+    if widest <= (width_cm / count) / UNIT_CM:
+        return count
+    if widest <= (width_cm / 2) / UNIT_CM:
+        return 2
+    return 1
+
+
 def pack_options(options: list[str], columns: int) -> list[list[str]]:
     """把選項切成每行 columns 個。"""
     return [options[i:i + columns] for i in range(0, len(options), columns)]
@@ -449,13 +465,27 @@ TITLE_HINTS = ('測驗', '考試', '試卷', '測', '卷', 'Test', 'Exam')
 
 
 def _title_index(head) -> int | None:
-    """挑最像卷名的那一段；都沒線索就沿用第一段（舊行為）。"""
+    """挑最像卷名的那一段；都沒線索就沿用第一段（舊行為）。
+
+    要認得「高一級(普通班)數學科大測」這種寫法，也要避開「姓名／學號」那一行
+    （它同樣有「高一」，但它不是卷名）。
+    """
     scored = []
     for i, p in enumerate(head):
         text = (p.text or '').strip()
         if not text or not p.runs:
             continue
-        score = sum(1 for hint in TITLE_HINTS if hint in text)
+        if '姓名' in text or '學號' in text:
+            continue
+        score = 0
+        if TITLE_GRADE_RE.search(text):
+            score += 3
+        if TITLE_TERM_RE.search(text):
+            score += 2
+        if TITLE_KIND_RE.search(text):
+            score += 2
+        if any(hint in text for hint in TITLE_HINTS):
+            score += 1
         scored.append((score, i))
     if not scored:
         return None
@@ -463,6 +493,58 @@ def _title_index(head) -> int | None:
     if best == 0:
         return scored[0][1]
     return max(i for score, i in scored if score == best)
+
+
+# ── 卷頭標題：只換「這份卷的資料」，其餘照範本 ───────────────────────────
+TITLE_TERM_RE = re.compile(r'第[一二三四]段')
+TITLE_GRADE_RE = re.compile(r'[高初中][一二三]')
+TITLE_CLASS_RE = re.compile(r'(級?)\s*([（(])([^）)]*)([）)])')
+TITLE_KIND_RE = re.compile(r'(小測|大測|考試|練習)')
+TITLE_SUBJECT_RE = re.compile(r'(數學|幾何)')
+
+
+def _fill_title(template_text: str, meta: dict | None, fallback: str) -> str:
+    """把範本標題裡屬於「這份卷」的欄位換成老師選的，其餘（校名、年度、卷別…）原樣保留。
+
+    例：範本「培華中學 2026 年度第一段高一級(普通班)數學科大測一」
+        → 選了 高二（職業班）／練習／第二段／數學
+        → 「培華中學 2026 年度第二段高二級(職業班)數學科練習一」
+    """
+    text = (template_text or '').strip()
+    if not text or not meta:
+        return fallback
+    out = text
+
+    # 年級＋班別：只動「高一」與緊接其後的括號，範本原本寫「高一級(普通班)」就保留那個「級」。
+    grade = str(meta.get('grade') or '').strip()
+    if grade:
+        base, _, rest = grade.partition('（')
+        if not rest:
+            base, _, rest = grade.partition('(')
+        klass = rest.rstrip('）)').strip()
+        m = TITLE_GRADE_RE.search(out)
+        if m:
+            out = out[:m.start()] + base + out[m.end():]
+            tail = TITLE_CLASS_RE.match(out, m.start() + len(base))
+            if tail:
+                # 範本在年級後面有括號：有班別就換內容（括號與「級」沿用範本寫法），沒有就整段拿掉
+                suffix, open_ch, _, close_ch = tail.groups()
+                repl = f'{suffix}{open_ch}{klass}{close_ch}' if klass else suffix
+                out = out[:tail.start()] + repl + out[tail.end():]
+
+    term = str(meta.get('term') or '').strip()
+    if term and TITLE_TERM_RE.search(out):
+        out = TITLE_TERM_RE.sub(term, out, count=1)
+
+    kind = str(meta.get('kind') or '').strip()
+    if kind and TITLE_KIND_RE.search(out):
+        out = TITLE_KIND_RE.sub(kind, out, count=1)
+
+    subject = str(meta.get('subject') or '').strip()
+    if subject and TITLE_SUBJECT_RE.search(out):
+        out = TITLE_SUBJECT_RE.sub(subject, out, count=1)
+
+    return out.strip() or fallback
 
 
 NUM_LEAD_RE = re.compile(r'^\s*\d{1,3}\s*([.、)．])(\t|\u3000| {1,})?')
@@ -514,6 +596,13 @@ def _heading_text(template_title: str, new_title: str, questions) -> str:
     tpl_prefix = HEADING_PREFIX_RE.match(tpl) if tpl else None
     if tpl_prefix:
         prefix = tpl_prefix.group(0).strip()
+    # 範本自己寫「單項選擇題」，就照範本的寫法（只要它認得我們這個題型）
+    if body and tpl_prefix:
+        tpl_body = tpl[tpl_prefix.end():]
+        if body in tpl_body:
+            named = re.split(r'[（(：:]', tpl_body)[0].strip()
+            if named:
+                body = named
     gap = '' if prefix.endswith(('、', '.', '．')) else '\u3000'
     heading = f'{prefix}{gap}{body}' if prefix else body
 
@@ -565,7 +654,8 @@ def sections_from_dict(data) -> list[Section]:
 def _render_into(tpl, sections: list[Section], title: str | None = None,
                  closing: str | None = None,
                  options_per_line: int = DEFAULT_OPTIONS_PER_LINE,
-                 math_as_text: bool = False) -> dict:
+                 math_as_text: bool = False,
+                 meta: dict | None = None) -> dict:
     """把內容套進一個已開啟的 Document（不存檔，讓呼叫端決定存哪裡）。"""
     blocks = read_blocks(tpl)
     paragraphs = tpl.paragraphs
@@ -617,7 +707,8 @@ def _render_into(tpl, sections: list[Section], title: str | None = None,
     if title:
         target = _title_index(cloned_head)
         if target is not None:
-            _fill(cloned_head[target], [title], math_as_text)
+            line = _fill_title(cloned_head[target].text, meta, title)
+            _fill(cloned_head[target], [line], math_as_text)
 
     number = 1
     template_headings = [b.text for b in blocks if b.role == 'section']
@@ -646,19 +737,19 @@ def _render_into(tpl, sections: list[Section], title: str | None = None,
                 _fill(ep, [extra], math_as_text)
 
             if q.options and 'option' in proto:
-                # 選項一律打橫排：範本有定位點就照範本的欄數，沒有就預設一行 4 個；
-                # 選項太長會自動降成 3、2、1 個，不會疊字。
-                per_line = option_columns(proto['option'])
-                auto = per_line < 2
-                if auto:
-                    per_line = options_per_line
+                # 選項一律打橫排：先試「全部塞一行」（5 個選項就 5 個一行），
+                # 真的不夠寬才退成每行 2 個 —— 5 個選項就變成 2、2、1。
+                tpl_columns = option_columns(proto['option'])
                 width_cm = _text_width(tpl, proto['option']) / 360000
-                columns = fit_columns(q.options, per_line, width_cm)
+                columns = option_layout(q.options, width_cm)
                 for row in pack_options(q.options, columns):
                     op = _clone(tpl, proto['option']._p, sectpr)
                     _fill(op, row, math_as_text)
-                    if auto and len(row) > 1:
-                        _column_stops(op, tpl, columns)
+                    if columns != tpl_columns:
+                        # 欄數跟範本不一樣時，範本帶過來的定位點會讓欄位歪掉，重設。
+                        op.paragraph_format.tab_stops.clear_all()
+                        if columns > 1:
+                            _column_stops(op, tpl, columns)
 
             if 'answer_line' in proto and lines and not q.options:
                 for _ in range(lines):
@@ -741,10 +832,15 @@ def parse_content_bytes(data: bytes) -> tuple[list[str], list[Section]]:
 def render_with_sections(template_bytes: bytes, sections: list[Section],
                          title: str | None = None,
                          options_per_line: int = DEFAULT_OPTIONS_PER_LINE,
-                         math_as_text: bool = False) -> tuple[bytes, dict]:
-    """已經有 Section 物件時用這個（例如 PDF 由 AI 轉寫出來的內容）。"""
+                         math_as_text: bool = False,
+                         meta: dict | None = None) -> tuple[bytes, dict]:
+    """已經有 Section 物件時用這個（例如 PDF 由 AI 轉寫出來的內容）。
+
+    meta 帶 year／term／grade／kind／subject 時，卷頭標題只換這幾個位置，
+    其餘（校名、年度、卷別…）照範本原文保留。
+    """
     tpl = Document(io.BytesIO(template_bytes))
-    report = _render_into(tpl, sections, title, None, options_per_line, math_as_text)
+    report = _render_into(tpl, sections, title, None, options_per_line, math_as_text, meta)
     buf = io.BytesIO()
     tpl.save(buf)
     return buf.getvalue(), report

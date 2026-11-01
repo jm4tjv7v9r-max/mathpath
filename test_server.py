@@ -2725,6 +2725,46 @@ class PaperGenerateTests(unittest.TestCase):
         self.assertIn('不符合要求', ctx.exception.message)
 
 
+    def test_preview_lists_questions_without_saving(self):
+        """按「生成」前先列出題目給老師挑；預覽不可以存檔。"""
+        self.app.ai.call = lambda *a, **k: {'sections': [
+            {'title': '一、選擇題', 'qtype': '選擇題', 'questions': [
+                {'stem': f'題{i}', 'options': ['A', 'B', 'C', 'D'], 'marks': 10,
+                 'difficulty': '易', 'answer': 'A', 'steps': []} for i in range(10)]}]}
+        before = len(self.call('GET', '/api/papers')['papers'])
+        out = self.call('POST', '/api/papers/preview', self.payload(
+            source='ai', qtypes=[{'type': '選擇題', 'optionCount': 4}]))
+        self.assertEqual(len(out['sections']), 1)
+        self.assertEqual(len(out['sections'][0]['questions']), 10)
+        self.assertEqual(out['sections'][0]['questions'][0]['difficulty'], '易')
+        self.assertEqual(out['totalPoints'], 100)
+        after = len(self.call('GET', '/api/papers')['papers'])
+        self.assertEqual(before, after, '預覽不可以存進我的試卷')
+
+    def test_generate_with_confirmed_sections_skips_ai(self):
+        """老師確認過的題目直接排版：不應該再叫 AI，配分重新核算到剛好總分。"""
+        self.app.ai.call = lambda *a, **k: (_ for _ in ()).throw(AssertionError('不應該呼叫 AI'))
+        confirmed = [{'title': '一、選擇題', 'questions': [
+            {'stem': f'確認題{i}', 'options': ['A', 'B', 'C', 'D'], 'marks': 5, 'lines': []}
+            for i in range(8)]}]
+        out = self.call('POST', '/api/papers/generate', self.payload(
+            source='ai', sections=confirmed))
+        self.assertEqual(out['paper']['questionCount'], 8)
+        total = sum(q['marks'] for s in self.sections_of(out) for q in s['questions'])
+        self.assertEqual(total, 100, '確認後仍要把配分核算到剛好總分')
+
+    def test_replace_returns_one_question(self):
+        self.app.ai.call = lambda *a, **k: {
+            'stem': '新題目（　　）', 'options': ['A', 'B', 'C', 'D'], 'marks': 5,
+            'difficulty': '難', 'answer': 'B', 'steps': []}
+        out = self.call('POST', '/api/papers/replace', {
+            'qtype': '選擇題', 'marks': 5, 'optionCount': 4,
+            'ranges': ['一元二次方程'], 'difficulty': '難', 'avoid': ['舊題目']})
+        self.assertEqual(out['question']['marks'], 5)
+        self.assertEqual(len(out['question']['options']), 4)
+        self.assertEqual(out['question']['difficulty'], '難')
+        self.assertEqual(out['question']['stem'], '新題目（　　）')
+
     def test_practice_kind_and_class_suffixed_grade(self):
         """類型可以選「練習」；年級可以帶班別（高一（職業班））並原樣保存。"""
         self.app.ai.call = lambda *a, **k: {'sections': [

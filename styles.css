@@ -1008,3 +1008,22 @@ html[data-theme=night] .contest-status.closed{background:#26302c;color:#a8c4b8}
   .record-list.two-col{grid-template-columns:minmax(0,1fr)}
   .contest-view{margin-left:0}
 }
+
+/* 一鍵生成試卷：第二步「確認題目」清單（逐題挑選／更換） */
+.gen-preview{max-height:50dvh;overflow:auto;margin:0 -4px;padding:0 4px}
+.gen-sec-title{display:flex;align-items:baseline;gap:6px;margin:12px 0 4px;
+  font-weight:700;font-size:calc(14px*var(--fs))}
+.gen-qrow{display:flex;gap:10px;align-items:flex-start;padding:10px 0;border-top:1px solid var(--line-soft)}
+.gen-qrow.off{opacity:.45}
+.gen-qcheck{padding-top:2px;flex:0 0 auto}
+.gen-qcheck input{accent-color:var(--green);width:16px;height:16px;margin:0}
+.gen-qbody{flex:1;min-width:0}
+.gen-qmeta{margin:0 0 3px;font-size:calc(11.5px*var(--fs));color:var(--muted)}
+.gen-qstem{margin:0;line-height:1.7;word-break:break-word}
+.gen-qopts{margin:4px 0 0;font-size:calc(12.5px*var(--fs));color:var(--muted-2);word-break:break-word}
+.gen-qreplace{flex:0 0 auto;white-space:nowrap;color:var(--green);padding-top:2px}
+.gen-preview-foot{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;
+  border-top:1px solid var(--border);padding:12px 0 2px;margin-top:10px;
+  position:sticky;bottom:0;background:#fff}
+.gen-foot-actions{display:flex;gap:8px;flex-wrap:wrap}
+html[data-theme=night] .gen-preview-foot{background:#161c1e}
