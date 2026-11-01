@@ -1073,3 +1073,6 @@ html[data-theme=night] .gen-ref-chip{background:#1b2427;border-color:#2a3437}
 /* 側欄「批閱」的待批數量徽章：有待批時用暖色，一眼看到 */
 .nav-item .count.due{background:#fdeee0;color:#a4632a;font-weight:700}
 html[data-theme=night] .nav-item .count.due{background:#3a2c1d;color:#e0b083}
+
+/* 批閱清單底部：載入更多 */
+.records-more{display:flex;justify-content:center;margin:16px 0 4px}

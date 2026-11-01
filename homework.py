@@ -852,6 +852,69 @@ class Homework:
                     self.fail(404, '找不到這則提醒。')
                 db.execute('DELETE FROM calendar_notes WHERE id=?', (row['id'],))
             return {'deleted': row['id']}
+        if method == 'GET' and path == '/api/reviews':
+            # 教師批閱清單：伺服器端篩選＋分頁。
+            # /api/state 只帶最近 200 筆（待批優先），要看更早的紀錄就從這裡一頁一頁取。
+            self.app.teacher(user)
+            values = {}
+            for key, value in parse_qsl(query, keep_blank_values=True):
+                if key not in ('status', 'before', 'limit') or key in values:
+                    self.fail(400, '批閱查詢只接受 status、before、limit。')
+                values[key] = value
+            status = values.get('status', 'pending')
+            if status not in ('pending', 'all', 'wrong'):
+                self.fail(400, 'status 只能是 pending、all 或 wrong。')
+            limit = 50
+            if 'limit' in values:
+                try:
+                    limit = int(values['limit'])
+                except ValueError:
+                    self.fail(400, 'limit 必須是整數。')
+                if not 1 <= limit <= 200:
+                    self.fail(400, 'limit 必須介乎 1 至 200。')
+            before = 0
+            if 'before' in values:
+                try:
+                    before = int(values['before'])
+                except ValueError:
+                    self.fail(400, 'before 必須是整數。')
+            with self.app.db() as db:
+                rows = db.execute(
+                    'SELECT a.* FROM attempts a WHERE a.assignment_id IS NOT NULL '
+                    'AND a.id IN (SELECT MAX(id) FROM attempts WHERE assignment_id IS NOT NULL '
+                    '             GROUP BY assignment_id, user_id, question_id) '
+                    'AND EXISTS (SELECT 1 FROM assignments s '
+                    '            WHERE s.id=a.assignment_id AND s.teacher_id=?) '
+                    'ORDER BY a.id DESC', (user['id'],)).fetchall()
+                picked = []
+                for r in rows:
+                    if before and r['id'] >= before:
+                        continue
+                    if status == 'pending' and not (r['status'] == 'pending' or
+                                                    (r['ai_score'] is not None and not r['teacher_reviewed'])):
+                        continue
+                    if status == 'wrong' and not (r['status'] == 'graded' and r['score'] is not None
+                                                  and r['score'] < r['max_score']):
+                        continue
+                    picked.append(r)
+                    if len(picked) > limit:
+                        break
+                has_more = len(picked) > limit
+                picked = picked[:limit]
+                cache, students = {}, {}
+                items = []
+                for r in picked:
+                    item = self.app.attempt_public(db, r, user, cache)
+                    sid = r['user_id']
+                    if sid not in students:
+                        found = db.execute('SELECT id,name,username,seat FROM users WHERE id=?',
+                                           (sid,)).fetchone()
+                        students[sid] = dict(found) if found else {'id': sid, 'name': '（已刪除的帳號）'}
+                    item['student'] = students[sid]
+                    items.append(item)
+            return {'items': items, 'hasMore': has_more, 'status': status,
+                    'nextBefore': picked[-1]['id'] if picked else None}
+
         if method == 'POST' and path == '/api/classes':
             self.app.teacher(user)
             # 建立班級不必先選學生：studentIds 可省略或給空陣列。

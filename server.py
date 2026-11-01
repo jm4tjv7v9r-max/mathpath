@@ -1725,6 +1725,8 @@ def ai_answer_draft(app, body):
     return {**answer, 'qtype': qtype, 'options': options, 'method': 'AI 生成'}
 
 
+# 教師端 /api/state 最多帶幾筆作答（其餘由 /api/reviews 分頁取）。
+TEACHER_ATTEMPT_CAP = 200
 PAPER_QTYPES = ('選擇題', '填空題', '解答題', '證明題', '附加題')
 # 各題型在總分裡的預設比重：只用來把總分切給各分部，實際配分仍以挑到的題目為準。
 PAPER_QTYPE_WEIGHT = {'選擇題': 30, '填空題': 20, '解答題': 35, '證明題': 15, '附加題': 10}
@@ -6949,19 +6951,7 @@ class Application:
                                       'ORDER BY a.id DESC', (user['id'],)).fetchall()
                 else:
                     rows = db.execute('SELECT * FROM attempts WHERE user_id=? ORDER BY id DESC', (user['id'],)).fetchall()
-                # 同一題常被整班重複作答、同一位學生也有多筆作答，兩者都做快取，
-                # 免得載入一次頁面就變成上百次查詢（作答累積後整個網站都會變慢）。
-                attempts = [self.attempt_public(db, r, user, qcache) for r in rows]
-                if user['role'] == 'teacher':
-                    students = {}
-                    for attempt, row in zip(attempts, rows):
-                        sid = row['user_id']
-                        if sid not in students:
-                            students[sid] = dict(db.execute('SELECT id,name,username,seat FROM users WHERE id=?',
-                                                            (sid,)).fetchone())
-                        attempt['student'] = students[sid]
-                # 待批數量：教師側欄的「批閱」徽章要用。只算每題最新一筆，
-                # 否則同一位學生重答幾次就會重複計數。
+                # 待批數量先算：它要涵蓋「全部」作答，不能只算下面被裁掉的那一批。
                 pending_reviews = 0
                 if user['role'] == 'teacher':
                     seen = set()
@@ -6975,6 +6965,28 @@ class Application:
                         if r['status'] == 'pending' or (r['ai_score'] is not None
                                                         and not r['teacher_reviewed']):
                             pending_reviews += 1
+                # 教師的作答清單只送前 200 筆：一個班 5 份作業就已經 620 筆、832 KB，
+                # 整學期下來會拖慢每一次載入。待批的排前面（老師真正要處理的），
+                # 其餘按新到舊；批閱頁另有 /api/reviews 可分頁取更多。
+                attempts_truncated = False
+                if user['role'] == 'teacher' and len(rows) > TEACHER_ATTEMPT_CAP:
+                    def _review_rank(r):
+                        needs = (r['status'] == 'pending' or
+                                 (r['ai_score'] is not None and not r['teacher_reviewed']))
+                        return (0 if needs else 1, -r['id'])
+                    rows = sorted(rows, key=_review_rank)[:TEACHER_ATTEMPT_CAP]
+                    attempts_truncated = True
+                # 同一題常被整班重複作答、同一位學生也有多筆作答，兩者都做快取，
+                # 免得載入一次頁面就變成上百次查詢（作答累積後整個網站都會變慢）。
+                attempts = [self.attempt_public(db, r, user, qcache) for r in rows]
+                if user['role'] == 'teacher':
+                    students = {}
+                    for attempt, row in zip(attempts, rows):
+                        sid = row['user_id']
+                        if sid not in students:
+                            students[sid] = dict(db.execute('SELECT id,name,username,seat FROM users WHERE id=?',
+                                                            (sid,)).fetchone())
+                        attempt['student'] = students[sid]
                 own = [r for r in rows if r['user_id'] == user['id']]
                 # 紙本累計要在連線還開著時算（下面 return 時 with 已結束）。
                 paper = self.paper_stats(db, user['id']) if user['role'] == 'student' else {}
@@ -6986,6 +6998,7 @@ class Application:
             stats.update(paper)
             return {'user': payload_user, 'questions': questions, 'attempts': attempts,
                     'pendingReviews': pending_reviews,
+                    'attemptsTruncated': attempts_truncated,
                     'stats': stats, 'ai': self.ai.public(), 'topics': TOPICS, 'grades': GRADES,
                     'topicTree': TOPIC_TREE,
                     'notice': self.notice(user), 'minutesNotice': '分鐘數僅按同日相鄰提交間隔估算，不是正式學習計時。'}, headers

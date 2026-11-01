@@ -33,8 +33,9 @@ class HomeworkTests(unittest.TestCase):
             self.teacher2 = db.execute('SELECT * FROM users WHERE id=4').fetchone()
         self.cid = self.call('POST', '/api/classes', {'name': '三年级', 'studentIds': [1, 3]}, self.teacher)['class']['id']
 
-    def call(self, method, path, body=None, user=None):
-        return self.app.dispatch(method, path, body or {}, self.student if user is None else user, None, '127.0.0.1')[0]
+    def call(self, method, path, body=None, user=None, query=''):
+        return self.app.dispatch(method, path, body or {}, self.student if user is None else user,
+                                 None, '127.0.0.1', query)[0]
 
     def error(self, status, method, path, body=None, user=None):
         with self.assertRaises(server.APIError) as context:
@@ -1339,6 +1340,30 @@ class HomeworkTests(unittest.TestCase):
         self.assertEqual(summary['confirmedAverage'], 5)
         self.assertEqual(summary['pendingReviewCount'], 0)
         self.assertEqual(self.detail(aid)['report']['pendingCount'], 0)
+
+    def test_state_caps_teacher_attempts_and_reviews_can_page(self):
+        """教師的 /api/state 只帶前 N 筆（待批優先），其餘由 /api/reviews 分頁取。"""
+        import server as _server
+        aid = self.assignment(questions=(1, 2, 3))
+        for qid in (1, 2, 3):
+            self.attempt(aid, qid=qid)
+        old_cap = _server.TEACHER_ATTEMPT_CAP
+        _server.TEACHER_ATTEMPT_CAP = 2
+        try:
+            state = self.call('GET', '/api/state', None, self.teacher)
+            self.assertEqual(len(state['attempts']), 2, '超過上限要裁掉')
+            self.assertTrue(state['attemptsTruncated'])
+        finally:
+            _server.TEACHER_ATTEMPT_CAP = old_cap
+        page1 = self.call('GET', '/api/reviews', None, self.teacher, 'status=all&limit=2')
+        self.assertEqual(len(page1['items']), 2)
+        self.assertTrue(page1['hasMore'])
+        self.assertIn('student', page1['items'][0], '批閱清單要帶學生姓名')
+        page2 = self.call('GET', '/api/reviews', None, self.teacher,
+                          f"status=all&limit=2&before={page1['nextBefore']}")
+        self.assertLess(page2['items'][0]['id'], page1['items'][-1]['id'], '第二頁要接在第一頁之後')
+        with self.assertRaises(server.APIError):
+            self.call('GET', '/api/reviews', None, self.teacher, 'status=bogus')
 
     def test_pending_review_count_drives_the_nav_badge(self):
         """側欄「批閱」的待批數量：手寫作答才算待批，批完要歸零。"""
