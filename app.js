@@ -4659,7 +4659,10 @@ async function scoreGridPage(){
       <div class="sg-bulkbox" id="sg-bulkbox" hidden>
         <p class="small-text">一行一個學生，格式「座號 姓名」或只寫姓名；已有的同名學生會自動跳過。</p>
         <textarea id="sg-bulk-text" rows="6" placeholder="1 陳大文&#10;2 李小明&#10;3 王美玲"></textarea>
-        <div class="sg-bulk-actions"><button class="primary" id="sg-bulk-ok">開始匯入</button></div>
+        <div class="sg-bulk-actions" style="justify-content:space-between;gap:8px;flex-wrap:wrap">
+          <span class="small-text">或用 Excel 名單：<input type="file" id="sg-bulk-file" accept=".xlsx,.xlsm" style="display:inline-block;width:auto">
+            <button class="secondary" id="sg-bulk-import">匯入 Excel</button></span>
+          <button class="primary" id="sg-bulk-ok">開始匯入</button></div>
         <div id="sg-bulk-result"></div>
       </div>
       <div class="sg-wrap"><table class="score-grid">
@@ -4715,6 +4718,26 @@ async function scoreGridPage(){
       toast(`已匯入 ${out.created.length} 人`);
       await scoreGridPage();
     }catch(e){toast(e.message);}
+  };
+  const showBulk=out=>{
+    const rows=(out.created||[]).map(st=>`<tr><td>${st.seat??''}</td><td>${esc(st.name)}</td>
+      <td>${esc(st.username)}</td><td>${esc(st.password)}</td></tr>`).join('');
+    $('#sg-bulk-result').innerHTML=rows?`<p class="small-text">新增 ${out.created.length} 人${out.skipped.length?`，略過同名 ${out.skipped.length} 人`:''}。帳號密碼只顯示這一次，請先抄下。</p>
+      <table class="bulk-result"><thead><tr><th>號</th><th>姓名</th><th>帳號</th><th>密碼</th></tr></thead><tbody>${rows}</tbody></table>`
+      :`<p class="small-text">沒有新增任何人（全部同名或格式不對）。</p>`;
+  };
+  $('#sg-bulk-import').onclick=async()=>{
+    if(!cid)return toast('請先選擇一個班別。');
+    const file=$('#sg-bulk-file').files[0];
+    if(!file)return toast('請先選一個 Excel 檔（.xlsx）。');
+    const btn=$('#sg-bulk-import');btn.disabled=true;btn.textContent='匯入中…';
+    try{
+      const data=await fileToDataUrl(file);
+      const out=await api('/api/score-grid/students/import',{classId:cid,file:data});
+      showBulk(out);toast(`已匯入 ${out.created.length} 人`);
+      await scoreGridPage();
+    }catch(e){toast(e.message);}
+    btn.disabled=false;btn.textContent='匯入 Excel';
   };
   $('#sg-addcol').onclick=()=>{
     if(!cid)return toast('請先選擇一個班別，再新增欄位。');

@@ -4704,6 +4704,24 @@ class ScoreGridTests(unittest.TestCase):
         self.call('POST', '/api/score-grid/student',
                   {'classId': cid, 'name': '陳大文', 'seat': 7}, expect=409)
 
+    def test_excel_roster_import(self):
+        """用 Excel 名單整班匯入：找「姓名／座號」表頭，姓名照樣遮蔽。"""
+        import base64, io
+        import openpyxl
+        cid = self.make_class()
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.append(['座號', '姓名'])
+        ws.append([2, '李小明'])
+        ws.append([3, '王美玲'])
+        buf = io.BytesIO()
+        wb.save(buf)
+        url = ('data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,'
+               + base64.b64encode(buf.getvalue()).decode())
+        out = self.call('POST', '/api/score-grid/students/import', {'classId': cid, 'file': url})
+        self.assertEqual(out['summary']['created'], 2)
+        self.assertEqual([s['name'] for s in out['created']], ['李X明', '王X玲'])
+
     def test_only_the_class_teacher_can_view_or_edit(self):
         """只有設立該班級的老師看得到、改得到；其他老師與學生一律擋。"""
         cid = self.make_class()

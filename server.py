@@ -6446,6 +6446,58 @@ class Application:
                                     'username': username, 'password': password})
             return {'created': created, 'skipped': skipped,
                     'summary': {'created': len(created), 'skipped': len(skipped)}}, headers
+        if method == 'POST' and path == '/api/score-grid/students/import':
+            # 用 Excel 名單匯入整班：第一列找「姓名／座號」表頭，找不到就當 A=座號、B=姓名
+            self.teacher(user)
+            fields(body, ('classId', 'file'), ('classId', 'file'))
+            class_id = number(body['classId'], '班別', 1, 10 ** 18, True)
+            raw, _mime = decode_data_url(body['file'], (
+                'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                'application/vnd.ms-excel.sheet.macroEnabled.12',
+                'application/vnd.ms-excel'))
+            if not raw:
+                fail(400, '請上傳 Excel（.xlsx）。')
+            try:
+                import openpyxl
+                wb = openpyxl.load_workbook(io.BytesIO(raw), data_only=True, read_only=True)
+            except Exception:
+                fail(400, '讀不到這個 Excel；請另存成 .xlsx 後再上傳。')
+            ws = wb.active
+            rows = [list(r) for r in ws.iter_rows(max_row=500, values_only=True)]
+            name_col, seat_col, start = None, None, 0
+            for i, row in enumerate(rows[:10]):
+                for j, cell in enumerate(row):
+                    text = str(cell or '').strip()
+                    if name_col is None and '姓名' in text:
+                        name_col, start = j, i + 1
+                    if seat_col is None and ('座號' in text or text in ('號', '編號', '號碼')):
+                        seat_col, start = j, i + 1
+                if name_col is not None:
+                    break
+            if name_col is None:
+                # 沒有表頭：兩欄以上就當「座號, 姓名」，否則整欄都是姓名
+                name_col, seat_col, start = (1, 0, 0) if rows and len(rows[0]) > 1 else (0, None, 0)
+            students = []
+            for row in rows[start:]:
+                if name_col >= len(row):
+                    continue
+                name = str(row[name_col] or '').strip()[:60]
+                if not name or name in ('姓名', '學生姓名'):
+                    continue
+                seat = None
+                if seat_col is not None and seat_col < len(row):
+                    try:
+                        seat = int(float(str(row[seat_col]).strip()))
+                    except (TypeError, ValueError):
+                        seat = None
+                students.append({'name': name, 'seat': seat})
+            if not students:
+                fail(422, '這個 Excel 找不到學生姓名；請確認有「姓名」欄。')
+            if len(students) > 100:
+                students = students[:100]
+            return self.dispatch('POST', '/api/score-grid/students',
+                                 {'classId': class_id, 'students': students},
+                                 user, token_hash, ip)[0], headers
         if method == 'GET' and path == '/api/score-grid/classes':
             self.teacher(user)
             with self.db() as db:
