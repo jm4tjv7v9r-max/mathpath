@@ -7052,6 +7052,8 @@ class Application:
                         'ORDER BY COALESCE(seat,999), id')]
             sheets = match_papers(roster, students)
             return {'sheets': sheets, 'pages': len(pages),
+                    'roster': [{'id': st['id'], 'name': st['name'], 'seat': st['seat']}
+                               for st in students],
                     'summary': {'papers': len(sheets),
                                 'matched': sum(1 for x in sheets if x['studentId']),
                                 'unmatched': sum(1 for x in sheets if not x['studentId'])}}, headers

@@ -875,7 +875,7 @@ function shell(){// 「新手上路」放最後——那是第一次來看的，
     {key:'bank',label:'題庫與入題',iconId:'bank',
      children:[['bank','題庫','list'],['import','試卷拆題入庫'],['newq','新增題目']]},
     {key:'review',label:'批閱',iconId:'edit',
-     children:[['mistakes','作業批閱'],['paper','紙本批閱']]},
+     children:[['mistakes','作業批閱'],['paper','紙本批閱'],['paperbatch','全班紙本掃描']]},
     {id:'layout',label:'試卷修正排版'},
     {id:'papers',label:'我的試卷'},
   ];
@@ -3523,6 +3523,67 @@ function paperHistoryHtml(history,classes,roster,classId){
     </div></details>`;
   }).join('');
 }
+// 讀檔成 dataURL（沒有現成 helper，這裡自己包一個 Promise）
+function fileToDataUrl(file){
+  return new Promise((resolve,reject)=>{
+    const reader=new FileReader();
+    reader.onload=()=>resolve(reader.result);
+    reader.onerror=()=>reject(new Error('讀取檔案失敗'));
+    reader.readAsDataURL(file);
+  });
+}
+
+// 全班紙本掃描：一次上傳整疊 PDF（≤80 頁），自動切卷、自動認人，
+// 認不出來的由老師在下拉裡指派（座號優先、姓名相似度輔助）。
+async function paperBatchPage(){
+  if(S.user?.role!=='teacher')return bank();
+  page='paperbatch';shell();
+  const classes=await api('/api/homework').then(d=>d.classes||[]).catch(()=>[]);
+  $('#main').innerHTML=`<div class="fade-in">
+    ${heading('BATCH SCAN','全班紙本掃描','一次上傳全部學生的卷（PDF，最多 80 頁）。AI 會切卷並認人，認不出來的由你指派。')}
+    <section class="panel panel-pad">
+      <div class="form-grid">
+        <div class="form-field"><label class="field-label" for="pb-class">班級</label>
+          <select id="pb-class"><option value="">全部學生</option>
+            ${classes.map(c=>`<option value="${c.id}">${esc(c.name||'')}</option>`).join('')}</select></div>
+        <div class="form-field"><label class="field-label" for="pb-file">PDF（≤80 頁）</label>
+          <input id="pb-file" type="file" accept="application/pdf"></div>
+      </div>
+      <div style="margin-top:10px"><button class="primary" id="pb-go">開始掃描</button>
+        <span class="small-text" id="pb-status"></span></div>
+      <div id="pb-result"></div>
+    </section></div>`;
+  $('#pb-go').onclick=async()=>{
+    const file=$('#pb-file').files[0];
+    if(!file)return toast('請先選一份 PDF。');
+    const btn=$('#pb-go');btn.disabled=true;$('#pb-status').textContent='掃描中，80 頁大約要 3–8 分鐘…';
+    try{
+      const data=await fileToDataUrl(file);
+      const res=await apiJob('/api/paper-grades/scan',
+        {file:data,classId:$('#pb-class').value||null,consentExternal:S.ai?.mode==='external'},
+        job=>{$('#pb-status').textContent=`掃描中… ${Math.round(job.elapsed||0)} 秒`;});
+      renderBatch(res);
+      $('#pb-status').textContent=`共 ${res.pages} 頁、切成 ${res.summary.papers} 份卷；認出 ${res.summary.matched} 份。`;
+    }catch(e){toast(e.message);$('#pb-status').textContent='';}
+    btn.disabled=false;
+  };
+  function renderBatch(res){
+    const opts=(id,cur)=>`<option value="">（未指派）</option>`+
+      (res.roster||[]).map(u=>`<option value="${u.id}"${u.id===cur?' selected':''}>${esc(u.name)}${u.seat?' · '+esc(u.seat):''}</option>`).join('');
+    const rows=(res.sheets||[]).map((sh,i)=>`<tr>
+      <td>${i+1}</td>
+      <td>${sh.pages.join('、')}</td>
+      <td>${sh.seat??''}</td>
+      <td>${esc(sh.name||'')}</td>
+      <td>${sh.matchedBy==='seat'?'座號':sh.matchedBy==='name'?'姓名':''}</td>
+      <td><select data-sheet="${i}">${opts(sh.studentId,sh.studentId)}</select></td></tr>`).join('');
+    $('#pb-result').innerHTML=`<div class="sg-wrap" style="margin-top:12px"><table class="score-grid">
+      <thead><tr><th>#</th><th>頁碼</th><th>讀到座號</th><th>讀到姓名</th><th>配對方式</th><th>指派給</th></tr></thead>
+      <tbody>${rows}</tbody></table></div>
+      <p class="field-hint">認不出來的請用右邊下拉指派；確認後再逐份批改（下一步）。</p>`;
+  }
+}
+
 async function paperGradePage(){
   page='paper';shell();
   if(S.user?.role!=='teacher')return bank();
@@ -5255,7 +5316,7 @@ $('#bulk-class-toggle').onchange=e=>{$('#bulk-class-field').hidden=!e.target.che
 $('#bulk-submit').onclick=async()=>{const {rows,errors}=bulkPreview();if(errors.length)return toast('請先修正名單格式錯誤。');if(!rows.length)return toast('請輸入至少一位學生。');if(rows.length>200)return toast('每批最多200位學生。');const makeClass=$('#bulk-class-toggle').checked,className=$('#bulk-class-name').value.trim();if(makeClass&&!className)return toast('請填寫班級名稱，或取消建立班級。');const b=$('#bulk-submit');b.disabled=true;b.textContent='正在建立…';try{const {users:created}=await api('/api/users/bulk',{students:rows.map(r=>({username:r.username,name:r.name,seat:r.seat,password:r.password}))});let classNote='';if(makeClass){try{const {class:room}=await api('/api/classes',{name:className,studentIds:created.map(u=>u.id)});classNote=`<div class="hint-box" style="margin-top:12px">已同時建立班級「${esc(room.name)}」，共 ${room.studentCount} 位學生，可直接佈置作業。</div>`;}catch(err){classNote=`<div class="inline-error" style="margin-top:12px">帳戶已建立，但班級未建立：${esc(err.message)}可在「作業與成績」重新建立班級。</div>`;}}const merged=rows.map((r,i)=>({username:r.username,password:r.password,name:(created[i]&&created[i].name)||r.name||r.username,seat:(created[i]&&created[i].seat)||r.seat||''}));const hasName=merged.some(r=>r.name!==r.username),hasSeat=merged.some(r=>r.seat);const cols=[['學號',r=>r.username]].concat(hasName?[['姓名',r=>r.name]]:[],hasSeat?[['班內號',r=>r.seat]]:[],[['密碼',r=>r.password]]);const text=[cols.map(c=>c[0]).join('\t'),...merged.map(r=>cols.map(c=>c[1](r)).join('\t'))].join('\n');$('#bulk-result').innerHTML=`<div class="import-warning">已建立 ${created.length} 個帳戶${merged.some(r=>r.name===r.username)?`（${merged.filter(r=>r.name===r.username).length} 個未填姓名，以學號顯示）`:""}。密碼只會顯示這一次，請立即複製並私下發給學生。</div>${classNote}<pre class="code-block">${esc(text)}</pre><button class="secondary wide" id="bulk-copy" style="margin-top:10px">${icon('file')}複製帳號密碼</button>`;$('#bulk-copy').onclick=async()=>{try{await navigator.clipboard.writeText(text);toast('已複製，請妥善保管。');}catch{toast('無法自動複製，請手動選取。');}};$('#bulk-students').value='';$('#bulk-class-toggle').checked=false;$('#bulk-class-field').hidden=true;$('#bulk-class-name').value='';bulkPreview();toast(`已建立 ${created.length} 個學生帳戶。`);}catch(err){$('#bulk-error').textContent=err.message;}finally{b.disabled=false;b.innerHTML=icon('upload')+'批次建立學生帳戶';}};}}catch(e){toast(e.message);}}
 function deploymentHelp(){modal(`<p class="eyebrow">SERVER SETUP</p><h2>啟動與部署說明</h2><p class="modal-intro">資料保存在網站伺服器；實際位置由管理員確認。以下是可選部署方式，不代表目前網站的部署狀態。</p><h3>本機預覽</h3><p class="info-note">雙擊 start.command，或用 Python 3 啟動：</p><pre class="code-block">python3 server.py --host 127.0.0.1 --port 8765</pre><p class="info-note">瀏覽器開啟 http://127.0.0.1:8765。</p><h3>校內連線</h3><p class="info-note">由資訊人員將 --host 設為伺服器的校內 IP，並限制防火牆只允許校內來源；正式使用需反向代理 HTTPS。不要把演示帳戶直接用於全校。</p><h3>目前帳戶範圍</h3><p class="info-note">初始演示配置包含學生與教師帳戶；實際帳戶由管理員確認。教師可在「設定與隱私」建立獨立學生帳戶，避免共用作答紀錄。可在「作業與成績」建立班級並發布作業；校內單一登入及批量帳戶管理仍可再擴充。</p><div class="import-warning">資料保存在網站伺服器；實際位置由管理員確認。預設資料庫路徑為 data/mathpath.sqlite3；備份及保存年限應按學校規定安排。AI 必須另行配置，未配置時手写作答由教師批閱。</div>`);}
 function navigate(target){if(busy)return toast('目前操作正在進行，請等待完成。');preserveDraft();if(page==='practice'&&strokes.length&&target!=='practice'&&!lastResult&&!confirm('尚未提交的手寫內容未保存。確定離開？'))return;beginView();$('#sidebar').classList.remove('open');if(target!=='practice'){assignmentContext=null;mockContext=null;stopQuizClock();}page=target;switch(target){case'guide':guidePage();break;
-case'homework':homeworkPage();break;case'scores':scoreGridPage();break;case'calendar':calendarPage();break;case'board':leaderboardPage();break;case'mock':mockPage();break;case'contests':contestsPage();break;case'ai':aiConfigPage();break;case'bank':bank();break;case'practice':practice();break;case'import':importPage();break;case'newq':newQuestionPage();break;case'mistakes':recordsPage();break;case'paper':paperGradePage();break;case'layout':paperLayoutPage();break;case'papers':papersPage();break;case'growth':growthPage();break;case'settings':settingsPage();break;default:bank();}window.scrollTo({top:0,behavior:'instant'});}
+case'homework':homeworkPage();break;case'scores':scoreGridPage();break;case'paperbatch':paperBatchPage();break;case'calendar':calendarPage();break;case'board':leaderboardPage();break;case'mock':mockPage();break;case'contests':contestsPage();break;case'ai':aiConfigPage();break;case'bank':bank();break;case'practice':practice();break;case'import':importPage();break;case'newq':newQuestionPage();break;case'mistakes':recordsPage();break;case'paper':paperGradePage();break;case'layout':paperLayoutPage();break;case'papers':papersPage();break;case'growth':growthPage();break;case'settings':settingsPage();break;default:bank();}window.scrollTo({top:0,behavior:'instant'});}
 document.addEventListener('click',e=>{const b=e.target.closest('button');if(!b||b.disabled)return;if(b.dataset.fontScale){applyFontScale(b.dataset.fontScale);shell();toast(`字體已設為「${FONT_SCALES.find(([id])=>id===b.dataset.fontScale)[1]}」，只影響這台裝置。`);return;}
 if(b.dataset.themeId){applyTheme(b.dataset.themeId);shell();toast(`版面已設為「${THEMES.find(([id])=>id===b.dataset.themeId)[1]}」，只影響這台裝置。`);return;}
 if(b.id==='open-math-editor'){openMathEditor();return;}
