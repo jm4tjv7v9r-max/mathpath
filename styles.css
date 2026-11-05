@@ -1127,3 +1127,5 @@ html[data-theme=night] .nav-item .count.due{background:#3a2c1d;color:#e0b083}
 .score-grid .sg-avg{font-weight:500;background:var(--surface,#f7f6f2)}
 .score-grid .sg-miss{color:#b8453b;font-weight:500}
 .score-grid .sg-empty{color:var(--ink-soft,#6b6a63);padding:24px}
+.sg-toolbar{display:flex;gap:12px;align-items:center;justify-content:space-between;margin-bottom:10px;flex-wrap:wrap}
+.sg-toolbar select{padding:7px 10px;border:1px solid var(--border);border-radius:8px;background:var(--paper);color:var(--ink)}

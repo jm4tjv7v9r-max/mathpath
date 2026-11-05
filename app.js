@@ -4521,7 +4521,11 @@ function svgToPng(svg,widthPx=900){
 async function scoreGridPage(){
   if(S.user?.role!=='teacher')return bank();
   page='scores';shell();
-  const grid=await api('/api/score-grid').catch(e=>({error:e.message,columns:[],students:[]}));
+  const classes=await api('/api/score-grid/classes').catch(()=>({classes:[]}));
+  const classList=classes.classes||classes||[];
+  const cid=Number(sessionStorage.getItem('scoreClass')||0)||null;
+  const grid=await api('/api/score-grid'+(cid?`?classId=${cid}`:''))
+    .catch(e=>({error:e.message,columns:[],students:[]}));
   if(grid.error){$('#main').innerHTML=`<div class="inline-error">${esc(grid.error)}</div>`;return;}
   const cols=grid.columns||[],rows=grid.students||[];
   const head=cols.map(c=>`<th class="sg-col"><span class="sg-date">${esc(c.date||'—')}</span><span class="sg-title">${esc(c.title||'')}</span></th>`).join('');
@@ -4536,6 +4540,14 @@ async function scoreGridPage(){
   $('#main').innerHTML=`<div class="fade-in">
     ${heading('SCORE SHEET','成績總表','列是學生、欄是作業；分數由系統依作答自動填入，可直接改。')}
     <div class="panel panel-pad">
+      <div class="sg-toolbar">
+        <label class="small-text">班別
+          <select id="sg-class"><option value="">全部學生</option>
+            ${classList.map(c=>`<option value="${c.id}"${cid===c.id?' selected':''}>${esc(c.name||'')}</option>`).join('')}
+          </select>
+        </label>
+        <button class="secondary" id="sg-export">下載 Excel</button>
+      </div>
       <div class="sg-wrap"><table class="score-grid">
         <thead><tr><th class="sg-seat">號</th><th class="sg-name">姓名</th>${head}
           <th class="sg-avg">平均分</th><th class="sg-miss">未完成</th></tr></thead>
@@ -4543,6 +4555,19 @@ async function scoreGridPage(){
       </table></div>
       <p class="field-hint">點格子直接改分數，按 Enter 或點別處即儲存；改過的格子會變淡黃，右鍵可還原成系統分數。清空格子＝還原。</p>
     </div></div>`;
+  $('#sg-class').onchange=async ev=>{
+    sessionStorage.setItem('scoreClass',ev.target.value);
+    await scoreGridPage();
+  };
+  $('#sg-export').onclick=async ev=>{
+    const btn=ev.target;const old=btn.textContent;btn.disabled=true;btn.textContent='匯出中…';
+    try{
+      const out=await api('/api/score-grid/export'+(cid?`?classId=${cid}`:''));
+      const a=document.createElement('a');a.href=out.file;a.download=out.filename;a.click();
+      toast('已匯出 Excel');
+    }catch(e){toast(e.message);}
+    btn.disabled=false;btn.textContent=old;
+  };
   $$('.sg-cell').forEach(td=>{
     const save=async()=>{
       const raw=td.textContent.trim();

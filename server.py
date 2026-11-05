@@ -6155,6 +6155,52 @@ class Application:
                                     for c in columns],
                         'students': rows,
                         'summary': {'students': len(rows), 'assignments': len(columns)}}, headers
+        if method == 'GET' and path == '/api/score-grid/classes':
+            self.teacher(user)
+            with self.db() as db:
+                rows = db.execute('SELECT id, name FROM classes WHERE teacher_id=? ORDER BY name',
+                                  (user['id'],)).fetchall()
+            return {'classes': [{'id': r['id'], 'name': r['name']} for r in rows]}, headers
+        if method == 'GET' and path == '/api/score-grid/export':
+            self.teacher(user)
+            cid = body.get('classId') or None
+            grid = self.dispatch('GET', '/api/score-grid',
+                                 {'classId': cid} if cid else {}, user, None, ip)[0]
+            try:
+                import openpyxl
+                from openpyxl.styles import Alignment, Font, PatternFill
+                from openpyxl.utils import get_column_letter
+            except ImportError:
+                fail(500, '伺服器缺少 openpyxl，無法匯出 Excel。')
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.title = '成績總表'
+            cols = grid.get('columns') or []
+            head = ['號', '姓名'] + [f"{c['date']} {c['title']}" for c in cols] + ['平均分', '未完成']
+            ws.append(head)
+            for cell in ws[1]:
+                cell.font = Font(bold=True)
+                cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+            for row in grid.get('students') or []:
+                line = [row.get('seat') or '', row.get('name') or '']
+                line += [('' if c['score'] is None else c['score']) for c in row['cells']]
+                line += ['' if row['average'] is None else round(row['average'], 1), row['missing']]
+                ws.append(line)
+                if any(c['overridden'] for c in row['cells']):
+                    for i, c in enumerate(row['cells']):
+                        if c['overridden']:
+                            ws.cell(row=ws.max_row, column=3 + i).fill = PatternFill('solid', fgColor='FDF6DC')
+            ws.column_dimensions['A'].width = 6
+            ws.column_dimensions['B'].width = 12
+            for i in range(len(cols)):
+                ws.column_dimensions[get_column_letter(3 + i)].width = 16
+            ws.freeze_panes = 'C2'
+            buf = io.BytesIO()
+            wb.save(buf)
+            name = ('成績總表-' + (grid['columns'][0]['date'] if cols else '') + '.xlsx').replace('/', '／')
+            return {'file': 'data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,'
+                            + base64.b64encode(buf.getvalue()).decode(),
+                    'filename': name}, headers
         if method == 'POST' and path == '/api/score-grid/score':
             self.teacher(user)
             fields(body, ('assignmentId', 'userId', 'score'), ('assignmentId', 'userId'))
