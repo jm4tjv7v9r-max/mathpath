@@ -4642,9 +4642,18 @@ PAPER_KEY_INSTRUCTION = (
 )
 
 
-def paper_key_page(app, image, page_no, total_pages, title):
-    """辨識單頁空白題目並生成標準答案。"""
-    instruction = (PAPER_KEY_INSTRUCTION +
+PAPER_KEY_STUDENT_INSTRUCTION = (
+    '這是學生「已經作答」的紙本作業。請只抄出印刷體的題目（題號、題幹、配分），'
+    '完全忽略學生的手寫答案、計算過程、批改記號與紅筆。'
+    '不要回答題目、不要臆造題幹；看不清的題目寧可略過。'
+    '只回傳 JSON：{"questions":[{"number":"1","question":"題幹","points":5}]}。'
+)
+
+
+def paper_key_page(app, image, page_no, total_pages, title, student=False):
+    """辨識單頁題目並生成標準答案；student=True 時只抽題目（學生已作答的卷）。"""
+    base = PAPER_KEY_STUDENT_INSTRUCTION if student else PAPER_KEY_INSTRUCTION
+    instruction = (base +
                    f'這是「{title}」的第 {page_no} / {total_pages} 頁。'
                    '如果這一頁沒有題目（封面、空白頁），回傳 {"questions":[]}。')
     try:
@@ -5965,7 +5974,8 @@ class Application:
         if method == 'POST' and path == '/api/paper-keys':
             # 第一步：教師上傳空白題目，AI 辨識題目並生成標準答案，等教師確認。
             self.teacher(user)
-            fields(body, ('title', 'pages', 'consentExternal'), ('title', 'pages'))
+            fields(body, ('title', 'pages', 'consentExternal', 'source'), ('title', 'pages'))
+            source = 'student' if body.get('source') == 'student' else 'blank'
             if 'consentExternal' in body and type(body['consentExternal']) is not bool:
                 fail(400, '外部上傳同意必須是布林值。')
             title = text(body['title'], '功課名稱', 200)
@@ -5990,7 +6000,8 @@ class Application:
             for index, image in enumerate(pages, 1):
                 if time.monotonic() > deadline:
                     fail(504, f'還有 {len(pages) - index + 1} 頁未辨識；請減少頁數。')
-                questions.extend(paper_key_page(self, image, index, len(pages), title))
+                questions.extend(paper_key_page(self, image, index, len(pages), title,
+                                                student=(source == 'student')))
             if not questions:
                 fail(422, 'AI 沒有辨識出任何題目；請確認上傳的是清晰的空白題目。')
             with self.db() as db:
@@ -6001,6 +6012,46 @@ class Application:
                 key_id = cur.lastrowid
             return {'key': {'id': key_id, 'title': title, 'pages': len(pages),
                             'questions': questions, 'confirmed': False}}, headers
+        if method == 'POST' and re.fullmatch(r'/api/paper-keys/([1-9]\d{0,17})/answers', path):
+            # 第二步：教師確認題目後，才叫 AI 逐題生成標準答案。
+            self.teacher(user)
+            fields(body, ('consentExternal', 'questions'), ())
+            key_id = int(path.rsplit('/', 2)[-2])
+            self.ai.consent(body.get('consentExternal'))
+            with self.db() as db:
+                row = db.execute('SELECT * FROM paper_keys WHERE id=?', (key_id,)).fetchone()
+                if row is None:
+                    fail(404, '找不到這份題目卷。')
+                if row['teacher_id'] != user['id'] and not self.is_owner(user, db):
+                    fail(403, '只有建立者或管理員可以生成答案。')
+                questions = (body.get('questions') if isinstance(body.get('questions'), list)
+                             else json.loads(row['questions']))
+            filled = []
+            for item in questions:
+                if not isinstance(item, dict):
+                    continue
+                question = str(item.get('question') or '').strip()
+                if not question:
+                    continue
+                if str(item.get('answer') or '').strip():
+                    filled.append(item)
+                    continue
+                try:
+                    result = self.ai.call(
+                        '你是資深數學教師。請為以下題目給出最終答案與簡要解法（繁體中文，公式用 $…$）。'
+                        '只回傳 JSON：{"answer":str,"solution":str}。',
+                        {'question': question, 'points': item.get('points')})
+                except APIError:
+                    filled.append(item)
+                    continue
+                if isinstance(result, dict):
+                    item = {**item, 'answer': str(result.get('answer') or '').strip()[:2000],
+                            'solution': str(result.get('solution') or '').strip()[:4000]}
+                filled.append(item)
+            with self.db() as db:
+                db.execute('UPDATE paper_keys SET questions=?, confirmed=0 WHERE id=?',
+                           (json.dumps(filled, ensure_ascii=False), key_id))
+            return {'key': {'id': key_id, 'questions': filled, 'confirmed': False}}, headers
         if method == 'GET' and path == '/api/paper-keys':
             self.teacher(user)
             with self.db() as db:
