@@ -3668,6 +3668,12 @@ async function paperGradePage(){
     const title=$('#paper-title').value.trim(),files=[...($('#key-files').files||[])];
     const err=$('#key-error'),btn=$('#key-build');
     err.textContent='';
+    // 「這是學生已作答的卷」勾選框：勾了只抽題目，之後再叫 AI 出答案
+    if($('#key-build')&&!$('#key-from-student')){
+      $('#key-build').insertAdjacentHTML('beforebegin',
+        '<label class="small-text" style="display:block;margin:0 0 6px">' +
+        '<input type="checkbox" id="key-from-student"> 這是學生已作答的卷（只抽題目，不需空白卷）</label>');
+    }
     if(!title)return err.textContent='請填寫功課名稱。';
     if(!files.length)return err.textContent='請上傳空白題目。';
     if(files.length>10)return err.textContent='最多 10 頁。';
@@ -3677,8 +3683,16 @@ async function paperGradePage(){
       const pages=[];
       for(let i=0;i<files.length;i++){btn.innerHTML=`${icon('clock')}處理第 ${i+1}/${files.length} 頁…`;pages.push(await paperPageData(files[i]));}
       btn.innerHTML=`${icon('spark')}AI 生成答案中…`;
-      const out=await api('/api/paper-keys',{title,pages,consentExternal:true});
-      const key=out.key;
+      const fromStudent=!!$('#key-from-student')?.checked;
+      const out=await api('/api/paper-keys',
+        {title,pages,consentExternal:true,source:fromStudent?'student':'blank'});
+      let key=out.key;
+      if(fromStudent){
+        // 學生卷只抽題目；教師確認前先由 AI 依抽到的題目生成答案
+        btn.innerHTML=`${icon('spark')}AI 生成答案中…`;
+        key=(await api(`/api/paper-keys/${key.id}/answers`,
+          {questions:key.questions,consentExternal:true})).key;
+      }
       $('#key-result').innerHTML=`<div class="paper-key-editor">
         <p class="small-text">AI 生成的標準答案如下。請逐題核對，可直接修改；確認後才能拿來批改。</p>
         <table class="board-table"><thead><tr><th>題號</th><th>題目</th><th>標準答案（可修改）</th></tr></thead><tbody>
