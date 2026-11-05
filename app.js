@@ -4579,7 +4579,7 @@ async function scoreGridPage(){
     if(!name)return toast('請填姓名。');
     try{
       const out=await api('/api/score-grid/student',
-        {classId:cid,name,seat:$('#sg-stu-seat').value||null});
+        {classId:cid,name,seat:Number($('#sg-stu-seat').value)||null});
       const st=out.student;
       toast(`已新增 ${st.name}（${st.seat?st.seat+'號 ' : ''}帳號 ${st.username}／密碼 ${st.password}）`);
       await scoreGridPage();

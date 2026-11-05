@@ -6206,8 +6206,16 @@ class Application:
             fields(body, ('classId', 'name', 'seat'), ('classId', 'name'))
             class_id = number(body['classId'], '班別', 1, 10 ** 18, True)
             name = text(body['name'], '姓名', 60, empty=False)
-            seat = body.get('seat')
-            seat = number(seat, '座號', 1, 999, True) if seat not in (None, '') else None
+            # 前端送來的是字串（input.value），number() 只吃數字型別，這裡自己收斂
+            raw_seat = body.get('seat')
+            seat = None
+            if raw_seat not in (None, ''):
+                try:
+                    seat = int(str(raw_seat).strip())
+                except (TypeError, ValueError):
+                    fail(400, '座號必須是數字。')
+                if not 1 <= seat <= 999:
+                    fail(400, '座號必須介於 1 和 999。')
             with self.db() as db:
                 row = db.execute('SELECT teacher_id, name FROM classes WHERE id=?', (class_id,)).fetchone()
                 if row is None:
