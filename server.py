@@ -683,6 +683,89 @@ def mask_name(name):
     return text[0] + 'X' * (len(text) - 2) + text[-1]
 
 
+PAPER_SCAN_MAX_PAGES = 80
+PAPER_ROSTER_PROMPT = (
+    '你是數學科教師助理。下面是一疊學生紙本作業的其中一頁，請讀出卷面上寫的學生身分。'
+    '只回傳 JSON：{"student": {"seat": 座號或null, "name": 姓名或null, "id": 學號或null},'
+    '"isFirst": 這頁是不是一份新卷的第一頁, "pageNo": 卷上寫的頁碼或null}。'
+    '讀不到就給 null，不要猜、不要用題目內容推測姓名。'
+)
+
+
+def paper_roster(app, pages):
+    """逐頁讀「這頁是誰的、是不是新的一份卷」，回一份清單（順序＝PDF 頁序）。"""
+    out = []
+    for index, image in enumerate(pages, 1):
+        try:
+            result = app.ai.call(PAPER_ROSTER_PROMPT, {'page': index}, image=image,
+                                 model=app.ai.vision, temperature=0)
+        except APIError:
+            result = None
+        student = (result or {}).get('student') if isinstance(result, dict) else None
+        student = student if isinstance(student, dict) else {}
+        seat = student.get('seat')
+        try:
+            seat = int(str(seat).strip()) if seat not in (None, '') else None
+        except (TypeError, ValueError):
+            seat = None
+        out.append({'page': index,
+                    'seat': seat,
+                    'name': str(student.get('name') or '').strip()[:40] or None,
+                    'isFirst': bool((result or {}).get('isFirst')) if isinstance(result, dict) else None})
+    return out
+
+
+def _name_score(written, stored):
+    """姓名相似度（C 輔助）：首尾字相同＋長度相同 → 高分；遮成 X 的字不計。"""
+    a, b = str(written or '').strip(), str(stored or '').strip()
+    if not a or not b or len(a) != len(b):
+        return 0
+    score = 0
+    for i, (x, y) in enumerate(zip(a, b)):
+        if y == 'X':
+            continue
+        if x == y:
+            score += 2 if i in (0, len(a) - 1) else 1
+    return score
+
+
+def match_papers(roster, students):
+    """把逐頁結果併成「一份卷」並配對學生：座號優先，姓名相似度輔助。"""
+    by_seat = {}
+    for st in students:
+        try:
+            by_seat[int(str(st['seat']).strip())] = st
+        except (TypeError, ValueError):
+            continue
+    sheets, current = [], None
+    for page in roster:
+        starts = page['isFirst'] or current is None or (
+            page['seat'] and current['seat'] and page['seat'] != current['seat'])
+        if starts:
+            current = {'seat': page['seat'], 'name': page['name'], 'pages': [page['page']],
+                       'studentId': None, 'matchedBy': None, 'confidence': 0}
+            sheets.append(current)
+        else:
+            current['pages'].append(page['page'])
+            current['seat'] = current['seat'] or page['seat']
+            current['name'] = current['name'] or page['name']
+    for sheet in sheets:
+        if sheet['seat'] and sheet['seat'] in by_seat:
+            st = by_seat[sheet['seat']]
+            sheet.update(studentId=st['id'], matchedName=st['name'],
+                         matchedBy='seat', confidence=1.0)
+            continue
+        best, best_score = None, 0
+        for st in students:
+            score = _name_score(sheet['name'], st['name'])
+            if score > best_score:
+                best, best_score = st, score
+        if best is not None and best_score >= 2:
+            sheet.update(studentId=best['id'], matchedName=best['name'],
+                         matchedBy='name', confidence=round(min(1.0, best_score / 4), 2))
+    return sheets
+
+
 def figure_needed(topic):
     """這道題需不需要圖形：只針對幾何與向量題材。"""
     return topic in FIGURE_TOPICS
@@ -6936,6 +7019,42 @@ class Application:
             return {'count': len(saved), 'skipped': skipped,
                     'questions': [self.question_public(q, user) for q in saved]}, headers
 
+        if method == 'POST' and path == '/api/paper-grades/scan':
+            self.teacher(user)
+            fields(body, ('file', 'classId', 'consentExternal', 'async'), ('file',))
+            if body.get('async'):
+                return {'jobId': self.start_job(
+                    user, lambda: self.dispatch(method, path, {**body, 'async': False},
+                                                user, token_hash, ip)[0])}, headers
+            kind, data = decode_paper(body['file'])
+            if kind != 'pdf':
+                fail(400, '請上傳 PDF（一次把所有學生的卷掃成一份 PDF）。')
+            class_id = body.get('classId')
+            class_id = number(class_id, '班別', 1, 10 ** 18, True) if class_id else None
+            self.ai.consent(body.get('consentExternal'))
+            pages = pdf_page_images(data, max_pages=PAPER_SCAN_MAX_PAGES)
+            if not pages:
+                fail(422, 'PDF 沒有可讀的頁面。')
+            roster = paper_roster(self, pages)
+            with self.db() as db:
+                if class_id:
+                    row = db.execute('SELECT teacher_id FROM classes WHERE id=?', (class_id,)).fetchone()
+                    if row is None:
+                        fail(404, '找不到這個班別。')
+                    if row['teacher_id'] != user['id'] and not self.is_owner(user, db):
+                        fail(403, '只有設立該班級的老師可以批改這個班。')
+                    students = [dict(r) for r in db.execute(
+                        'SELECT u.id,u.name,u.seat FROM users u JOIN class_students cs ON cs.user_id=u.id '
+                        'WHERE cs.class_id=? ORDER BY COALESCE(u.seat,999)', (class_id,))]
+                else:
+                    students = [dict(r) for r in db.execute(
+                        "SELECT id,name,seat FROM users WHERE role='student' "
+                        'ORDER BY COALESCE(seat,999), id')]
+            sheets = match_papers(roster, students)
+            return {'sheets': sheets, 'pages': len(pages),
+                    'summary': {'papers': len(sheets),
+                                'matched': sum(1 for x in sheets if x['studentId']),
+                                'unmatched': sum(1 for x in sheets if not x['studentId'])}}, headers
         if method == 'GET' and path == '/api/paper-grades':
             # 紙本批改紀錄：教師看自己建的；管理員看全部。
             self.teacher(user)

@@ -4618,6 +4618,27 @@ class ReasoningRoutingTests(unittest.TestCase):
         self.assertEqual(self.make().public()['reasoning'], '')
 
 
+class PaperRosterTests(unittest.TestCase):
+    """紙本批改：一次上傳全部學生的卷，先切卷、再認人（座號優先，姓名輔助）。"""
+
+    def test_sheets_are_grouped_and_matched(self):
+        students = [{'id': 1, 'name': '陳X文', 'seat': '7'},
+                    {'id': 2, 'name': '王X', 'seat': None},
+                    {'id': 3, 'name': '李X明', 'seat': '9'}]
+        roster = [
+            {'page': 1, 'seat': 7, 'name': '陳大文', 'isFirst': True},
+            {'page': 2, 'seat': None, 'name': None, 'isFirst': False},   # 同一份卷的第 2 頁
+            {'page': 3, 'seat': None, 'name': '王五', 'isFirst': True},
+            {'page': 4, 'seat': None, 'name': '張三', 'isFirst': True},   # 認不出
+        ]
+        sheets = server.match_papers(roster, students)
+        self.assertEqual([x['pages'] for x in sheets], [[1, 2], [3], [4]])
+        self.assertEqual(sheets[0]['studentId'], 1, '座號優先')
+        self.assertEqual(sheets[0]['matchedBy'], 'seat')
+        self.assertEqual(sheets[1]['studentId'], 2, '沒有座號就用姓名相似度（王五 ↔ 王X）')
+        self.assertIsNone(sheets[2]['studentId'], '認不出來的留給老師指派')
+
+
 class ScoreGridTests(unittest.TestCase):
     """成績總表：列=學生、欄=作業，教師可直接改分（存成調整，不動原始作答）。"""
 
