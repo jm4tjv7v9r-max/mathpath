@@ -6179,6 +6179,28 @@ class Application:
                                     for c in columns],
                         'students': rows,
                         'summary': {'students': len(rows), 'assignments': len(columns)}}, headers
+        if method == 'POST' and path == '/api/score-grid/column':
+            self.teacher(user)
+            fields(body, ('classId', 'title', 'date'), ('classId', 'title'))
+            class_id = number(body['classId'], '班別', 1, 10 ** 18, True)
+            title = text(body['title'], '欄位名稱', 120, empty=False)
+            date = (body.get('date') or '')[:10]
+            with self.db() as db:
+                row = db.execute('SELECT teacher_id, name FROM classes WHERE id=?', (class_id,)).fetchone()
+                if row is None:
+                    fail(404, '找不到這個班別。')
+                if row['teacher_id'] != user['id'] and not self.is_owner(user, db):
+                    fail(403, '只有設立該班級的老師可以新增欄位。')
+                if date and not re.fullmatch(r'\d{4}-\d{2}-\d{2}', date):
+                    fail(400, '日期格式應為 YYYY-MM-DD。')
+                stamp = (date + 'T00:00:00Z') if date else utc_now()
+                aid = db.execute(
+                    'INSERT INTO assignments(teacher_id,class_id,class_name,title,description,'
+                    'due_at,created_at,allow_late,kind,duration_minutes,ai_grading) '
+                    'VALUES(?,?,?,?,?,?,?,1,\'homework\',0,1)',
+                    (user['id'], class_id, row['name'], title, '（成績總表新增的欄位）', stamp,
+                     utc_now())).lastrowid
+            return {'ok': True, 'column': {'id': aid, 'title': title, 'date': date}}, headers
         if method == 'GET' and path == '/api/score-grid/classes':
             self.teacher(user)
             with self.db() as db:

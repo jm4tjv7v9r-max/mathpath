@@ -870,8 +870,8 @@ function shell(){// 「新手上路」放最後——那是第一次來看的，
   // 展開狀態記在 navOpen：沒設定過就跟著當前頁面（在裡面就展開）。
   const navRow=(id,label,active,child,iconId)=>`<button class="nav-item${child?' child':''} ${active?'active':''}" data-page="${id}">${icon(iconId||id)}<span>${label}</span>${id==='bank'?`<span class="count">${S.user?S.questions.length:'示例'}</span>`:''}</button>`;
   const TEACHER_NAV=[
-    {id:'homework',label:'作業成績'},
-    {id:'scores',label:'成績總表',iconId:'papers'},
+    {key:'homework',label:'作業成績',iconId:'homework',
+     children:[['homework','作業成績','list'],['scores','成績總表','papers']]},
     {key:'bank',label:'題庫與入題',iconId:'bank',
      children:[['bank','題庫','list'],['import','試卷拆題入庫'],['newq','新增題目']]},
     {key:'review',label:'批閱',iconId:'edit',
@@ -4546,6 +4546,12 @@ async function scoreGridPage(){
             ${classList.map(c=>`<option value="${c.id}"${cid===c.id?' selected':''}>${esc(c.name||'')}</option>`).join('')}
           </select>
         </label>
+        <span class="sg-newcol" id="sg-newcol" hidden>
+          <input id="sg-newcol-title" placeholder="欄位名稱，如：小測三" maxlength="40">
+          <input id="sg-newcol-date" type="date">
+          <button class="primary" id="sg-newcol-ok">確定</button>
+        </span>
+        <button class="secondary" id="sg-addcol">＋ 新增欄位</button>
         <button class="secondary" id="sg-export">下載 Excel</button>
       </div>
       <div class="sg-wrap"><table class="score-grid">
@@ -4558,6 +4564,21 @@ async function scoreGridPage(){
   $('#sg-class').onchange=async ev=>{
     sessionStorage.setItem('scoreClass',ev.target.value);
     await scoreGridPage();
+  };
+  // 不用 prompt()：內嵌預覽的 iframe 會封鎖對話框，改用行內表單
+  $('#sg-addcol').onclick=()=>{
+    if(!cid)return toast('請先選擇一個班別，再新增欄位。');
+    const box=$('#sg-newcol');
+    box.hidden=!box.hidden;
+    if(!box.hidden)$('#sg-newcol-title').focus();
+  };
+  $('#sg-newcol-ok').onclick=async()=>{
+    const title=($('#sg-newcol-title').value||'').trim();
+    if(!title)return toast('請填欄位名稱。');
+    try{
+      await api('/api/score-grid/column',{classId:cid,title,date:$('#sg-newcol-date').value||''});
+      toast('已新增欄位');await scoreGridPage();
+    }catch(e){toast(e.message);}
   };
   $('#sg-export').onclick=async ev=>{
     const btn=ev.target;const old=btn.textContent;btn.disabled=true;btn.textContent='匯出中…';
