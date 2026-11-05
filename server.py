@@ -6172,8 +6172,8 @@ class Application:
                     return {'ok': True, 'cleared': True}, headers
                 score = number(raw, '分數', 0, 1000, True)
                 db.execute('INSERT INTO score_overrides(assignment_id,user_id,score,updated_by,updated_at) '
-                           'VALUES(?,?,?,?,?) ON CONFLICT(assignment_id,user_id) '
-                           'UPDATE SET score=excluded.score, updated_by=excluded.updated_by, '
+                           'VALUES(?,?,?,?,?) ON CONFLICT(assignment_id,user_id) DO UPDATE SET '
+                           'score=excluded.score, updated_by=excluded.updated_by, '
                            'updated_at=excluded.updated_at',
                            (assignment_id, user_id, score, user['id'], utc_now()))
             return {'ok': True, 'score': score}, headers

@@ -4618,5 +4618,63 @@ class ReasoningRoutingTests(unittest.TestCase):
         self.assertEqual(self.make().public()['reasoning'], '')
 
 
+class ScoreGridTests(unittest.TestCase):
+    """成績總表：列=學生、欄=作業，教師可直接改分（存成調整，不動原始作答）。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.app = server.Application(self.tmp.name, server.ROOT)
+        self.app.initialize()
+        with self.app.db() as db:
+            self.teacher = dict(db.execute(
+                "SELECT * FROM users WHERE role='teacher' ORDER BY id LIMIT 1").fetchone())
+            self.student = dict(db.execute(
+                "SELECT * FROM users WHERE role='student' ORDER BY id LIMIT 1").fetchone())
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def call(self, method, path, body=None, expect=200):
+        try:
+            payload, _ = self.app.dispatch(method, path, body or {}, self.teacher, None, '127.0.0.1')
+        except server.APIError as exc:
+            self.assertEqual(exc.status, expect, exc.message)
+            return {'error': exc.message}
+        self.assertEqual(expect, 200)
+        return payload
+
+    def test_grid_lists_students_and_columns(self):
+        grid = self.call('GET', '/api/score-grid')
+        self.assertIn('columns', grid)
+        self.assertEqual(len(grid['students']), 1)
+        row = grid['students'][0]
+        self.assertEqual(row['id'], self.student['id'])
+        self.assertEqual(len(row['cells']), len(grid['columns']))
+        self.assertEqual(row['missing'], len(grid['columns']) - row['done'])
+
+    def test_teacher_can_override_and_clear_a_score(self):
+        with self.app.db() as db:
+            cid = db.execute("INSERT INTO classes(teacher_id,name) VALUES(?,?)",
+                             (self.teacher['id'], '測試班')).lastrowid
+            db.execute("INSERT OR IGNORE INTO class_students(class_id,user_id) VALUES(?,?)",
+                       (cid, self.student['id']))
+            aid = db.execute("INSERT INTO assignments(teacher_id,class_id,class_name,title,description,"
+                             "due_at,created_at,allow_late,kind,duration_minutes,ai_grading) "
+                             "VALUES(?,?,?,?,?,?,?,0,'homework',0,1)",
+                             (self.teacher['id'], cid, '測試班', '測試作業', '',
+                              '2026-11-01T00:00:00Z', '2026-11-01T00:00:00Z')).lastrowid
+        self.call('POST', '/api/score-grid/score',
+                  {'assignmentId': aid, 'userId': self.student['id'], 'score': 88})
+        grid = self.call('GET', '/api/score-grid')
+        cell = [c for c in grid['students'][0]['cells'] if c['score'] is not None]
+        self.assertTrue(cell and cell[0]['overridden'], '教師改的分數要標成 overridden')
+        self.assertEqual(grid['students'][0]['average'], 88)
+
+        self.call('POST', '/api/score-grid/score',
+                  {'assignmentId': aid, 'userId': self.student['id'], 'score': None})
+        grid = self.call('GET', '/api/score-grid')
+        self.assertEqual(grid['students'][0]['average'], None, '清除後回到未完成')
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)
