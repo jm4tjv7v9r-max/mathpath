@@ -7381,6 +7381,10 @@ class Application:
             if not re.fullmatch(r'[A-Za-z0-9_.-]{3,40}', username):
                 fail(400, '帳戶名稱須為3至40個 ASCII 字母、數字或 _ . -。')
             name = student_name(body.get('name'), username)
+            if name != username:
+                name = mask_name(name)   # 學生姓名一律遮蔽（陳大文 → 陳X文）
+            if name != username:
+                name = mask_name(name)      # 學生姓名一律遮蔽（陳大文 → 陳X文）
             seat = seat_value(body.get('seat'))
             try:
                 grade = self.dataadmin.grade_value(body.get('grade'))
@@ -7447,6 +7451,10 @@ class Application:
                     fail(400, f'第 {index} 行帳戶名稱在本次批次中重複。')
                 seen.add(username)
                 name = student_name(item.get('name'), username, f'第 {index} 行姓名')
+                if name != username:
+                    name = mask_name(name)   # 學生姓名一律遮蔽（陳大文 → 陳X文）
+                if name != username:
+                    name = mask_name(name)
                 seat = seat_value(item.get('seat'), f'第 {index} 行班內號')
                 pw = text(item['password'], f'第 {index} 行密碼', 256, strip=False)
                 if len(pw) < 10:

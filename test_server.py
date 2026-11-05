@@ -965,7 +965,7 @@ class APITests(unittest.TestCase):
                      origin='http://evil.example', expect=403)
 
     def test_users_creation_login_and_teacher_only_listing(self):
-        body = {'username': 'Class_3.A-01', 'name': '獨立學生', 'password': 'StudentPass123!'}
+        body = {'username': 'Class_3.A-01', 'name': '獨XX生', 'password': 'StudentPass123!'}
         for cookie, status in ((None, 401), (self.student, 403)):
             self.request('GET', '/api/users', cookie=cookie, expect=status)
             self.request('POST', '/api/users', body, cookie=cookie, expect=status)
