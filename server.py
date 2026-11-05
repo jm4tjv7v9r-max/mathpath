@@ -6236,9 +6236,13 @@ class Application:
                     fail(404, '找不到這個班別。')
                 if row['teacher_id'] != user['id'] and not self.is_owner(user, db):
                     fail(403, '只有設立該班級的老師可以新增學生。')
-                if db.execute('SELECT 1 FROM users u JOIN class_students cs ON cs.user_id=u.id '
-                              'WHERE cs.class_id=? AND u.name=?', (class_id, name)).fetchone():
-                    fail(409, f'「{row["name"]}」已經有叫「{name}」的學生。')
+                # 資料庫一律存遮蔽姓名（陳大文 → 陳X文）；同名不同座號視為不同人
+                display = mask_name(name)
+                dup = db.execute('SELECT 1 FROM users u JOIN class_students cs ON cs.user_id=u.id '
+                                 'WHERE cs.class_id=? AND u.name=? AND COALESCE(u.seat,-1)=?',
+                                 (class_id, display, -1 if seat is None else seat)).fetchone()
+                if dup:
+                    fail(409, f'「{row["name"]}」已經有座號 {seat if seat else "（未填）"} 的「{display}」。')
                 base = f's{class_id}{seat if seat else int(time.time()) % 100000}'
                 username, n = base, 1
                 while db.execute('SELECT 1 FROM users WHERE username=?', (username,)).fetchone():
@@ -6247,11 +6251,11 @@ class Application:
                 password = 'm' + secrets.token_hex(3)
                 uid = db.execute('INSERT INTO users(username,name,role,password,demo,seat,created_by) '
                                  'VALUES(?,?,?,?,0,?,?)',
-                                 (username, name, 'student', password_hash(password), seat,
+                                 (username, display, 'student', password_hash(password), seat,
                                   user['id'])).lastrowid
                 db.execute('INSERT OR IGNORE INTO class_students(class_id,user_id) VALUES(?,?)',
                            (class_id, uid))
-            return {'student': {'id': uid, 'name': name, 'seat': seat,
+            return {'student': {'id': uid, 'name': display, 'seat': seat,
                                 'username': username, 'password': password}}, headers
         if method == 'POST' and path == '/api/score-grid/students':
             self.teacher(user)
@@ -6266,8 +6270,8 @@ class Application:
                     fail(404, '找不到這個班別。')
                 if row['teacher_id'] != user['id'] and not self.is_owner(user, db):
                     fail(403, '只有設立該班級的老師可以匯入學生。')
-                existing = {r['name'] for r in db.execute(
-                    'SELECT u.name FROM users u JOIN class_students cs ON cs.user_id=u.id '
+                existing = {(r['name'], r['seat']) for r in db.execute(
+                    'SELECT u.name, u.seat FROM users u JOIN class_students cs ON cs.user_id=u.id '
                     'WHERE cs.class_id=?', (class_id,))}
                 created, skipped = [], []
                 for item in raw:
@@ -6275,9 +6279,6 @@ class Application:
                         continue
                     name = str(item.get('name') or '').strip()[:60]
                     if not name:
-                        continue
-                    if name in existing:
-                        skipped.append(name)
                         continue
                     seat = None
                     if item.get('seat') not in (None, ''):
@@ -6287,6 +6288,10 @@ class Application:
                             seat = None
                         if seat is not None and not 1 <= seat <= 999:
                             seat = None
+                    display = mask_name(name)
+                    if (display, seat) in existing:
+                        skipped.append(display)
+                        continue
                     base = f's{class_id}{seat if seat else int(time.time() * 1000) % 100000}'
                     username, n = base, 1
                     while db.execute('SELECT 1 FROM users WHERE username=?', (username,)).fetchone():
@@ -6295,12 +6300,12 @@ class Application:
                     password = 'm' + secrets.token_hex(3)
                     uid = db.execute('INSERT INTO users(username,name,role,password,demo,seat,created_by) '
                                      'VALUES(?,?,?,?,0,?,?)',
-                                     (username, name, 'student', password_hash(password), seat,
+                                     (username, display, 'student', password_hash(password), seat,
                                       user['id'])).lastrowid
                     db.execute('INSERT OR IGNORE INTO class_students(class_id,user_id) VALUES(?,?)',
                                (class_id, uid))
-                    existing.add(name)
-                    created.append({'id': uid, 'name': name, 'seat': seat,
+                    existing.add((display, seat))
+                    created.append({'id': uid, 'name': display, 'seat': seat,
                                     'username': username, 'password': password})
             return {'created': created, 'skipped': skipped,
                     'summary': {'created': len(created), 'skipped': len(skipped)}}, headers

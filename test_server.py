@@ -4674,15 +4674,14 @@ class ScoreGridTests(unittest.TestCase):
         out = self.call('POST', '/api/score-grid/student',
                         {'classId': cid, 'name': '陳大文', 'seat': 7})['student']
         self.assertTrue(out['username'] and out['password'])
+        self.assertEqual(out['name'], '陳X文', '資料庫存遮蔽姓名')
         grid = self.call('GET', '/api/score-grid', {'classId': cid})
-        # 成績表對外顯示遮蔽後的姓名（中間用 X），完整姓名另存 fullName
         names = [r['name'] for r in grid['students']]
         self.assertIn('陳X文', names)
         self.assertNotIn('陳大文', names)
-        self.assertIn('陳大文', [r['fullName'] for r in grid['students']])
-        # 同班同名要擋
+        # 同班同座號同名要擋
         self.call('POST', '/api/score-grid/student',
-                  {'classId': cid, 'name': '陳大文'}, expect=409)
+                  {'classId': cid, 'name': '陳大文', 'seat': 7}, expect=409)
 
     def test_only_the_class_teacher_can_view_or_edit(self):
         """只有設立該班級的老師看得到、改得到；其他老師與學生一律擋。"""
