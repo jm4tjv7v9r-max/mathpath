@@ -4634,23 +4634,53 @@ class ScoreGridTests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def call(self, method, path, body=None, expect=200):
+    def call(self, method, path, body=None, expect=200, user=None):
         try:
-            payload, _ = self.app.dispatch(method, path, body or {}, self.teacher, None, '127.0.0.1')
+            payload, _ = self.app.dispatch(method, path, body or {}, user or self.teacher,
+                                           None, '127.0.0.1')
         except server.APIError as exc:
             self.assertEqual(exc.status, expect, exc.message)
             return {'error': exc.message}
         self.assertEqual(expect, 200)
         return payload
 
+    def make_class(self):
+        with self.app.db() as db:
+            cid = db.execute("INSERT INTO classes(teacher_id,name) VALUES(?,?)",
+                             (self.teacher['id'], '測試班')).lastrowid
+            db.execute("INSERT OR IGNORE INTO class_students(class_id,user_id) VALUES(?,?)",
+                       (cid, self.student['id']))
+        return cid
+
     def test_grid_lists_students_and_columns(self):
-        grid = self.call('GET', '/api/score-grid')
+        cid = self.make_class()
+        grid = self.call('GET', '/api/score-grid', {'classId': cid})
         self.assertIn('columns', grid)
         self.assertEqual(len(grid['students']), 1)
         row = grid['students'][0]
         self.assertEqual(row['id'], self.student['id'])
         self.assertEqual(len(row['cells']), len(grid['columns']))
         self.assertEqual(row['missing'], len(grid['columns']) - row['done'])
+
+    def test_only_the_class_teacher_can_view_or_edit(self):
+        """只有設立該班級的老師看得到、改得到；其他老師與學生一律擋。"""
+        cid = self.make_class()
+        with self.app.db() as db:
+            aid = db.execute("INSERT INTO assignments(teacher_id,class_id,class_name,title,description,"
+                             "due_at,created_at,allow_late,kind,duration_minutes,ai_grading) "
+                             "VALUES(?,?,?,?,?,?,?,0,'homework',0,1)",
+                             (self.teacher['id'], cid, '測試班', '作業', '',
+                              '2026-11-01T00:00:00Z', '2026-11-01T00:00:00Z')).lastrowid
+            other = db.execute("SELECT * FROM users WHERE role='teacher' AND id<>? LIMIT 1",
+                               (self.teacher['id'],)).fetchone()
+        if other:
+            other = dict(other)
+            self.call('GET', '/api/score-grid', {'classId': cid}, user=other, expect=403)
+            self.call('POST', '/api/score-grid/score',
+                      {'assignmentId': aid, 'userId': self.student['id'], 'score': 99},
+                      user=other, expect=403)
+        # 學生連端點都進不去
+        self.call('GET', '/api/score-grid', {'classId': cid}, user=self.student, expect=403)
 
     def test_teacher_can_override_and_clear_a_score(self):
         with self.app.db() as db:

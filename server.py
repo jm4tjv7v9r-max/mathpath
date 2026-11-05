@@ -6097,12 +6097,35 @@ class Application:
                                 updated_by INTEGER,
                                 updated_at TEXT NOT NULL,
                                 PRIMARY KEY (assignment_id, user_id))""")
-                students = [dict(r) for r in db.execute(
-                    'SELECT u.id, u.name, u.seat FROM users u '
-                    + ('JOIN class_students cs ON cs.user_id=u.id WHERE cs.class_id=? '
-                       if class_id else "WHERE u.role='student' ")
-                    + 'ORDER BY COALESCE(u.seat, 999), u.id', ((class_id,) if class_id else ()))]
-                where, args = ('WHERE class_id=?', (class_id,)) if class_id else ('', ())
+                # 權限：只有「設立這個班級的老師」看得到自己班的成績；管理員例外。
+                mine = [r['id'] for r in db.execute(
+                    'SELECT id FROM classes WHERE teacher_id=?', (user['id'],))]
+                if class_id is not None and not self.is_owner(user, db) and class_id not in mine:
+                    fail(403, '這不是你設立的班別；只有該班老師可以查看成績。')
+                scope = None if self.is_owner(user, db) else (mine if class_id is None else [class_id])
+                if scope is not None and not scope:
+                    return {'columns': [], 'students': [],
+                            'summary': {'students': 0, 'assignments': 0},
+                            'notice': '你還沒有設立班級。'}, headers
+                if class_id:
+                    students = [dict(r) for r in db.execute(
+                        'SELECT u.id, u.name, u.seat FROM users u '
+                        'JOIN class_students cs ON cs.user_id=u.id WHERE cs.class_id=? '
+                        'ORDER BY COALESCE(u.seat, 999), u.id', (class_id,))]
+                    where, args = 'WHERE class_id=?', (class_id,)
+                elif scope is None:
+                    students = [dict(r) for r in db.execute(
+                        "SELECT id, name, seat FROM users WHERE role='student' "
+                        'ORDER BY COALESCE(seat, 999), id')]
+                    where, args = '', ()
+                else:
+                    marks = ','.join('?' * len(scope))
+                    students = [dict(r) for r in db.execute(
+                        'SELECT DISTINCT u.id, u.name, u.seat FROM users u '
+                        'JOIN class_students cs ON cs.user_id=u.id '
+                        f'WHERE cs.class_id IN ({marks}) '
+                        'ORDER BY COALESCE(u.seat, 999), u.id', tuple(scope))]
+                    where, args = f'WHERE class_id IN ({marks})', tuple(scope)
                 assignments = [dict(r) for r in db.execute(
                     'SELECT id, title, due_at, created_at, class_name FROM assignments ' + where
                     + ' ORDER BY COALESCE(due_at, created_at), id', args)]
@@ -6209,6 +6232,13 @@ class Application:
             user_id = number(body['userId'], '學生', 1, 10 ** 18, True)
             raw = body.get('score')
             with self.db() as db:
+                row = db.execute('SELECT a.class_id, c.teacher_id FROM assignments a '
+                                 'LEFT JOIN classes c ON c.id=a.class_id WHERE a.id=?',
+                                 (assignment_id,)).fetchone()
+                if row is None:
+                    fail(404, '找不到這份作業。')
+                if row['teacher_id'] != user['id'] and not self.is_owner(user, db):
+                    fail(403, '只有設立該班級的老師可以修改分數。')
                 db.execute("""CREATE TABLE IF NOT EXISTS score_overrides (
                                 assignment_id INTEGER NOT NULL, user_id INTEGER NOT NULL,
                                 score REAL NOT NULL, updated_by INTEGER, updated_at TEXT NOT NULL,
