@@ -670,6 +670,19 @@ FIGURE_TOPICS = ('幾何', '三角形', '四邊形與多邊形', '圓', '立體�
                  '坐標幾何', '軌跡與幾何證明', '向量')
 
 
+def mask_name(name):
+    """姓名中間用 X 代替（陳大文 → 陳X文、王五 → 王X），成績表對外顯示用。
+
+    保留首尾各一個字，長度 3 以上中間全部換成 X；只有一個字就原樣。
+    """
+    text = str(name or '').strip()
+    if len(text) <= 1:
+        return text
+    if len(text) == 2:
+        return text[0] + 'X'
+    return text[0] + 'X' * (len(text) - 2) + text[-1]
+
+
 def figure_needed(topic):
     """這道題需不需要圖形：只針對幾何與向量題材。"""
     return topic in FIGURE_TOPICS
@@ -6171,7 +6184,8 @@ class Application:
                                 total += value; done_count += 1
                         else:
                             cells.append({'score': None, 'overridden': False})
-                    rows.append({'id': st['id'], 'name': st['name'], 'seat': st['seat'],
+                    rows.append({'id': st['id'], 'name': mask_name(st['name']),
+                                 'fullName': st['name'], 'seat': st['seat'],
                                  'cells': cells, 'done': done_count,
                                  'missing': len(columns) - done_count,
                                  'average': (total / done_count) if done_count else None})

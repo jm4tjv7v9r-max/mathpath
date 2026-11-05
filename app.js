@@ -4531,7 +4531,7 @@ async function scoreGridPage(){
   const head=cols.map(c=>`<th class="sg-col"><span class="sg-date">${esc(c.date||'—')}</span><span class="sg-title">${esc(c.title||'')}</span></th>`).join('');
   const body=rows.map(r=>`<tr>
     <td class="sg-seat">${r.seat??''}</td>
-    <td class="sg-name">${esc(r.name||'')}</td>
+    <td class="sg-name" title="${esc(r.fullName||r.name||'')}">${esc(r.name||'')}</td>
     ${r.cells.map((c,i)=>`<td class="sg-cell${c.overridden?' edited':''}${c.score===null?' empty':''}"
         contenteditable="true" data-a="${cols[i].id}" data-u="${r.id}"
         title="${c.overridden?'教師調整過（按右鍵還原）':'系統依作答計算'}">${c.score===null?'':fmtScore(c.score)}</td>`).join('')}
