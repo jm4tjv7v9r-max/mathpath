@@ -6239,6 +6239,57 @@ class Application:
                            (class_id, uid))
             return {'student': {'id': uid, 'name': name, 'seat': seat,
                                 'username': username, 'password': password}}, headers
+        if method == 'POST' and path == '/api/score-grid/students':
+            self.teacher(user)
+            fields(body, ('classId', 'students'), ('classId', 'students'))
+            class_id = number(body['classId'], '班別', 1, 10 ** 18, True)
+            raw = body['students']
+            if not isinstance(raw, list) or not 1 <= len(raw) <= 100:
+                fail(400, '一次匯入 1 至 100 名學生。')
+            with self.db() as db:
+                row = db.execute('SELECT teacher_id, name FROM classes WHERE id=?', (class_id,)).fetchone()
+                if row is None:
+                    fail(404, '找不到這個班別。')
+                if row['teacher_id'] != user['id'] and not self.is_owner(user, db):
+                    fail(403, '只有設立該班級的老師可以匯入學生。')
+                existing = {r['name'] for r in db.execute(
+                    'SELECT u.name FROM users u JOIN class_students cs ON cs.user_id=u.id '
+                    'WHERE cs.class_id=?', (class_id,))}
+                created, skipped = [], []
+                for item in raw:
+                    if not isinstance(item, dict):
+                        continue
+                    name = str(item.get('name') or '').strip()[:60]
+                    if not name:
+                        continue
+                    if name in existing:
+                        skipped.append(name)
+                        continue
+                    seat = None
+                    if item.get('seat') not in (None, ''):
+                        try:
+                            seat = int(str(item['seat']).strip())
+                        except (TypeError, ValueError):
+                            seat = None
+                        if seat is not None and not 1 <= seat <= 999:
+                            seat = None
+                    base = f's{class_id}{seat if seat else int(time.time() * 1000) % 100000}'
+                    username, n = base, 1
+                    while db.execute('SELECT 1 FROM users WHERE username=?', (username,)).fetchone():
+                        n += 1
+                        username = f'{base}{n}'
+                    password = 'm' + secrets.token_hex(3)
+                    uid = db.execute('INSERT INTO users(username,name,role,password,demo,seat,created_by) '
+                                     'VALUES(?,?,?,?,0,?,?)',
+                                     (username, name, 'student', password_hash(password), seat,
+                                      user['id'])).lastrowid
+                    db.execute('INSERT OR IGNORE INTO class_students(class_id,user_id) VALUES(?,?)',
+                               (class_id, uid))
+                    existing.add(name)
+                    created.append({'id': uid, 'name': name, 'seat': seat,
+                                    'username': username, 'password': password})
+            return {'created': created, 'skipped': skipped,
+                    'summary': {'created': len(created), 'skipped': len(skipped)}}, headers
         if method == 'GET' and path == '/api/score-grid/classes':
             self.teacher(user)
             with self.db() as db:

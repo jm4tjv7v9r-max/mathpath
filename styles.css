@@ -1134,3 +1134,10 @@ html[data-theme=night] .nav-item .count.due{background:#3a2c1d;color:#e0b083}
 .sg-addrow #sg-stu-seat{width:64px}
 .sg-addcell{text-align:left!important}
 .sg-addcell input{width:180px;margin-right:8px}
+.sg-bulkbox{margin-bottom:12px;padding:12px;border:1px solid var(--border);border-radius:10px;background:var(--surface,#f7f6f2)}
+.sg-bulkbox textarea{width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;
+  font-family:var(--font-mono);font-size:calc(13px*var(--fs));line-height:1.6}
+.sg-bulk-actions{margin-top:8px;display:flex;justify-content:flex-end}
+.bulk-result{width:100%;border-collapse:collapse;margin-top:8px;font-size:calc(12.5px*var(--fs))}
+.bulk-result th,.bulk-result td{border:1px solid var(--border-tertiary,#e6e3da);padding:4px 8px;text-align:left}
+.bulk-result th{background:var(--paper,#fff)}

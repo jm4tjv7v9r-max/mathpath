@@ -4552,7 +4552,14 @@ async function scoreGridPage(){
           <button class="primary" id="sg-newcol-ok">確定</button>
         </span>
         <button class="secondary" id="sg-addcol">＋ 新增欄位</button>
+        <button class="secondary" id="sg-bulk">整班匯入</button>
         <button class="secondary" id="sg-export">下載 Excel</button>
+      </div>
+      <div class="sg-bulkbox" id="sg-bulkbox" hidden>
+        <p class="small-text">一行一個學生，格式「座號 姓名」或只寫姓名；已有的同名學生會自動跳過。</p>
+        <textarea id="sg-bulk-text" rows="6" placeholder="1 陳大文&#10;2 李小明&#10;3 王美玲"></textarea>
+        <div class="sg-bulk-actions"><button class="primary" id="sg-bulk-ok">開始匯入</button></div>
+        <div id="sg-bulk-result"></div>
       </div>
       <div class="sg-wrap"><table class="score-grid">
         <thead><tr><th class="sg-seat">號</th><th class="sg-name">姓名</th>${head}
@@ -4582,6 +4589,29 @@ async function scoreGridPage(){
         {classId:cid,name,seat:Number($('#sg-stu-seat').value)||null});
       const st=out.student;
       toast(`已新增 ${st.name}（${st.seat?st.seat+'號 ' : ''}帳號 ${st.username}／密碼 ${st.password}）`);
+      await scoreGridPage();
+    }catch(e){toast(e.message);}
+  };
+  $('#sg-bulk').onclick=()=>{
+    if(!cid)return toast('請先選擇一個班別。');
+    const box=$('#sg-bulkbox');box.hidden=!box.hidden;
+    if(!box.hidden)$('#sg-bulk-text').focus();
+  };
+  $('#sg-bulk-ok').onclick=async()=>{
+    const lines=($('#sg-bulk-text').value||'').split('\n').map(l=>l.trim()).filter(Boolean);
+    if(!lines.length)return toast('請貼上學生名單。');
+    const students=lines.map(line=>{
+      const m=line.match(/^(\d{1,3})[\s,，、.\t]+(.+)$/);
+      return m?{seat:Number(m[1]),name:m[2].trim()}:{name:line.replace(/^[\s,，、.]+/,'').trim()};
+    }).filter(x=>x.name);
+    try{
+      const out=await api('/api/score-grid/students',{classId:cid,students});
+      const rows=(out.created||[]).map(st=>`<tr><td>${st.seat??''}</td><td>${esc(st.name)}</td>
+        <td>${esc(st.username)}</td><td>${esc(st.password)}</td></tr>`).join('');
+      $('#sg-bulk-result').innerHTML=rows?`<p class="small-text">新增 ${out.created.length} 人${out.skipped.length?`，略過同名 ${out.skipped.length} 人`:''}。帳號密碼只顯示這一次，請先抄下。</p>
+        <table class="bulk-result"><thead><tr><th>號</th><th>姓名</th><th>帳號</th><th>密碼</th></tr></thead><tbody>${rows}</tbody></table>`
+        :`<p class="small-text">沒有新增任何人（全部同名或格式不對）。</p>`;
+      toast(`已匯入 ${out.created.length} 人`);
       await scoreGridPage();
     }catch(e){toast(e.message);}
   };
