@@ -6082,6 +6082,101 @@ class Application:
                               'totalQuestions': len([q for q in questions if q['correct'] is not None]),
                               'correctCount': sum(1 for q in questions if q['correct'] is True),
                               'questions': questions}}, headers
+        # ---------- 成績總表（教師用，像 Excel 的網格） ----------
+        if method == 'GET' and path == '/api/score-grid':
+            self.teacher(user)
+            class_id = body.get('classId') or None
+            if class_id is not None:
+                class_id = number(class_id, '班別', 1, 10 ** 18, True)
+            with self.db() as db:
+                db.execute("""CREATE TABLE IF NOT EXISTS score_overrides (
+                                assignment_id INTEGER NOT NULL,
+                                user_id INTEGER NOT NULL,
+                                score REAL NOT NULL,
+                                updated_by INTEGER,
+                                updated_at TEXT NOT NULL,
+                                PRIMARY KEY (assignment_id, user_id))""")
+                students = [dict(r) for r in db.execute(
+                    'SELECT u.id, u.name, u.seat FROM users u '
+                    + ('JOIN class_students cs ON cs.user_id=u.id WHERE cs.class_id=? '
+                       if class_id else "WHERE u.role='student' ")
+                    + 'ORDER BY COALESCE(u.seat, 999), u.id', ((class_id,) if class_id else ()))]
+                where, args = ('WHERE class_id=?', (class_id,)) if class_id else ('', ())
+                assignments = [dict(r) for r in db.execute(
+                    'SELECT id, title, due_at, created_at, class_name FROM assignments ' + where
+                    + ' ORDER BY COALESCE(due_at, created_at), id', args)]
+                override = {(r['assignment_id'], r['user_id']): r['score'] for r in db.execute(
+                    'SELECT assignment_id, user_id, score FROM score_overrides')}
+                uid_list = [s['id'] for s in students]
+                columns = []
+                for a in assignments:
+                    qids = [r['question_id'] for r in db.execute(
+                        'SELECT question_id FROM assignment_questions WHERE assignment_id=? '
+                        'ORDER BY position', (a['id'],))]
+                    done = {r['user_id']: r for r in db.execute(
+                        'SELECT user_id, submitted_at FROM assignment_recipients WHERE assignment_id=?',
+                        (a['id'],))}
+                    scores = {}
+                    if qids and uid_list:
+                        marks = ','.join('?' * len(qids))
+                        users = ','.join('?' * len(uid_list))
+                        rows = db.execute(
+                            f'SELECT user_id, question_id, score FROM ('
+                            f'  SELECT user_id, question_id, score, ROW_NUMBER() OVER ('
+                            f'    PARTITION BY user_id, question_id ORDER BY submitted_at DESC) rn'
+                            f'  FROM attempts WHERE question_id IN ({marks}) AND user_id IN ({users})'
+                            f') WHERE rn=1', (*qids, *uid_list)).fetchall()
+                        for r in rows:
+                            scores.setdefault(r['user_id'], 0.0)
+                            scores[r['user_id']] += r['score'] or 0
+                    columns.append({'id': a['id'], 'title': a['title'],
+                                    'date': (a['due_at'] or a['created_at'] or '')[:10],
+                                    'class': a['class_name'], 'submitted': done, 'scores': scores})
+                rows = []
+                for st in students:
+                    cells, total, done_count = [], 0.0, 0
+                    for col in columns:
+                        key = (col['id'], st['id'])
+                        if key in override:
+                            cells.append({'score': override[key], 'overridden': True})
+                            total += override[key]; done_count += 1
+                        elif st['id'] in col['submitted']:
+                            value = col['scores'].get(st['id'])
+                            cells.append({'score': value, 'overridden': False})
+                            if value is not None:
+                                total += value; done_count += 1
+                        else:
+                            cells.append({'score': None, 'overridden': False})
+                    rows.append({'id': st['id'], 'name': st['name'], 'seat': st['seat'],
+                                 'cells': cells, 'done': done_count,
+                                 'missing': len(columns) - done_count,
+                                 'average': (total / done_count) if done_count else None})
+                return {'columns': [{'id': c['id'], 'title': c['title'], 'date': c['date']}
+                                    for c in columns],
+                        'students': rows,
+                        'summary': {'students': len(rows), 'assignments': len(columns)}}, headers
+        if method == 'POST' and path == '/api/score-grid/score':
+            self.teacher(user)
+            fields(body, ('assignmentId', 'userId', 'score'), ('assignmentId', 'userId'))
+            assignment_id = number(body['assignmentId'], '作業', 1, 10 ** 18, True)
+            user_id = number(body['userId'], '學生', 1, 10 ** 18, True)
+            raw = body.get('score')
+            with self.db() as db:
+                db.execute("""CREATE TABLE IF NOT EXISTS score_overrides (
+                                assignment_id INTEGER NOT NULL, user_id INTEGER NOT NULL,
+                                score REAL NOT NULL, updated_by INTEGER, updated_at TEXT NOT NULL,
+                                PRIMARY KEY (assignment_id, user_id))""")
+                if raw is None or raw == '':
+                    db.execute('DELETE FROM score_overrides WHERE assignment_id=? AND user_id=?',
+                               (assignment_id, user_id))
+                    return {'ok': True, 'cleared': True}, headers
+                score = number(raw, '分數', 0, 1000, True)
+                db.execute('INSERT INTO score_overrides(assignment_id,user_id,score,updated_by,updated_at) '
+                           'VALUES(?,?,?,?,?) ON CONFLICT(assignment_id,user_id) '
+                           'UPDATE SET score=excluded.score, updated_by=excluded.updated_by, '
+                           'updated_at=excluded.updated_at',
+                           (assignment_id, user_id, score, user['id'], utc_now()))
+            return {'ok': True, 'score': score}, headers
         # ---------- 卷面排版：直接輸出 LaTeX（Overleaf 用） ----------
         if method == 'POST' and path == '/api/papers/to-tex':
             self.teacher(user)
