@@ -6467,10 +6467,11 @@ class Application:
             name_col, seat_col, start = None, None, 0
             for i, row in enumerate(rows[:10]):
                 for j, cell in enumerate(row):
-                    text = str(cell or '').strip()
-                    if name_col is None and '姓名' in text:
+                    cell_text = str(cell or '').strip()   # 不可叫 text：會蓋掉全域的 text() 驗證函式
+                    if name_col is None and '姓名' in cell_text:
                         name_col, start = j, i + 1
-                    if seat_col is None and ('座號' in text or text in ('號', '編號', '號碼')):
+                    if seat_col is None and ('座號' in cell_text
+                                             or cell_text in ('號', '編號', '號碼')):
                         seat_col, start = j, i + 1
                 if name_col is not None:
                     break
