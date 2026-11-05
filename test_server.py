@@ -4704,6 +4704,16 @@ class ScoreGridTests(unittest.TestCase):
         self.call('POST', '/api/score-grid/student',
                   {'classId': cid, 'name': '陳大文', 'seat': 7}, expect=409)
 
+    def test_class_id_can_come_from_query_string(self):
+        """真實 HTTP 的 GET 是 ?classId=3（body 是空的）：之前只讀 body，班別篩選完全沒生效。"""
+        cid = self.make_class()
+        payload, _ = self.app.dispatch('GET', '/api/score-grid', {}, self.teacher, None,
+                                       '127.0.0.1', f'classId={cid}')
+        self.assertEqual([r['id'] for r in payload['students']], [self.student['id']])
+        self.assertEqual(server.class_id_param({}, 'classId=7'), 7)
+        self.assertEqual(server.class_id_param({'classId': 5}, ''), 5)
+        self.assertIsNone(server.class_id_param({}, ''))
+
     def test_excel_roster_import(self):
         """用 Excel 名單整班匯入：找「姓名／座號」表頭，姓名照樣遮蔽。"""
         import base64, io

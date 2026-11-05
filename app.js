@@ -875,7 +875,7 @@ function shell(){// 「新手上路」放最後——那是第一次來看的，
     {key:'bank',label:'題庫與入題',iconId:'bank',
      children:[['bank','題庫','list'],['import','試卷拆題入庫'],['newq','新增題目']]},
     {key:'review',label:'批閱',iconId:'edit',
-     children:[['mistakes','作業批閱'],['paper','紙本批閱'],['paperbatch','全班紙本掃描']]},
+     children:[['mistakes','作業批閱'],['paper','紙本批閱'],['paperbatch','全班紙本批閱']]},
     {id:'layout',label:'試卷修正排版'},
     {id:'papers',label:'我的試卷'},
   ];
@@ -896,7 +896,7 @@ function shell(){// 「新手上路」放最後——那是第一次來看的，
     if(S.user?.role!=='student')nav=nav.filter(([id])=>id!=='mock');
     navHtml=nav.map(([id,label])=>navRow(id,label,page===id,false)).join('');
   }
-  $('#nav').innerHTML=navHtml;$('#settings-nav').innerHTML=icon('settings')+'<span>設定與隱私</span>';$('#settings-nav').classList.toggle('active',page==='settings');$('#font-scale').innerHTML=fontScaleControl();$('#theme-switch').innerHTML=themeControl();$('#account').innerHTML=`<span class="avatar">${S.user?(S.user.role==='teacher'?'師':'學'):'M'}</span><span class="account-info">${S.user?esc(S.user.name):'訪客預覽'}<small>${S.user?(S.user.role==='teacher'?'教師工作空間':'中三數學學習者'):'登入後開始學習'}</small></span>${icon(S.user?'chevron':'logout')}`;$('#avatar').textContent=S.user?(S.user.role==='teacher'?'師':'學'):'M';const labels={contests:'數學比賽',guide:'新手上路',homework:S.user?.role==='teacher'?'作業成績':'我的作業',calendar:'日曆',board:'排行榜',mock:'模擬測驗',ai:'模型端點',bank:'數學題庫',practice:'自主練習',import:'試卷拆題入庫',mistakes:S.user?.role==='teacher'?'作業批閱':'我的錯題本',paper:'紙本批閱',layout:'試卷修正排版',papers:'我的試卷',growth:'學習足跡',newq:'新增題目',settings:'設定與隱私'};$('#crumb').textContent=labels[page] || '數學題庫';renderCalculator();}
+  $('#nav').innerHTML=navHtml;$('#settings-nav').innerHTML=icon('settings')+'<span>設定與隱私</span>';$('#settings-nav').classList.toggle('active',page==='settings');$('#font-scale').innerHTML=fontScaleControl();$('#theme-switch').innerHTML=themeControl();$('#account').innerHTML=`<span class="avatar">${S.user?(S.user.role==='teacher'?'師':'學'):'M'}</span><span class="account-info">${S.user?esc(S.user.name):'訪客預覽'}<small>${S.user?(S.user.role==='teacher'?'教師工作空間':'中三數學學習者'):'登入後開始學習'}</small></span>${icon(S.user?'chevron':'logout')}`;$('#avatar').textContent=S.user?(S.user.role==='teacher'?'師':'學'):'M';const labels={contests:'數學比賽',guide:'新手上路',homework:S.user?.role==='teacher'?'作業成績':'我的作業',calendar:'日曆',board:'排行榜',mock:'模擬測驗',ai:'模型端點',bank:'數學題庫',practice:'自主練習',import:'試卷拆題入庫',mistakes:S.user?.role==='teacher'?'作業批閱':'我的錯題本',paper:'紙本批閱',paperbatch:'全班紙本批閱',layout:'試卷修正排版',papers:'我的試卷',growth:'學習足跡',newq:'新增題目',settings:'設定與隱私'};$('#crumb').textContent=labels[page] || '數學題庫';renderCalculator();}
 
 let calCursor=null,calSelected=null;
 const calPad=n=>String(n).padStart(2,'0');
@@ -3533,14 +3533,14 @@ function fileToDataUrl(file){
   });
 }
 
-// 全班紙本掃描：一次上傳整疊 PDF（≤80 頁），自動切卷、自動認人，
+// 全班紙本批閱：一次上傳整疊 PDF（≤80 頁），自動切卷、自動認人，
 // 認不出來的由老師在下拉裡指派（座號優先、姓名相似度輔助）。
 async function paperBatchPage(){
   if(S.user?.role!=='teacher')return bank();
   page='paperbatch';shell();
   const classes=await api('/api/homework').then(d=>d.classes||[]).catch(()=>[]);
   $('#main').innerHTML=`<div class="fade-in">
-    ${heading('BATCH SCAN','全班紙本掃描','一次上傳全部學生的卷（PDF，最多 80 頁）。AI 會切卷並認人，認不出來的由你指派。')}
+    ${heading('BATCH GRADING','全班紙本批閱','一次上傳全部學生的卷（PDF，最多 80 頁）。AI 會切卷並認人，認不出來的由你指派。')}
     <section class="panel panel-pad">
       <div class="form-grid">
         <div class="form-field"><label class="field-label" for="pb-class">班級</label>
@@ -3553,6 +3553,27 @@ async function paperBatchPage(){
       </div>
       <div style="margin-top:10px"><button class="primary" id="pb-go">開始掃描</button>
         <span class="small-text" id="pb-status"></span></div>
+
+      <div class="pb-import">
+        <div class="pb-import-head">
+          <div><strong>全班學生名單</strong>
+            <span class="small-text" id="pb-roster-info"></span></div>
+          <button class="secondary" id="pb-import-toggle">＋ 匯入全班學生</button>
+        </div>
+        <div class="pb-import-box" id="pb-import-box" hidden>
+          <p class="small-text" style="margin:0 0 8px">先選班級再匯入。一行一個學生（「座號 姓名」或只寫姓名），也可以直接上傳 Excel 名單；同班同名同座號會自動跳過。</p>
+          <textarea id="pb-bulk-text" rows="5" placeholder="1 陳大文&#10;2 李小明&#10;3,王美玲"></textarea>
+          <div class="pb-import-actions">
+            <span class="small-text">或用 Excel：<input type="file" id="pb-bulk-file" accept=".xlsx,.xlsm"></span>
+            <span style="display:flex;gap:8px">
+              <button class="secondary" id="pb-bulk-import">匯入 Excel</button>
+              <button class="primary" id="pb-bulk-ok">匯入文字名單</button>
+            </span>
+          </div>
+          <div id="pb-bulk-result"></div>
+        </div>
+      </div>
+
       <div id="pb-result"></div>
     </section></div>`;
   $('#pb-go').onclick=async()=>{
@@ -3566,11 +3587,78 @@ async function paperBatchPage(){
         job=>{$('#pb-status').textContent=`掃描中… ${Math.round(job.elapsed||0)} 秒`;});
       renderBatch(res);
       lastScan={file:data,res};
+      $('#pb-roster-info').textContent=(res.roster||[]).length?`（目前 ${res.roster.length} 人）`:'（還沒有學生）';
       $('#pb-status').textContent=`共 ${res.pages} 頁、切成 ${res.summary.papers} 份卷；認出 ${res.summary.matched} 份。`;
     }catch(e){toast(e.message);$('#pb-status').textContent='';}
     btn.disabled=false;
   };
   let lastScan=null;
+
+  // 名冊（給「指派給」下拉用）：匯入學生後要能立刻出現在下拉裡，
+  // 否則老師得重新掃一次 80 頁的 PDF 才看得到新學生。
+  async function refreshRoster(){
+    const cid=$('#pb-class').value;
+    try{
+      const g=await api('/api/score-grid'+(cid?`?classId=${cid}`:''));
+      const roster=(g.students||[]).map(s=>({id:s.id,name:s.name,seat:s.seat}));
+      $('#pb-roster-info').textContent=roster.length?`（目前 ${roster.length} 人）`:'（還沒有學生）';
+      if(!lastScan)return;
+      const keep={};
+      $$('[data-sheet]').forEach(sel=>{keep[sel.dataset.sheet]=sel.value;});
+      lastScan.res.roster=roster;
+      renderBatch(lastScan.res,keep);
+    }catch(e){/* 沒有班級或權限不足時靜靜略過 */}
+  }
+
+  const showBulk=out=>{
+    const rows=(out.created||[]).map(st=>`<tr><td>${st.seat??''}</td><td>${esc(st.name)}</td>
+      <td>${esc(st.username)}</td><td>${esc(st.password)}</td></tr>`).join('');
+    $('#pb-bulk-result').innerHTML=rows?`<p class="small-text">新增 ${out.created.length} 人${(out.skipped||[]).length?`，略過 ${out.skipped.length} 人（同名同座號）`:''}。帳號密碼只顯示這一次，請先抄下。</p>
+      <table class="bulk-result"><thead><tr><th>號</th><th>姓名</th><th>帳號</th><th>密碼</th></tr></thead><tbody>${rows}</tbody></table>`
+      :`<p class="small-text">沒有新增任何人（全部同名同座號，或格式不對）。</p>`;
+  };
+
+  $('#pb-import-toggle').onclick=()=>{
+    const box=$('#pb-import-box');box.hidden=!box.hidden;
+    if(!box.hidden)$('#pb-bulk-text').focus();
+  };
+  $('#pb-bulk-ok').onclick=async()=>{
+    const cid=$('#pb-class').value;
+    if(!cid)return toast('請先選擇班級，再匯入學生。');
+    const lines=($('#pb-bulk-text').value||'').split('\n').map(l=>l.trim()).filter(Boolean);
+    if(!lines.length)return toast('請貼上學生名單。');
+    const students=lines.map(line=>{
+      const m=line.match(/^(\d{1,3})[\s,，、.\t]+(.+)$/);
+      return m?{seat:Number(m[1]),name:m[2].trim()}:{name:line.replace(/^[\s,，、.]+/,'').trim()};
+    }).filter(x=>x.name);
+    if(!students.length)return toast('名單裡找不到姓名。');
+    const btn=$('#pb-bulk-ok');btn.disabled=true;btn.textContent='匯入中…';
+    try{
+      const out=await api('/api/score-grid/students',{classId:Number(cid),students});
+      showBulk(out);toast(`已匯入 ${(out.created||[]).length} 人`);
+      await refreshRoster();
+    }catch(e){toast(e.message);}
+    btn.disabled=false;btn.textContent='匯入文字名單';
+  };
+  $('#pb-bulk-import').onclick=async()=>{
+    const cid=$('#pb-class').value;
+    if(!cid)return toast('請先選擇班級，再匯入學生。');
+    const file=$('#pb-bulk-file').files[0];
+    if(!file)return toast('請先選一個 Excel 檔（.xlsx）。');
+    const btn=$('#pb-bulk-import');btn.disabled=true;btn.textContent='匯入中…';
+    try{
+      const data=await fileToDataUrl(file);
+      const out=await api('/api/score-grid/students/import',{classId:Number(cid),file:data});
+      showBulk(out);toast(`已匯入 ${(out.created||[]).length} 人`);
+      await refreshRoster();
+    }catch(e){toast(e.message);}
+    btn.disabled=false;btn.textContent='匯入 Excel';
+  };
+
+  // 換班級就換名冊
+  $('#pb-class').onchange=()=>{lastScan=null;$('#pb-result').innerHTML='';refreshRoster();};
+  refreshRoster();
+
   async function gradeBatch(res){
     const title=($('#pb-title').value||'').trim();
     if(!title)return toast('請先填功課名稱。');
@@ -3591,16 +3679,17 @@ async function paperBatchPage(){
     }catch(e){toast(e.message);}
     btn.disabled=false;btn.textContent='確認並開始批改';
   }
-  function renderBatch(res){
-    const opts=(id,cur)=>`<option value="">（未指派）</option>`+
-      (res.roster||[]).map(u=>`<option value="${u.id}"${u.id===cur?' selected':''}>${esc(u.name)}${u.seat?' · '+esc(u.seat):''}</option>`).join('');
+  function renderBatch(res,keep){
+    const pick=(i,cur)=>String((keep&&keep[i])||cur||'');
+    const opts=(i,cur)=>`<option value="">（未指派）</option>`+
+      (res.roster||[]).map(u=>`<option value="${u.id}"${String(u.id)===pick(i,cur)?' selected':''}>${esc(u.name)}${u.seat?' · '+esc(u.seat):''}</option>`).join('');
     const rows=(res.sheets||[]).map((sh,i)=>`<tr>
       <td>${i+1}</td>
       <td>${sh.pages.join('、')}</td>
       <td>${sh.seat??''}</td>
       <td>${esc(sh.name||'')}</td>
       <td>${sh.matchedBy==='seat'?'座號':sh.matchedBy==='name'?'姓名':''}</td>
-      <td><select data-sheet="${i}">${opts(sh.studentId,sh.studentId)}</select></td></tr>`).join('');
+      <td><select data-sheet="${i}">${opts(i,sh.studentId)}</select></td></tr>`).join('');
     $('#pb-result').innerHTML=`<div class="sg-wrap" style="margin-top:12px"><table class="score-grid">
       <thead><tr><th>#</th><th>頁碼</th><th>讀到座號</th><th>讀到姓名</th><th>配對方式</th><th>指派給</th></tr></thead>
       <tbody>${rows}</tbody></table></div>

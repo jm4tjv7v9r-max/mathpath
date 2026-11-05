@@ -1141,3 +1141,14 @@ html[data-theme=night] .nav-item .count.due{background:#3a2c1d;color:#e0b083}
 .bulk-result{width:100%;border-collapse:collapse;margin-top:8px;font-size:calc(12.5px*var(--fs))}
 .bulk-result th,.bulk-result td{border:1px solid var(--border-tertiary,#e6e3da);padding:4px 8px;text-align:left}
 .bulk-result th{background:var(--paper,#fff)}
+
+/* 全班紙本批閱：內嵌的「匯入全班學生」面板 */
+.pb-import{margin-top:14px;border-top:1px solid var(--border-tertiary,#e6e3da);padding-top:12px}
+.pb-import-head{display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap}
+.pb-import-head .small-text{margin-left:6px}
+.pb-import-box{margin-top:10px;padding:12px;border:1px solid var(--border);border-radius:10px;
+  background:var(--surface,#f7f6f2)}
+.pb-import-box textarea{width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;
+  font-family:var(--font-mono);font-size:calc(13px*var(--fs));line-height:1.6;background:var(--paper,#fff);color:var(--ink)}
+.pb-import-actions{margin-top:8px;display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap}
+.pb-import-actions input[type=file]{display:inline-block;width:auto;max-width:220px}

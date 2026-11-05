@@ -79,6 +79,26 @@ def _prune_jobs():
         JOBS.pop(oldest, None)
 
 
+def class_id_param(body, query=''):
+    """把 classId 收成整數：GET 從查詢字串取（body 是空的），POST 從 JSON 取。
+
+    之前只讀 body，所以「選了班別」在真實 HTTP 下完全沒生效（?classId=3 被忽略，
+    永遠回全部學生）。number() 也不吃字串，這裡自己轉。
+    """
+    raw = body.get('classId') if isinstance(body, dict) else None
+    if raw in (None, '') and query:
+        raw = dict(parse_qsl(query)).get('classId')
+    if raw in (None, ''):
+        return None
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        fail(400, '班別必須是數字。')
+    if not 1 <= value <= 10 ** 18:
+        fail(400, '班別不正確。')
+    return value
+
+
 def query_allowed(path, query):
     """只有白名單端點可以帶查詢參數。
 
@@ -6233,9 +6253,7 @@ class Application:
         # ---------- 成績總表（教師用，像 Excel 的網格） ----------
         if method == 'GET' and path == '/api/score-grid':
             self.teacher(user)
-            class_id = body.get('classId') or None
-            if class_id is not None:
-                class_id = number(class_id, '班別', 1, 10 ** 18, True)
+            class_id = class_id_param(body, query)
             with self.db() as db:
                 db.execute("""CREATE TABLE IF NOT EXISTS score_overrides (
                                 assignment_id INTEGER NOT NULL,
@@ -6507,7 +6525,7 @@ class Application:
             return {'classes': [{'id': r['id'], 'name': r['name']} for r in rows]}, headers
         if method == 'GET' and path == '/api/score-grid/export':
             self.teacher(user)
-            cid = body.get('classId') or None
+            cid = class_id_param(body, query)
             grid = self.dispatch('GET', '/api/score-grid',
                                  {'classId': cid} if cid else {}, user, None, ip)[0]
             try:
