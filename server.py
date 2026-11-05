@@ -6238,9 +6238,11 @@ class Application:
                     fail(403, '只有設立該班級的老師可以新增學生。')
                 # 資料庫一律存遮蔽姓名（陳大文 → 陳X文）；同名不同座號視為不同人
                 display = mask_name(name)
+                # seat 在資料庫是 TEXT，要用字串比對（不然 7 與 '7' 對不上，重複就漏擋）
                 dup = db.execute('SELECT 1 FROM users u JOIN class_students cs ON cs.user_id=u.id '
-                                 'WHERE cs.class_id=? AND u.name=? AND COALESCE(u.seat,-1)=?',
-                                 (class_id, display, -1 if seat is None else seat)).fetchone()
+                                 'WHERE cs.class_id=? AND u.name=? '
+                                 "AND COALESCE(u.seat,'')=?",
+                                 (class_id, display, '' if seat is None else str(seat))).fetchone()
                 if dup:
                     fail(409, f'「{row["name"]}」已經有座號 {seat if seat else "（未填）"} 的「{display}」。')
                 base = f's{class_id}{seat if seat else int(time.time()) % 100000}'
@@ -6270,7 +6272,8 @@ class Application:
                     fail(404, '找不到這個班別。')
                 if row['teacher_id'] != user['id'] and not self.is_owner(user, db):
                     fail(403, '只有設立該班級的老師可以匯入學生。')
-                existing = {(r['name'], r['seat']) for r in db.execute(
+                existing = {(r['name'], str(r['seat']) if r['seat'] is not None else '')
+                            for r in db.execute(
                     'SELECT u.name, u.seat FROM users u JOIN class_students cs ON cs.user_id=u.id '
                     'WHERE cs.class_id=?', (class_id,))}
                 created, skipped = [], []
@@ -6289,7 +6292,7 @@ class Application:
                         if seat is not None and not 1 <= seat <= 999:
                             seat = None
                     display = mask_name(name)
-                    if (display, seat) in existing:
+                    if (display, '' if seat is None else str(seat)) in existing:
                         skipped.append(display)
                         continue
                     base = f's{class_id}{seat if seat else int(time.time() * 1000) % 100000}'
@@ -6304,7 +6307,7 @@ class Application:
                                       user['id'])).lastrowid
                     db.execute('INSERT OR IGNORE INTO class_students(class_id,user_id) VALUES(?,?)',
                                (class_id, uid))
-                    existing.add((display, seat))
+                    existing.add((display, '' if seat is None else str(seat)))
                     created.append({'id': uid, 'name': display, 'seat': seat,
                                     'username': username, 'password': password})
             return {'created': created, 'skipped': skipped,
