@@ -1344,6 +1344,11 @@ class QueryPathTests(unittest.TestCase):
     def test_papers_list_accepts_query(self):
         self.assertTrue(server.query_allowed('/api/papers', 'year=2026&grade=%E9%AB%98%E4%BA%8C'))
 
+    def test_score_grid_accepts_query(self):
+        """成績總表用 ?classId= 篩班；不在白名單會直接 400「不支援查詢參數」。"""
+        self.assertTrue(server.query_allowed('/api/score-grid', 'classId=3'))
+        self.assertTrue(server.query_allowed('/api/score-grid/export', 'classId=3'))
+
     def test_calendar_still_allowed(self):
         self.assertTrue(server.query_allowed('/api/calendar', 'from=2026-10-01'))
 

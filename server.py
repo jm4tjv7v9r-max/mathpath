@@ -56,6 +56,7 @@ SESSION_SECONDS = 12 * 3600
 SESSION_SECONDS_LONG = 30 * 24 * 3600
 # 允許帶查詢參數的路徑（日曆區間、歸檔選項）。
 QUERY_PATHS = ('/api/calendar', '/api/papers',
+               '/api/score-grid', '/api/score-grid/export',
                '/api/admin/archive/students', '/api/admin/archive/questions',
                '/api/admin/restore/questions', '/api/admin/restore/students')
 
