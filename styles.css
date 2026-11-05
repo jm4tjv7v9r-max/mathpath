@@ -1107,3 +1107,23 @@ html[data-theme=night] .nav-item .count.due{background:#3a2c1d;color:#e0b083}
 .geo-no{flex:0 0 auto;color:var(--ink-soft,#6b6a63)}
 .geo-stem{flex:1;line-height:1.5}
 .geo-actions{display:flex;justify-content:flex-end}
+
+/* 成績總表：像 Excel 的網格 */
+.sg-wrap{overflow:auto;max-height:70vh;border:1px solid var(--border);border-radius:10px}
+.score-grid{border-collapse:separate;border-spacing:0;width:100%;font-size:calc(13px*var(--fs))}
+.score-grid th,.score-grid td{border-right:1px solid var(--border-tertiary,#e6e3da);
+  border-bottom:1px solid var(--border-tertiary,#e6e3da);padding:6px 8px;text-align:center;white-space:nowrap}
+.score-grid thead th{position:sticky;top:0;background:var(--surface,#f7f6f2);z-index:2;font-weight:500}
+.score-grid .sg-date{display:block;font-size:calc(11.5px*var(--fs));color:var(--ink-soft,#6b6a63)}
+.score-grid .sg-title{display:block;font-size:calc(12px*var(--fs));max-width:150px;overflow:hidden;text-overflow:ellipsis}
+.score-grid .sg-seat{width:44px;color:var(--ink-soft,#6b6a63)}
+.score-grid .sg-name{text-align:left;font-weight:500;position:sticky;left:44px;background:var(--paper,#fff);z-index:1}
+.score-grid thead .sg-name{left:44px;z-index:3;background:var(--surface,#f7f6f2)}
+.score-grid .sg-cell{cursor:text;min-width:64px}
+.score-grid .sg-cell:hover{background:var(--surface-green,#eef5ea)}
+.score-grid .sg-cell:focus{outline:2px solid var(--green,#3b6d11);outline-offset:-2px;background:#fff}
+.score-grid .sg-cell.edited{background:#fdf6dc}
+.score-grid .sg-cell.empty{color:#c3c1b8}
+.score-grid .sg-avg{font-weight:500;background:var(--surface,#f7f6f2)}
+.score-grid .sg-miss{color:#b8453b;font-weight:500}
+.score-grid .sg-empty{color:var(--ink-soft,#6b6a63);padding:24px}

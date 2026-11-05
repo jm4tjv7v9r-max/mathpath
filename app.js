@@ -871,6 +871,7 @@ function shell(){// 「新手上路」放最後——那是第一次來看的，
   const navRow=(id,label,active,child,iconId)=>`<button class="nav-item${child?' child':''} ${active?'active':''}" data-page="${id}">${icon(iconId||id)}<span>${label}</span>${id==='bank'?`<span class="count">${S.user?S.questions.length:'示例'}</span>`:''}</button>`;
   const TEACHER_NAV=[
     {id:'homework',label:'作業成績'},
+    {id:'scores',label:'成績總表',iconId:'papers'},
     {key:'bank',label:'題庫與入題',iconId:'bank',
      children:[['bank','題庫','list'],['import','試卷拆題入庫'],['newq','新增題目']]},
     {key:'review',label:'批閱',iconId:'edit',
@@ -4515,6 +4516,58 @@ function svgToPng(svg,widthPx=900){
   });
 }
 
+// 成績總表：像 Excel 的網格——列是學生、欄是作業，最右邊是平均分與未完成次數。
+// 格子直接改，離開格子就存（存成教師調整，不動學生原始作答）。
+async function scoreGridPage(){
+  if(S.user?.role!=='teacher')return bank();
+  page='scores';shell();
+  const grid=await api('/api/score-grid').catch(e=>({error:e.message,columns:[],students:[]}));
+  if(grid.error){$('#main').innerHTML=`<div class="inline-error">${esc(grid.error)}</div>`;return;}
+  const cols=grid.columns||[],rows=grid.students||[];
+  const head=cols.map(c=>`<th class="sg-col"><span class="sg-date">${esc(c.date||'—')}</span><span class="sg-title">${esc(c.title||'')}</span></th>`).join('');
+  const body=rows.map(r=>`<tr>
+    <td class="sg-seat">${r.seat??''}</td>
+    <td class="sg-name">${esc(r.name||'')}</td>
+    ${r.cells.map((c,i)=>`<td class="sg-cell${c.overridden?' edited':''}${c.score===null?' empty':''}"
+        contenteditable="true" data-a="${cols[i].id}" data-u="${r.id}"
+        title="${c.overridden?'教師調整過（按右鍵還原）':'系統依作答計算'}">${c.score===null?'':fmtScore(c.score)}</td>`).join('')}
+    <td class="sg-avg">${r.average===null?'—':fmtScore(r.average)}</td>
+    <td class="sg-miss">${r.missing}</td></tr>`).join('');
+  $('#main').innerHTML=`<div class="fade-in">
+    ${heading('SCORE SHEET','成績總表','列是學生、欄是作業；分數由系統依作答自動填入，可直接改。')}
+    <div class="panel panel-pad">
+      <div class="sg-wrap"><table class="score-grid">
+        <thead><tr><th class="sg-seat">號</th><th class="sg-name">姓名</th>${head}
+          <th class="sg-avg">平均分</th><th class="sg-miss">未完成</th></tr></thead>
+        <tbody>${body||`<tr><td colspan="${cols.length+4}" class="sg-empty">還沒有作業資料</td></tr>`}</tbody>
+      </table></div>
+      <p class="field-hint">點格子直接改分數，按 Enter 或點別處即儲存；改過的格子會變淡黃，右鍵可還原成系統分數。清空格子＝還原。</p>
+    </div></div>`;
+  $$('.sg-cell').forEach(td=>{
+    const save=async()=>{
+      const raw=td.textContent.trim();
+      const value=raw===''?null:Number(raw);
+      if(value!==null&&!Number.isFinite(value)){toast('請輸入數字');return;}
+      td.classList.remove('edited');
+      try{
+        await api('/api/score-grid/score',{assignmentId:Number(td.dataset.a),userId:Number(td.dataset.u),score:value});
+        if(value!==null)td.classList.add('edited');
+        td.classList.toggle('empty',value===null);
+        if(value===null)td.textContent='';
+        await scoreGridPage();
+      }catch(e){toast(e.message);}
+    };
+    td.onkeydown=ev=>{if(ev.key==='Enter'){ev.preventDefault();td.blur();}};
+    td.onblur=save;
+    td.oncontextmenu=async ev=>{
+      ev.preventDefault();
+      try{await api('/api/score-grid/score',{assignmentId:Number(td.dataset.a),userId:Number(td.dataset.u),score:null});
+        toast('已還原系統分數');await scoreGridPage();}catch(e){toast(e.message);}
+    };
+  });
+}
+function fmtScore(n){const v=Number(n);return Number.isInteger(v)?String(v):v.toFixed(1);}
+
 async function paperLayoutPage(){
   // 卷面排版是教師功能：學生連入口都不該看到，直接回題庫（側欄也不會出現）
   if(S.user?.role!=='teacher')return bank();
@@ -5107,7 +5160,7 @@ $('#bulk-class-toggle').onchange=e=>{$('#bulk-class-field').hidden=!e.target.che
 $('#bulk-submit').onclick=async()=>{const {rows,errors}=bulkPreview();if(errors.length)return toast('請先修正名單格式錯誤。');if(!rows.length)return toast('請輸入至少一位學生。');if(rows.length>200)return toast('每批最多200位學生。');const makeClass=$('#bulk-class-toggle').checked,className=$('#bulk-class-name').value.trim();if(makeClass&&!className)return toast('請填寫班級名稱，或取消建立班級。');const b=$('#bulk-submit');b.disabled=true;b.textContent='正在建立…';try{const {users:created}=await api('/api/users/bulk',{students:rows.map(r=>({username:r.username,name:r.name,seat:r.seat,password:r.password}))});let classNote='';if(makeClass){try{const {class:room}=await api('/api/classes',{name:className,studentIds:created.map(u=>u.id)});classNote=`<div class="hint-box" style="margin-top:12px">已同時建立班級「${esc(room.name)}」，共 ${room.studentCount} 位學生，可直接佈置作業。</div>`;}catch(err){classNote=`<div class="inline-error" style="margin-top:12px">帳戶已建立，但班級未建立：${esc(err.message)}可在「作業與成績」重新建立班級。</div>`;}}const merged=rows.map((r,i)=>({username:r.username,password:r.password,name:(created[i]&&created[i].name)||r.name||r.username,seat:(created[i]&&created[i].seat)||r.seat||''}));const hasName=merged.some(r=>r.name!==r.username),hasSeat=merged.some(r=>r.seat);const cols=[['學號',r=>r.username]].concat(hasName?[['姓名',r=>r.name]]:[],hasSeat?[['班內號',r=>r.seat]]:[],[['密碼',r=>r.password]]);const text=[cols.map(c=>c[0]).join('\t'),...merged.map(r=>cols.map(c=>c[1](r)).join('\t'))].join('\n');$('#bulk-result').innerHTML=`<div class="import-warning">已建立 ${created.length} 個帳戶${merged.some(r=>r.name===r.username)?`（${merged.filter(r=>r.name===r.username).length} 個未填姓名，以學號顯示）`:""}。密碼只會顯示這一次，請立即複製並私下發給學生。</div>${classNote}<pre class="code-block">${esc(text)}</pre><button class="secondary wide" id="bulk-copy" style="margin-top:10px">${icon('file')}複製帳號密碼</button>`;$('#bulk-copy').onclick=async()=>{try{await navigator.clipboard.writeText(text);toast('已複製，請妥善保管。');}catch{toast('無法自動複製，請手動選取。');}};$('#bulk-students').value='';$('#bulk-class-toggle').checked=false;$('#bulk-class-field').hidden=true;$('#bulk-class-name').value='';bulkPreview();toast(`已建立 ${created.length} 個學生帳戶。`);}catch(err){$('#bulk-error').textContent=err.message;}finally{b.disabled=false;b.innerHTML=icon('upload')+'批次建立學生帳戶';}};}}catch(e){toast(e.message);}}
 function deploymentHelp(){modal(`<p class="eyebrow">SERVER SETUP</p><h2>啟動與部署說明</h2><p class="modal-intro">資料保存在網站伺服器；實際位置由管理員確認。以下是可選部署方式，不代表目前網站的部署狀態。</p><h3>本機預覽</h3><p class="info-note">雙擊 start.command，或用 Python 3 啟動：</p><pre class="code-block">python3 server.py --host 127.0.0.1 --port 8765</pre><p class="info-note">瀏覽器開啟 http://127.0.0.1:8765。</p><h3>校內連線</h3><p class="info-note">由資訊人員將 --host 設為伺服器的校內 IP，並限制防火牆只允許校內來源；正式使用需反向代理 HTTPS。不要把演示帳戶直接用於全校。</p><h3>目前帳戶範圍</h3><p class="info-note">初始演示配置包含學生與教師帳戶；實際帳戶由管理員確認。教師可在「設定與隱私」建立獨立學生帳戶，避免共用作答紀錄。可在「作業與成績」建立班級並發布作業；校內單一登入及批量帳戶管理仍可再擴充。</p><div class="import-warning">資料保存在網站伺服器；實際位置由管理員確認。預設資料庫路徑為 data/mathpath.sqlite3；備份及保存年限應按學校規定安排。AI 必須另行配置，未配置時手写作答由教師批閱。</div>`);}
 function navigate(target){if(busy)return toast('目前操作正在進行，請等待完成。');preserveDraft();if(page==='practice'&&strokes.length&&target!=='practice'&&!lastResult&&!confirm('尚未提交的手寫內容未保存。確定離開？'))return;beginView();$('#sidebar').classList.remove('open');if(target!=='practice'){assignmentContext=null;mockContext=null;stopQuizClock();}page=target;switch(target){case'guide':guidePage();break;
-case'homework':homeworkPage();break;case'calendar':calendarPage();break;case'board':leaderboardPage();break;case'mock':mockPage();break;case'contests':contestsPage();break;case'ai':aiConfigPage();break;case'bank':bank();break;case'practice':practice();break;case'import':importPage();break;case'newq':newQuestionPage();break;case'mistakes':recordsPage();break;case'paper':paperGradePage();break;case'layout':paperLayoutPage();break;case'papers':papersPage();break;case'growth':growthPage();break;case'settings':settingsPage();break;default:bank();}window.scrollTo({top:0,behavior:'instant'});}
+case'homework':homeworkPage();break;case'scores':scoreGridPage();break;case'calendar':calendarPage();break;case'board':leaderboardPage();break;case'mock':mockPage();break;case'contests':contestsPage();break;case'ai':aiConfigPage();break;case'bank':bank();break;case'practice':practice();break;case'import':importPage();break;case'newq':newQuestionPage();break;case'mistakes':recordsPage();break;case'paper':paperGradePage();break;case'layout':paperLayoutPage();break;case'papers':papersPage();break;case'growth':growthPage();break;case'settings':settingsPage();break;default:bank();}window.scrollTo({top:0,behavior:'instant'});}
 document.addEventListener('click',e=>{const b=e.target.closest('button');if(!b||b.disabled)return;if(b.dataset.fontScale){applyFontScale(b.dataset.fontScale);shell();toast(`字體已設為「${FONT_SCALES.find(([id])=>id===b.dataset.fontScale)[1]}」，只影響這台裝置。`);return;}
 if(b.dataset.themeId){applyTheme(b.dataset.themeId);shell();toast(`版面已設為「${THEMES.find(([id])=>id===b.dataset.themeId)[1]}」，只影響這台裝置。`);return;}
 if(b.id==='open-math-editor'){openMathEditor();return;}
