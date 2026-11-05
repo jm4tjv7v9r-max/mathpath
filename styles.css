@@ -1129,3 +1129,8 @@ html[data-theme=night] .nav-item .count.due{background:#3a2c1d;color:#e0b083}
 .score-grid .sg-empty{color:var(--ink-soft,#6b6a63);padding:24px}
 .sg-toolbar{display:flex;gap:12px;align-items:center;justify-content:space-between;margin-bottom:10px;flex-wrap:wrap}
 .sg-toolbar select{padding:7px 10px;border:1px solid var(--border);border-radius:8px;background:var(--paper);color:var(--ink)}
+.sg-addrow input{padding:6px 8px;border:1px solid var(--border);border-radius:8px;
+  background:var(--paper);color:var(--ink);font-size:calc(13px*var(--fs))}
+.sg-addrow #sg-stu-seat{width:64px}
+.sg-addcell{text-align:left!important}
+.sg-addcell input{width:180px;margin-right:8px}

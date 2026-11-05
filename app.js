@@ -4558,6 +4558,13 @@ async function scoreGridPage(){
         <thead><tr><th class="sg-seat">號</th><th class="sg-name">姓名</th>${head}
           <th class="sg-avg">平均分</th><th class="sg-miss">未完成</th></tr></thead>
         <tbody>${body||`<tr><td colspan="${cols.length+4}" class="sg-empty">還沒有作業資料</td></tr>`}</tbody>
+        ${cid?`<tfoot><tr class="sg-addrow">
+          <td colspan="2"><input id="sg-stu-seat" type="number" min="1" max="999" placeholder="號"></td>
+          <td colspan="${Math.max(1,cols.length)}" class="sg-addcell">
+            <input id="sg-stu-name" placeholder="新增學生姓名" maxlength="40">
+            <button class="primary" id="sg-stu-ok">＋ 新增學生</button>
+          </td>
+          <td colspan="2"></td></tr></tfoot>`:''}
       </table></div>
       <p class="field-hint">點格子直接改分數，按 Enter 或點別處即儲存；改過的格子會變淡黃，右鍵可還原成系統分數。清空格子＝還原。</p>
     </div></div>`;
@@ -4566,6 +4573,18 @@ async function scoreGridPage(){
     await scoreGridPage();
   };
   // 不用 prompt()：內嵌預覽的 iframe 會封鎖對話框，改用行內表單
+  const stuOk=$('#sg-stu-ok');
+  if(stuOk)stuOk.onclick=async()=>{
+    const name=($('#sg-stu-name').value||'').trim();
+    if(!name)return toast('請填姓名。');
+    try{
+      const out=await api('/api/score-grid/student',
+        {classId:cid,name,seat:$('#sg-stu-seat').value||null});
+      const st=out.student;
+      toast(`已新增 ${st.name}（${st.seat?st.seat+'號 ' : ''}帳號 ${st.username}／密碼 ${st.password}）`);
+      await scoreGridPage();
+    }catch(e){toast(e.message);}
+  };
   $('#sg-addcol').onclick=()=>{
     if(!cid)return toast('請先選擇一個班別，再新增欄位。');
     const box=$('#sg-newcol');

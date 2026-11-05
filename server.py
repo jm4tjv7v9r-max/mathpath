@@ -6201,6 +6201,36 @@ class Application:
                     (user['id'], class_id, row['name'], title, '（成績總表新增的欄位）', stamp,
                      utc_now())).lastrowid
             return {'ok': True, 'column': {'id': aid, 'title': title, 'date': date}}, headers
+        if method == 'POST' and path == '/api/score-grid/student':
+            self.teacher(user)
+            fields(body, ('classId', 'name', 'seat'), ('classId', 'name'))
+            class_id = number(body['classId'], '班別', 1, 10 ** 18, True)
+            name = text(body['name'], '姓名', 60, empty=False)
+            seat = body.get('seat')
+            seat = number(seat, '座號', 1, 999, True) if seat not in (None, '') else None
+            with self.db() as db:
+                row = db.execute('SELECT teacher_id, name FROM classes WHERE id=?', (class_id,)).fetchone()
+                if row is None:
+                    fail(404, '找不到這個班別。')
+                if row['teacher_id'] != user['id'] and not self.is_owner(user, db):
+                    fail(403, '只有設立該班級的老師可以新增學生。')
+                if db.execute('SELECT 1 FROM users u JOIN class_students cs ON cs.user_id=u.id '
+                              'WHERE cs.class_id=? AND u.name=?', (class_id, name)).fetchone():
+                    fail(409, f'「{row["name"]}」已經有叫「{name}」的學生。')
+                base = f's{class_id}{seat if seat else int(time.time()) % 100000}'
+                username, n = base, 1
+                while db.execute('SELECT 1 FROM users WHERE username=?', (username,)).fetchone():
+                    n += 1
+                    username = f'{base}{n}'
+                password = 'm' + secrets.token_hex(3)
+                uid = db.execute('INSERT INTO users(username,name,role,password,demo,seat,created_by) '
+                                 'VALUES(?,?,?,?,0,?,?)',
+                                 (username, name, 'student', password_hash(password), seat,
+                                  user['id'])).lastrowid
+                db.execute('INSERT OR IGNORE INTO class_students(class_id,user_id) VALUES(?,?)',
+                           (class_id, uid))
+            return {'student': {'id': uid, 'name': name, 'seat': seat,
+                                'username': username, 'password': password}}, headers
         if method == 'GET' and path == '/api/score-grid/classes':
             self.teacher(user)
             with self.db() as db:

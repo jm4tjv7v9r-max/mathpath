@@ -4662,6 +4662,24 @@ class ScoreGridTests(unittest.TestCase):
         self.assertEqual(len(row['cells']), len(grid['columns']))
         self.assertEqual(row['missing'], len(grid['columns']) - row['done'])
 
+    def test_add_column_and_student_from_grid(self):
+        """成績總表可以直接加一欄（0 題作業）與加一個學生（自動建帳號）。"""
+        cid = self.make_class()
+        col = self.call('POST', '/api/score-grid/column',
+                        {'classId': cid, 'title': '小測三', 'date': '2026-11-05'})
+        self.assertEqual(col['column']['title'], '小測三')
+        grid = self.call('GET', '/api/score-grid', {'classId': cid})
+        self.assertEqual([c['title'] for c in grid['columns']], ['小測三'])
+
+        out = self.call('POST', '/api/score-grid/student',
+                        {'classId': cid, 'name': '陳大文', 'seat': 7})['student']
+        self.assertTrue(out['username'] and out['password'])
+        grid = self.call('GET', '/api/score-grid', {'classId': cid})
+        self.assertIn('陳大文', [r['name'] for r in grid['students']])
+        # 同班同名要擋
+        self.call('POST', '/api/score-grid/student',
+                  {'classId': cid, 'name': '陳大文'}, expect=409)
+
     def test_only_the_class_teacher_can_view_or_edit(self):
         """只有設立該班級的老師看得到、改得到；其他老師與學生一律擋。"""
         cid = self.make_class()
