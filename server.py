@@ -7019,6 +7019,51 @@ class Application:
             return {'count': len(saved), 'skipped': skipped,
                     'questions': [self.question_public(q, user) for q in saved]}, headers
 
+        if method == 'POST' and path == '/api/paper-grades/batch':
+            # 全班一次批改：前端把切好的「學生 → 頁碼」送回來，這裡逐份呼叫單份批改。
+            self.teacher(user)
+            fields(body, ('file', 'title', 'sheets', 'paperKeyId', 'consentExternal', 'async'),
+                   ('file', 'title', 'sheets'))
+            if body.get('async'):
+                return {'jobId': self.start_job(
+                    user, lambda: self.dispatch(method, path, {**body, 'async': False},
+                                                user, token_hash, ip)[0])}, headers
+            kind, data = decode_paper(body['file'])
+            if kind != 'pdf':
+                fail(400, '請上傳 PDF。')
+            title = text(body['title'], '功課名稱', 200)
+            sheets = body['sheets']
+            if not isinstance(sheets, list) or not 1 <= len(sheets) <= 80:
+                fail(400, '請提供 1 至 80 份卷。')
+            self.ai.consent(body.get('consentExternal'))
+            pages = pdf_page_images(data, max_pages=PAPER_SCAN_MAX_PAGES)
+            if not pages:
+                fail(422, 'PDF 沒有可讀的頁面。')
+            done, failed = [], []
+            for sheet in sheets:
+                if not isinstance(sheet, dict):
+                    continue
+                try:
+                    student_id = number(sheet.get('studentId'), '學生', 1, 10 ** 18, True)
+                except APIError:
+                    continue
+                nums = sheet.get('pages') or []
+                imgs = [pages[n - 1] for n in nums
+                        if isinstance(n, int) and 1 <= n <= len(pages)][:10]
+                if not imgs:
+                    failed.append({'studentId': student_id, 'reason': '沒有對應的頁面'})
+                    continue
+                payload = {'studentId': student_id, 'title': title, 'pages': imgs}
+                if body.get('paperKeyId'):
+                    payload['paperKeyId'] = body['paperKeyId']
+                try:
+                    result = self.dispatch('POST', '/api/paper-grades', payload,
+                                           user, token_hash, ip)[0]
+                    done.append({'studentId': student_id, 'grade': result.get('grade')})
+                except APIError as exc:
+                    failed.append({'studentId': student_id, 'reason': exc.message})
+            return {'graded': done, 'failed': failed,
+                    'summary': {'graded': len(done), 'failed': len(failed)}}, headers
         if method == 'POST' and path == '/api/paper-grades/scan':
             self.teacher(user)
             fields(body, ('file', 'classId', 'consentExternal', 'async'), ('file',))

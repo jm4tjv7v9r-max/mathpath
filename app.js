@@ -3546,6 +3546,8 @@ async function paperBatchPage(){
         <div class="form-field"><label class="field-label" for="pb-class">班級</label>
           <select id="pb-class"><option value="">全部學生</option>
             ${classes.map(c=>`<option value="${c.id}">${esc(c.name||'')}</option>`).join('')}</select></div>
+        <div class="form-field"><label class="field-label" for="pb-title">功課名稱</label>
+          <input id="pb-title" maxlength="200" placeholder="例如：第三次功課"></div>
         <div class="form-field"><label class="field-label" for="pb-file">PDF（≤80 頁）</label>
           <input id="pb-file" type="file" accept="application/pdf"></div>
       </div>
@@ -3563,10 +3565,32 @@ async function paperBatchPage(){
         {file:data,classId:$('#pb-class').value||null,consentExternal:S.ai?.mode==='external'},
         job=>{$('#pb-status').textContent=`掃描中… ${Math.round(job.elapsed||0)} 秒`;});
       renderBatch(res);
+      lastScan={file:data,res};
       $('#pb-status').textContent=`共 ${res.pages} 頁、切成 ${res.summary.papers} 份卷；認出 ${res.summary.matched} 份。`;
     }catch(e){toast(e.message);$('#pb-status').textContent='';}
     btn.disabled=false;
   };
+  let lastScan=null;
+  async function gradeBatch(res){
+    const title=($('#pb-title').value||'').trim();
+    if(!title)return toast('請先填功課名稱。');
+    const sheets=[];
+    $$('[data-sheet]').forEach(sel=>{
+      const i=Number(sel.dataset.sheet);
+      if(!sel.value)return;
+      sheets.push({studentId:Number(sel.value),pages:res.sheets[i].pages});
+    });
+    if(!sheets.length)return toast('至少要指派一位學生。');
+    const btn=$('#pb-grade');btn.disabled=true;btn.textContent='批改中…';
+    try{
+      const out=await apiJob('/api/paper-grades/batch',
+        {file:lastScan.file,title,sheets,consentExternal:S.ai?.mode==='external'},
+        job=>{btn.textContent=`批改中… ${Math.round(job.elapsed||0)} 秒`;});
+      toast(`已批改 ${out.summary.graded} 份${out.summary.failed?`，${out.summary.failed} 份失敗`:''}`);
+      $('#pb-status').textContent=`批改完成：${out.summary.graded} 份成功、${out.summary.failed} 份失敗。`;
+    }catch(e){toast(e.message);}
+    btn.disabled=false;btn.textContent='確認並開始批改';
+  }
   function renderBatch(res){
     const opts=(id,cur)=>`<option value="">（未指派）</option>`+
       (res.roster||[]).map(u=>`<option value="${u.id}"${u.id===cur?' selected':''}>${esc(u.name)}${u.seat?' · '+esc(u.seat):''}</option>`).join('');
@@ -3580,7 +3604,9 @@ async function paperBatchPage(){
     $('#pb-result').innerHTML=`<div class="sg-wrap" style="margin-top:12px"><table class="score-grid">
       <thead><tr><th>#</th><th>頁碼</th><th>讀到座號</th><th>讀到姓名</th><th>配對方式</th><th>指派給</th></tr></thead>
       <tbody>${rows}</tbody></table></div>
-      <p class="field-hint">認不出來的請用右邊下拉指派；確認後再逐份批改（下一步）。</p>`;
+      <p class="field-hint">認不出來的請用右邊下拉指派，然後按下面的按鈕逐份批改。</p>
+      <div class="sg-bulk-actions"><button class="primary" id="pb-grade">確認並開始批改</button></div>`;
+    $('#pb-grade').onclick=()=>gradeBatch(res);
   }
 }
 
