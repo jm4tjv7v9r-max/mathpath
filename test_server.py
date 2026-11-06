@@ -4793,6 +4793,46 @@ class ScoreGridTests(unittest.TestCase):
         grid = self.call('GET', '/api/score-grid')
         self.assertEqual(grid['students'][0]['average'], None, '清除後回到未完成')
 
+    def test_teacher_can_change_a_student_seat(self):
+        """成績總表可直接改學號（users.seat）：存得進去、撞號要擋、清空可以。"""
+        cid = self.make_class()
+        uid = self.student['id']
+        out = self.call('POST', '/api/score-grid/student/seat',
+                        {'classId': cid, 'userId': uid, 'seat': 12})
+        self.assertEqual(out['student']['seat'], 12)
+        grid = self.call('GET', '/api/score-grid', {'classId': cid})
+        self.assertEqual(str(grid['students'][0]['seat']), '12', 'users.seat 是 TEXT')
+
+        other = self.call('POST', '/api/score-grid/student',
+                          {'classId': cid, 'name': '李小明', 'seat': 3})['student']
+        grid = self.call('GET', '/api/score-grid', {'classId': cid})
+        self.assertEqual([r['id'] for r in grid['students']], [other['id'], uid],
+                         '座號改了，成績表的排序要跟著變')
+        # 同班撞號要擋，而且訊息要講清楚被誰佔用
+        err = self.call('POST', '/api/score-grid/student/seat',
+                        {'classId': cid, 'userId': other['id'], 'seat': 12}, expect=409)
+        self.assertIn('12', err['error'])
+        # 清空學號（排到最後）是允許的
+        out = self.call('POST', '/api/score-grid/student/seat',
+                        {'classId': cid, 'userId': uid, 'seat': None})
+        self.assertIsNone(out['student']['seat'])
+        # 格式檢查
+        self.call('POST', '/api/score-grid/student/seat',
+                  {'classId': cid, 'userId': uid, 'seat': 'abc'}, expect=400)
+        self.call('POST', '/api/score-grid/student/seat',
+                  {'classId': cid, 'userId': uid, 'seat': 1000}, expect=400)
+        # 學生不能改；別班老師也不行
+        self.call('POST', '/api/score-grid/student/seat',
+                  {'classId': cid, 'userId': uid, 'seat': 5}, user=self.student, expect=403)
+        with self.app.db() as db:
+            other_teacher = db.execute(
+                "SELECT * FROM users WHERE role='teacher' AND id<>? LIMIT 1",
+                (self.teacher['id'],)).fetchone()
+        if other_teacher:
+            self.call('POST', '/api/score-grid/student/seat',
+                      {'classId': cid, 'userId': uid, 'seat': 5},
+                      user=dict(other_teacher), expect=403)
+
 
 
 class PaperDraftTests(unittest.TestCase):

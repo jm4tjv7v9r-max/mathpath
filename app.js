@@ -5568,7 +5568,8 @@ async function scoreGridPage(){
   const cols=grid.columns||[],rows=grid.students||[];
   const head=cols.map(c=>`<th class="sg-col"><span class="sg-date">${esc(c.date||'—')}</span><span class="sg-title">${esc(c.title||'')}</span></th>`).join('');
   const body=rows.map(r=>`<tr data-row="${r.id}">
-    <td class="sg-seat">${r.seat??''}</td>
+    <td class="sg-seat${cid?' editable':''}" data-u="${r.id}"${cid?' contenteditable="true"':''}
+        title="${cid?'點一下可直接改學號':'選擇班別後可改學號'}">${r.seat??''}</td>
     <td class="sg-name" title="${esc(r.fullName||r.name||'')}">${esc(r.name||'')}</td>
     ${r.cells.map((c,i)=>`<td class="sg-cell${c.overridden?' edited':''}${c.score===null?' empty':''}"
         contenteditable="true" data-a="${cols[i].id}" data-u="${r.id}"
@@ -5604,7 +5605,7 @@ async function scoreGridPage(){
         <div id="sg-bulk-result"></div>
       </div>
       <div class="sg-wrap"><table class="score-grid">
-        <thead><tr><th class="sg-seat">號</th><th class="sg-name">姓名</th>${head}
+        <thead><tr><th class="sg-seat" title="${cid?'點一下學號可直接修改':'選擇班別後可改學號'}">號</th><th class="sg-name">姓名</th>${head}
           <th class="sg-avg">平均分</th><th class="sg-miss">未完成</th></tr></thead>
         <tbody>${body||`<tr><td colspan="${cols.length+4}" class="sg-empty">還沒有作業資料</td></tr>`}</tbody>
         ${cid?`<tfoot><tr class="sg-addrow">
@@ -5616,6 +5617,7 @@ async function scoreGridPage(){
           <td colspan="2"></td></tr></tfoot>`:''}
       </table></div>
       <p class="field-hint">點格子直接改分數，按 Enter 或點別處即儲存；改過的格子會變淡黃，右鍵可還原成系統分數。清空格子＝還原。</p>
+      ${cid?'<p class="field-hint">「號」欄點一下可直接改學號（1–999，同班不可重複）；只改班內編號，學生登入帳號不變。</p>':''}
     </div></div>`;
   $('#sg-class').onchange=async ev=>{
     sessionStorage.setItem('scoreClass',ev.target.value);
@@ -5782,6 +5784,61 @@ async function scoreGridPage(){
         toast('已還原系統分數');
       }catch(e){toast(e.message);}
     };
+  });
+  // ── 改學號：座號欄直接編輯，存檔後只重排這張表，不整頁重載 ──────────────
+  const resortRows=()=>{
+    const tbody=$('.score-grid tbody');
+    if(!tbody||!tbody.querySelectorAll)return;
+    const trs=[...tbody.querySelectorAll('tr[data-row]')];
+    const key=tr=>{
+      const v=rowById.get(Number(tr.dataset.row))?.seat;
+      return (v===null||v===undefined||v==='')?999:Number(v);
+    };
+    trs.sort((a,b)=>key(a)-key(b)||Number(a.dataset.row)-Number(b.dataset.row));
+    trs.forEach(tr=>tbody.appendChild(tr));
+  };
+  if(!cid)$$('tbody .sg-seat').forEach(td=>{
+    td.onclick=()=>toast('請先在上方選擇班別，再改學號。');
+  });
+  if(cid)$$('.sg-seat.editable').forEach(td=>{
+    let before=td.textContent.trim();
+    const restore=()=>{td.textContent=before;};
+    const save=async()=>{
+      const raw=td.textContent.replace(/\s+/g,'');
+      if(raw===before)return;
+      let value=null;
+      if(raw!==''){
+        if(!/^\d{1,3}$/.test(raw)||Number(raw)<1){toast('學號請填 1 到 999 的數字');restore();return;}
+        value=Number(raw);
+      }
+      const uid=Number(td.dataset.u);
+      const row=rowById.get(uid);
+      try{
+        const out=await api('/api/score-grid/student/seat',
+          {classId:cid,userId:uid,seat:value});
+        const saved=out.student?out.student.seat:value;
+        if(row)row.seat=saved;
+        td.textContent=(saved===null||saved===undefined)?'':String(saved);
+        before=td.textContent;
+        resortRows();
+        toast(value===null?`已清空 ${row?.name||''} 的學號`:`已將 ${row?.name||''} 的學號改為 ${value}`);
+      }catch(e){toast(e.message);restore();}
+    };
+    td.onfocus=()=>{
+      before=td.textContent.trim();
+      // 已有號碼就整格選起來，直接打字即覆蓋，不用先刪
+      if(before){
+        const range=document.createRange();
+        range.selectNodeContents(td);
+        const sel=window.getSelection();
+        sel.removeAllRanges();sel.addRange(range);
+      }
+    };
+    td.onkeydown=ev=>{
+      if(ev.key==='Enter'){ev.preventDefault();td.blur();}
+      else if(ev.key==='Escape'){restore();td.blur();}
+    };
+    td.onblur=save;
   });
 }
 function fmtScore(n){const v=Number(n);return Number.isInteger(v)?String(v):v.toFixed(1);}

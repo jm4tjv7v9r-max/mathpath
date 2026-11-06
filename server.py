@@ -60,6 +60,10 @@ QUERY_PATHS = ('/api/calendar', '/api/papers',
                '/api/score-grid', '/api/score-grid/export',
                '/api/admin/archive/students', '/api/admin/archive/questions',
                '/api/admin/restore/questions', '/api/admin/restore/students')
+# users.seat 是 TEXT：直接排會變成 '10' < '2' < '3'，座號 12 排到 3 前面。
+# 一律轉成整數再排；沒有座號的放最後。
+SEAT_ORDER = "CASE WHEN COALESCE(u.seat,'')='' THEN 9999 ELSE CAST(u.seat AS INTEGER) END"
+SEAT_ORDER_BARE = "CASE WHEN COALESCE(seat,'')='' THEN 9999 ELSE CAST(seat AS INTEGER) END"
 
 
 # ── 背景工作：長 AI 請求（PDF 轉寫）改成「先回 jobId，前端輪詢」 ────────────
@@ -6387,7 +6391,7 @@ class Application:
                 students = [dict(r) for r in db.execute(
                     'SELECT u.id,u.name,u.seat FROM users u JOIN class_students cs '
                     'ON cs.user_id=u.id WHERE cs.class_id=? '
-                    'ORDER BY COALESCE(u.seat,999), u.id', (class_id,))]
+                    'ORDER BY ' + SEAT_ORDER + ', u.id', (class_id,))]
                 averages = {}
                 if mode == 'mixed' and students:
                     marks = ','.join('?' * len(students))
@@ -6705,12 +6709,12 @@ class Application:
                     students = [dict(r) for r in db.execute(
                         'SELECT u.id, u.name, u.seat FROM users u '
                         'JOIN class_students cs ON cs.user_id=u.id WHERE cs.class_id=? '
-                        'ORDER BY COALESCE(u.seat, 999), u.id', (class_id,))]
+                        'ORDER BY ' + SEAT_ORDER + ', u.id', (class_id,))]
                     where, args = 'WHERE class_id=?', (class_id,)
                 elif scope is None:
                     students = [dict(r) for r in db.execute(
                         "SELECT id, name, seat FROM users WHERE role='student' "
-                        'ORDER BY COALESCE(seat, 999), id')]
+                        'ORDER BY ' + SEAT_ORDER_BARE + ', id')]
                     where, args = '', ()
                 else:
                     marks = ','.join('?' * len(scope))
@@ -6718,7 +6722,7 @@ class Application:
                         'SELECT DISTINCT u.id, u.name, u.seat FROM users u '
                         'JOIN class_students cs ON cs.user_id=u.id '
                         f'WHERE cs.class_id IN ({marks}) '
-                        'ORDER BY COALESCE(u.seat, 999), u.id', tuple(scope))]
+                        f'ORDER BY {SEAT_ORDER}, u.id', tuple(scope))]
                     where, args = f'WHERE class_id IN ({marks})', tuple(scope)
                 assignments = [dict(r) for r in db.execute(
                     'SELECT id, title, due_at, created_at, class_name FROM assignments ' + where
@@ -6840,6 +6844,50 @@ class Application:
                            (class_id, uid))
             return {'student': {'id': uid, 'name': display, 'seat': seat,
                                 'username': username, 'password': password}}, headers
+        if method == 'POST' and path == '/api/score-grid/student/seat':
+            # 成績總表直接改學號（座號）：只動 users.seat，登入帳號不變。
+            self.teacher(user)
+            fields(body, ('classId', 'userId', 'seat'), ('classId', 'userId'))
+            class_id = number(body['classId'], '班別', 1, 10 ** 18, True)
+            uid = number(body['userId'], '學生', 1, 10 ** 18, True)
+            raw_seat = body.get('seat')
+            seat = None
+            if raw_seat not in (None, ''):
+                try:
+                    seat = int(str(raw_seat).strip())
+                except (TypeError, ValueError):
+                    fail(400, '學號必須是數字。')
+                if not 1 <= seat <= 999:
+                    fail(400, '學號必須介於 1 和 999。')
+            with self.db() as db:
+                row = db.execute('SELECT teacher_id, name FROM classes WHERE id=?',
+                                 (class_id,)).fetchone()
+                if row is None:
+                    fail(404, '找不到這個班別。')
+                if row['teacher_id'] != user['id'] and not self.is_owner(user, db):
+                    fail(403, '只有設立該班級的老師可以修改學號。')
+                st = db.execute('SELECT u.id, u.name, u.seat FROM users u '
+                                'JOIN class_students cs ON cs.user_id=u.id '
+                                'WHERE cs.class_id=? AND u.id=?',
+                                (class_id, uid)).fetchone()
+                if st is None:
+                    fail(404, '這個學生不在本班。')
+                new_seat = '' if seat is None else str(seat)
+                if str(st['seat'] if st['seat'] is not None else '') == new_seat:
+                    return {'ok': True, 'unchanged': True,
+                            'student': {'id': uid, 'name': mask_name(st['name']),
+                                        'seat': st['seat']}}, headers
+                # 同一班內學號不可重複（座號撞號會讓排序與點名對不上）
+                if seat is not None:
+                    clash = db.execute(
+                        'SELECT u.name FROM users u JOIN class_students cs ON cs.user_id=u.id '
+                        "WHERE cs.class_id=? AND u.id<>? AND COALESCE(u.seat,'')=?",
+                        (class_id, uid, new_seat)).fetchone()
+                    if clash:
+                        fail(409, f'學號 {seat} 已被「{mask_name(clash["name"])}」使用。')
+                db.execute('UPDATE users SET seat=? WHERE id=?', (seat, uid))
+            return {'ok': True, 'student': {'id': uid, 'name': mask_name(st['name']),
+                                            'seat': seat}}, headers
         if method == 'POST' and path == '/api/score-grid/students':
             self.teacher(user)
             fields(body, ('classId', 'students'), ('classId', 'students'))
@@ -7664,11 +7712,11 @@ class Application:
                         fail(403, '只有設立該班級的老師可以批改這個班。')
                     students = [dict(r) for r in db.execute(
                         'SELECT u.id,u.name,u.seat FROM users u JOIN class_students cs ON cs.user_id=u.id '
-                        'WHERE cs.class_id=? ORDER BY COALESCE(u.seat,999)', (class_id,))]
+                        'WHERE cs.class_id=? ORDER BY ' + SEAT_ORDER, (class_id,))]
                 else:
                     students = [dict(r) for r in db.execute(
                         "SELECT id,name,seat FROM users WHERE role='student' "
-                        'ORDER BY COALESCE(seat,999), id')]
+                        'ORDER BY ' + SEAT_ORDER_BARE + ', id')]
             sheets = match_papers(roster, students)
             roster_out = [{'id': st['id'], 'name': st['name'], 'seat': st['seat']}
                           for st in students]
