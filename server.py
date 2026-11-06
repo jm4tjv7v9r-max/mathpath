@@ -726,10 +726,12 @@ def classroom_ensure(db):
                     submissions TEXT,
                     reviews TEXT,
                     grade_assignment_id INTEGER,
+                    code TEXT,
+                    current_task INTEGER DEFAULT 0,
                     started_at REAL NOT NULL,
                     ended_at REAL)""")
     cols = {r['name'] for r in db.execute('PRAGMA table_info(classroom_sessions)')}
-    for name in ('submissions', 'reviews', 'grade_assignment_id'):
+    for name in ('submissions', 'reviews', 'grade_assignment_id', 'code', 'current_task'):
         if name not in cols:
             db.execute(f'ALTER TABLE classroom_sessions ADD COLUMN {name} TEXT')
 
@@ -744,6 +746,8 @@ def classroom_json(row):
             'reviews': json.loads((row['reviews'] if 'reviews' in keys else None) or '[]'),
             'gradeAssignmentId': (row['grade_assignment_id']
                                   if 'grade_assignment_id' in keys else None),
+            'code': (row['code'] if 'code' in keys else None),
+            'currentTask': ((row['current_task'] if 'current_task' in keys else 0) or 0),
             'startedAt': row['started_at'], 'endedAt': row['ended_at']}
 
 
@@ -756,6 +760,35 @@ def classroom_review_avg(reviews, group_id):
     if len(values) >= 3:
         values = sorted(values)[1:-1]
     return sum(values) / len(values)
+
+
+def classroom_code(db):
+    """6 位數字課堂碼（同時只會有一堂 running 用到同一個碼）。"""
+    for _ in range(30):
+        code = str(secrets.randbelow(900000) + 100000)
+        row = db.execute("SELECT 1 FROM classroom_sessions WHERE code=? AND status='running'",
+                         (code,)).fetchone()
+        if row is None:
+            return code
+    return str(secrets.randbelow(900000) + 100000)
+
+
+def classroom_student_view(data, student_id):
+    """學生端只看得到：任務、自己那一組、各組分數（不給名單細節）。"""
+    mine = None
+    for g in data['groups']:
+        if any(str(m.get('id')) == str(student_id) for m in g.get('members') or []):
+            mine = g
+            break
+    if mine is None:
+        return None
+    return {'id': data['id'], 'title': data['title'], 'code': data.get('code') or '',
+            'currentTask': data.get('currentTask') or 0, 'tasks': data['tasks'],
+            'myGroup': {'id': mine['id'], 'name': mine['name'],
+                        'members': [m.get('name') or '' for m in mine.get('members') or []]},
+            'groups': [{'id': g['id'], 'name': g['name'],
+                        'score': data['scores'].get(str(g['id']), 0)} for g in data['groups']],
+            'submission': (data.get('submissions') or {}).get(str(mine['id']))}
 
 
 def classroom_groups(students, size, mode='random', averages=None):
@@ -6367,6 +6400,46 @@ class Application:
                 fail(422, '這個班還沒有學生；先在成績總表匯入名單。')
             return {'groups': classroom_groups(students, size, mode, averages),
                     'className': row['name']}, headers
+        if method == 'POST' and path in ('/api/classroom/join', '/api/classroom/student/submit'):
+            # 學生端：輸入 6 位課堂碼加入；加入後可提交答案（只有自己那一組）
+            if not user:
+                fail(401, '請先登入。')
+            fields(body, ('code', 'text', 'image'), ('code',))
+            code = str(body['code']).strip()
+            if not re.fullmatch(r'\d{6}', code):
+                fail(400, '課堂碼是 6 位數字。')
+            with self.db() as db:
+                classroom_ensure(db)
+                row = db.execute(
+                    "SELECT * FROM classroom_sessions WHERE code=? AND status='running' "
+                    'ORDER BY id DESC LIMIT 1', (code,)).fetchone()
+                if row is None:
+                    fail(404, '課堂碼不正確，或這堂課已經結束。')
+                if row['class_id'] and not db.execute(
+                        'SELECT 1 FROM class_students WHERE class_id=? AND user_id=?',
+                        (row['class_id'], user['id'])).fetchone():
+                    fail(403, '你不在這堂課的班級名單內。')
+                data = classroom_json(row)
+                view = classroom_student_view(data, user['id'])
+                if view is None:
+                    fail(403, '你不在這堂課的分組名單內。')
+                if path.endswith('/submit'):
+                    image = body.get('image') or ''
+                    if image:
+                        if not isinstance(image, str) or not image.startswith('data:image/'):
+                            fail(400, '圖片格式不正確。')
+                        if len(image) > 400000:
+                            fail(413, '圖片太大，請縮小後再上傳。')
+                    gid = str(view['myGroup']['id'])
+                    data['submissions'][gid] = {'text': str(body.get('text') or '')[:2000],
+                                                'image': image, 'at': time.time()}
+                    data['statuses'].setdefault(gid, {'submitted': False, 'help': False})['submitted'] = True
+                    db.execute(
+                        'UPDATE classroom_sessions SET submissions=?, statuses=? WHERE id=?',
+                        (json.dumps(data['submissions'], ensure_ascii=False),
+                         json.dumps(data['statuses']), row['id']))
+                    view = classroom_student_view(data, user['id'])
+            return {'session': view}, headers
         if method == 'POST' and path == '/api/classroom/sessions':
             # 「教師同意才開展」：只有老師按了開始課堂、送出這個請求才會建立課堂
             self.teacher(user)
@@ -6390,14 +6463,17 @@ class Application:
                 classroom_ensure(db)
                 scores = {str(g['id']): 0 for g in groups}
                 statuses = {str(g['id']): {'submitted': False, 'help': False} for g in groups}
+                code = classroom_code(db)
                 sid = db.execute(
                     'INSERT INTO classroom_sessions(teacher_id,class_id,title,status,groups,tasks,'
-                    'scores,statuses,log,started_at,ended_at) VALUES(?,?,?,?,?,?,?,?,?,?,NULL)',
+                    'scores,statuses,log,code,started_at,ended_at) '
+                    'VALUES(?,?,?,?,?,?,?,?,?,?,?,NULL)',
                     (user['id'], class_id, title, 'running',
                      json.dumps(groups, ensure_ascii=False),
                      json.dumps(tasks, ensure_ascii=False),
-                     json.dumps(scores), json.dumps(statuses), '[]', time.time())).lastrowid
-            return {'sessionId': sid}, headers
+                     json.dumps(scores), json.dumps(statuses), '[]', code,
+                     time.time())).lastrowid
+            return {'sessionId': sid, 'code': code}, headers
         if method == 'GET' and path == '/api/classroom/sessions':
             self.teacher(user)
             with self.db() as db:
@@ -6571,7 +6647,7 @@ class Application:
                     result_extra = {'assignmentId': aid, 'title': grade_title,
                                     'students': count}
                 elif action == 'update':
-                    fields(body, ('title', 'groups', 'tasks'), ())
+                    fields(body, ('title', 'groups', 'tasks', 'currentTask'), ())
                     if isinstance(body.get('groups'), list) and body['groups']:
                         data['groups'] = body['groups']
                         data['scores'] = {str(g['id']): data['scores'].get(str(g['id']), 0)
@@ -6581,6 +6657,8 @@ class Application:
                             for g in data['groups']}
                     if isinstance(body.get('tasks'), list):
                         data['tasks'] = body['tasks']
+                    if 'currentTask' in body:
+                        data['currentTask'] = number(body['currentTask'], '任務', 0, 50, True)
                     if str(body.get('title') or '').strip():
                         data['title'] = str(body['title']).strip()[:120]
                 else:      # end
@@ -6589,7 +6667,7 @@ class Application:
                 db.execute(
                     'UPDATE classroom_sessions SET title=?,status=?,groups=?,tasks=?,scores=?,'
                     'statuses=?,log=?,submissions=?,reviews=?,grade_assignment_id=?,'
-                    'ended_at=? WHERE id=?',
+                    'current_task=?,ended_at=? WHERE id=?',
                     (data['title'], data['status'],
                      json.dumps(data['groups'], ensure_ascii=False),
                      json.dumps(data['tasks'], ensure_ascii=False),
@@ -6597,7 +6675,8 @@ class Application:
                      json.dumps(data['log'], ensure_ascii=False),
                      json.dumps(data.get('submissions') or {}, ensure_ascii=False),
                      json.dumps(data.get('reviews') or [], ensure_ascii=False),
-                     data.get('gradeAssignmentId'), data['endedAt'], sid))
+                     data.get('gradeAssignmentId'), data.get('currentTask') or 0,
+                     data['endedAt'], sid))
             return {'session': data, **(result_extra or {})}, headers
 
         # ---------- 成績總表（教師用，像 Excel 的網格） ----------

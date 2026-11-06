@@ -5016,6 +5016,52 @@ class ClassroomTests(unittest.TestCase):
         # 列表要標示已匯出
         self.assertTrue(self.call('GET', '/api/classroom/sessions')['sessions'][0]['graded'])
 
+    def test_student_joins_with_code_and_submits(self):
+        """學生用 6 位課堂碼加入，看得到目前任務與自己那組，提交後老師端標記已交。"""
+        sid, groups = self.make_session()
+        code = self.call('GET', f'/api/classroom/sessions/{sid}')['session']['code']
+        self.assertRegex(code, r'^\d{6}$')
+
+        member = groups[0]['members'][0]
+        with self.app.db() as db:
+            student = dict(db.execute('SELECT * FROM users WHERE id=?', (member['id'],)).fetchone())
+            outsider = dict(db.execute("SELECT * FROM users WHERE role='student' AND id=?",
+                                      (self.teacher['id'],)).fetchone() or {})
+
+        joined = self.call('POST', '/api/classroom/join', {'code': code}, user=student)
+        self.assertEqual(joined['session']['myGroup']['id'], groups[0]['id'])
+        self.assertEqual(joined['session']['currentTask'], 0)
+        self.assertEqual(joined['session']['tasks'][0]['title'], '任務一')
+        self.assertNotIn('teacher_id', joined['session'], '學生端不該看到老師欄位')
+
+        submitted = self.call('POST', '/api/classroom/student/submit',
+                              {'code': code, 'text': 'x=2 或 x=3'}, user=student)
+        self.assertEqual(submitted['session']['submission']['text'], 'x=2 或 x=3')
+
+        got = self.call('GET', f'/api/classroom/sessions/{sid}')['session']
+        self.assertTrue(got['statuses'][str(groups[0]['id'])]['submitted'],
+                        '學生提交後，老師的計分板要顯示已交')
+
+        # 錯的課堂碼
+        self.call('POST', '/api/classroom/join', {'code': '000000'}, user=student, expect=404)
+        # 不在這班名單的學生
+        with self.app.db() as db:
+            other = dict(db.execute("SELECT * FROM users WHERE role='student' AND id NOT IN "
+                                    "(SELECT user_id FROM class_students WHERE class_id=?) LIMIT 1",
+                                    (self.class_id,)).fetchone())
+        if other:
+            self.call('POST', '/api/classroom/join', {'code': code}, user=other, expect=403)
+
+    def test_teacher_can_push_current_task_to_students(self):
+        sid, groups = self.make_session()
+        self.call('POST', f'/api/classroom/sessions/{sid}/update',
+                  {'tasks': [{'id': 1, 'title': '任務一', 'text': 'a', 'minutes': 5},
+                             {'id': 2, 'title': '任務二', 'text': 'b', 'minutes': 5}]})
+        self.call('POST', f'/api/classroom/sessions/{sid}/update', {'currentTask': 1})
+        got = self.call('GET', f'/api/classroom/sessions/{sid}')['session']
+        self.assertEqual(got['currentTask'], 1)
+        self.assertEqual(len(got['tasks']), 2)
+
     def test_other_teacher_cannot_open_the_class(self):
         sid, _ = self.make_session()
         with self.app.db() as db:

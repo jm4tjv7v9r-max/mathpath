@@ -894,11 +894,11 @@ function shell(){// 「新手上路」放最後——那是第一次來看的，
       return head+kids;
     }).join('');
   }else{
-    let nav=[['homework','我的作業'],['mock','模擬測驗'],['bank','數學題庫'],['practice','自主練習'],['mistakes','我的錯題本'],['growth','學習足跡']];
+    let nav=[['classroom','課堂'],['homework','我的作業'],['mock','模擬測驗'],['bank','數學題庫'],['practice','自主練習'],['mistakes','我的錯題本'],['growth','學習足跡']];
     if(S.user?.role!=='student')nav=nav.filter(([id])=>id!=='mock');
     navHtml=nav.map(([id,label])=>navRow(id,label,page===id,false)).join('');
   }
-  $('#nav').innerHTML=navHtml;$('#settings-nav').innerHTML=icon('settings')+'<span>設定與隱私</span>';$('#settings-nav').classList.toggle('active',page==='settings');$('#font-scale').innerHTML=fontScaleControl();$('#theme-switch').innerHTML=themeControl();$('#account').innerHTML=`<span class="avatar">${S.user?(S.user.role==='teacher'?'師':'學'):'M'}</span><span class="account-info">${S.user?esc(S.user.name):'訪客預覽'}<small>${S.user?(S.user.role==='teacher'?'教師工作空間':'中三數學學習者'):'登入後開始學習'}</small></span>${icon(S.user?'chevron':'logout')}`;$('#avatar').textContent=S.user?(S.user.role==='teacher'?'師':'學'):'M';const labels={contests:'數學比賽',guide:'新手上路',homework:S.user?.role==='teacher'?'作業成績':'我的作業',calendar:'日曆',board:'排行榜',mock:'模擬測驗',ai:'模型端點',bank:'數學題庫',practice:'自主練習',import:'試卷拆題入庫',mistakes:S.user?.role==='teacher'?'作業批閱':'我的錯題本',paper:'紙本批閱',paperbatch:'全班紙本批閱',classroom:'課堂應用',classroomRecords:'課堂紀錄',layout:'試卷修正排版',papers:'我的試卷',growth:'學習足跡',newq:'新增題目',settings:'設定與隱私'};$('#crumb').textContent=labels[page] || '數學題庫';renderCalculator();}
+  $('#nav').innerHTML=navHtml;$('#settings-nav').innerHTML=icon('settings')+'<span>設定與隱私</span>';$('#settings-nav').classList.toggle('active',page==='settings');$('#font-scale').innerHTML=fontScaleControl();$('#theme-switch').innerHTML=themeControl();$('#account').innerHTML=`<span class="avatar">${S.user?(S.user.role==='teacher'?'師':'學'):'M'}</span><span class="account-info">${S.user?esc(S.user.name):'訪客預覽'}<small>${S.user?(S.user.role==='teacher'?'教師工作空間':'中三數學學習者'):'登入後開始學習'}</small></span>${icon(S.user?'chevron':'logout')}`;$('#avatar').textContent=S.user?(S.user.role==='teacher'?'師':'學'):'M';const labels={contests:'數學比賽',guide:'新手上路',homework:S.user?.role==='teacher'?'作業成績':'我的作業',calendar:'日曆',board:'排行榜',mock:'模擬測驗',ai:'模型端點',bank:'數學題庫',practice:'自主練習',import:'試卷拆題入庫',mistakes:S.user?.role==='teacher'?'作業批閱':'我的錯題本',paper:'紙本批閱',paperbatch:'全班紙本批閱',classroom:(S.user?.role==='teacher'?'課堂應用':'課堂'),classroomRecords:'課堂紀錄',layout:'試卷修正排版',papers:'我的試卷',growth:'學習足跡',newq:'新增題目',settings:'設定與隱私'};$('#crumb').textContent=labels[page] || '數學題庫';renderCalculator();}
 
 let calCursor=null,calSelected=null;
 const calPad=n=>String(n).padStart(2,'0');
@@ -3608,6 +3608,25 @@ function fileToDataUrl(file){
 // ── 課堂應用（分組教學）────────────────────────────────────────────
 // 所有課堂功能都只在「課堂應用」之下：分組 → 任務 → 開始（教師確認）→ 進行 → 紀錄。
 let crTimerId = null;
+let crStudentTimer = null;
+// 手寫照片縮到 900px、JPEG 0.7（課堂提交用；伺服器上限 400KB）
+function crShrink(file) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      const ratio = Math.min(1, 900 / (img.width || 900));
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.round((img.width || 900) * ratio);
+      canvas.height = Math.round((img.height || 600) * ratio);
+      canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+      URL.revokeObjectURL(url);
+      resolve(canvas.toDataURL('image/jpeg', 0.7));
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('讀取圖片失敗')); };
+    img.src = url;
+  });
+}
 // 常見的課堂流程：一鍵把任務排好，不用每次重打
 const CR_TEMPLATES = [
   { id: 'flow', name: '小測 → 討論 → 發表 → 互評', tasks: [
@@ -3631,7 +3650,7 @@ function crFmt(sec) {
 }
 
 async function classroomPage() {
-  if (S.user?.role !== 'teacher') return bank();
+  if (S.user?.role !== 'teacher') return classroomStudentPage();
   page = 'classroom'; shell();
   if (crTimerId) { clearInterval(crTimerId); crTimerId = null; }
   const classes = await api('/api/score-grid/classes').catch(() => ({ classes: [] }));
@@ -3848,7 +3867,8 @@ function crLive(session) {
     const s = st.session, g = s.groups || [], scores = s.scores || {}, stat = s.statuses || {};
     box.innerHTML = `<div class="cr-live-inner">
       <header class="cr-live-head">
-        <div><p class="eyebrow">CLASSROOM</p><h2>${esc(s.title || '課堂')}</h2></div>
+        <div><p class="eyebrow">CLASSROOM</p><h2>${esc(s.title || '課堂')}</h2>
+          <p class="cr-code">課堂碼 <strong>${esc(s.code || '—')}</strong></p></div>
         <div class="cr-clock" id="cr-clock">${crFmt(st.left)}</div>
         <div class="cr-live-btns">
           <button class="secondary" id="cr-fs-minus" title="字小一點">A−</button>
@@ -3996,9 +4016,11 @@ function crLive(session) {
         }
       }, 1000);
     };
-    $('#cr-prev').onclick = () => { if (st.idx > 0) { st.idx -= 1; resetTimer(); render(); } };
+    const syncTask = () => api(`/api/classroom/sessions/${st.session.id}/update`,
+      { currentTask: st.idx }).catch(() => {});
+    $('#cr-prev').onclick = () => { if (st.idx > 0) { st.idx -= 1; resetTimer(); render(); syncTask(); } };
     $('#cr-next').onclick = () => {
-      if (st.idx < (st.session.tasks || []).length - 1) { st.idx += 1; resetTimer(); render(); }
+      if (st.idx < (st.session.tasks || []).length - 1) { st.idx += 1; resetTimer(); render(); syncTask(); }
     };
     $('#cr-draw').onclick = () => {
       const pool = (st.session.groups || []).map(g => g.name).filter(n => n !== st.drawn);
@@ -4070,6 +4092,110 @@ function crLive(session) {
 
   resetTimer();
   render();
+  // 每 15 秒同步一次：學生提交後，計分板上的「已交」會自己更新
+  const poll = setInterval(async () => {
+    if (!document.getElementById('cr-live')) { clearInterval(poll); return; }
+    try {
+      const { session } = await api('/api/classroom/sessions/' + st.session.id);
+      if (session.status === 'running') { st.session = session; render(); }
+      else clearInterval(poll);
+    } catch (e) { /* 網路不穩就跳過這次 */ }
+  }, 15000);
+}
+
+async function classroomStudentPage() {
+  if (!S.user) return loginModal(classroomStudentPage);
+  if (S.user.role === 'teacher') return classroomPage();
+  page = 'classroom'; shell();
+  if (crStudentTimer) { clearInterval(crStudentTimer); crStudentTimer = null; }
+  let saved = '';
+  try { saved = localStorage.getItem('crJoinCode') || ''; } catch (e) {}
+  $('#main').innerHTML = `<div class="fade-in">
+    ${heading('CLASSROOM', '課堂', '輸入老師給的 6 位課堂碼加入；加入後看目前任務、交你們組的答案。')}
+    <section class="panel panel-pad">
+      <div class="cr-join">
+        <input id="cr-code" inputmode="numeric" maxlength="6" placeholder="6 位課堂碼" value="${esc(saved)}">
+        <button class="primary" id="cr-join-btn">加入課堂</button>
+        <span class="small-text" id="cr-join-msg">${saved ? '' : '課堂碼由老師在投影畫面上顯示。'}</span>
+      </div>
+      <div id="cr-student"></div>
+    </section></div>`;
+
+  let current = null;
+  const renderStudent = session => {
+    current = session;
+    const t = (session.tasks || [])[session.currentTask] || {};
+    const sub = session.submission || null;
+    const groups = session.groups || [];
+    $('#cr-student').innerHTML = `
+      <div class="cr-stu-head">
+        <div><strong>${esc(session.title || '')}</strong>
+          <span class="small-text">${esc(session.myGroup.name || '')} · ${esc((session.myGroup.members || []).join('、'))}</span></div>
+        <span class="cr-stu-code">課堂碼 ${esc(session.code || '')}</span>
+      </div>
+      <div class="cr-stu-task">
+        <p class="eyebrow">目前任務 ${session.currentTask + 1} / ${(session.tasks || []).length || 1}</p>
+        <h2>${esc(t.title || '（老師還沒開始）')}</h2>
+        <p class="cr-stu-text">${esc(t.text || '')}</p>
+      </div>
+      <div class="cr-stu-submit">
+        <label class="field-label" for="cr-stu-text">你們組的答案</label>
+        <textarea id="cr-stu-text" rows="4" placeholder="寫下討論結果或解題過程…">${esc((sub && sub.text) || '')}</textarea>
+        <div class="cr-stu-actions">
+          <label class="small-text">手寫照片（可選）<input id="cr-stu-file" type="file" accept="image/*"></label>
+          <span class="small-text" id="cr-stu-status">${sub ? '已提交（可修改）' : '尚未提交'}</span>
+          <button class="primary" id="cr-stu-ok">${sub ? '更新提交' : '提交'}</button>
+        </div>
+        <div id="cr-stu-prev">${sub && sub.image ? `<img src="${sub.image}" alt="已提交的照片">` : ''}</div>
+      </div>
+      <p class="small-text" style="margin-top:10px">各組分數：${groups.map(g => `${esc(g.name)} ${g.score}`).join(' · ')}</p>`;
+    let image = (sub && sub.image) || '';
+    $('#cr-stu-file').onchange = async ev => {
+      const file = ev.target.files[0];
+      if (!file) return;
+      try { image = await crShrink(file); $('#cr-stu-prev').innerHTML = `<img src="${image}" alt="待提交的照片">`; }
+      catch (e) { toast(e.message); }
+    };
+    $('#cr-stu-ok').onclick = async () => {
+      const btn = $('#cr-stu-ok');
+      btn.disabled = true; btn.textContent = '提交中…';
+      try {
+        const out = await api('/api/classroom/student/submit',
+          { code: current.code, text: $('#cr-stu-text').value, image });
+        renderStudent(out.session);
+        toast('已提交，老師會看到你們組的答案');
+      } catch (e) { toast(e.message); btn.disabled = false; btn.textContent = sub ? '更新提交' : '提交'; }
+    };
+  };
+
+  const join = async (code, silent) => {
+    try {
+      const out = await api('/api/classroom/join', { code });
+      try { localStorage.setItem('crJoinCode', code); } catch (e) {}
+      $('#cr-join-msg').textContent = '';
+      renderStudent(out.session);
+      return true;
+    } catch (e) {
+      if (!silent) toast(e.message);
+      return false;
+    }
+  };
+
+  $('#cr-join-btn').onclick = async () => {
+    const code = ($('#cr-code').value || '').replace(/\D/g, '').slice(0, 6);
+    if (code.length !== 6) return toast('請輸入 6 位數字的課堂碼。');
+    if (await join(code)) {
+      if (crStudentTimer) clearInterval(crStudentTimer);
+      // 每 10 秒同步一次：老師換任務、或課堂結束時，學生端會跟著更新
+      crStudentTimer = setInterval(async () => {
+        if (page !== 'classroom' || !current) { clearInterval(crStudentTimer); crStudentTimer = null; return; }
+        const ok = await join(current.code, true);
+        if (!ok) { clearInterval(crStudentTimer); crStudentTimer = null; }
+      }, 10000);
+    }
+  };
+  $('#cr-code').onkeydown = ev => { if (ev.key === 'Enter') $('#cr-join-btn').click(); };
+  if (saved) $('#cr-join-btn').click();
 }
 
 async function classroomRecordsPage() {
@@ -6174,7 +6300,7 @@ $('#bulk-template').onclick=()=>{const order=$('#bulk-order')?$('#bulk-order').v
 $('#bulk-class-toggle').onchange=e=>{$('#bulk-class-field').hidden=!e.target.checked;};
 $('#bulk-submit').onclick=async()=>{const {rows,errors}=bulkPreview();if(errors.length)return toast('請先修正名單格式錯誤。');if(!rows.length)return toast('請輸入至少一位學生。');if(rows.length>200)return toast('每批最多200位學生。');const makeClass=$('#bulk-class-toggle').checked,className=$('#bulk-class-name').value.trim();if(makeClass&&!className)return toast('請填寫班級名稱，或取消建立班級。');const b=$('#bulk-submit');b.disabled=true;b.textContent='正在建立…';try{const {users:created}=await api('/api/users/bulk',{students:rows.map(r=>({username:r.username,name:r.name,seat:r.seat,password:r.password}))});let classNote='';if(makeClass){try{const {class:room}=await api('/api/classes',{name:className,studentIds:created.map(u=>u.id)});classNote=`<div class="hint-box" style="margin-top:12px">已同時建立班級「${esc(room.name)}」，共 ${room.studentCount} 位學生，可直接佈置作業。</div>`;}catch(err){classNote=`<div class="inline-error" style="margin-top:12px">帳戶已建立，但班級未建立：${esc(err.message)}可在「作業與成績」重新建立班級。</div>`;}}const merged=rows.map((r,i)=>({username:r.username,password:r.password,name:(created[i]&&created[i].name)||r.name||r.username,seat:(created[i]&&created[i].seat)||r.seat||''}));const hasName=merged.some(r=>r.name!==r.username),hasSeat=merged.some(r=>r.seat);const cols=[['學號',r=>r.username]].concat(hasName?[['姓名',r=>r.name]]:[],hasSeat?[['班內號',r=>r.seat]]:[],[['密碼',r=>r.password]]);const text=[cols.map(c=>c[0]).join('\t'),...merged.map(r=>cols.map(c=>c[1](r)).join('\t'))].join('\n');$('#bulk-result').innerHTML=`<div class="import-warning">已建立 ${created.length} 個帳戶${merged.some(r=>r.name===r.username)?`（${merged.filter(r=>r.name===r.username).length} 個未填姓名，以學號顯示）`:""}。密碼只會顯示這一次，請立即複製並私下發給學生。</div>${classNote}<pre class="code-block">${esc(text)}</pre><button class="secondary wide" id="bulk-copy" style="margin-top:10px">${icon('file')}複製帳號密碼</button>`;$('#bulk-copy').onclick=async()=>{try{await navigator.clipboard.writeText(text);toast('已複製，請妥善保管。');}catch{toast('無法自動複製，請手動選取。');}};$('#bulk-students').value='';$('#bulk-class-toggle').checked=false;$('#bulk-class-field').hidden=true;$('#bulk-class-name').value='';bulkPreview();toast(`已建立 ${created.length} 個學生帳戶。`);}catch(err){$('#bulk-error').textContent=err.message;}finally{b.disabled=false;b.innerHTML=icon('upload')+'批次建立學生帳戶';}};}}catch(e){toast(e.message);}}
 function deploymentHelp(){modal(`<p class="eyebrow">SERVER SETUP</p><h2>啟動與部署說明</h2><p class="modal-intro">資料保存在網站伺服器；實際位置由管理員確認。以下是可選部署方式，不代表目前網站的部署狀態。</p><h3>本機預覽</h3><p class="info-note">雙擊 start.command，或用 Python 3 啟動：</p><pre class="code-block">python3 server.py --host 127.0.0.1 --port 8765</pre><p class="info-note">瀏覽器開啟 http://127.0.0.1:8765。</p><h3>校內連線</h3><p class="info-note">由資訊人員將 --host 設為伺服器的校內 IP，並限制防火牆只允許校內來源；正式使用需反向代理 HTTPS。不要把演示帳戶直接用於全校。</p><h3>目前帳戶範圍</h3><p class="info-note">初始演示配置包含學生與教師帳戶；實際帳戶由管理員確認。教師可在「設定與隱私」建立獨立學生帳戶，避免共用作答紀錄。可在「作業與成績」建立班級並發布作業；校內單一登入及批量帳戶管理仍可再擴充。</p><div class="import-warning">資料保存在網站伺服器；實際位置由管理員確認。預設資料庫路徑為 data/mathpath.sqlite3；備份及保存年限應按學校規定安排。AI 必須另行配置，未配置時手写作答由教師批閱。</div>`);}
-async function navigate(target){if(busy)return toast('目前操作正在進行，請等待完成。');preserveDraft();if(page==='practice'&&strokes.length&&target!=='practice'&&!lastResult&&await askCancel('尚未提交的手寫內容未保存。確定離開？'))return;beginView();$('#sidebar').classList.remove('open');if(target!=='practice'){assignmentContext=null;mockContext=null;stopQuizClock();}page=target;switch(target){case'guide':guidePage();break;
+async function navigate(target){if(busy)return toast('目前操作正在進行，請等待完成。');if(crStudentTimer){clearInterval(crStudentTimer);crStudentTimer=null;}preserveDraft();if(page==='practice'&&strokes.length&&target!=='practice'&&!lastResult&&await askCancel('尚未提交的手寫內容未保存。確定離開？'))return;beginView();$('#sidebar').classList.remove('open');if(target!=='practice'){assignmentContext=null;mockContext=null;stopQuizClock();}page=target;switch(target){case'guide':guidePage();break;
 case'homework':homeworkPage();break;case'scores':scoreGridPage();break;case'paperbatch':paperBatchPage();break;
 case'classroom':classroomPage();break;case'classroomRecords':classroomRecordsPage();break;case'calendar':calendarPage();break;case'board':leaderboardPage();break;case'mock':mockPage();break;case'contests':contestsPage();break;case'ai':aiConfigPage();break;case'bank':bank();break;case'practice':practice();break;case'import':importPage();break;case'newq':newQuestionPage();break;case'mistakes':recordsPage();break;case'paper':paperGradePage();break;case'layout':paperLayoutPage();break;case'papers':papersPage();break;case'growth':growthPage();break;case'settings':settingsPage();break;default:bank();}window.scrollTo({top:0,behavior:'instant'});}
 document.addEventListener('click',async e=>{const b=e.target.closest('button');if(!b||b.disabled)return;if(b.dataset.fontScale){applyFontScale(b.dataset.fontScale);shell();toast(`字體已設為「${FONT_SCALES.find(([id])=>id===b.dataset.fontScale)[1]}」，只影響這台裝置。`);return;}
