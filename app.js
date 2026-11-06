@@ -1196,6 +1196,18 @@ function askPrompt(label, value, opts) {
 function askCancel(message, opts) {
   return askConfirm(message, opts).then(ok => !ok);
 }
+// 姓名一存入資料庫就遮蔽（陳大文 → 陳X文），全名不留；這件事只提醒一次，
+// 之後用 localStorage 記住，免得每次匯入都被攔一次。
+const NAME_MASK_ACK = 'mathpath_name_mask_ack';
+async function askNameMask() {
+  try { if (localStorage.getItem(NAME_MASK_ACK) === '1') return true; } catch (e) {}
+  const ok = await askConfirm(
+    '為保護學生隱私，姓名在存入資料庫時就會遮蔽（例：陳大文 → 陳X文、歐陽修文 → 歐XX文），'
+    + '全名不會保留，之後也無法還原。\n\n建議先自行保留一份原始名單。',
+    { title: '姓名會以遮蔽形式存入', confirmText: '了解，繼續', cancelText: '取消' });
+  if (ok) { try { localStorage.setItem(NAME_MASK_ACK, '1'); } catch (e) {} }
+  return ok;
+}
 
 function modal(html,large=false,dismiss=true){
   // large 可以是 true（一般大視窗）或直接給 class 字串（例如 'large gen-modal'）。
@@ -3618,6 +3630,7 @@ async function paperBatchPage(){
         </div>
         <div class="pb-import-box" id="pb-import-box" hidden>
           <p class="small-text" style="margin:0 0 8px">先選班級再匯入。一行一個學生（「座號 姓名」或只寫姓名），也可以直接上傳 Excel 名單；同班同名同座號會自動跳過。</p>
+          <p class="small-text sg-mask-note">姓名存入時會遮蔽（陳大文 → 陳X文），全名不會保留、無法還原。</p>
           <textarea id="pb-bulk-text" rows="5" placeholder="1 陳大文&#10;2 李小明&#10;3,王美玲"></textarea>
           <div class="pb-import-actions">
             <span class="small-text">或用 Excel：<input type="file" id="pb-bulk-file" accept=".xlsx,.xlsm"></span>
@@ -3688,6 +3701,7 @@ async function paperBatchPage(){
       return m?{seat:Number(m[1]),name:m[2].trim()}:{name:line.replace(/^[\s,，、.]+/,'').trim()};
     }).filter(x=>x.name);
     if(!students.length)return toast('名單裡找不到姓名。');
+    if(!(await askNameMask()))return;
     const btn=$('#pb-bulk-ok');btn.disabled=true;btn.textContent='匯入中…';
     try{
       const out=await api('/api/score-grid/students',{classId:Number(cid),students});
@@ -3701,6 +3715,7 @@ async function paperBatchPage(){
     if(!cid)return toast('請先選擇班級，再匯入學生。');
     const file=$('#pb-bulk-file').files[0];
     if(!file)return toast('請先選一個 Excel 檔（.xlsx）。');
+    if(!(await askNameMask()))return;
     const btn=$('#pb-bulk-import');btn.disabled=true;btn.textContent='匯入中…';
     try{
       const data=await fileToDataUrl(file);
@@ -4803,6 +4818,7 @@ async function scoreGridPage(){
       </div>
       <div class="sg-bulkbox" id="sg-bulkbox" hidden>
         <p class="small-text">一行一個學生，格式「座號 姓名」或只寫姓名；已有的同名學生會自動跳過。</p>
+        <p class="small-text sg-mask-note">姓名存入時會遮蔽（陳大文 → 陳X文），全名不會保留、無法還原；請自留原始名單。</p>
         <textarea id="sg-bulk-text" rows="6" placeholder="1 陳大文&#10;2 李小明&#10;3 王美玲"></textarea>
         <div class="sg-bulk-actions" style="justify-content:space-between;gap:8px;flex-wrap:wrap">
           <span class="small-text">或用 Excel 名單：<input type="file" id="sg-bulk-file" accept=".xlsx,.xlsm" style="display:inline-block;width:auto">
@@ -4833,6 +4849,7 @@ async function scoreGridPage(){
   if(stuOk)stuOk.onclick=async()=>{
     const name=($('#sg-stu-name').value||'').trim();
     if(!name)return toast('請填姓名。');
+    if(!(await askNameMask()))return;
     try{
       const out=await api('/api/score-grid/student',
         {classId:cid,name,seat:Number($('#sg-stu-seat').value)||null});
@@ -4853,6 +4870,8 @@ async function scoreGridPage(){
       const m=line.match(/^(\d{1,3})[\s,，、.\t]+(.+)$/);
       return m?{seat:Number(m[1]),name:m[2].trim()}:{name:line.replace(/^[\s,，、.]+/,'').trim()};
     }).filter(x=>x.name);
+    if(!students.length)return toast('名單裡找不到姓名。');
+    if(!(await askNameMask()))return;
     try{
       const out=await api('/api/score-grid/students',{classId:cid,students});
       const rows=(out.created||[]).map(st=>`<tr><td>${st.seat??''}</td><td>${esc(st.name)}</td>
@@ -4875,6 +4894,7 @@ async function scoreGridPage(){
     if(!cid)return toast('請先選擇一個班別。');
     const file=$('#sg-bulk-file').files[0];
     if(!file)return toast('請先選一個 Excel 檔（.xlsx）。');
+    if(!(await askNameMask()))return;
     const btn=$('#sg-bulk-import');btn.disabled=true;btn.textContent='匯入中…';
     try{
       const data=await fileToDataUrl(file);
@@ -5572,7 +5592,7 @@ const studentHtml=`<div class="divider-text"><span>學生帳號</span></div>
 <p class="account-group">獨立學生帳戶（${students.length}）</p>
 <div class="review-answer" style="max-height:180px;overflow:auto">${students.map(accountRow).join('')}</div><form id="user-create-form"><div class="form-grid" style="margin-top:20px"><div class="form-field"><label class="field-label" for="student-name">姓名（可留空，預設用學號）</label><input id="student-name" maxlength="60" placeholder="例如：陳大文"></div><div class="form-field"><label class="field-label" for="student-username">學號（登入帳戶）</label><input id="student-username" minlength="3" maxlength="40" pattern="[A-Za-z0-9_.\\-]{3,40}" required placeholder="例如：s3a01" autocomplete="off"></div><div class="form-field"><label class="field-label" for="student-seat">班內號（可留空）</label><input id="student-seat" maxlength="20" placeholder="例如：3"></div></div><div class="form-field"><label class="field-label" for="student-password">初始密碼（至少10字）</label><input id="student-password" type="password" minlength="10" maxlength="256" required autocomplete="new-password"></div><p class="field-hint">學號只接受英文字母、數字、底線、點或連字號；<strong>姓名可以留空</strong>（不匯入名字），系統會以學號作為顯示名稱。請私下將初始密碼交給學生，提醒首次登入後更換。</p><p class="error-text" id="user-error"></p><button class="primary wide" type="submit">建立學生帳戶 ${icon('check')}</button></form><div class="divider-text"><span>或批次匯入一整班</span></div><div class="bulk-tools"><label class="secondary" for="bulk-file">${icon('upload')}上傳名單檔案</label><input id="bulk-file" type="file" accept=".csv,.txt,text/csv,text/plain" hidden><button class="text-button" id="bulk-template" type="button">${icon('file')}下載名單範本</button></div><div class="form-field" style="margin-top:14px"><label class="field-label" for="bulk-order">名單欄位順序</label><select id="bulk-order"><option value="auto">自動判斷（依內容或第一行標題）</option><option value="name_username_seat_password">姓名,學號,班內號,密碼</option><option value="username_seat_password">學號,班內號,密碼</option><option value="name_username_password">姓名,學號,密碼</option><option value="username_password">學號,密碼</option></select></div><p class="field-hint"><strong>姓名可以放第一欄</strong>（例：<code>陳大文,s3a01,1,密碼</code>），也可以完全省略：省略時以學號作為顯示名稱，名單上不會出現空白姓名。班內號與密碼都可留空（密碼留空會自動產生）。也接受 Tab、全角逗號或分號；第一行若是標題（如「學號,班內號,密碼」）會自動略過並依標題對應欄位。以 # 開頭的行會被忽略。名單檔案請存成 UTF-8 的 CSV 或 TXT。</p><textarea class="answer-field" id="bulk-students" style="min-height:150px;font-size:calc(15px*var(--fs))" placeholder="陳大文,s3a01,1,MathPass1234&#10;李小明,s3a02,2&#10;s3a03,3&#10;s3a04"></textarea><div id="bulk-preview" class="field-hint"></div><div id="bulk-preview-table"></div><label class="checkbox-line"><input type="checkbox" id="bulk-class-toggle">匯入後直接建立班級（把這批學生編入同一班）</label><div class="form-field" id="bulk-class-field" hidden><label class="field-label" for="bulk-class-name">班級名稱</label><input id="bulk-class-name" maxlength="100" placeholder="例如：中三甲班"></div><p class="error-text" id="bulk-error"></p><button class="secondary wide" id="bulk-submit" style="margin-top:6px">${icon('upload')}批次建立學生帳戶</button><div id="bulk-result"></div>`;
 modal(headHtml+(focus==='student'?'':teacherHtml)+(focus==='teacher'?'':studentHtml),true);
-if($('#teacher-create-form'))$('#teacher-create-form').onsubmit=async e=>{e.preventDefault();const b=$('[type="submit"]',e.target);b.disabled=true;$('#teacher-error').textContent='';try{const {user:made}=await api('/api/teachers',{username:$('#teacher-username').value,name:$('#teacher-name').value,password:$('#teacher-password').value});toast(`教師帳號「${made.name}」已建立，請把帳號與初始密碼私下交給對方。`);manageUsers(focus);}catch(err){$('#teacher-error').textContent=err.message;b.disabled=false;}};if($('#user-create-form')){$('#user-create-form').onsubmit=async e=>{e.preventDefault();const b=$('[type="submit"]',e.target);b.disabled=true;try{await api('/api/users',{username:$('#student-username').value,name:$('#student-name').value,seat:$('#student-seat').value,password:$('#student-password').value});toast('獨立學生帳戶已建立。');manageUsers(focus);}catch(err){$('#user-error').textContent=err.message;b.disabled=false;}};
+if($('#teacher-create-form'))$('#teacher-create-form').onsubmit=async e=>{e.preventDefault();const b=$('[type="submit"]',e.target);b.disabled=true;$('#teacher-error').textContent='';try{const {user:made}=await api('/api/teachers',{username:$('#teacher-username').value,name:$('#teacher-name').value,password:$('#teacher-password').value});toast(`教師帳號「${made.name}」已建立，請把帳號與初始密碼私下交給對方。`);manageUsers(focus);}catch(err){$('#teacher-error').textContent=err.message;b.disabled=false;}};if($('#user-create-form')){$('#user-create-form').onsubmit=async e=>{e.preventDefault();const b=$('[type="submit"]',e.target);if(($('#student-name').value||'').trim()&&!(await askNameMask()))return;b.disabled=true;try{await api('/api/users',{username:$('#student-username').value,name:$('#student-name').value,seat:$('#student-seat').value,password:$('#student-password').value});toast('獨立學生帳戶已建立。');manageUsers(focus);}catch(err){$('#user-error').textContent=err.message;b.disabled=false;}};
 const bulkPreview=()=>{const {rows,errors,fields}=parseBulkStudents($('#bulk-students').value,$('#bulk-order')?$('#bulk-order').value:'auto');const generated=rows.filter(r=>r.generated).length,noName=rows.filter(r=>!r.name).length,seated=rows.filter(r=>r.seat).length;$('#bulk-preview').innerHTML=rows.length?`將建立 <strong>${rows.length}</strong> 個帳戶${fields?`（${fields.map(f=>BULK_FIELD_NAMES[f]).join(' · ')}）`:''}${generated?`，其中 ${generated} 個自動產生密碼`:''}${noName?`，${noName} 個未填姓名（以學號顯示）`:''}${seated?`，${seated} 個有班內號`:''}`:'請輸入學生名單，每行一位。';$('#bulk-error').innerHTML=errors.length?errors.slice(0,6).map(esc).join('<br>'):'';const table=$('#bulk-preview-table');if(table)table.innerHTML=rows.length?`<div class="table-scroll" style="margin-top:10px"><table class="results-table bulk-table"><thead><tr><th>學號</th><th>班內號</th><th>顯示名稱</th><th>密碼</th></tr></thead><tbody>${rows.slice(0,8).map(r=>`<tr><td>${esc(r.username)}</td><td>${r.seat?esc(r.seat):'—'}</td><td>${esc(r.name||r.username)}</td><td>${r.generated?'自動產生':'已填'}</td></tr>`).join('')}</tbody></table></div>${rows.length>8?`<p class="field-hint">…另有 ${rows.length-8} 位未顯示。</p>`:''}`:'';return{rows,errors};};
 $('#bulk-students').oninput=bulkPreview;$('#bulk-students').onchange=bulkPreview;$('#bulk-order').onchange=bulkPreview;
 $('#bulk-file').onchange=async e=>{const f=e.target.files[0];if(!f)return;if(f.size>1024*1024)return toast('名單檔案不可超過 1 MB。');if(!/\.(csv|txt)$/i.test(f.name)&&!['text/csv','text/plain'].includes(f.type))return toast('請提供 CSV 或 TXT 名單檔案。');try{const raw=await new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result);r.onerror=()=>rej(new Error('檔案讀取失敗，請確認是 UTF-8 的 CSV 或 TXT。'));r.readAsText(f,'UTF-8');});$('#bulk-students').value=raw.replace(/^\ufeff/,'');bulkPreview();toast(`已載入名單：${f.name}`);}catch(err){toast(err.message);}e.target.value='';};
@@ -5961,6 +5981,7 @@ function createClassModal(){
         <input id="class-file" type="file" accept=".csv,.txt,text/csv,text/plain" hidden>
         <button class="text-button" id="class-template" type="button">${icon('file')}下載名單範本</button></div>
       <p class="field-hint">學號只接受英文字母、數字、底線、點或連字號；<strong>姓名與班內號可以留空</strong>（姓名留空就以學號顯示）。</p>
+      <p class="field-hint">姓名會以遮蔽形式存入（陳大文 → 陳X文），全名不會保留、無法還原。</p>
       <p class="error-text" id="class-error"></p>
       <button class="primary wide" type="submit">建立班級 ${icon('check')}</button>
     </form>`);
@@ -6012,6 +6033,7 @@ function createClassModal(){
       if(!students.length){errBox.textContent='名單裡沒有可用的學生。';return;}
       if(students.length>200){errBox.textContent='一次最多建立 200 位學生。';return;}
     }
+    if(students.some(x=>x.name)&&!(await askNameMask()))return;
     b.disabled=true;
     try{
       let created=[];

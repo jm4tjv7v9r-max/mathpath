@@ -1158,3 +1158,7 @@ html[data-theme=night] .nav-item .count.due{background:#3a2c1d;color:#e0b083}
 .ask-actions{display:flex;justify-content:flex-end;align-items:center;gap:14px;margin-top:20px}
 .ask-actions .text-button{margin:0;font-size:calc(14px*var(--fs))}
 .ask-actions button.danger{padding:11px 18px;border-radius:8px;font-weight:600}
+
+/* 匯入名單時的常駐提醒：姓名會被遮蔽 */
+.sg-mask-note{color:#8a5a1a;background:rgba(217,164,65,.1);border:1px solid rgba(217,164,65,.35);
+  border-radius:8px;padding:6px 9px;margin:8px 0 0;line-height:1.6}
