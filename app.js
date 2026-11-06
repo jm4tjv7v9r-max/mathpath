@@ -4775,7 +4775,7 @@ async function scoreGridPage(){
   if(grid.error){$('#main').innerHTML=`<div class="inline-error">${esc(grid.error)}</div>`;return;}
   const cols=grid.columns||[],rows=grid.students||[];
   const head=cols.map(c=>`<th class="sg-col"><span class="sg-date">${esc(c.date||'—')}</span><span class="sg-title">${esc(c.title||'')}</span></th>`).join('');
-  const body=rows.map(r=>`<tr>
+  const body=rows.map(r=>`<tr data-row="${r.id}">
     <td class="sg-seat">${r.seat??''}</td>
     <td class="sg-name" title="${esc(r.fullName||r.name||'')}">${esc(r.name||'')}</td>
     ${r.cells.map((c,i)=>`<td class="sg-cell${c.overridden?' edited':''}${c.score===null?' empty':''}"
@@ -4907,26 +4907,83 @@ async function scoreGridPage(){
     }catch(e){toast(e.message);}
     btn.disabled=false;btn.textContent=old;
   };
+  // 改一格就只更新那一格、那一列的平均與未完成次數。
+  // 以前每次存檔都 scoreGridPage() 整頁重載：畫面閃一下、捲動位置跳回頂端，
+  // 30 人 × 10 欄還要全部重算一次。
+  const rowById=new Map(rows.map(r=>[r.id,r]));
+  const colIndex=new Map(cols.map((c,i)=>[c.id,i]));
+  const paintRow=(row,tr)=>{
+    if(!row||!tr)return;
+    let sum=0,done=0;
+    row.cells.forEach(c=>{
+      if(c.score!==null&&c.score!==undefined&&Number.isFinite(Number(c.score))){sum+=Number(c.score);done+=1;}
+    });
+    row.done=done;
+    row.missing=Math.max(0,cols.length-done);
+    row.average=done?sum/done:null;
+    tr.querySelector('.sg-avg').textContent=row.average===null?'—':fmtScore(row.average);
+    tr.querySelector('.sg-miss').textContent=row.missing;
+  };
+  const applyCell=(td,row,idx,value)=>{
+    if(!row||idx===undefined||!row.cells[idx])return;
+    row.cells[idx]={score:value,overridden:value!==null};
+    td.textContent=value===null?'':fmtScore(value);
+    td.classList.toggle('edited',value!==null);
+    td.classList.toggle('empty',value===null);
+    td.title=value!==null?'教師調整過（按右鍵還原）':'系統依作答計算';
+  };
+  // 右鍵「還原系統分數」要把系統算的分數抓回來（本地不知道原始分數是多少），
+  // 只重抓資料並更新那一列，不整頁重畫。
+  const reloadRow=async uid=>{
+    try{
+      const fresh=(await api('/api/score-grid'+(cid?`?classId=${cid}`:''))).students||[];
+      const row=fresh.find(r=>r.id===uid);
+      if(!row)return;
+      rowById.set(uid,row);
+      const tr=$(`tr[data-row="${uid}"]`);
+      if(!tr||!tr.querySelectorAll)return;
+      const tds=tr.querySelectorAll('.sg-cell');
+      row.cells.forEach((c,i)=>{
+        const cell=tds[i];
+        if(!cell)return;
+        cell.textContent=c.score===null?'':fmtScore(c.score);
+        cell.classList.toggle('edited',!!c.overridden);
+        cell.classList.toggle('empty',c.score===null);
+        cell.title=c.overridden?'教師調整過（按右鍵還原）':'系統依作答計算';
+      });
+      paintRow(row,tr);
+    }catch(e){/* 抓不到就維持現狀，下次進頁面會是對的 */}
+  };
   $$('.sg-cell').forEach(td=>{
+    let before=td.textContent;
+    td.onfocus=()=>{before=td.textContent;};
+    const store=async value=>{
+      const uid=Number(td.dataset.u),idx=colIndex.get(Number(td.dataset.a));
+      await api('/api/score-grid/score',{assignmentId:Number(td.dataset.a),userId:uid,score:value});
+      applyCell(td,rowById.get(uid),idx,value);
+      paintRow(rowById.get(uid),td.closest('tr'));
+    };
     const save=async()=>{
       const raw=td.textContent.trim();
+      if(raw===String(before||'').trim())return;          // 沒改就不送
       const value=raw===''?null:Number(raw);
-      if(value!==null&&!Number.isFinite(value)){toast('請輸入數字');return;}
-      td.classList.remove('edited');
+      if(value!==null&&!Number.isFinite(value)){toast('請輸入數字');td.textContent=before;return;}
+      if(value!==null&&(value<0||value>1000)){toast('分數請介於 0 到 1000');td.textContent=before;return;}
       try{
-        await api('/api/score-grid/score',{assignmentId:Number(td.dataset.a),userId:Number(td.dataset.u),score:value});
-        if(value!==null)td.classList.add('edited');
-        td.classList.toggle('empty',value===null);
-        if(value===null)td.textContent='';
-        await scoreGridPage();
-      }catch(e){toast(e.message);}
+        await store(value);
+        before=td.textContent;
+      }catch(e){toast(e.message);td.textContent=before;}
     };
     td.onkeydown=ev=>{if(ev.key==='Enter'){ev.preventDefault();td.blur();}};
     td.onblur=save;
     td.oncontextmenu=async ev=>{
       ev.preventDefault();
-      try{await api('/api/score-grid/score',{assignmentId:Number(td.dataset.a),userId:Number(td.dataset.u),score:null});
-        toast('已還原系統分數');await scoreGridPage();}catch(e){toast(e.message);}
+      try{
+        await store(null);
+        await reloadRow(Number(td.dataset.u));
+        before='';
+        toast('已還原系統分數');
+      }catch(e){toast(e.message);}
     };
   });
 }
