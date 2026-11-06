@@ -1152,3 +1152,9 @@ html[data-theme=night] .nav-item .count.due{background:#3a2c1d;color:#e0b083}
   font-family:var(--font-mono);font-size:calc(13px*var(--fs));line-height:1.6;background:var(--paper,#fff);color:var(--ink)}
 .pb-import-actions{margin-top:8px;display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap}
 .pb-import-actions input[type=file]{display:inline-block;width:auto;max-width:220px}
+
+/* 站內確認框（取代 window.confirm / prompt；內嵌預覽會封鎖原生對話框） */
+.ask-message{margin:0 0 14px;font-size:calc(14px*var(--fs));line-height:1.85;color:#5f6f66}
+.ask-actions{display:flex;justify-content:flex-end;align-items:center;gap:14px;margin-top:20px}
+.ask-actions .text-button{margin:0;font-size:calc(14px*var(--fs))}
+.ask-actions button.danger{padding:11px 18px;border-radius:8px;font-weight:600}

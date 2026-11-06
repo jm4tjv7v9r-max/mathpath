@@ -955,7 +955,7 @@ $('#cal-next').onclick=()=>{calCursor=new Date(y,m+1,1);calendarPage();};
 $('#cal-today').onclick=()=>{calCursor=new Date(now.getFullYear(),now.getMonth(),1);calSelected=calFmt(now);calendarPage();};
 $$('[data-cal-date]').forEach(b=>b.onclick=()=>{calSelected=b.dataset.calDate;calendarPage();});
 $$('[data-cal-open]').forEach(b=>b.onclick=()=>navigate('homework'));
-$$('[data-note-del]').forEach(b=>b.onclick=async()=>{if(!confirm('刪除這則提醒？'))return;try{await api(`/api/calendar/notes/${b.dataset.noteDel}/delete`,{});toast('提醒已刪除。');calendarPage();}catch(e){toast(e.message);}});
+$$('[data-note-del]').forEach(b=>b.onclick=async()=>{if(await askCancel('刪除這則提醒？'))return;try{await api(`/api/calendar/notes/${b.dataset.noteDel}/delete`,{});toast('提醒已刪除。');calendarPage();}catch(e){toast(e.message);}});
 const nf=$('#note-form');
 if(nf)nf.onsubmit=async e=>{e.preventDefault();const b=$('button[type=submit]',e.target);b.disabled=true;$('#note-error').textContent='';
 try{await api('/api/calendar/notes',{date:calSelected,title:$('#note-title').value.trim(),note:$('#note-body').value.trim()});toast('提醒已加入。');calendarPage();}
@@ -1053,7 +1053,7 @@ if(subFilter)subFilter.addEventListener('change',e=>{subtopic=e.target.value;cur
 if(fillBtn)fillBtn.onclick=async()=>{
   const ids=S.questions.filter(q=>!(q.answer||'').trim()).map(q=>q.id);
   if(!ids.length)return toast('題庫裡的題目都有答案了。');
-  if(!confirm(`要讓 AI 逐題解這 ${ids.length} 題，把答案、詳解與評分標準填進去嗎？\n（每批 5 題，共 ${Math.ceil(ids.length/5)} 次模型呼叫；已經有答案的題目不會被覆蓋。）`))return;
+  if(await askCancel(`要讓 AI 逐題解這 ${ids.length} 題，把答案、詳解與評分標準填進去嗎？\n（每批 5 題，共 ${Math.ceil(ids.length/5)} 次模型呼叫；已經有答案的題目不會被覆蓋。）`))return;
   const old=fillBtn.textContent;fillBtn.disabled=true;
   let done=0,failed=0;
   for(let i=0;i<ids.length;i+=5){
@@ -1141,6 +1141,62 @@ function exportLatexDialog(){
 function renderList(){const list=filteredQuestions(),size=5,total=Math.ceil(list.length/size);currentPage=Math.max(1,Math.min(currentPage,total||1));$('#question-count').textContent=`${list.length} 題${topic==='我的收藏'?' · 我的收藏':''}`;$('#question-list').innerHTML=list.length?list.slice((currentPage-1)*size,currentPage*size).map((q,i)=>questionCard(q,(currentPage-1)*size+i+1)).join(''):empty('還沒有符合的題目','試試更換分類、難度或搜尋關鍵字。');$('#pagination').innerHTML=`<span>顯示 ${list.length?(currentPage-1)*size+1:0}–${Math.min(currentPage*size,list.length)} / 共 ${list.length} 題</span><div class="pagination-buttons"><button data-pagination="${currentPage-1}" ${currentPage<=1?'disabled':''} aria-label="上一頁">‹</button>${Array.from({length:Math.min(total,7)},(_,i)=>`<button data-pagination="${i+1}" class="${currentPage===i+1?'active':''}">${i+1}</button>`).join('')}<button data-pagination="${currentPage+1}" ${currentPage>=total?'disabled':''} aria-label="下一頁">›</button></div>`;}
 function requireLogin(fn){if(S.user){fn();return true;}loginModal(fn);return false;}
 let modalReturnFocus=null, modalSeq=0;
+// ── 站內確認框（取代 window.confirm / window.prompt）──────────────
+// 內嵌預覽的 iframe 會封鎖原生對話框：confirm() 靜靜回 false、prompt() 回 null，
+// 按下去看起來「完全沒有反應」。所以全部改用站內 modal，回傳 Promise。
+let askSeq = 0;
+function askDialog(opts) {
+  const o = opts || {};
+  return new Promise(resolve => {
+    const id = `ask-${++askSeq}`;
+    const message = o.message
+      ? `<p class="ask-message">${esc(o.message).replace(/\n/g, '<br>')}</p>` : '';
+    const field = o.input
+      ? `<div class="form-field"><label class="field-label" for="${id}-in">${esc(o.label || '內容')}</label>
+           <input id="${id}-in" value="${esc(o.value || '')}" placeholder="${esc(o.placeholder || '')}"
+                  maxlength="${Number(o.maxlength) || 200}"></div>`
+      : '';
+    modal(`<p class="eyebrow">請確認</p><h2>${esc(o.title || '請確認')}</h2>${message}${field}
+      <div class="ask-actions">
+        <button class="text-button" id="${id}-no">${esc(o.cancelText || '取消')}</button>
+        <button class="${o.danger ? 'danger' : 'primary'}" id="${id}-yes">${esc(o.confirmText || '確定')}</button>
+      </div>`);
+    const root = $('#modal-root');
+    let settled = false;
+    const finish = value => {
+      if (settled) return;
+      settled = true;
+      obs.disconnect();
+      closeModal();
+      resolve(value);
+    };
+    // 使用者按 Esc 或點背景關掉時，modal 會被移除 —— 這裡補回「取消」。
+    const obs = new MutationObserver(() => { if (!root.children.length) finish(o.input ? null : false); });
+    obs.observe(root, { childList: true });
+    $(`#${id}-no`).onclick = () => finish(o.input ? null : false);
+    $(`#${id}-yes`).onclick = () => finish(o.input ? String($(`#${id}-in`).value || '') : true);
+    if (o.input) {
+      const input = $(`#${id}-in`);
+      input.focus();
+      input.select();
+      input.onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); finish(String(input.value || '')); } };
+    }
+  });
+}
+// askConfirm('訊息') → Promise<boolean>；askPrompt('標題', 預設值) → Promise<string|null>
+function askConfirm(message, opts) {
+  return askDialog({ ...(opts || {}), title: (opts && opts.title) || '請確認', message });
+}
+function askPrompt(label, value, opts) {
+  return askDialog({ ...(opts || {}), input: true, title: label,
+                     label: (opts && opts.label) || '內容', value });
+}
+// askCancel：原本寫 `!confirm(...)` 的地方用它 —— 使用者按取消／關掉時回 true。
+// 這樣替換時不用改括號結構（`!await askConfirm()` 是語法錯誤）。
+function askCancel(message, opts) {
+  return askConfirm(message, opts).then(ok => !ok);
+}
+
 function modal(html,large=false,dismiss=true){
   // large 可以是 true（一般大視窗）或直接給 class 字串（例如 'large gen-modal'）。
   const size=typeof large==='string'?large:(large?'large':'');
@@ -1176,7 +1232,7 @@ async function loadServerDemo(){
 }
 function loginModal(after){const lastUser=(()=>{try{return localStorage.getItem('mathpath_last_user')||''}catch(_){return ''}})();modal(`<div class="login-brand"><span class="brand-symbol">m<span>↗</span></span>MathPath</div><h2>登入學習空間</h2><p class="modal-intro">先選擇身分，再輸入密碼。系統會記住你的帳戶，下次開啟不必重新輸入。</p><div class="role-cards"><button type="button" data-role="student" class="role-card active"><span class="role-card-icon">${icon('practice')}</span><strong>學生</strong><small>領取作業、手寫或打字解題、查看自己的分數與建議</small></button><button type="button" data-role="teacher" class="role-card"><span class="role-card-icon">${icon('import')}</span><strong>教師</strong><small>佈置作業與測驗、批閱、查看全班成績</small></button></div><form id="login-form"><div class="form-field"><label class="field-label" for="username">校內帳戶</label><input id="username" name="username" autocomplete="username" value="${esc(lastUser||'student')}" required maxlength="64">${lastUser?`<p class="field-hint login-remembered">已記住上次登入的帳戶：<strong>${esc(lastUser)}</strong></p>`:''}</div><div class="form-field"><label class="field-label" for="password">密碼</label><input id="password" type="password" name="password" autocomplete="current-password" placeholder="輸入帳戶密碼" required maxlength="256"></div><label class="checkbox-line remember-line login-remember"><input type="checkbox" id="remember" checked><span><strong>記住我（30 天）</strong><small>下次開啟不必重新登入；公用電腦請取消勾選。</small></span></label><p class="error-text" id="login-error"></p><button type="submit" class="primary wide login-submit">登入學習空間 ${icon('arrow')}</button></form>${demoAccountsHtml()}`);if(serverDemo===null)loadServerDemo();$$('[data-role]').forEach(b=>b.onclick=()=>{$$('[data-role]').forEach(x=>x.classList.toggle('active',x===b));$('#username').value=b.dataset.role;$('#password').value='';$('#password').focus();});$$('[data-role]').forEach(x=>x.classList.toggle('active',x.dataset.role===(lastUser==='teacher'?'teacher':'student')));$('#login-form').onsubmit=async e=>{e.preventDefault();const btn=$('button[type="submit"]',e.target);btn.disabled=true;$('#login-error').textContent='';const uname=$('#username').value;try{await api('/api/login',{username:uname,password:$('#password').value,remember:$('#remember').checked});try{localStorage.setItem('mathpath_last_user',uname);}catch(_){}await refresh();closeModal();toast('已登入，學習紀錄已準備就緒。');if(after)after();else navigate('homework');/* 登入後直接到作業頁：學生先知道有沒有作業要交，教師先看批閱 */}catch(err){$('#login-error').textContent=err.message;}finally{btn.disabled=false;}};if(serverIssue){const box=$('#login-error');if(box)box.textContent=serverIssue;}}
 function accountModal(){if(!S.user)return loginModal();modal(`<h2>${esc(S.user.name)}</h2><p class="modal-intro">${S.user.role==='teacher'?'教師工作空間':'中三數學學習空間'} · 資料保存在網站伺服器；實際位置由管理員確認</p>${S.notice?`<div class="import-warning">${esc(S.notice)}</div>`:''}<div class="result-actions"><button class="secondary" id="password-link">${icon('lock')}更換密碼</button><button class="secondary" id="logout-btn">${icon('logout')}登出</button></div>`);$('#password-link').onclick=()=>{closeModal();navigate('settings');};$('#logout-btn').onclick=async()=>{beginView();stopQuizClock();pendingQuizSubmission=null;quizDeadlines.clear();try{await api('/api/logout',{});clearUserDrafts(S.user.id);S={user:null,questions:preview,attempts:[],stats:{completed:0,accuracy:0,streak:0,minutes:0},ai:{configured:false,mode:'off'}};strokes=[];answerFile=null;lastResult=null;lastSolution=null;currentQuestion=null;assignmentContext=null;assignmentDetail=null;HW=null;resultData=null;closeModal();loadBookmarks();homeworkPage();toast('已登出。');}catch(e){toast(e.message);}};}
-async function openQuestion(id){if(busy)return toast('正在保存作答，請等待完成。');preserveDraft();if(!S.user){loginModal(()=>openQuestion(id));return;}const q=S.questions.find(q=>q.id===Number(id));if(!q)return toast('找不到題目，請重新整理題庫。');if(currentQuestion&&currentQuestion.id!==q.id&&strokes.length&&!lastResult&&!confirm('目前手寫內容尚未提交，確定切換題目？'))return;assignmentContext=null;mockContext=null;currentQuestion=q;lastResult=null;lastSolution=null;answerMode=(q.options&&q.options.length)?'choice':'hand';answerFile=null;selectedOption=null;window.answerTextDraft='';strokes=[];redoStrokes=[];recommendations=null;stopQuizClock();practice();const target=viewTarget();try{const rec=await api(`/api/questions/${q.id}/recommendations`);if(viewMatches(target)){recommendations=rec;renderRecommendations();}}catch(e){if(viewMatches(target))toast(e.message);}}
+async function openQuestion(id){if(busy)return toast('正在保存作答，請等待完成。');preserveDraft();if(!S.user){loginModal(()=>openQuestion(id));return;}const q=S.questions.find(q=>q.id===Number(id));if(!q)return toast('找不到題目，請重新整理題庫。');if(currentQuestion&&currentQuestion.id!==q.id&&strokes.length&&!lastResult&&await askCancel('目前手寫內容尚未提交，確定切換題目？'))return;assignmentContext=null;mockContext=null;currentQuestion=q;lastResult=null;lastSolution=null;answerMode=(q.options&&q.options.length)?'choice':'hand';answerFile=null;selectedOption=null;window.answerTextDraft='';strokes=[];redoStrokes=[];recommendations=null;stopQuizClock();practice();const target=viewTarget();try{const rec=await api(`/api/questions/${q.id}/recommendations`);if(viewMatches(target)){recommendations=rec;renderRecommendations();}}catch(e){if(viewMatches(target))toast(e.message);}}
 // ── 自主練習：先選章節與題型 ──
 function practicePool(skipQtype){
   return (S.questions||[]).filter(q=>
@@ -1263,7 +1319,7 @@ function practicePicker(){
   bindPracticePicker();
 }
 function practice(){if(!S.user){return requireLogin(()=>practice());}if(!currentQuestion)return practicePicker();beginView();page='practice';shell();const q=currentQuestion;$('#main').innerHTML=`<div class="fade-in">${heading(mockContext?'MOCK EXAM':assignmentContext?'ASSIGNMENT PRACTICE':'FOCUSED PRACTICE',mockContext?'模擬測驗作答':assignmentContext?'作業解題':'自主練習',mockContext?esc(mockContext.title)+' · 本次作答計入模擬測驗':assignmentContext?esc(assignmentContext.title)+' · 此次保存將計入本份作業':'慢一點思考，清楚寫下每一步。理解，比速度更重要。')}${quizClockBadge()}${mockContext?`<button class="text-button back-button" data-mock="${mockContext.id}">${icon('back')}返回模擬測驗</button>`:assignmentContext?`<button class="text-button back-button" data-assignment="${assignmentContext.id}">${icon('back')}返回本份作業</button>`:`<button class="text-button back-button" data-page="bank">${icon('back')}返回題庫</button><button class="text-button back-button" id="change-range">${icon('practice')}換練習範圍</button>`}<div class="practice-layout"><section class="panel practice-panel"><div class="practice-question"><div class="question-top"><span class="badge">${q.grade} · ${esc(q.topic)}${q.subtopic?' · '+esc(q.subtopic):''}</span><span class="badge l${q.level}">${levels[q.level]}</span><span class="badge outline">${esc(q.qtype||'解答題')}</span><span class="badge outline">${q.points} 分</span><button class="bookmark ${bookmarks.has(q.id)?'saved':''}" style="margin-left:auto" data-save="${q.id}" aria-label="收藏題目">${icon('bookmark')}</button></div><h2>${mathText(q.title)}</h2>${stemHtml(q,{options:false})}<div class="question-meta">${esc(q.tags.join(' · '))}<i class="separator"></i>${esc(q.source)}</div></div><div class="section-head"><h2 style="font-size:calc(16px*var(--fs))">你的解題過程</h2><button class="text-button" id="hint-btn" style="font-size:calc(14px*var(--fs))">${icon('bulb')}給我一點提示</button></div><div id="hint-root"></div>${(()=>{const modes=practiceModes(q);if(modes.length<2)return '';return `<div class="practice-tabs">${modes.map(([id,ic,t])=>`<button data-answer-mode="${id}" class="${answerMode===id?'active':''}">${icon(ic)}${t}</button>`).join('')}</div>`;})()}<div id="answer-area"></div><div class="form-field"><div class="final-answer-head"><label class="field-label" for="final-answer">最終答案 <span class="small-text">· 文字作答必填，手寫作答可選填</span></label></div><button type="button" class="math-editor-open" id="open-math-editor">${icon('calculator')}開啟公式編輯器（分數、根號、次方）</button><input class="answer-field" id="final-answer" placeholder="例如：x=2 或 x=3，或按上方數學鍵盤輸入" maxlength="4000"><div class="math-preview" id="final-answer-preview" hidden></div></div>${aiGradingHtml()}${(aiGradedNow()&&S.ai.mode==='external')?`<label class="checkbox-line"><input type="checkbox" id="consent-ai">我同意將本題、作答及最多5次本人同知識點已評紀錄，傳送至學校配置的外部 AI 作批改與學習建議。</label>`:''}<div class="submit-row answer-submit"><span class="small-text" id="draft-status">本分頁草稿暫存 · 提交後才保存至伺服器</span>${assignmentContext?`<button class="secondary" id="skip-answer" title="不會也沒關係，老師會看到">本題不會</button>`:''}<button class="primary" id="submit-answer">${icon('check')}${submitLabel()}</button></div><div id="result-root"></div></section><div class="right-stack"><section class="panel right-panel"><h2>${icon('spark')}從一道題，到一類題</h2><p class="panel-sub">先鞏固相同解法，再挑戰更深的思考</p><div id="recommendations">${empty('正在找題','從校本題庫尋找同知識點練習')}</div></section><section class="panel right-panel tip-panel"><h2>${icon('bulb')}解題習慣</h2><p>① 先理解題目要找甚麼。<br>② 選擇方法，寫下理由。<br>③ 代回原題，檢查結果。<br><br>手寫評閱需要能辨認完整步驟；請保持字跡清楚。</p></section></div></div></div>`;renderAnswerArea();bindMathKeyboard();$('#hint-btn').onclick=()=>{$('#hint-root').innerHTML=`<div class="hint-box">${mathText(q.hint||'先圈出已知條件，再想想與哪一個知識點有關。')}</div>`;};$('#submit-answer').onclick=submitAnswer;
-  const skipBtn=$('#skip-answer');if(skipBtn)skipBtn.onclick=markCurrentSkipped;const rangeBtn=$('#change-range');if(rangeBtn)rangeBtn.onclick=()=>{if(strokes.length&&!lastResult&&!confirm('目前手寫內容尚未提交，確定離開這一題？'))return;preserveDraft();currentQuestion=null;strokes=[];redoStrokes=[];lastResult=null;lastSolution=null;practicePicker();};restoreDraft();renderRecommendations();}
+  const skipBtn=$('#skip-answer');if(skipBtn)skipBtn.onclick=markCurrentSkipped;const rangeBtn=$('#change-range');if(rangeBtn)rangeBtn.onclick=async()=>{if(strokes.length&&!lastResult&&await askCancel('目前手寫內容尚未提交，確定離開這一題？'))return;preserveDraft();currentQuestion=null;strokes=[];redoStrokes=[];lastResult=null;lastSolution=null;practicePicker();};restoreDraft();renderRecommendations();}
 // ── 作答模式與數學鍵盤 ──
 // 選擇題只可點選作答；填空題只手寫或文字作答；解答題／證明題保留上傳手稿。
 function practiceModes(q){
@@ -1465,7 +1521,7 @@ function bindMathKeyboard(root, insert){
   if(!root) syncMathKeyboard();
 }
 function renderAnswerArea(){ensureAnswerMode();renderAnswerAreaInner();syncMathKeyboard();}
-function renderAnswerAreaInner(){const area=$('#answer-area');if(!area)return;if(answerMode==='choice'){const opts=(currentQuestion&&currentQuestion.options)||[];area.innerHTML=`<label class="field-label">點選你的答案</label><div class="choice-picker" id="choice-picker">${opts.map((o,j)=>{const L=OPTION_LETTERS[j];return `<button type="button" class="choice-option ${selectedOption===L?'selected':''}" data-choice="${L}" aria-pressed="${selectedOption===L}"><span class="option-letter">${L}</span><span class="option-text">${mathText(o)}</span></button>`;}).join('')}</div><p class="field-hint">點選一項即完成作答；自主練習提交後可即時核對，作業結果須教師覆核。</p>`;$$('[data-choice]').forEach(b=>b.addEventListener('click',()=>{selectedOption=b.dataset.choice;$('#final-answer').value=selectedOption;lastResult=null;renderAnswerArea();scheduleDraft();}));return;}if(answerMode==='hand'){area.innerHTML=`<div class="writing-toolbar"><div class="tool-group"><button class="icon-btn active" id="pen-btn" aria-label="畫筆">${icon('practice')}</button><button class="icon-btn" id="eraser-btn" aria-label="橡皮擦">${icon('eraser')}</button><span style="height:20px;border-right:1px solid var(--border);margin:0 4px"></span>${['#274b3b','#456bab','#b96c5d'].map(c=>`<button class="pen-color ${c===penColor?'selected':''}" style="background:${c}" data-color="${c}" aria-label="${c==='#274b3b'?'深綠':c==='#456bab'?'藍':'紅'}色畫筆"></button>`).join('')}<button class="icon-btn" id="undo-btn" aria-label="撤銷一筆">${icon('undo')}</button><button class="icon-btn" id="clear-btn" aria-label="清空畫布">${icon('trash')}</button></div><span class="small-text">觸控筆 / 滑鼠皆可</span></div><div class="canvas-wrap hand-canvas-wrap"><canvas id="hand-canvas" width="${handSize()[2]}" height="${handSize()[3]}" aria-label="手寫解題畫布"></canvas><div class="canvas-placeholder" id="canvas-placeholder">在這裡寫下你的思考…</div></div><div class="hand-size-row">${handSizeControl()}<span class="small-text">步驟多就換大一點；已寫的內容會保留。</span></div><p class="field-hint">提示：先寫出算式，再補上推導。切換文字模式不會清除手寫內容。</p>`;initCanvas();const sizeSel=$('#hand-size');if(sizeSel)sizeSel.onchange=()=>{const next=HAND_SIZES.find(([id])=>id===sizeSel.value);if(!next)return;const current=handSize();if(strokes.length&&next[3]<current[3]&&!confirm(`縮小後，超出範圍的筆跡不會出現在送出的圖片上（畫布內仍保留，可再放大回來）。仍要換成「${next[1]}」？`)){renderAnswerArea();return;}try{localStorage.setItem('mathpath_hand_size',next[0]);}catch{}renderAnswerArea();toast(`書寫區已換成「${next[1]}」。`);};$('#pen-btn').onclick=()=>setEraser(false);$('#eraser-btn').onclick=()=>setEraser(true);$('#undo-btn').onclick=()=>{if(strokes.length)redoStrokes.push(strokes.pop());drawCanvas();lastResult=null;scheduleDraft();};$('#clear-btn').onclick=()=>{if(!strokes.length)return;if(confirm('清空尚未提交的手寫內容？此動作無法復原。')){strokes=[];redoStrokes=[];drawCanvas();lastResult=null;scheduleDraft();}};$$('[data-color]').forEach(b=>b.onclick=()=>{penColor=b.dataset.color;setEraser(false);$$('[data-color]').forEach(x=>x.classList.toggle('selected',x===b));});}else if(answerMode==='text'){area.innerHTML=`<p class="field-hint">${icon('practice')}可以直接打字，或按上方「開啟公式編輯器」用分數、根號、次方的結構輸入。純文字（如 5 cm）同樣可以。</p>`;}else{const isPdf=!!answerFile&&answerFile.indexOf('data:application/pdf')===0;area.innerHTML=`<label class="upload-answer" id="answer-drop">${isPdf?`<span class="upload-file">${icon('file')}<strong>已選擇 PDF 作答</strong><small>提交時會先讀取 PDF 的文字；掃描檔會取用內嵌的圖片</small></span>`:answerFile?`<img src="${answerFile}" alt="待提交的手寫解題">`:`${icon('image')}<strong>上傳紙上的解題過程</strong><small>相片 JPG / PNG 最多 25 MB（上傳前會自動壓縮）、PDF 最多 20 MB；請保持完整、清晰</small>`}<input id="answer-upload" type="file" accept="image/*,application/pdf" hidden></label><div class="upload-actions"><button type="button" class="secondary" id="answer-select">選擇檔案</button><button type="button" class="secondary" id="answer-camera">${icon('image')}用手機拍照</button><button type="button" class="secondary" id="answer-remove" ${answerFile||uploadReading?'':'disabled'}>移除檔案</button><span class="small-text" id="answer-read-status" role="status">${uploadReading?'正在讀取並壓縮相片，請稍候…':answerFile?(isPdf?'已選擇 PDF 作答，提交時會先讀取 PDF 文字':'相片已壓縮至約 '+fmtBytes(dataUrlBytes(answerFile))+'，送出更快'):'可選擇檔案或用手機相機拍照。'}</span><input id="answer-capture" type="file" accept="image/*" capture="environment" hidden></div>`;
+function renderAnswerAreaInner(){const area=$('#answer-area');if(!area)return;if(answerMode==='choice'){const opts=(currentQuestion&&currentQuestion.options)||[];area.innerHTML=`<label class="field-label">點選你的答案</label><div class="choice-picker" id="choice-picker">${opts.map((o,j)=>{const L=OPTION_LETTERS[j];return `<button type="button" class="choice-option ${selectedOption===L?'selected':''}" data-choice="${L}" aria-pressed="${selectedOption===L}"><span class="option-letter">${L}</span><span class="option-text">${mathText(o)}</span></button>`;}).join('')}</div><p class="field-hint">點選一項即完成作答；自主練習提交後可即時核對，作業結果須教師覆核。</p>`;$$('[data-choice]').forEach(b=>b.addEventListener('click',()=>{selectedOption=b.dataset.choice;$('#final-answer').value=selectedOption;lastResult=null;renderAnswerArea();scheduleDraft();}));return;}if(answerMode==='hand'){area.innerHTML=`<div class="writing-toolbar"><div class="tool-group"><button class="icon-btn active" id="pen-btn" aria-label="畫筆">${icon('practice')}</button><button class="icon-btn" id="eraser-btn" aria-label="橡皮擦">${icon('eraser')}</button><span style="height:20px;border-right:1px solid var(--border);margin:0 4px"></span>${['#274b3b','#456bab','#b96c5d'].map(c=>`<button class="pen-color ${c===penColor?'selected':''}" style="background:${c}" data-color="${c}" aria-label="${c==='#274b3b'?'深綠':c==='#456bab'?'藍':'紅'}色畫筆"></button>`).join('')}<button class="icon-btn" id="undo-btn" aria-label="撤銷一筆">${icon('undo')}</button><button class="icon-btn" id="clear-btn" aria-label="清空畫布">${icon('trash')}</button></div><span class="small-text">觸控筆 / 滑鼠皆可</span></div><div class="canvas-wrap hand-canvas-wrap"><canvas id="hand-canvas" width="${handSize()[2]}" height="${handSize()[3]}" aria-label="手寫解題畫布"></canvas><div class="canvas-placeholder" id="canvas-placeholder">在這裡寫下你的思考…</div></div><div class="hand-size-row">${handSizeControl()}<span class="small-text">步驟多就換大一點；已寫的內容會保留。</span></div><p class="field-hint">提示：先寫出算式，再補上推導。切換文字模式不會清除手寫內容。</p>`;initCanvas();const sizeSel=$('#hand-size');if(sizeSel)sizeSel.onchange=async()=>{const next=HAND_SIZES.find(([id])=>id===sizeSel.value);if(!next)return;const current=handSize();if(strokes.length&&next[3]<current[3]&&await askCancel(`縮小後，超出範圍的筆跡不會出現在送出的圖片上（畫布內仍保留，可再放大回來）。仍要換成「${next[1]}」？`)){renderAnswerArea();return;}try{localStorage.setItem('mathpath_hand_size',next[0]);}catch{}renderAnswerArea();toast(`書寫區已換成「${next[1]}」。`);};$('#pen-btn').onclick=()=>setEraser(false);$('#eraser-btn').onclick=()=>setEraser(true);$('#undo-btn').onclick=()=>{if(strokes.length)redoStrokes.push(strokes.pop());drawCanvas();lastResult=null;scheduleDraft();};$('#clear-btn').onclick=async()=>{if(!strokes.length)return;if(await askConfirm('清空尚未提交的手寫內容？此動作無法復原。')){strokes=[];redoStrokes=[];drawCanvas();lastResult=null;scheduleDraft();}};$$('[data-color]').forEach(b=>b.onclick=()=>{penColor=b.dataset.color;setEraser(false);$$('[data-color]').forEach(x=>x.classList.toggle('selected',x===b));});}else if(answerMode==='text'){area.innerHTML=`<p class="field-hint">${icon('practice')}可以直接打字，或按上方「開啟公式編輯器」用分數、根號、次方的結構輸入。純文字（如 5 cm）同樣可以。</p>`;}else{const isPdf=!!answerFile&&answerFile.indexOf('data:application/pdf')===0;area.innerHTML=`<label class="upload-answer" id="answer-drop">${isPdf?`<span class="upload-file">${icon('file')}<strong>已選擇 PDF 作答</strong><small>提交時會先讀取 PDF 的文字；掃描檔會取用內嵌的圖片</small></span>`:answerFile?`<img src="${answerFile}" alt="待提交的手寫解題">`:`${icon('image')}<strong>上傳紙上的解題過程</strong><small>相片 JPG / PNG 最多 25 MB（上傳前會自動壓縮）、PDF 最多 20 MB；請保持完整、清晰</small>`}<input id="answer-upload" type="file" accept="image/*,application/pdf" hidden></label><div class="upload-actions"><button type="button" class="secondary" id="answer-select">選擇檔案</button><button type="button" class="secondary" id="answer-camera">${icon('image')}用手機拍照</button><button type="button" class="secondary" id="answer-remove" ${answerFile||uploadReading?'':'disabled'}>移除檔案</button><span class="small-text" id="answer-read-status" role="status">${uploadReading?'正在讀取並壓縮相片，請稍候…':answerFile?(isPdf?'已選擇 PDF 作答，提交時會先讀取 PDF 文字':'相片已壓縮至約 '+fmtBytes(dataUrlBytes(answerFile))+'，送出更快'):'可選擇檔案或用手機相機拍照。'}</span><input id="answer-capture" type="file" accept="image/*" capture="environment" hidden></div>`;
 const pickAnswer=async file=>{
   if(!file||busy)return;
   const target=viewTarget(),seq=++uploadSeq;uploadReading=true;renderAnswerArea();if($('#submit-answer'))$('#submit-answer').disabled=true;
@@ -1582,8 +1638,8 @@ const FIGURE_ISSUE_LIMIT=6;
 
 function figureNeeded(topic){return FIGURE_TOPICS.includes(topic);}
 // 外部模型要先取得同意；生成與核對都會把題目內容（及圖形）送出。
-function aiExternalOk(what){
-  return !(S.ai.mode==='external'&&!confirm(`${what}會將題目內容與圖形（不含學生作答）傳送至學校配置的外部 AI，是否繼續？`));
+async function aiExternalOk(what){
+  return !(S.ai.mode==='external'&&await askCancel(`${what}會將題目內容與圖形（不含學生作答）傳送至學校配置的外部 AI，是否繼續？`));
 }
 
 function openFigureStudio(ctx){
@@ -1707,7 +1763,7 @@ function renderFigureStudio(){
     // 圖形沒有改動就不必寫回（題庫題目的 figure 是網址，直接送回會被當成無效檔案）。
     if(studio.figure===studio.original){figStudio=null;closeModal();return;}
     // 還有疑慮就先講清楚，避免教師順手把跟題目差很遠的圖存進題庫。
-    if(studio.issues.length&&!confirm(`這張圖仍有 ${studio.issues.length} 個疑慮：\n\n`
+    if(studio.issues.length&&await askCancel(`這張圖仍有 ${studio.issues.length} 個疑慮：\n\n`
         +studio.issues.map(x=>'・'+x).join('\n')+'\n\n確定要使用嗎？')){
       return;
     }
@@ -1721,7 +1777,7 @@ async function drawFigureInStudio(useIssues){
   if(!figStudio)return;
   const {ctx}=figStudio;
   let issues=(useIssues&&figStudio.issues)?figStudio.issues.slice(0,FIGURE_ISSUE_LIMIT):[];
-  if(!aiExternalOk('生成圖形與核對圖形'))return;
+  if(!(await aiExternalOk('生成圖形與核對圖形')))return;
   const canCheck=!!S.ai.configured&&!!S.ai.vision;
   // 開始重畫就先把舊的核對結果收起來，避免教師看到已經過期的核對結論。
   figStudio.check=null;figStudio.issues=[];figStudio.specIssues=[];
@@ -1762,7 +1818,7 @@ async function drawFigureInStudio(useIssues){
 async function checkFigureInStudio(){
   if(!figStudio||!figStudio.figure)return toast('請先有圖形才能核對。');
   if(!S.ai.vision)return toast('核對圖形需要視覺模型，請先到「設定與隱私」設定。');
-  if(!aiExternalOk('核對圖形'))return;
+  if(!(await aiExternalOk('核對圖形')))return;
   const {ctx,figure,specIssues}=figStudio;
   figStudio.busy='check';renderFigureStudio();
   try{
@@ -1804,7 +1860,7 @@ function openFigureStudioForQuestion(qid,pick=false){
 }
 
 async function clearQuestionFigure(qid){
-  if(!confirm('確定移除這道題目的圖形？'))return;
+  if(await askCancel('確定移除這道題目的圖形？'))return;
   try{
     await api('/api/questions/figures',{figures:[{id:Number(qid),figure:''}]});
     await refresh();bank();
@@ -1852,7 +1908,7 @@ function rememberAssignmentAttempt(attempt){
 async function markQuestionSkipped(qid,opts={}){
   const aid=opts.assignmentId||assignmentContext?.id;
   if(busy||!aid||S.user?.role!=='student')return null;
-  if(!opts.silent&&!confirm('標示「本題不會」？老師會看到這題你沒有作答，不會自動記零分。'))return null;
+  if(!opts.silent&&await askCancel('標示「本題不會」？老師會看到這題你沒有作答，不會自動記零分。'))return null;
   const target=viewTarget();
   busy=true;
   try{
@@ -1921,7 +1977,7 @@ function aiDraftSummary(q){return `${q.title||''}${q.content||''}`.replace(/\s+/
 async function generateQuestion(kind,qid){
   if(S.user?.role!=='teacher')return toast('只有教師可以生成題目並加入題庫。');
   if(!S.ai.configured)return toast('AI 尚未接入。請在「設定與隱私」查看管理員配置說明。');
-  if(S.ai.mode==='external'&&!confirm('生成新題會將原題（不含學生作答）傳送至學校配置的外部 AI，是否繼續？'))return;
+  if(S.ai.mode==='external'&&await askCancel('生成新題會將原題（不含學生作答）傳送至學校配置的外部 AI，是否繼續？'))return;
   const target=Number(qid||(currentQuestion&&currentQuestion.id));
   if(!target||Number.isNaN(target))return toast('請先開啟一道參考題。');
   const b=$(`[data-gen-kind="${kind}"]`)||$(`[data-generate="${kind}"]`);
@@ -1991,7 +2047,7 @@ function aiDraftModal(draft,kind,qid){
   };
   $('#ai-draft-save').onclick=async()=>{
     if(S.user?.role!=='teacher')return toast('只有教師可以核驗並加入題庫。');
-    if(!confirm('我已核對題目內容、分類、參考答案、詳解與評分標準，確認將這道題標記為「教師已核驗」並加入題庫。'))return;
+    if(await askCancel('我已核對題目內容、分類、參考答案、詳解與評分標準，確認將這道題標記為「教師已核驗」並加入題庫。'))return;
     const verified=structuredClone(draft);
     verified.tags=(verified.tags||[]).filter(t=>!/待.*(?:核驗|核验|審核|审核|確認|确认)/.test(t));
     verified.source='AI 生成 · 教師已核驗';
@@ -2540,9 +2596,9 @@ function initFigureCanvas(){
 }
 // 拆題步驟可以點回上一步：走錯了不必從頭再匯入一次。
 // 只開放「第二步 → 第一步」——第三步已經寫進題庫，再往回走會讓同一批題目被匯入兩次。
-function goToImportStep(n){
+async function goToImportStep(n){
   if(importStage!==2||n!==1)return;
-  if(drafts.length&&!confirm(`回到「匯入試卷」會清掉已拆分的 ${drafts.length} 道題目，確定嗎？`))return;
+  if(drafts.length&&await askCancel(`回到「匯入試卷」會清掉已拆分的 ${drafts.length} 道題目，確定嗎？`))return;
   drafts=[];importMethod='';importStage=1;
   importPage();
   toast('已回到第一步。');
@@ -2553,9 +2609,9 @@ $('#main').innerHTML=`<div class="fade-in">${heading('PAPER TO PRACTICE','試卷
 async function aiGenerateForQuestion(payload, consent){
   return api('/api/questions/ai-answer', {...payload, consentExternal: !!consent});
 }
-function aiConfirmExternal(){
+async function aiConfirmExternal(){
   if(S.ai.mode !== 'external') return true;
-  return window.confirm('將題目內容傳送到外部 AI 產生答案與評分標準，是否繼續？');
+  return await askConfirm('將題目內容傳送到外部 AI 產生答案與評分標準，是否繼續？');
 }
 function applyAiAnswer(target, r){
   if(r.answer) target.answer = r.answer;
@@ -2571,7 +2627,7 @@ async function aiFillDraft(i, btn){
   if(!q) return;
   if(!(q.content || '').trim()) return toast('請先填寫題目內容，AI 才能生成答案。');
   if(!S.ai.configured) return toast('AI 尚未設定：請先設定模型端點，或手動填寫答案。');
-  if(!aiConfirmExternal()) return;
+  if(!(await aiConfirmExternal())) return;
   const old = btn.innerHTML;
   btn.disabled = true; btn.innerHTML = icon('clock') + 'AI 生成中…';
   try{
@@ -2588,7 +2644,7 @@ async function aiFillQuestion(prefix, state, btn){
   const content = el('content').value.trim();
   if(!content) return toast('請先填寫題目內容，AI 才能生成答案。');
   if(!S.ai.configured) return toast('AI 尚未設定：請先設定模型端點，或手動填寫答案。');
-  if(!aiConfirmExternal()) return;
+  if(!(await aiConfirmExternal())) return;
   const qtype = el('qtype').value;
   const old = btn.innerHTML;
   btn.disabled = true; btn.innerHTML = icon('clock') + 'AI 生成中…';
@@ -2617,7 +2673,7 @@ async function aiFillQuestion(prefix, state, btn){
 async function aiFillRubric(prefix, state, btn, qid){
   if(!qid) return;
   if(!S.ai.configured) return toast('AI 尚未設定：請先設定模型端點。');
-  if(!aiConfirmExternal()) return;
+  if(!(await aiConfirmExternal())) return;
   const old = btn.innerHTML;
   btn.disabled = true; btn.innerHTML = icon('clock') + '生成中…';
   try{
@@ -2949,7 +3005,7 @@ async function parsePaper(){if(busy)return;if(!paperName.trim())return toast('�
     const cropped=await attachFigureBoxes(drafts,boxes,paperImageSource());
     importMethod=r.method||'';importStage=2;importPage();
     toast(cropped?`已辨識，並自動裁出 ${cropped} 題圖形，請逐題核驗。`:(r.method.includes('AI')?'AI 已辨識，請逐題核驗。':'已用本地規則拆分，請核驗分類與答案。'));}catch(e){$('#parse-error').innerHTML=`<div class="inline-error">${esc(e.message)}</div>`+`<p class="field-hint">若持續失敗，可先改用手動輸入；伺服器日誌（Render → Logs）會顯示 AI 的實際錯誤原因。</p>`;}finally{busy=false;if($('#parse-paper')){$('#parse-paper').disabled=false;$('#parse-paper').innerHTML='開始拆分題目 '+icon('spark');}}}
-async function autoImportPaper(){if(busy)return;if(!paperName.trim())return toast('請先填寫試卷名稱。');if(!paperFile&&!paperText.trim())return toast('請選擇試卷或貼上題目文字。');if(!confirm('全自動拆分並直接寫入題庫？題目會標示為「自動匯入 · 待核驗」，可之後在題庫核對。'))return;const body={name:paperName.trim(),consentExternal:!!$('#paper-consent')?.checked};if(paperFile)Object.assign(body,{dataUrl:paperFile.dataUrl,mime:paperFile.mime});else body.text=paperText.trim();busy=true;const b=$('#auto-import-paper'),original=b.innerHTML;b.disabled=true;b.innerHTML=icon('clock')+'正在拆分並匯入…';try{const source=paperImageSource();const r=await api('/api/papers/auto-import',body);
+async function autoImportPaper(){if(busy)return;if(!paperName.trim())return toast('請先填寫試卷名稱。');if(!paperFile&&!paperText.trim())return toast('請選擇試卷或貼上題目文字。');if(await askCancel('全自動拆分並直接寫入題庫？題目會標示為「自動匯入 · 待核驗」，可之後在題庫核對。'))return;const body={name:paperName.trim(),consentExternal:!!$('#paper-consent')?.checked};if(paperFile)Object.assign(body,{dataUrl:paperFile.dataUrl,mime:paperFile.mime});else body.text=paperText.trim();busy=true;const b=$('#auto-import-paper'),original=b.innerHTML;b.disabled=true;b.innerHTML=icon('clock')+'正在拆分並匯入…';try{const source=paperImageSource();const r=await api('/api/papers/auto-import',body);
     // 題目已寫入題庫，圖形改由 POST /api/questions/figures 補上（一次批次送出）。
     const cropped=await attachFigureBoxes(r.questions||[],r.figureBoxes||[],source);
     if(cropped){const figures=(r.questions||[]).filter(q=>q.figure).map(q=>({id:q.id,figure:q.figure}));if(figures.length)await api('/api/questions/figures',{figures});}
@@ -3157,7 +3213,7 @@ function annotationBlock(a,editable){
 }
 
 let ann={base:null,shapes:[],tool:'pen',drawing:null},annotationDone=null;
-function annotationRefresh(attempt){if(ann.shapes?.length&&!confirm('畫面將重新載入，你尚未儲存的紅筆批註會遺失。確定繼續？'))return;closeModal();reviewModal(attempt.id,annotationDone);}
+async function annotationRefresh(attempt){if(ann.shapes?.length&&await askCancel('畫面將重新載入，你尚未儲存的紅筆批註會遺失。確定繼續？'))return;closeModal();reviewModal(attempt.id,annotationDone);}
 function redrawAnn(){const c=$('#ann-canvas');if(!c||!ann.base)return;const ctx=c.getContext('2d');ctx.fillStyle='#fff';ctx.fillRect(0,0,c.width,c.height);ctx.drawImage(ann.base,0,0,c.width,c.height);for(const s of ann.shapes)drawAnnShape(ctx,s);if(ann.drawing)drawAnnShape(ctx,ann.drawing);if(ann.selected!=null&&ann.shapes[ann.selected]){const b=annShapeBounds(ann.shapes[ann.selected]);ctx.save();ctx.setLineDash([9,7]);ctx.strokeStyle='#2c6a8e';ctx.lineWidth=2.5;ctx.strokeRect(b.x-8,b.y-8,b.w+16,b.h+16);ctx.restore();}}
 function drawAnnShape(ctx,s){ctx.save();ctx.lineCap='round';ctx.lineJoin='round';if(s.type==='pen'||s.type==='highlight'){ctx.strokeStyle=s.erase?'rgba(255,255,255,.92)':s.type==='highlight'?'rgba(255,206,0,.38)':'#d9453b';ctx.lineWidth=s.erase?30:annShapeSize(s);ctx.beginPath();s.points.forEach((p,i)=>i?ctx.lineTo(p.x,p.y):ctx.moveTo(p.x,p.y));ctx.stroke();}else if(s.type==='ellipse'){const x=Math.min(s.a.x,s.b.x),y=Math.min(s.a.y,s.b.y),w=Math.abs(s.b.x-s.a.x),h=Math.abs(s.b.y-s.a.y);ctx.strokeStyle='#d9453b';ctx.lineWidth=annShapeSize(s);ctx.beginPath();ctx.ellipse(x+w/2,y+h/2,Math.max(w/2,6),Math.max(h/2,6),0,0,Math.PI*2);ctx.stroke();}else if(s.type==='arrow'){const ang=Math.atan2(s.b.y-s.a.y,s.b.x-s.a.x),L=26;ctx.strokeStyle='#d9453b';ctx.lineWidth=annShapeSize(s);ctx.beginPath();ctx.moveTo(s.a.x,s.a.y);ctx.lineTo(s.b.x,s.b.y);ctx.moveTo(s.b.x,s.b.y);ctx.lineTo(s.b.x-L*Math.cos(ang-0.42),s.b.y-L*Math.sin(ang-0.42));ctx.moveTo(s.b.x,s.b.y);ctx.lineTo(s.b.x-L*Math.cos(ang+0.42),s.b.y-L*Math.sin(ang+0.42));ctx.stroke();}else if(s.type==='text'){ctx.font=`600 ${annShapeSize(s)}px "PingFang TC","Microsoft JhengHei",sans-serif`;ctx.lineWidth=8;ctx.strokeStyle='rgba(255,255,255,.94)';ctx.strokeText(s.text,s.x,s.y);ctx.fillStyle='#c0392b';ctx.fillText(s.text,s.x,s.y);}ctx.restore();}
 // ── 選取／移動／修改既有批註 ──
@@ -3224,22 +3280,22 @@ document.addEventListener('keydown',e=>{
 });
 function initAnnotation(a){const c=$('#ann-canvas');if(!c)return;const img=new Image();img.onload=()=>{const s=Math.min(1,1600/Math.max(img.naturalWidth,img.naturalHeight));c.width=Math.max(1,Math.round(img.naturalWidth*s));c.height=Math.max(1,Math.round(img.naturalHeight*s));ann={base:img,shapes:[],tool:'pen',drawing:null,selected:null,dragging:null};redrawAnn();syncAnnSelection();};img.onerror=()=>{$('#ann-status').textContent='無法載入學生手稿，請關閉後重新整理。';};img.src=a.annotation||a.image;
 function pos(e){const r=c.getBoundingClientRect();return{x:(e.clientX-r.left)/r.width*c.width,y:(e.clientY-r.top)/r.height*c.height};}
-c.onpointerdown=e=>{if(!ann.base)return;if(e.button!==0&&e.pointerType==='mouse')return;e.preventDefault();const p=pos(e);if(ann.tool==='select'){const hit=annHitShape(p);ann.selected=hit>=0?hit:null;ann.dragging=hit>=0?{index:hit,last:p}:null;if(hit>=0)try{c.setPointerCapture(e.pointerId);}catch(_){}syncAnnSelection();redrawAnn();return;}if(ann.tool==='text'){const t=(prompt('輸入要寫在圖上的批註文字（例如：這裡漏了負號）')||'').trim();if(t)ann.shapes.push({type:'text',x:p.x,y:p.y,text:t.slice(0,120)});redrawAnn();$('#ann-status').textContent='已加入文字批註，記得儲存。';return;}c.setPointerCapture(e.pointerId);ann.drawing=ann.tool==='pen'||ann.tool==='highlight'||ann.tool==='eraser'?{type:ann.tool==='highlight'?'highlight':'pen',points:[p],erase:ann.tool==='eraser'}:{type:ann.tool,a:p,b:p};redrawAnn();};
+c.onpointerdown=async e=>{if(!ann.base)return;if(e.button!==0&&e.pointerType==='mouse')return;e.preventDefault();const p=pos(e);if(ann.tool==='select'){const hit=annHitShape(p);ann.selected=hit>=0?hit:null;ann.dragging=hit>=0?{index:hit,last:p}:null;if(hit>=0)try{c.setPointerCapture(e.pointerId);}catch(_){}syncAnnSelection();redrawAnn();return;}if(ann.tool==='text'){const t=(await askPrompt('輸入要寫在圖上的批註文字（例如：這裡漏了負號）')||'').trim();if(t)ann.shapes.push({type:'text',x:p.x,y:p.y,text:t.slice(0,120)});redrawAnn();$('#ann-status').textContent='已加入文字批註，記得儲存。';return;}c.setPointerCapture(e.pointerId);ann.drawing=ann.tool==='pen'||ann.tool==='highlight'||ann.tool==='eraser'?{type:ann.tool==='highlight'?'highlight':'pen',points:[p],erase:ann.tool==='eraser'}:{type:ann.tool,a:p,b:p};redrawAnn();};
 c.onpointermove=e=>{if(ann.dragging){e.preventDefault();const p=pos(e),s=ann.shapes[ann.dragging.index];if(s){annTranslate(s,p.x-ann.dragging.last.x,p.y-ann.dragging.last.y);ann.dragging.last=p;redrawAnn();$('#ann-status').textContent='批註尚未儲存';}return;}if(!ann.drawing)return;e.preventDefault();const p=pos(e);if(ann.drawing.points)ann.drawing.points.push(p);else ann.drawing.b=p;redrawAnn();};
 c.onpointerup=c.onpointercancel=c.onlostpointercapture=()=>{ann.dragging=null;const d=ann.drawing;ann.drawing=null;if(!d)return;if(d.type==='pen'&&d.erase){const pts=d.points;ann.shapes=ann.shapes.filter(s=>!(s.points||[]).some(q=>pts.some(p=>Math.hypot(p.x-q.x,p.y-q.y)<30)));}else if(d.points){if(d.points.length>=2)ann.shapes.push(d);}else if(Math.hypot(d.b.x-d.a.x,d.b.y-d.a.y)>=12){ann.shapes.push(d);}ann.selected=null;syncAnnSelection();redrawAnn();if(ann.shapes.length)$('#ann-status').textContent='批註尚未儲存';};
 $$('[data-ann-tool]').forEach(b=>b.onclick=()=>{ann.tool=b.dataset.annTool;$$('[data-ann-tool]').forEach(x=>x.classList.toggle('active',x===b));if(ann.tool!=='select')ann.selected=null;syncAnnSelection();});
 $('#ann-delete').onclick=deleteAnnSelected;
-$('#ann-edit-text').onclick=()=>{const s=ann.selected!=null?ann.shapes[ann.selected]:null;if(!s||s.type!=='text')return;const next=prompt('修改這則文字批註',s.text);if(next===null)return;const t=next.trim();if(!t)return toast('文字不可留空；要移除請用「刪除選取」。');s.text=t.slice(0,120);redrawAnn();$('#ann-status').textContent='文字已修改，記得儲存。';};
+$('#ann-edit-text').onclick=async()=>{const s=ann.selected!=null?ann.shapes[ann.selected]:null;if(!s||s.type!=='text')return;const next=await askPrompt('修改這則文字批註',s.text);if(next===null)return;const t=next.trim();if(!t)return toast('文字不可留空；要移除請用「刪除選取」。');s.text=t.slice(0,120);redrawAnn();$('#ann-status').textContent='文字已修改，記得儲存。';};
 const annSize=$('#ann-item-size');
 if(annSize)annSize.oninput=()=>{const s=ann.selected!=null?ann.shapes[ann.selected]:null;if(!s)return;s.size=Number(annSize.value);const v=$('#ann-item-size-value');if(v)v.textContent=String(s.size);redrawAnn();$('#ann-status').textContent='批註尚未儲存';};
 syncAnnSelection();
 $('#ann-undo').onclick=()=>{if(!ann.shapes.length)return toast('沒有可撤銷的批註。');ann.shapes.pop();ann.selected=null;syncAnnSelection();redrawAnn();$('#ann-status').textContent='已撤銷一筆，記得儲存。';};
-$('#ann-clear').onclick=()=>{if(!ann.shapes.length)return;if(!confirm('清除圖上所有批註？原有手寫內容不受影響。'))return;ann.shapes=[];ann.selected=null;syncAnnSelection();redrawAnn();$('#ann-status').textContent='已清除全部批註，記得儲存。';};
+$('#ann-clear').onclick=async()=>{if(!ann.shapes.length)return;if(await askCancel('清除圖上所有批註？原有手寫內容不受影響。'))return;ann.shapes=[];ann.selected=null;syncAnnSelection();redrawAnn();$('#ann-status').textContent='已清除全部批註，記得儲存。';};
 $('#ann-save').onclick=async()=>{const b=$('#ann-save');b.disabled=true;$('#ann-status').textContent='正在儲存批註…';try{const {attempt}=await api(`/api/attempts/${a.id}/annotation`,{image:imageDataUrl(c)});const i=S.attempts.findIndex(x=>x.id===attempt.id);if(i<0)S.attempts.push(attempt);else S.attempts[i]=attempt;toast('批註已儲存，學生可查看。');closeModal();if(annotationDone)annotationDone();}catch(e){$('#ann-status').textContent=e.message;b.disabled=false;}};
 const aiBtn=$('#ai-annotate');
-if(aiBtn)aiBtn.onclick=async()=>{if(S.ai.mode==='external'&&!confirm('AI 批註會將這位學生的手寫照片及本題內容，傳送至學校配置的外部 AI 服務，是否繼續？'))return;const original=aiBtn.innerHTML;aiBtn.disabled=true;aiBtn.innerHTML=icon('clock')+'AI 正在看手稿…';try{const {attempt}=await api(`/api/attempts/${a.id}/ai-annotation`,{consentExternal:S.ai.mode==='external'});const i=S.attempts.findIndex(x=>x.id===attempt.id);if(i<0)S.attempts.push(attempt);else S.attempts[i]=attempt;const n=attempt.aiAnnotation?.issues?.length||0;toast(n?`AI 建議 ${n} 處，須由教師覆核。`:'AI 未標示任何錯處；這不代表作答正確，請教師自行檢視。');annotationRefresh(attempt);}catch(e){toast(e.message);aiBtn.disabled=false;aiBtn.innerHTML=original;}};
+if(aiBtn)aiBtn.onclick=async()=>{if(S.ai.mode==='external'&&await askCancel('AI 批註會將這位學生的手寫照片及本題內容，傳送至學校配置的外部 AI 服務，是否繼續？'))return;const original=aiBtn.innerHTML;aiBtn.disabled=true;aiBtn.innerHTML=icon('clock')+'AI 正在看手稿…';try{const {attempt}=await api(`/api/attempts/${a.id}/ai-annotation`,{consentExternal:S.ai.mode==='external'});const i=S.attempts.findIndex(x=>x.id===attempt.id);if(i<0)S.attempts.push(attempt);else S.attempts[i]=attempt;const n=attempt.aiAnnotation?.issues?.length||0;toast(n?`AI 建議 ${n} 處，須由教師覆核。`:'AI 未標示任何錯處；這不代表作答正確，請教師自行檢視。');annotationRefresh(attempt);}catch(e){toast(e.message);aiBtn.disabled=false;aiBtn.innerHTML=original;}};
 const aiClear=$('#ai-clear');
-if(aiClear)aiClear.onclick=async()=>{if(!confirm('清除 AI 建議批註？教師自己的批註不受影響。'))return;try{const {attempt}=await api(`/api/attempts/${a.id}/ai-annotation`,{clear:true});const i=S.attempts.findIndex(x=>x.id===attempt.id);if(i<0)S.attempts.push(attempt);else S.attempts[i]=attempt;toast('已清除 AI 批註。');annotationRefresh(attempt);}catch(e){toast(e.message);}};}
+if(aiClear)aiClear.onclick=async()=>{if(await askCancel('清除 AI 建議批註？教師自己的批註不受影響。'))return;try{const {attempt}=await api(`/api/attempts/${a.id}/ai-annotation`,{clear:true});const i=S.attempts.findIndex(x=>x.id===attempt.id);if(i<0)S.attempts.push(attempt);else S.attempts[i]=attempt;toast('已清除 AI 批註。');annotationRefresh(attempt);}catch(e){toast(e.message);}};}
 let aiDrag=null,aiJustDragged=false;
 // 教師可以直接拖動：圓形標記、AI 批語框、印章。三種都寫回同一組相對座標。
 const aiMovableTarget=e=>e.target&&e.target.closest?e.target.closest('.ai-mark-layer.draggable .ai-mark, .ai-ink-layer.editable .movable'):null;
@@ -3248,14 +3304,14 @@ document.addEventListener('pointermove',e=>{if(!aiDrag)return;const {m,r}=aiDrag
 // 拖曳結束後緊接著的 click 要忽略，否則一放手就跳出修改文字。
 ['pointerup','pointercancel'].forEach(t=>document.addEventListener(t,()=>{if(aiDrag&&aiDrag.moved){aiJustDragged=true;setTimeout(()=>{aiJustDragged=false;},400);}aiDrag=null;}));
 // 點一下（沒有拖動）批語就改文字：教師可以直接改寫 AI 的說法，不必整組重來。
-document.addEventListener('click',e=>{
+document.addEventListener('click',async e=>{
   const el=e.target&&e.target.closest?e.target.closest('.ai-ink-layer.editable .ai-callout'):null;
   if(!el||aiJustDragged)return;
   const layer=el.closest('.ai-ink-layer'),data=layer&&AI_INK_DATA.get(Number(layer.dataset.ink));
   if(!data)return;
   const key=el.dataset.place||'';
   if(key==='summary'){
-    const next=prompt('修改 AI 總結（會直接寫在學生的手稿上）',data.summary);
+    const next=await askPrompt('修改 AI 總結（會直接寫在學生的手稿上）',data.summary);
     if(next===null)return;
     const t=next.trim();
     if(!t)return toast('總結不可留空；如要移除整組批註，請按「清除 AI 批註」。');
@@ -3263,7 +3319,7 @@ document.addEventListener('click',e=>{
   }else if(key.startsWith('issue:')){
     const it=data.issues[Number(key.slice(6))];
     if(!it)return;
-    const next=prompt('修改這則批註（格式：標籤 | 說明）',`${it.label} | ${it.comment}`);
+    const next=await askPrompt('修改這則批註（格式：標籤 | 說明）',`${it.label} | ${it.comment}`);
     if(next===null)return;
     const parts=next.split('|');
     const label=(parts.length>1?parts[0]:it.label).trim();
@@ -4078,7 +4134,7 @@ async function papersPage(){
   const clear=$('#paper-q-clear');
   if(clear)clear.onclick=()=>{paperFilter={q:'',year:'',grade:'',term:''};applyFilter();};
   $$('[data-paper-del]').forEach(b=>b.onclick=async()=>{
-    if(!confirm('刪除這份試卷？已匯入題庫的題目不受影響。'))return;
+    if(await askCancel('刪除這份試卷？已匯入題庫的題目不受影響。'))return;
     try{await fetch('/api/papers/'+b.dataset.paperDel,{method:'DELETE',credentials:'same-origin'})
       .then(async r=>{const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.error||'刪除失敗');});
       toast('已刪除');papersPage();
@@ -4177,7 +4233,7 @@ function bulkEditModal(){
 async function bulkDeleteQuestions(){
   const ids=[...pickedQuestions];
   if(!ids.length)return toast('先勾選要刪除的題目。');
-  if(!confirm(`刪除已選的 ${ids.length} 題？\n已經有作答紀錄的題目不會被刪（作答是學生成績的一部分）。`))return;
+  if(await askCancel(`刪除已選的 ${ids.length} 題？\n已經有作答紀錄的題目不會被刪（作答是學生成績的一部分）。`))return;
   try{
     const res=await api('/api/questions/bulk',{ids,action:'delete'});
     pickedQuestions.clear();
@@ -4353,7 +4409,7 @@ async function generatePaperModal(){
     // PDF 沒有結構，要靠 AI 讀版面；走外部模型前先明確問一次。
     const isPdf=/pdf$/i.test(file.name||'')||file.type===PDF_MIME;
     if(isPdf&&S.ai.mode==='external'&&
-       !confirm('PDF 範本要先交給 AI 分析版面（整份檔案會上傳到外部模型）。要繼續嗎？')){
+       await askCancel('PDF 範本要先交給 AI 分析版面（整份檔案會上傳到外部模型）。要繼續嗎？')){
       e.target.value='';return;
     }
     const btn=$('#gen-upload');const old=btn.innerHTML;
@@ -5149,7 +5205,7 @@ $('#ai-form').onsubmit=async e=>{e.preventDefault();const b=$('#ai-form button[t
 const runTest=async vision=>{const btn=$(vision?'#ai-test-vision':'#ai-test'),original=btn.innerHTML;btn.disabled=true;btn.innerHTML=icon('clock')+'測試中…';$('#ai-test-result').innerHTML='';try{const payload=body();if(vision)payload.vision=true;const r=await api('/api/ai-config/test',payload);$('#ai-test-result').innerHTML=`<div class="hint-box">連線成功（${r.mode==='local'?'本機':'外部'} · ${esc(r.model)}）${r.testedVision?'；端點接受了圖片輸入，但這不證明辨識準確度。':''}</div>`;}catch(err){$('#ai-test-result').innerHTML=`<div class="inline-error">連線失敗：${esc(err.message)}</div>`;}finally{btn.disabled=false;btn.innerHTML=original;}};
 $('#ai-test').onclick=()=>runTest(false);$('#ai-test-vision').onclick=()=>runTest(true);
 if($('#ai-thinking'))$('#ai-thinking').onchange=async e=>{const on=e.target.checked;e.target.disabled=true;try{const r=await api('/api/ai-config/economy',{economy:on});AICFG.active=r.active;toast(on?'已切換為省錢模式：AI 直接作答，費用約三分之一。':'已切換為精確模式：AI 先推理再作答，費用較高。');renderAiConfigPage();}catch(err){toast(err.message);e.target.checked=!on;}finally{e.target.disabled=false;}};
-if($('#ai-clear'))$('#ai-clear').onclick=async()=>{if(!confirm('清除已儲存的模型設定？AI 功能將停用，除非環境變數另有設定。'))return;try{await api('/api/ai-config',{baseUrl:'',model:''});toast('已清除已儲存的設定。');aiConfigPage();}catch(e){toast(e.message);}};}
+if($('#ai-clear'))$('#ai-clear').onclick=async()=>{if(await askCancel('清除已儲存的模型設定？AI 功能將停用，除非環境變數另有設定。'))return;try{await api('/api/ai-config',{baseUrl:'',model:''});toast('已清除已儲存的設定。');aiConfigPage();}catch(e){toast(e.message);}};}
 let ADMIN_STATS=null;
 function formatBytes(value){const n=Number(value)||0;if(n<=0)return '0 B';const units=['B','KB','MB','GB','TB'];const i=Math.min(units.length-1,Math.floor(Math.log(n)/Math.log(1024)));return (n/Math.pow(1024,i)).toFixed(i?1:0)+' '+units[i];}
 // 用量卡片：讓教師知道題庫、作答與圖片各佔多少，以及還有多少空間可以回收。
@@ -5288,7 +5344,7 @@ function bindDataAdmin(){
   if($('#admin-reset'))$('#admin-reset').onclick=async()=>{
     const typed=$('#reset-confirm').value.trim();
     if(typed.toUpperCase()!=='RESET'){$('#reset-error').textContent='請先輸入 RESET 才能執行學年重置。';return;}
-    if(!confirm('確定清空這一學年的學生帳號、班級、作業與所有作答嗎？題庫會保留，但刪除後無法還原。'))return;
+    if(await askCancel('確定清空這一學年的學生帳號、班級、作業與所有作答嗎？題庫會保留，但刪除後無法還原。'))return;
     const b=$('#admin-reset');b.disabled=true;$('#reset-error').textContent='';
     try{const r=await api('/api/admin/reset/students',{confirm:typed});
       toast(`學年重置完成：刪除 ${r.removed.students} 個學生帳號、${r.removed.attempts} 筆作答；題庫 ${r.kept.questions} 題保留。`);
@@ -5298,7 +5354,7 @@ function bindDataAdmin(){
   const restoreQuestions=$('#restore-questions-btn');
   if(restoreQuestions)restoreQuestions.onclick=async()=>{
     const replace=$('#restore-replace').checked;
-    if(replace&&!confirm('整批取代會先清空現有題庫，再寫入歸檔內容。確定嗎？'))return;
+    if(replace&&await askCancel('整批取代會先清空現有題庫，再寫入歸檔內容。確定嗎？'))return;
     const box=$('#restore-questions-result');box.innerHTML='';
     const original=restoreQuestions.innerHTML;restoreQuestions.disabled=true;restoreQuestions.innerHTML=icon('clock')+'還原中…';
     try{const r=await uploadFile('/api/admin/restore/questions'+(replace?'?replace=1':''),$('#restore-questions-file').files[0]);
@@ -5311,7 +5367,7 @@ function bindDataAdmin(){
   if(restoreStudents)restoreStudents.onclick=async()=>{
     const password=$('#restore-password').value;
     if(password&&password.length<10){$('#restore-students-result').innerHTML='<div class="inline-error">初始密碼至少 10 字。</div>';return;}
-    if(!confirm('將依歸檔重建學生帳號、班級、作業與作答（不會刪除現有資料）。確定嗎？'))return;
+    if(await askCancel('將依歸檔重建學生帳號、班級、作業與作答（不會刪除現有資料）。確定嗎？'))return;
     const box=$('#restore-students-result');box.innerHTML='';
     const original=restoreStudents.innerHTML;restoreStudents.disabled=true;restoreStudents.innerHTML=icon('clock')+'還原中…';
     try{const path='/api/admin/restore/students'+(password?'?password='+encodeURIComponent(password):'');
@@ -5328,7 +5384,7 @@ function bindDataAdmin(){
   };
   const restoreDb=$('#restore-db-btn');
   if(restoreDb)restoreDb.onclick=async()=>{
-    if(!confirm('這會用備份檔取代目前的整個資料庫（題庫、學生、作答、圖片全部換成備份內容）。目前的資料庫會自動保留一份。確定嗎？'))return;
+    if(await askCancel('這會用備份檔取代目前的整個資料庫（題庫、學生、作答、圖片全部換成備份內容）。目前的資料庫會自動保留一份。確定嗎？'))return;
     const box=$('#restore-db-result');box.innerHTML='';
     const original=restoreDb.innerHTML;restoreDb.disabled=true;restoreDb.innerHTML=icon('clock')+'還原中…';
     try{const r=await uploadFile('/api/admin/restore/db',$('#restore-db-file').files[0]);
@@ -5406,7 +5462,7 @@ function editAccountModal(id){
   if($('#delete-account'))$('#delete-account').onclick=async()=>{
     const typed=$('#delete-confirm').value;
     if(typed.trim().toUpperCase()!=='DELETE'){$('#delete-error').textContent='請輸入 DELETE 確認。';return;}
-    if(!window.confirm(`確定要刪除「${u.name}」的帳號嗎？此操作無法還原。`))return;
+    if(await askCancel(`確定要刪除「${u.name}」的帳號嗎？此操作無法還原。`))return;
     const b=$('#delete-account');b.disabled=true;$('#delete-error').textContent='';
     try{const r=await api(`/api/users/${id}/delete`,{confirm:typed});
       toast(`已刪除 ${r.deleted.name} 的帳號：${r.removed.attempts} 筆作答${r.imagesDeleted?`、${r.imagesDeleted} 張圖片`:''}。`);
@@ -5467,15 +5523,15 @@ $('#bulk-template').onclick=()=>{const order=$('#bulk-order')?$('#bulk-order').v
 $('#bulk-class-toggle').onchange=e=>{$('#bulk-class-field').hidden=!e.target.checked;};
 $('#bulk-submit').onclick=async()=>{const {rows,errors}=bulkPreview();if(errors.length)return toast('請先修正名單格式錯誤。');if(!rows.length)return toast('請輸入至少一位學生。');if(rows.length>200)return toast('每批最多200位學生。');const makeClass=$('#bulk-class-toggle').checked,className=$('#bulk-class-name').value.trim();if(makeClass&&!className)return toast('請填寫班級名稱，或取消建立班級。');const b=$('#bulk-submit');b.disabled=true;b.textContent='正在建立…';try{const {users:created}=await api('/api/users/bulk',{students:rows.map(r=>({username:r.username,name:r.name,seat:r.seat,password:r.password}))});let classNote='';if(makeClass){try{const {class:room}=await api('/api/classes',{name:className,studentIds:created.map(u=>u.id)});classNote=`<div class="hint-box" style="margin-top:12px">已同時建立班級「${esc(room.name)}」，共 ${room.studentCount} 位學生，可直接佈置作業。</div>`;}catch(err){classNote=`<div class="inline-error" style="margin-top:12px">帳戶已建立，但班級未建立：${esc(err.message)}可在「作業與成績」重新建立班級。</div>`;}}const merged=rows.map((r,i)=>({username:r.username,password:r.password,name:(created[i]&&created[i].name)||r.name||r.username,seat:(created[i]&&created[i].seat)||r.seat||''}));const hasName=merged.some(r=>r.name!==r.username),hasSeat=merged.some(r=>r.seat);const cols=[['學號',r=>r.username]].concat(hasName?[['姓名',r=>r.name]]:[],hasSeat?[['班內號',r=>r.seat]]:[],[['密碼',r=>r.password]]);const text=[cols.map(c=>c[0]).join('\t'),...merged.map(r=>cols.map(c=>c[1](r)).join('\t'))].join('\n');$('#bulk-result').innerHTML=`<div class="import-warning">已建立 ${created.length} 個帳戶${merged.some(r=>r.name===r.username)?`（${merged.filter(r=>r.name===r.username).length} 個未填姓名，以學號顯示）`:""}。密碼只會顯示這一次，請立即複製並私下發給學生。</div>${classNote}<pre class="code-block">${esc(text)}</pre><button class="secondary wide" id="bulk-copy" style="margin-top:10px">${icon('file')}複製帳號密碼</button>`;$('#bulk-copy').onclick=async()=>{try{await navigator.clipboard.writeText(text);toast('已複製，請妥善保管。');}catch{toast('無法自動複製，請手動選取。');}};$('#bulk-students').value='';$('#bulk-class-toggle').checked=false;$('#bulk-class-field').hidden=true;$('#bulk-class-name').value='';bulkPreview();toast(`已建立 ${created.length} 個學生帳戶。`);}catch(err){$('#bulk-error').textContent=err.message;}finally{b.disabled=false;b.innerHTML=icon('upload')+'批次建立學生帳戶';}};}}catch(e){toast(e.message);}}
 function deploymentHelp(){modal(`<p class="eyebrow">SERVER SETUP</p><h2>啟動與部署說明</h2><p class="modal-intro">資料保存在網站伺服器；實際位置由管理員確認。以下是可選部署方式，不代表目前網站的部署狀態。</p><h3>本機預覽</h3><p class="info-note">雙擊 start.command，或用 Python 3 啟動：</p><pre class="code-block">python3 server.py --host 127.0.0.1 --port 8765</pre><p class="info-note">瀏覽器開啟 http://127.0.0.1:8765。</p><h3>校內連線</h3><p class="info-note">由資訊人員將 --host 設為伺服器的校內 IP，並限制防火牆只允許校內來源；正式使用需反向代理 HTTPS。不要把演示帳戶直接用於全校。</p><h3>目前帳戶範圍</h3><p class="info-note">初始演示配置包含學生與教師帳戶；實際帳戶由管理員確認。教師可在「設定與隱私」建立獨立學生帳戶，避免共用作答紀錄。可在「作業與成績」建立班級並發布作業；校內單一登入及批量帳戶管理仍可再擴充。</p><div class="import-warning">資料保存在網站伺服器；實際位置由管理員確認。預設資料庫路徑為 data/mathpath.sqlite3；備份及保存年限應按學校規定安排。AI 必須另行配置，未配置時手写作答由教師批閱。</div>`);}
-function navigate(target){if(busy)return toast('目前操作正在進行，請等待完成。');preserveDraft();if(page==='practice'&&strokes.length&&target!=='practice'&&!lastResult&&!confirm('尚未提交的手寫內容未保存。確定離開？'))return;beginView();$('#sidebar').classList.remove('open');if(target!=='practice'){assignmentContext=null;mockContext=null;stopQuizClock();}page=target;switch(target){case'guide':guidePage();break;
+async function navigate(target){if(busy)return toast('目前操作正在進行，請等待完成。');preserveDraft();if(page==='practice'&&strokes.length&&target!=='practice'&&!lastResult&&await askCancel('尚未提交的手寫內容未保存。確定離開？'))return;beginView();$('#sidebar').classList.remove('open');if(target!=='practice'){assignmentContext=null;mockContext=null;stopQuizClock();}page=target;switch(target){case'guide':guidePage();break;
 case'homework':homeworkPage();break;case'scores':scoreGridPage();break;case'paperbatch':paperBatchPage();break;case'calendar':calendarPage();break;case'board':leaderboardPage();break;case'mock':mockPage();break;case'contests':contestsPage();break;case'ai':aiConfigPage();break;case'bank':bank();break;case'practice':practice();break;case'import':importPage();break;case'newq':newQuestionPage();break;case'mistakes':recordsPage();break;case'paper':paperGradePage();break;case'layout':paperLayoutPage();break;case'papers':papersPage();break;case'growth':growthPage();break;case'settings':settingsPage();break;default:bank();}window.scrollTo({top:0,behavior:'instant'});}
-document.addEventListener('click',e=>{const b=e.target.closest('button');if(!b||b.disabled)return;if(b.dataset.fontScale){applyFontScale(b.dataset.fontScale);shell();toast(`字體已設為「${FONT_SCALES.find(([id])=>id===b.dataset.fontScale)[1]}」，只影響這台裝置。`);return;}
+document.addEventListener('click',async e=>{const b=e.target.closest('button');if(!b||b.disabled)return;if(b.dataset.fontScale){applyFontScale(b.dataset.fontScale);shell();toast(`字體已設為「${FONT_SCALES.find(([id])=>id===b.dataset.fontScale)[1]}」，只影響這台裝置。`);return;}
 if(b.dataset.themeId){applyTheme(b.dataset.themeId);shell();toast(`版面已設為「${THEMES.find(([id])=>id===b.dataset.themeId)[1]}」，只影響這台裝置。`);return;}
 if(b.id==='open-math-editor'){openMathEditor();return;}
   if(b.dataset.manageClass){manageClassModal(Number(b.dataset.manageClass));return;}
   if(b.dataset.purgeImg){
     const uid=Number(b.dataset.purgeImg),uname=b.dataset.purgeName||'';
-    if(!confirm(`清除「${uname}」的所有手寫圖與批註圖？\n\n⚠️ 會刪除網盤上的圖片檔，無法復原。\n作答紀錄與分數會保留。`))return;
+    if(await askCancel(`清除「${uname}」的所有手寫圖與批註圖？\n\n⚠️ 會刪除網盤上的圖片檔，無法復原。\n作答紀錄與分數會保留。`))return;
     b.disabled=true;
     api(`/api/users/${uid}/images/delete`,{}).then(r=>{toast(`已清除 ${r.images} 個圖片、${r.attempts} 筆作答的圖片欄位。`);manageUsers();})
       .catch(err=>{b.disabled=false;toast(err.message);});
@@ -5486,7 +5542,7 @@ if(b.id==='open-math-editor'){openMathEditor();return;}
     const uid=Number(b.dataset.disableUser),off=b.dataset.disableTo==='1',uname=b.dataset.disableName||'';
     const ask=off?`停用「${uname}」？\n\n他將無法登入，目前的登入也會立即失效。\n作答、分數與班級都會保留，之後可以再啟用。`
                  :`重新啟用「${uname}」？\n\n他可以再次登入，先前的作答與分數都還在。`;
-    if(!confirm(ask))return;
+    if(await askCancel(ask))return;
     b.disabled=true;
     api(`/api/users/${uid}/disabled`,{disabled:off})
       .then(()=>{toast(off?'已停用，該帳號目前的登入已失效。':'已重新啟用。');manageUsers();})
@@ -5498,7 +5554,7 @@ if(b.id==='open-math-editor'){openMathEditor();return;}
     const warn=urole==='teacher'
       ? `刪除教師「${uname}」？\n\n他的班級與作業會轉給管理員；他建立的學生改為無歸屬。\n\n請輸入 DELETE 確認：`
       : `刪除學生「${uname}」？\n\n⚠️ 會一併刪除他的所有作答、手寫圖、批改紀錄、班級成員與模擬測驗，無法復原。\n\n請輸入 DELETE 確認：`;
-    const typed=prompt(warn);
+    const typed=await askPrompt(warn);
     if(typed===null)return;
     if(typed.trim()!=='DELETE')return toast('未輸入 DELETE，已取消。');
     b.disabled=true;
@@ -5508,7 +5564,7 @@ if(b.id==='open-math-editor'){openMathEditor();return;}
   }
   if(b.dataset.delAssign){
     const aid=Number(b.dataset.delAssign),atitle=b.dataset.delTitle||'';
-    if(!confirm(`確定刪除作業「${atitle}」？\n\n⚠️ 這會一併刪除所有學生在這份作業的作答、分數與批閱紀錄，無法復原。`))return;
+    if(await askCancel(`確定刪除作業「${atitle}」？\n\n⚠️ 這會一併刪除所有學生在這份作業的作答、分數與批閱紀錄，無法復原。`))return;
     b.disabled=true;
     api(`/api/assignments/${aid}/delete`,{}).then(r=>{toast(`作業已刪除${r.attempts?`（含 ${r.attempts} 筆作答）`:''}。`);homeworkPage();})
       .catch(err=>{b.disabled=false;toast(err.message);});
@@ -5516,7 +5572,7 @@ if(b.id==='open-math-editor'){openMathEditor();return;}
   }
   if(b.dataset.delClass){
     const cid=Number(b.dataset.delClass),cname=b.dataset.delName||'';
-    if(!confirm(`確定刪除班級「${cname}」？\n\n只會刪除班級與名單，不會刪除學生帳戶。\n有作業的班級無法刪除。`))return;
+    if(await askCancel(`確定刪除班級「${cname}」？\n\n只會刪除班級與名單，不會刪除學生帳戶。\n有作業的班級無法刪除。`))return;
     b.disabled=true;
     api(`/api/classes/${cid}/delete`,{}).then(()=>{toast('班級已刪除。');homeworkPage();})
       .catch(err=>{b.disabled=false;toast(err.message);});
@@ -5532,13 +5588,13 @@ if(b.id==='open-math-editor'){openMathEditor();return;}
   }if(b.dataset.page)return navigate(b.dataset.page);if(b.dataset.assignment)return assignmentPage(Number(b.dataset.assignment));if(b.dataset.mock)return mockExamPage(Number(b.dataset.mock));
 if(b.dataset.mockDel){
   const id=Number(b.dataset.mockDel);
-  if(!confirm('刪除這場未完成的模擬測驗？已作答的內容會一併清除。'))return;
+  if(await askCancel('刪除這場未完成的模擬測驗？已作答的內容會一併清除。'))return;
   return api(`/api/mock/${id}/delete`,{}).then(()=>{toast('已刪除這場模擬測驗。');return mockPage();}).catch(e=>toast(e.message));
 }if(b.dataset.mockQ)return openMockQuestion(Number(b.dataset.mockQ));if(b.dataset.results)return resultsPage(Number(b.dataset.results));if(b.dataset.skipQ)return skipQuestionFromList(b.dataset.skipQ);
 if(b.dataset.assignmentQ){
   const qid=Number(b.dataset.assignmentQ);
   const done=(assignmentDetail?.attempts||[]).some(x=>x.questionId===qid);
-  if(done&&!confirm('這題已經作答過。重新作答會清除先前的答案，確定嗎？'))return;
+  if(done&&await askCancel('這題已經作答過。重新作答會清除先前的答案，確定嗎？'))return;
   const go=openAssignmentQuestion(qid);
   if(done)Promise.resolve(go).then(()=>{clearAnswerState();clearCurrentDraft();renderAnswerArea();toast('已清除先前的作答，可以重新寫一次。');});
   return go;
@@ -5546,7 +5602,7 @@ if(b.dataset.assignmentQ){
   if(busy)return toast('正在保存作答，請等待完成。');
   const next=b.dataset.answerMode;
   if(next!==answerMode&&hasProcessContent(answerMode)){
-    if(!confirm('切換作答方式會清除目前的解題過程，確定嗎？'))return;
+    if(await askCancel('切換作答方式會清除目前的解題過程，確定嗎？'))return;
     clearProcessForMode(answerMode);
   }
   preserveDraft();answerMode=next;$$('[data-answer-mode]').forEach(x=>x.classList.toggle('active',x===b));renderAnswerArea();scheduleDraft();return;
@@ -6067,7 +6123,7 @@ ${exams.length?`<div class="record-list">${exams.map(e=>`<article class="record"
 </section></div>`;
 const syncMockSub=()=>{const sel=$('#mock-subtopic');if(!sel)return;const subs=(o.subtopics||{})[$('#mock-topic').value]||[];sel.innerHTML='<option value="">全部子分類</option>'+subs.map(v=>`<option>${esc(v)}</option>`).join('');};$('#mock-topic').onchange=syncMockSub;syncMockSub();
 $('#mock-start').onclick=async()=>{const b=$('#mock-start');b.disabled=true;$('#mock-error').innerHTML='';const body={count:Number($('#mock-count').value),minutes:Number($('#mock-minutes').value)};const topic=$('#mock-topic').value,level=$('#mock-level').value,qtype=$('#mock-qtype').value;if(topic)body.topic=topic;const sub=$('#mock-subtopic')?$('#mock-subtopic').value:'';if(sub)body.subtopic=sub;if(level)body.level=Number(level);if(qtype)body.qtype=qtype;const request=viewTarget();try{const r=await api('/api/mock',body);if(!viewMatches(request))return;toast('模擬測驗已開始，請把握時間。');mockExamPage(r.exam.id);}catch(e){if(!viewMatches(request))return;$('#mock-error').innerHTML=`<div class="inline-error">${esc(e.message)}</div>`;b.disabled=false;}};}
-function openMockQuestion(qid){if(!mockDetail||busy||mockContext?.id!==mockDetail.exam.id)return;if(mockDetail.exam.status==='submitted'||mockDetail.exam.remainingSeconds<=0||Date.parse(mockDetail.exam.expiresAt)<=Date.now()||quizTargetExpired())return toast('本份測驗已提交或到期，不能再作答。');preserveDraft();const q=mockDetail.questions.find(x=>x.id===Number(qid));if(!q)return;if(currentQuestion&&currentQuestion.id!==q.id&&strokes.length&&!lastResult&&!confirm('目前手寫內容尚未提交，確定切換題目？'))return;assignmentContext=null;mockContext={id:mockDetail.exam.id,title:'模擬測驗 · '+mockDetail.exam.topic};currentQuestion=q;lastResult=null;lastSolution=null;answerMode=(q.options&&q.options.length)?'choice':'hand';answerFile=null;selectedOption=null;window.answerTextDraft='';strokes=[];redoStrokes=[];recommendations=null;practice();}
+async function openMockQuestion(qid){if(!mockDetail||busy||mockContext?.id!==mockDetail.exam.id)return;if(mockDetail.exam.status==='submitted'||mockDetail.exam.remainingSeconds<=0||Date.parse(mockDetail.exam.expiresAt)<=Date.now()||quizTargetExpired())return toast('本份測驗已提交或到期，不能再作答。');preserveDraft();const q=mockDetail.questions.find(x=>x.id===Number(qid));if(!q)return;if(currentQuestion&&currentQuestion.id!==q.id&&strokes.length&&!lastResult&&await askCancel('目前手寫內容尚未提交，確定切換題目？'))return;assignmentContext=null;mockContext={id:mockDetail.exam.id,title:'模擬測驗 · '+mockDetail.exam.topic};currentQuestion=q;lastResult=null;lastSolution=null;answerMode=(q.options&&q.options.length)?'choice':'hand';answerFile=null;selectedOption=null;window.answerTextDraft='';strokes=[];redoStrokes=[];recommendations=null;practice();}
 async function mockExamPage(id){if(!S.user)return loginModal(()=>mockExamPage(id));if(S.user.role!=='student')return toast('只有學生可以作答模擬測驗。');if(busy)return toast('請先等待作答保存完成。');preserveDraft();beginView();stopQuizClock();page='mock';assignmentContext=null;mockContext={id:Number(id)};mockDetail=null;currentQuestion=null;shell();$('#sidebar').classList.remove('open');const target=viewTarget();
 try{const data=await api(`/api/mock/${id}`);if(!viewMatches(target))return;mockDetail=data;}catch(e){if(!viewMatches(target))return;$('#main').innerHTML=`<div class="fade-in"><button class="text-button back-button" data-page="mock">${icon('back')}返回模擬測驗</button>${heading('MOCK EXAM','模擬測驗','')}<section class="panel"><div class="inline-error">${esc(e.message)}</div></section></div>`;return;}
 const exam=mockDetail.exam,questions=mockDetail.questions||[],attempts=mockDetail.attempts||[],report=mockDetail.report;
@@ -6087,14 +6143,14 @@ ${homeworkMetrics([['已保存題目',`${answered} / ${questions.length}`,'逐�
 ${report?`<div class="result-layout"><section class="panel panel-pad">${suggestionCard(report.suggestion)}</section><aside class="right-stack">${mockTopicPanel(report.topicStats)}</aside></div>`:''}</div>`;
 if(!submitted)startQuizClock({kind:'mock',id:exam.id},remaining,exam.expiresAt);else stopQuizClock();
 const sb=$('#mock-submit');
-if(sb)sb.onclick=async()=>{if(!confirm('提交後不能修改作答，確定提交？'))return;const request=viewTarget(),b=sb;b.disabled=true;try{await api(`/api/mock/${exam.id}/submit`,{});if(!viewMatches(request))return;stopQuizClock();toast('已提交並即時計分。');mockExamPage(exam.id);}catch(e){if(viewMatches(request)){toast(e.message);b.disabled=false;}}};}
+if(sb)sb.onclick=async()=>{if(await askCancel('提交後不能修改作答，確定提交？'))return;const request=viewTarget(),b=sb;b.disabled=true;try{await api(`/api/mock/${exam.id}/submit`,{});if(!viewMatches(request))return;stopQuizClock();toast('已提交並即時計分。');mockExamPage(exam.id);}catch(e){if(viewMatches(request)){toast(e.message);b.disabled=false;}}};}
 async function assignmentPage(id){if(busy)return toast('請先等待作答保存完成。');preserveDraft();if(!S.user)return loginModal(()=>assignmentPage(id));if(S.user.role==='teacher')return resultsPage(id);beginView();stopQuizClock();page='homework';mockContext=null;assignmentContext={id:Number(id)};assignmentDetail=null;currentQuestion=null;shell();$('#sidebar').classList.remove('open');const target=viewTarget();try{const data=await api(`/api/assignments/${id}`);if(!viewMatches(target))return;assignmentDetail=data;assignmentContext=data.assignment;const {assignment:a,report:r,mySubmission:sub,questions:qs,attempts}=data;const map=new Map();attempts.forEach(x=>{if(!map.has(x.questionId)||map.get(x.questionId).id<x.id)map.set(x.questionId,x);});const submitted=sub.status==='submitted';const late=new Date(a.dueAt)<new Date();const fix=sub.correction;const isQuiz=a.kind==='quiz'&&!!a.durationMinutes;const quizStarted=!!sub.startedAt;const quizExpired=!!sub.expired||(quizStarted&&(sub.remainingSeconds<=0||Date.parse(sub.expiresAt)<=Date.now()));const quizBlocked=isQuiz&&!submitted&&!sub.correction&&(!quizStarted||quizExpired);const fixIds=new Set(fix?fix.questionIds:[]);const locked=submitted||!!fix;const inFix=q=>!fix||fixIds.has(q.id);const redone=q=>{const at=map.get(q.id);return!!(at&&fix&&at.id>(fix.minAttemptId??-1));};const pendingFix=fix?qs.filter(inFix).filter(q=>!redone(q)).length:0;$('#main').innerHTML=`<div class="fade-in"><button class="text-button back-button" data-page="homework">${icon('back')}返回我的作業</button>${heading('YOUR ASSIGNMENT',mathText(a.title),`${esc(a.className)} · 截止 ${dateText(a.dueAt)} · ${a.questionCount} 題 / ${a.totalPoints} 分`,`<span class="badge ${submitted?'':'l2'}">${statusText(sub.status)}${sub.late?' · 遲交':''}${sub.submitCount>1?` · 第 ${sub.submitCount} 次提交`:''}</span>`)}${isQuiz&&!submitted?`<div class="quiz-banner${quizExpired?' expired':''}">${icon('clock')}<div class="quiz-banner-body"><strong>模擬測驗 · 限時 ${a.durationMinutes} 分鐘</strong>${!quizStarted?`<small>按「開始測驗」後開始倒數；到期自動封存，分數與 AI 建議須教師覆核。</small>`:quizExpired?`<small>測驗時間已結束，無法再作答。</small>`:`<small>剩餘時間 <span class="quiz-clock" data-quiz-clock>--:--</span> · 到期自動封存，分數與 AI 建議須教師覆核。</small><div class="quiz-bar"><span data-quiz-bar="${a.durationMinutes*60}"></span></div>`}</div>${!quizStarted&&!quizExpired?`<button class="primary" id="start-quiz">開始測驗 ${icon('arrow')}</button>`:''}</div>`:''}${fix?`<div class="correction-banner"><div class="advice-heading">${icon('undo')}教師要求訂正（第 ${fix.round} 回合）</div><p>${esc(fix.note)}</p><small class="field-hint">教師於 ${dateText(fix.requestedAt)} 要求。請完成範圍內題目後按「提交訂正」；教師要求的訂正不受截止時間限制。${pendingFix?`目前尚有 ${pendingFix} 題未重新作答。`:'所有題目已重新作答，可以提交。'}</small></div>`:''}${submitted&&isQuiz?`<div class="quiz-result-banner${r.awaitingReview?' awaiting':''}"><div class="advice-heading">${icon(r.awaitingReview?'clock':'check')}測驗已完成${r.awaitingReview?' · 等待教師批閱':' · 教師已批閱'}</div>${r.awaitingReview?`<p>教師批閱後才會顯示分數與 AI 批閱結果。</p><small class="field-hint">已保存 ${map.size} / ${qs.length} 題 · 待教師批閱 ${r.pendingCount} 題，未當零分。</small>`:`<p class="quiz-result-score"><strong>${scoreText(r.score)}</strong> / ${r.maxScore} 分${r.percent!=null?`（${r.percent}%）`:''}</p><small class="field-hint">已評 ${r.gradedCount} / ${r.questionCount} 題${r.pendingCount?` · ${r.pendingCount} 題待教師批閱，未當零分`:''}。右側「學習建議」已按本次表現更新。</small>`}</div>`:''}${submitted&&r?.awaitingReview&&!isQuiz?`<div class="hint-box" style="margin-bottom:20px">${icon('clock')}作業已提交，等待教師批閱。教師批閱後才會顯示分數、AI 批閱結果、參考答案與學習建議。</div>`:''}${a.aiGrading?`<div class="hint-box" style="margin-bottom:20px">${icon('spark')}本份作業由教師設定使用 AI 建議評分（僅供教師覆核），最終分數以教師確認為準。</div>`:''}${a.description?`<div class="hint-box" style="margin-bottom:20px">${esc(a.description)}</div>`:''}${homeworkMetrics([['已保存題目',fix?`${qs.filter(q=>inFix(q)&&redone(q)).length} / ${fixIds.size}`:`${map.size} / ${qs.length}`,fix?'只計本回合訂正範圍的最新有效作答':'保存題目不等於正式交作業'],['已評得分',scoreText(r.score),r.awaitingReview?'教師批閱後才顯示':`僅涵蓋已評 ${r.totalScoredPoints} 分，非完整總分`],['待批閱題目',r.pendingCount,'未批閱不當零分'],['教師確認分',scoreText(r.confirmedScore),`已確認 ${r.confirmedCount} / ${qs.length} 題`]])}<div class="homework-layout"><section class="panel assignment-question-list"><div class="panel-heading"><h2>本份作業題目</h2><span class="small-text">${fix?'只可修改訂正範圍內的題目':submitted?'作答已鎖定':'可逐題保存並重做'}</span></div>${qs.map((q,i)=>{const at=map.get(q.id);return `<article class="assignment-question-row"><span class="question-number">${String(i+1).padStart(2,'0')}</span><div class="question-body"><div class="question-top"><h3>${mathText(q.title)}</h3><span class="badge">${q.points} 分</span></div>${stemHtml(q)}<span class="small-text">${at?(at.skipped?'已標示「本題不會」 · 等待教師處理':(at.awaitingReview?`${submitted?'已提交':'已保存'} · 等待教師批閱`:(at.status==='pending'?'已保存 · 待批閱':`已評 ${at.score}/${at.maxScore} · ${at.teacherReviewed?'教師確認':'尚未教師確認'}`))):'尚未作答'}${fix?(inFix(q)?(redone(q)?' · 已訂正待提交':' · 待訂正'):' · 不需訂正'):''}</span>${at&&(submitted||redone(q))?`${at.awaitingReview?'':`<p class="field-hint">${esc(at.feedback)}</p>`}<button class="text-button" data-review="${at.id}" style="font-size:calc(14px*var(--fs))">${at.awaitingReview?'查看我的作答':'查看手稿與學習建議'} ${icon('arrow')}</button>`:''}</div>${(!locked||(fix&&inFix(q)))&&!quizBlocked?`<div class="q-actions"><button class="practice-btn" data-assignment-q="${q.id}" ${late&&!a.allowLate&&!fix?'disabled':''}>${at?(at.skipped?'補作答':'修改作答'):'開始解題'} ${icon('arrow')}</button>${!at&&!isQuiz?`<button class="text-button skip-btn" data-skip-q="${q.id}" title="不會也沒關係，老師會看到">本題不會</button>`:''}</div>`:''}</article>`;}).join('')}<div class="assignment-submit"><p class="field-hint">${fix?`請完成訂正範圍內的 ${fixIds.size} 題後提交，教師會重新檢視你的推導。${pendingFix?`目前尚有 ${pendingFix} 題未重新作答。`:'所有題目已重新作答。'}`:submitted?`正式提交於 ${dateText(sub.submittedAt)}${sub.resubmittedAt?` · 最近訂正提交於 ${dateText(sub.resubmittedAt)}`:''}。你可查看結果，教師覆核後分數會更新。`:late&&!a.allowLate?'已超過截止時間，本份作業不接受補交。':'完成所有題目後正式交作業。含待批閱的手稿也可提交，不會自動記零分。'}</p>${fix?`<button class="primary" id="finalize-assignment" ${pendingFix?'disabled':''}>提交訂正 ${icon('check')}</button>`:!submitted?`<button class="primary" id="finalize-assignment" ${!quizExpired&&(map.size!==qs.length||(late&&!a.allowLate)||quizBlocked)?'disabled':''}>正式提交整份作業 ${icon('check')}</button>${(!fix&&!quizBlocked&&!(late&&!a.allowLate)&&map.size!==qs.length)?`<button class="secondary" id="skip-rest-submit">其餘 ${qs.length-map.size} 題標示「不會」並提交</button>`:''}`:`<button class="secondary" data-assignment="${a.id}">讀取最新批閱 ${icon('undo')}</button>`}</div></section><aside class="right-stack">${suggestionCard(r.suggestion)}<section class="panel right-panel"><h2>${icon('growth')}知識點表现</h2>${r.topicStats.map(t=>`<div class="topic-detail"><div class="knowledge-row"><span>${esc(t.topic)}</span><span>${t.percent===null?'待批閱':t.percent+'%'}</span></div><div class="progress-track"><div class="progress-fill" style="width:${t.percent||0}%"></div></div><small class="field-hint">已評 ${t.scoredCount} / ${t.totalCount} 題</small></div>`).join('')}</section></aside></div></div>`;for(const at of attempts){const idx=S.attempts.findIndex(x=>x.id===at.id);if(idx<0)S.attempts.push(at);else S.attempts[idx]=at;}if($('#start-quiz'))$('#start-quiz').onclick=async()=>{const request=viewTarget(),b=$('#start-quiz');b.disabled=true;try{await api(`/api/assignments/${id}/start`,{});if(!viewMatches(request))return;toast('已開始計時，請把握時間作答。');assignmentPage(id);}catch(e){if(viewMatches(request)){toast(e.message);b.disabled=false;}}};if(isQuiz&&quizStarted&&!submitted&&!fix)startQuizClock({kind:'assignment',id:a.id},sub.remainingSeconds,sub.expiresAt);else stopQuizClock();
   const skipRest=$('#skip-rest-submit');
   if(skipRest)skipRest.onclick=async()=>{
     const answered=new Set((assignmentDetail?.attempts||[]).map(x=>x.questionId));
     const missing=(assignmentQuestionScope()||[]).filter(q=>!answered.has(q.id));
     if(!missing.length)return;
-    if(!confirm(`把剩下的 ${missing.length} 題標示為「不會」並立即提交？老師會看到哪幾題沒有作答，不會自動記零分。`))return;
+    if(await askCancel(`把剩下的 ${missing.length} 題標示為「不會」並立即提交？老師會看到哪幾題沒有作答，不會自動記零分。`))return;
     const b=skipRest;b.disabled=true;b.innerHTML=icon('clock')+'正在處理…';
     try{
       for(const q of missing)await api('/api/attempts',{questionId:q.id,skipped:true,assignmentId:id});
@@ -6103,7 +6159,7 @@ async function assignmentPage(id){if(busy)return toast('請先等待作答保存
       assignmentPage(id);
     }catch(e){b.disabled=false;b.innerHTML=`其餘 ${missing.length} 題標示「不會」並提交`;toast(e.message);}
   };if($('#finalize-assignment'))$('#finalize-assignment').onclick=async()=>{
-  if(!confirm(fix?'提交訂正後教師會重新檢視，確定提交？':'正式提交後不能修改作答，確定交作業？'))return;
+  if(await askCancel(fix?'提交訂正後教師會重新檢視，確定提交？':'正式提交後不能修改作答，確定交作業？'))return;
   const request=viewTarget(),b=$('#finalize-assignment');b.disabled=true;
   const send=()=>api(`/api/assignments/${id}/submit`,{});
   try{
@@ -6111,7 +6167,7 @@ async function assignmentPage(id){if(busy)return toast('請先等待作答保存
     catch(err){
       // 還有題目沒有交代：一次把剩下的標示「不會」，不必逐題回去點。
       if(!/還有 \d+ 題沒有作答/.test(err.message||''))throw err;
-      if(!confirm(`${err.message}\n\n要把這些題目標示為「不會」並立即提交嗎？老師會看到這幾題沒有作答，不會自動記零分。`))throw err;
+      if(await askCancel(`${err.message}\n\n要把這些題目標示為「不會」並立即提交嗎？老師會看到這幾題沒有作答，不會自動記零分。`))throw err;
       const answered=new Set((assignmentDetail?.attempts||[]).map(x=>x.questionId));
       const missing=(assignmentQuestionScope()||[]).filter(q=>!answered.has(q.id));
       for(const q of missing)await api('/api/attempts',{questionId:q.id,skipped:true,assignmentId:id});
@@ -6132,7 +6188,7 @@ async function openAssignmentQuestion(qid){
     if(new Date(a.dueAt)<new Date()&&!a.allowLate)return toast('已超過截止時間，本份作業不接受補交。');
   }
   const q=assignmentDetail.questions.find(q=>q.id===Number(qid));if(!q)return;
-  preserveDraft();if(strokes.length&&!lastResult&&page==='practice'&&!confirm('目前手稿尚未提交，確定切換？'))return;
+  preserveDraft();if(strokes.length&&!lastResult&&page==='practice'&&await askCancel('目前手稿尚未提交，確定切換？'))return;
   mockContext=null;assignmentContext=a;if(fix)stopQuizClock();currentQuestion=q;lastResult=null;lastSolution=null;answerMode=q.options?.length?'choice':'hand';answerFile=null;selectedOption=null;strokes=[];redoStrokes=[];window.answerTextDraft='';recommendations=null;
   practice();const target=viewTarget();
   if(!fix&&a.kind==='quiz'&&a.durationMinutes)startQuizClock({kind:'assignment',id:a.id},sub.remainingSeconds,sub.expiresAt);else stopQuizClock();
@@ -6245,12 +6301,12 @@ async function aiReviewAll(id){
   const message=(external
     ?'將以 AI 批閱這份作業中所有尚未批閱的作答，作答內容（含手寫圖片）會傳送至學校配置的外部 AI'
     :'將以 AI 批閱這份作業中所有尚未批閱的作答')+tail+'。確定繼續？';
-if(!confirm(message))return;const original=btn.innerHTML;btn.disabled=true;btn.innerHTML=icon('clock')+'正在以 AI 批閱…';try{const r=await api(`/api/assignments/${id}/ai-review`,{consentExternal:external});const parts=[r.autoConfirm?`已批閱並確認 ${r.reviewed} 題`:`AI 已預批 ${r.graded} 題（待你確認）`];if(r.failed)parts.push(`${r.failed} 題失敗`);if(r.skipped)parts.push(`${r.skipped} 題已被其他操作處理`);if(r.remaining)parts.push(`還有 ${r.remaining} 題，請再按一次`);toast(parts.join(' · ')+(r.errors?.length?`（${r.errors[0].error}）`:''));await resultsPage(id);}catch(e){toast(e.message);btn.disabled=false;btn.innerHTML=original;}}
+if(await askCancel(message))return;const original=btn.innerHTML;btn.disabled=true;btn.innerHTML=icon('clock')+'正在以 AI 批閱…';try{const r=await api(`/api/assignments/${id}/ai-review`,{consentExternal:external});const parts=[r.autoConfirm?`已批閱並確認 ${r.reviewed} 題`:`AI 已預批 ${r.graded} 題（待你確認）`];if(r.failed)parts.push(`${r.failed} 題失敗`);if(r.skipped)parts.push(`${r.skipped} 題已被其他操作處理`);if(r.remaining)parts.push(`還有 ${r.remaining} 題，請再按一次`);toast(parts.join(' · ')+(r.errors?.length?`（${r.errors[0].error}）`:''));await resultsPage(id);}catch(e){toast(e.message);btn.disabled=false;btn.innerHTML=original;}}
 function studentResultModal(uid){const st=resultData.students.find(s=>s.id===uid);if(!st)return;const latest=new Map();assignmentDetail.attempts.filter(at=>at.student?.id===uid).forEach(at=>{if(!latest.has(at.questionId)||latest.get(at.questionId).id<at.id)latest.set(at.questionId,at);});modal(`<p class="eyebrow">INDIVIDUAL FEEDBACK</p><h2>${esc(st.name)} · 本次作業</h2><p class="modal-intro">${statusText(st.status)} · 已評 ${scoreText(st.score)} 分（涵蓋 ${st.scoredPoints} 分值） · 教師確認 ${scoreText(st.confirmedScore)} 分</p>${suggestionCard(st.suggestion)}${st.correction?`<div class="correction-banner"><div class="advice-heading">${icon('undo')}訂正中（第 ${st.correction.round} 回合）</div><p>${esc(st.correction.note)}</p><small class="field-hint">已於 ${dateText(st.correction.requestedAt)} 要求訂正 ${st.correction.questionIds.length||assignmentDetail.questions.length} 題。學生重新提交前，此份作業不計入班級平均。</small></div>`:''}<h3 style="margin-top:22px">逐題查看與覆核</h3>${assignmentDetail.questions.map(q=>{const at=latest.get(q.id);return `<div class="student-review-row"><div><strong>${mathText(q.title)}</strong><small>${at?at.status==='pending'?'待批閱':`已評 ${at.score}/${q.points} · ${at.teacherReviewed?'已教師確認':'未教師確認'}`:'尚未作答'}${at?.reviewFlags?.length?' · <span class="badge review-flag">建議覆核</span>':''}</small></div>${at?`<button class="secondary" data-hw-review="${at.id}">查看／批閱</button>`:''}</div>`;}).join('')}${(assignmentDetail.assignment.aiGrading&&S.ai.configured)?`<div class="submit-row" style="margin-top:16px"><button class="secondary" id="adopt-student-ai">${icon('spark')}確認這位學生的全部 AI 建議</button><span class="small-text">只處理尚未覆核的題目；標示「不會」的空白題不會丟給模型。</span></div>`:''}<div class="correction-actions">${st.submittedAt&&!st.correction?`<button class="secondary" id="request-correction">${icon('undo')}退回訂正</button><span class="small-text">讓學生重新作答並再次提交</span>`:`<span class="small-text">${st.correction?'已有進行中的訂正要求。':'此學生尚未正式提交，無需退回訂正。'}</span>`}</div>`,true);for(const at of latest.values()){const idx=S.attempts.findIndex(x=>x.id===at.id);if(idx<0)S.attempts.push(at);else S.attempts[idx]=at;}const studentQueue=assignmentDetail.questions.map(q=>latest.get(q.id)).filter(Boolean).map(at=>at.id);
 $$('[data-hw-review]').forEach(b=>b.onclick=()=>{const at=S.attempts.find(x=>x.id===Number(b.dataset.hwReview));closeModal();reviewModal(at.id,()=>resultsPage(resultData.assignment.id),assignmentDetail.questions.find(q=>q.id===at.questionId),studentQueue);});
 const adoptAll=$('#adopt-student-ai');
 if(adoptAll)adoptAll.onclick=async()=>{const external=S.ai.mode==='external';
-  if(external&&!confirm('會把這位學生的作答（含手寫圖片）傳送給外部 AI，是否繼續？'))return;
+  if(external&&await askCancel('會把這位學生的作答（含手寫圖片）傳送給外部 AI，是否繼續？'))return;
   const label=adoptAll.innerHTML;adoptAll.disabled=true;adoptAll.innerHTML=icon('clock')+'正在確認…';
   try{const r=await api(`/api/assignments/${assignmentDetail.assignment.id}/ai-review`,{studentId:uid,consentExternal:external});
     const parts=[`已確認 ${r.reviewed} 題`];
