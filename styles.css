@@ -1162,3 +1162,13 @@ html[data-theme=night] .nav-item .count.due{background:#3a2c1d;color:#e0b083}
 /* 匯入名單時的常駐提醒：姓名會被遮蔽 */
 .sg-mask-note{color:#8a5a1a;background:rgba(217,164,65,.1);border:1px solid rgba(217,164,65,.35);
   border-radius:8px;padding:6px 9px;margin:8px 0 0;line-height:1.6}
+
+/* 全班紙本批閱：未完成的批閱（切卷草稿） */
+.pb-draft{display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap;
+  border-bottom:1px solid var(--border-tertiary,#e6e3da);padding:9px 0}
+.pb-draft:last-child{border-bottom:0}
+.pb-draft-main{display:flex;flex-direction:column;gap:2px;min-width:0}
+.pb-draft-main strong{font-size:calc(14px*var(--fs));font-weight:600}
+.pb-draft-actions{display:flex;gap:10px;align-items:center;flex:0 0 auto}
+.pb-draft-actions .secondary{padding:7px 14px;font-size:calc(13px*var(--fs))}
+.pb-draft-actions .text-button{font-size:calc(13px*var(--fs));color:#b8453b}

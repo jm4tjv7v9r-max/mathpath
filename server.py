@@ -704,6 +704,25 @@ def mask_name(name):
 
 
 PAPER_SCAN_MAX_PAGES = 80
+# 掃描草稿保留幾天：80 頁的 PDF 不小，批完就刪；沒批完的留一週讓老師回來續批。
+PAPER_DRAFT_DAYS = 7
+
+
+def ensure_paper_drafts(db):
+    """切卷草稿：存 PDF 本體與掃描結果，讓老師不必為同一疊卷重掃一次。"""
+    db.execute("""CREATE TABLE IF NOT EXISTS paper_drafts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    teacher_id INTEGER NOT NULL,
+                    class_id INTEGER,
+                    title TEXT,
+                    pages INTEGER NOT NULL,
+                    sheets TEXT NOT NULL,
+                    roster TEXT NOT NULL,
+                    pdf BLOB NOT NULL,
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL)""")
+    db.execute('DELETE FROM paper_drafts WHERE created_at<?',
+               (time.time() - PAPER_DRAFT_DAYS * 86400,))
 PAPER_ROSTER_PROMPT = (
     '你是數學科教師助理。下面是一疊學生紙本作業的其中一頁，請讀出卷面上寫的學生身分。'
     '只回傳 JSON：{"student": {"seat": 座號或null, "name": 姓名或null, "id": 學號或null},'
@@ -7144,16 +7163,35 @@ class Application:
         if method == 'POST' and path == '/api/paper-grades/batch':
             # 全班一次批改：前端把切好的「學生 → 頁碼」送回來，這裡逐份呼叫單份批改。
             self.teacher(user)
-            fields(body, ('file', 'title', 'sheets', 'paperKeyId', 'consentExternal', 'async'),
-                   ('file', 'title', 'sheets'))
+            fields(body, ('file', 'draftId', 'title', 'sheets', 'paperKeyId',
+                          'consentExternal', 'async'), ('sheets',))
             if body.get('async'):
                 return {'jobId': self.start_job(
                     user, lambda: self.dispatch(method, path, {**body, 'async': False},
                                                 user, token_hash, ip)[0])}, headers
-            kind, data = decode_paper(body['file'])
+            draft_id = number(body['draftId'], '草稿', 1, 10 ** 18, True) if body.get('draftId') else None
+            if draft_id is None and not body.get('file'):
+                fail(400, '請提供 PDF 或草稿編號。')
+            title = (text(body['title'], '功課名稱', 200)
+                     if str(body.get('title') or '').strip() else '')
+            if draft_id is not None:
+                with self.db() as db:
+                    ensure_paper_drafts(db)
+                    row = db.execute('SELECT teacher_id,pdf,title FROM paper_drafts WHERE id=?',
+                                     (draft_id,)).fetchone()
+                    if row is None:
+                        fail(404, '找不到這份草稿（可能已批改或超過七天）。')
+                    if row['teacher_id'] != user['id'] and not self.is_owner(user, db):
+                        fail(403, '只有建立這份草稿的老師可以批改。')
+                data = row['pdf']
+                title = title or (row['title'] or '')
+                kind = 'pdf'
+            else:
+                kind, data = decode_paper(body['file'])
             if kind != 'pdf':
                 fail(400, '請上傳 PDF。')
-            title = text(body['title'], '功課名稱', 200)
+            if not title:
+                fail(400, '請填寫功課名稱。')
             sheets = body['sheets']
             if not isinstance(sheets, list) or not 1 <= len(sheets) <= 80:
                 fail(400, '請提供 1 至 80 份卷。')
@@ -7184,11 +7222,15 @@ class Application:
                     done.append({'studentId': student_id, 'grade': result.get('grade')})
                 except APIError as exc:
                     failed.append({'studentId': student_id, 'reason': exc.message})
+            # 全部批完就刪掉草稿（PDF 不小）；有失敗就留著，老師可以補批
+            if draft_id is not None and not failed:
+                with self.db() as db:
+                    db.execute('DELETE FROM paper_drafts WHERE id=?', (draft_id,))
             return {'graded': done, 'failed': failed,
                     'summary': {'graded': len(done), 'failed': len(failed)}}, headers
         if method == 'POST' and path == '/api/paper-grades/scan':
             self.teacher(user)
-            fields(body, ('file', 'classId', 'consentExternal', 'async'), ('file',))
+            fields(body, ('file', 'classId', 'title', 'consentExternal', 'async'), ('file',))
             if body.get('async'):
                 return {'jobId': self.start_job(
                     user, lambda: self.dispatch(method, path, {**body, 'async': False},
@@ -7218,12 +7260,74 @@ class Application:
                         "SELECT id,name,seat FROM users WHERE role='student' "
                         'ORDER BY COALESCE(seat,999), id')]
             sheets = match_papers(roster, students)
-            return {'sheets': sheets, 'pages': len(pages),
-                    'roster': [{'id': st['id'], 'name': st['name'], 'seat': st['seat']}
-                               for st in students],
+            roster_out = [{'id': st['id'], 'name': st['name'], 'seat': st['seat']}
+                          for st in students]
+            # 存成草稿：重新整理、換頁、隔天再回來都不用重掃（重掃＝80 頁的 AI 費用）
+            draft_id = None
+            draft_title = str(body.get('title') or '').strip()[:120]
+            try:
+                with self.db() as db:
+                    ensure_paper_drafts(db)
+                    draft_id = db.execute(
+                        'INSERT INTO paper_drafts(teacher_id,class_id,title,pages,sheets,roster,pdf,'
+                        'created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)',
+                        (user['id'], class_id, draft_title, len(pages),
+                         json.dumps(sheets, ensure_ascii=False),
+                         json.dumps(roster_out, ensure_ascii=False),
+                         data, time.time(), time.time())).lastrowid
+            except Exception:
+                draft_id = None      # 存不下也不影響這次掃描結果
+            return {'sheets': sheets, 'pages': len(pages), 'draftId': draft_id,
+                    'roster': roster_out,
                     'summary': {'papers': len(sheets),
                                 'matched': sum(1 for x in sheets if x['studentId']),
                                 'unmatched': sum(1 for x in sheets if not x['studentId'])}}, headers
+        if method == 'GET' and path == '/api/paper-grades/drafts':
+            self.teacher(user)
+            with self.db() as db:
+                ensure_paper_drafts(db)
+                rows = db.execute(
+                    'SELECT id,title,class_id,pages,sheets,created_at FROM paper_drafts '
+                    'WHERE teacher_id=? ORDER BY id DESC LIMIT 20', (user['id'],)).fetchall()
+                names = {r['id']: r['name'] for r in db.execute('SELECT id,name FROM classes')}
+            drafts = []
+            for row in rows:
+                sheets = json.loads(row['sheets'])
+                drafts.append({'id': row['id'], 'title': row['title'] or '',
+                               'classId': row['class_id'],
+                               'className': names.get(row['class_id']) or '',
+                               'pages': row['pages'], 'papers': len(sheets),
+                               'matched': sum(1 for x in sheets if x.get('studentId')),
+                               'unmatched': sum(1 for x in sheets if not x.get('studentId')),
+                               'createdAt': row['created_at']})
+            return {'drafts': drafts}, headers
+        if method == 'GET' and re.fullmatch(r'/api/paper-grades/drafts/([1-9]\d{0,17})', path):
+            self.teacher(user)
+            draft_id = int(path.rsplit('/', 1)[-1])
+            with self.db() as db:
+                ensure_paper_drafts(db)
+                row = db.execute('SELECT * FROM paper_drafts WHERE id=?', (draft_id,)).fetchone()
+                if row is None:
+                    fail(404, '找不到這份草稿（可能已批改或超過七天）。')
+                if row['teacher_id'] != user['id'] and not self.is_owner(user, db):
+                    fail(403, '只有建立這份草稿的老師可以開啟。')
+            return {'draft': {'id': row['id'], 'title': row['title'] or '',
+                              'classId': row['class_id'], 'pages': row['pages'],
+                              'sheets': json.loads(row['sheets']),
+                              'roster': json.loads(row['roster']),
+                              'createdAt': row['created_at']}}, headers
+        if method == 'DELETE' and re.fullmatch(r'/api/paper-grades/drafts/([1-9]\d{0,17})', path):
+            self.teacher(user)
+            draft_id = int(path.rsplit('/', 1)[-1])
+            with self.db() as db:
+                ensure_paper_drafts(db)
+                row = db.execute('SELECT teacher_id FROM paper_drafts WHERE id=?', (draft_id,)).fetchone()
+                if row is None:
+                    return {'ok': True}, headers
+                if row['teacher_id'] != user['id'] and not self.is_owner(user, db):
+                    fail(403, '只有建立這份草稿的老師可以刪除。')
+                db.execute('DELETE FROM paper_drafts WHERE id=?', (draft_id,))
+            return {'ok': True}, headers
         if method == 'GET' and path == '/api/paper-grades':
             # 紙本批改紀錄：教師看自己建的；管理員看全部。
             self.teacher(user)

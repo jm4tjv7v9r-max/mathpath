@@ -779,7 +779,7 @@ function applyTheme(v){if(!THEMES.some(([id])=>id===v))v='day';if(v==='day')dele
 function themeControl(){const cur=theme();return `<div class="font-scale" role="group" aria-label="版面配色">${icon('image')}<span>版面</span>${THEMES.map(([id,label])=>`<button type="button" data-theme-id="${id}" class="${cur===id?'active':''}" aria-pressed="${cur===id}" title="版面${label}">${label}</button>`).join('')}</div><p class="font-scale-note">只影響這台裝置，隨時可切回。</p>`;}
 applyTheme(theme());
 function toast(msg){const t=$('#toast');t.textContent=msg;t.classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>t.classList.remove('show'),4200);}
-async function api(path,body){let r;try{r=await fetch(path,{method:body===undefined?'GET':'POST',headers:body===undefined?{}:{'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body),credentials:'same-origin'});}catch{throw new Error('無法連接網站伺服器，請確認服務已啟動。');}let data;try{data=await r.json();}catch{throw new Error(r.status===524?'AI 處理超過兩分鐘，已被網路層中斷。請縮短試卷、分批上傳，或稍後再試。':`伺服器回應無效（HTTP ${r.status}），請稍後再試；伺服器日誌會有實際原因。`);}if(!r.ok){if(r.status===401 && !path.includes('login') && !path.includes('change-password')){S.user=null;loginModal();}throw new Error(data.error || '操作未完成，請再試。');}serverIssue='';return data;}
+async function api(path,body,method){let r;try{r=await fetch(path,{method:method||(body===undefined?'GET':'POST'),headers:body===undefined?{}:{'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body),credentials:'same-origin'});}catch{throw new Error('無法連接網站伺服器，請確認服務已啟動。');}let data;try{data=await r.json();}catch{throw new Error(r.status===524?'AI 處理超過兩分鐘，已被網路層中斷。請縮短試卷、分批上傳，或稍後再試。':`伺服器回應無效（HTTP ${r.status}），請稍後再試；伺服器日誌會有實際原因。`);}if(!r.ok){if(r.status===401 && !path.includes('login') && !path.includes('change-password')){S.user=null;loginModal();}throw new Error(data.error || '操作未完成，請再試。');}serverIssue='';return data;}
 // 長 AI 工作（PDF 轉寫會超過 30 秒）：先拿 jobId，再輪詢 /api/jobs/{id}。
 async function apiJob(path,body,onTick){
   const {jobId}=await api(path,{...body,async:true});
@@ -3609,6 +3609,11 @@ async function paperBatchPage(){
   const classes=await api('/api/homework').then(d=>d.classes||[]).catch(()=>[]);
   $('#main').innerHTML=`<div class="fade-in">
     ${heading('BATCH GRADING','全班紙本批閱','一次上傳全部學生的卷（PDF，最多 80 頁）。AI 會切卷並認人，認不出來的由你指派。')}
+    <section class="panel panel-pad" id="pb-drafts-panel" hidden>
+      <h2 style="margin-bottom:6px">未完成的批閱</h2>
+      <p class="small-text" style="margin:0 0 10px">切好的卷存在伺服器七天內；按「繼續」直接接下去批，不必重掃。</p>
+      <div id="pb-drafts"></div>
+    </section>
     <section class="panel panel-pad">
       <div class="form-grid">
         <div class="form-field"><label class="field-label" for="pb-class">班級</label>
@@ -3652,16 +3657,60 @@ async function paperBatchPage(){
     try{
       const data=await fileToDataUrl(file);
       const res=await apiJob('/api/paper-grades/scan',
-        {file:data,classId:$('#pb-class').value||null,consentExternal:S.ai?.mode==='external'},
+        {file:data,classId:$('#pb-class').value||null,title:($('#pb-title').value||'').trim(),
+         consentExternal:S.ai?.mode==='external'},
         job=>{$('#pb-status').textContent=`掃描中… ${Math.round(job.elapsed||0)} 秒`;});
       renderBatch(res);
-      lastScan={file:data,res};
+      lastScan={file:data,res,draftId:res.draftId||null};
       $('#pb-roster-info').textContent=(res.roster||[]).length?`（目前 ${res.roster.length} 人）`:'（還沒有學生）';
-      $('#pb-status').textContent=`共 ${res.pages} 頁、切成 ${res.summary.papers} 份卷；認出 ${res.summary.matched} 份。`;
+      $('#pb-status').textContent=`共 ${res.pages} 頁、切成 ${res.summary.papers} 份卷；認出 ${res.summary.matched} 份。`
+        +(res.draftId?'（已存成草稿，可離開頁面稍後再批）':'');
+      await loadDrafts();
     }catch(e){toast(e.message);$('#pb-status').textContent='';}
     btn.disabled=false;
   };
   let lastScan=null;
+
+  // 未完成的批閱：清單＋續批。切卷結果存在伺服器，重新整理也不會消失。
+  async function loadDrafts(){
+    const panel=$('#pb-drafts-panel'),box=$('#pb-drafts');
+    if(!panel||!box)return;
+    let list=[];
+    try{list=(await api('/api/paper-grades/drafts')).drafts||[];}catch(e){list=[];}
+    panel.hidden=!list.length;
+    if(!list.length){box.innerHTML='';return;}
+    box.innerHTML=list.map(d=>`<div class="pb-draft">
+      <div class="pb-draft-main">
+        <strong>${esc(d.title||'（未命名）')}</strong>
+        <span class="small-text">${new Date((d.createdAt||0)*1000).toLocaleDateString()} · ${d.pages} 頁 · ${d.papers} 份卷${d.unmatched?` · ${d.unmatched} 份未認出`:''}${d.className?` · ${esc(d.className)}`:''}</span>
+      </div>
+      <div class="pb-draft-actions">
+        <button class="secondary" data-resume="${d.id}">繼續</button>
+        <button class="text-button" data-drop="${d.id}">刪除</button>
+      </div></div>`).join('');
+    $$('[data-resume]').forEach(b=>b.onclick=()=>resumeDraft(Number(b.dataset.resume)));
+    $$('[data-drop]').forEach(b=>b.onclick=async()=>{
+      if(!(await askConfirm('刪除這份草稿？之後要批就得重新掃描（會再花一次 AI 費用）。')))return;
+      try{
+        await api('/api/paper-grades/drafts/'+b.dataset.drop,{} ,'DELETE');
+        toast('草稿已刪除');
+        if(lastScan&&Number(lastScan.draftId)===Number(b.dataset.drop)){lastScan=null;$('#pb-result').innerHTML='';}
+        await loadDrafts();
+      }catch(e){toast(e.message);}
+    });
+  }
+  async function resumeDraft(id){
+    try{
+      const {draft}=await api('/api/paper-grades/drafts/'+id);
+      if(draft.classId)$('#pb-class').value=String(draft.classId);
+      if(draft.title)$('#pb-title').value=draft.title;
+      lastScan={draftId:draft.id,res:draft};
+      renderBatch(draft);
+      await refreshRoster();
+      $('#pb-status').textContent=`已載入草稿：${draft.pages} 頁、${(draft.sheets||[]).length} 份卷。確認指派後按下面「確認並開始批改」。`;
+      $('#pb-result').scrollIntoView({block:'nearest'});
+    }catch(e){toast(e.message);}
+  }
 
   // 名冊（給「指派給」下拉用）：匯入學生後要能立刻出現在下拉裡，
   // 否則老師得重新掃一次 80 頁的 PDF 才看得到新學生。
@@ -3729,6 +3778,7 @@ async function paperBatchPage(){
   // 換班級就換名冊
   $('#pb-class').onchange=()=>{lastScan=null;$('#pb-result').innerHTML='';refreshRoster();};
   refreshRoster();
+  loadDrafts();
 
   async function gradeBatch(res){
     const title=($('#pb-title').value||'').trim();
@@ -3742,11 +3792,15 @@ async function paperBatchPage(){
     if(!sheets.length)return toast('至少要指派一位學生。');
     const btn=$('#pb-grade');btn.disabled=true;btn.textContent='批改中…';
     try{
-      const out=await apiJob('/api/paper-grades/batch',
-        {file:lastScan.file,title,sheets,consentExternal:S.ai?.mode==='external'},
+      const payload=lastScan.draftId
+        ? {draftId:lastScan.draftId,title,sheets,consentExternal:S.ai?.mode==='external'}
+        : {file:lastScan.file,title,sheets,consentExternal:S.ai?.mode==='external'};
+      const out=await apiJob('/api/paper-grades/batch',payload,
         job=>{btn.textContent=`批改中… ${Math.round(job.elapsed||0)} 秒`;});
       toast(`已批改 ${out.summary.graded} 份${out.summary.failed?`，${out.summary.failed} 份失敗`:''}`);
       $('#pb-status').textContent=`批改完成：${out.summary.graded} 份成功、${out.summary.failed} 份失敗。`;
+      if(!out.summary.failed){lastScan=null;$('#pb-result').innerHTML='';}
+      await loadDrafts();
     }catch(e){toast(e.message);}
     btn.disabled=false;btn.textContent='確認並開始批改';
   }

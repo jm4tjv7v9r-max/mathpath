@@ -4794,5 +4794,86 @@ class ScoreGridTests(unittest.TestCase):
         self.assertEqual(grid['students'][0]['average'], None, '清除後回到未完成')
 
 
+
+class PaperDraftTests(unittest.TestCase):
+    """全班紙本批閱：切卷結果存成草稿，重新整理或隔天再回來都不用重掃 80 頁。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.app = server.Application(self.tmp.name, server.ROOT)
+        self.app.initialize()
+        with self.app.db() as db:
+            self.teacher = dict(db.execute(
+                "SELECT * FROM users WHERE role='teacher' ORDER BY id LIMIT 1").fetchone())
+            self.student = dict(db.execute(
+                "SELECT * FROM users WHERE role='student' ORDER BY id LIMIT 1").fetchone())
+            self.class_id = db.execute("INSERT INTO classes(teacher_id,name) VALUES(?,?)",
+                                       (self.teacher['id'], '初三A')).lastrowid
+            db.execute("INSERT INTO class_students(class_id,user_id) VALUES(?,?)",
+                       (self.class_id, self.student['id']))
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def call(self, method, path, body=None, expect=200, user=None):
+        try:
+            payload, _ = self.app.dispatch(method, path, body or {}, user or self.teacher,
+                                           None, '127.0.0.1')
+        except server.APIError as exc:
+            self.assertEqual(exc.status, expect, exc.message)
+            return {'error': exc.message}
+        self.assertEqual(expect, 200)
+        return payload
+
+    def scan(self, title='第三次功課'):
+        import base64
+        from unittest import mock
+        pdf = 'data:application/pdf;base64,' + base64.b64encode(b'%PDF-1.4 fake').decode()
+        with mock.patch.object(server, 'pdf_page_images',
+                               lambda data, max_pages=80: [b'p1', b'p2']), \
+             mock.patch.object(server, 'paper_roster', lambda app, pages: [
+                 {'page': 1, 'seat': 7, 'name': '陳大文', 'isFirst': True},
+                 {'page': 2, 'seat': None, 'name': None, 'isFirst': False}]):
+            return self.call('POST', '/api/paper-grades/scan',
+                             {'file': pdf, 'classId': self.class_id, 'title': title})
+
+    def test_scan_saves_a_draft_that_can_be_reopened(self):
+        scan = self.scan()
+        self.assertTrue(scan.get('draftId'), '掃描後要回傳草稿編號')
+        self.assertEqual(scan['summary']['papers'], 1)
+
+        drafts = self.call('GET', '/api/paper-grades/drafts')['drafts']
+        self.assertEqual(len(drafts), 1)
+        self.assertEqual(drafts[0]['title'], '第三次功課')
+        self.assertEqual(drafts[0]['pages'], 2)
+        self.assertEqual(drafts[0]['papers'], 1)
+
+        one = self.call('GET', f"/api/paper-grades/drafts/{scan['draftId']}")['draft']
+        self.assertEqual(len(one['sheets']), 1)
+        self.assertEqual(one['sheets'][0]['pages'], [1, 2], '同一份卷的兩頁要併在一起')
+        self.assertEqual(len(one['roster']), 1)
+
+    def test_batch_accepts_a_draft_instead_of_a_file(self):
+        from unittest import mock
+        scan = self.scan()
+        with mock.patch.object(server, 'pdf_page_images',
+                               lambda data, max_pages=80: [b'p1', b'p2']):
+            out = self.call('POST', '/api/paper-grades/batch',
+                            {'draftId': scan['draftId'], 'title': '第三次功課',
+                             'sheets': [{'studentId': self.student['id'], 'pages': [1, 2]}]})
+        self.assertEqual(out['summary']['graded'] + out['summary']['failed'], 1)
+        # 沒有 AI 時會失敗，草稿要留著讓老師補批
+        if out['summary']['failed']:
+            self.assertTrue(self.call('GET', '/api/paper-grades/drafts')['drafts'])
+
+    def test_batch_requires_file_or_draft(self):
+        self.call('POST', '/api/paper-grades/batch', {'title': 'x', 'sheets': []}, expect=400)
+
+    def test_draft_can_be_deleted(self):
+        scan = self.scan()
+        self.call('DELETE', f"/api/paper-grades/drafts/{scan['draftId']}")
+        self.assertEqual(self.call('GET', '/api/paper-grades/drafts')['drafts'], [])
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)
