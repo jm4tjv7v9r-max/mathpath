@@ -4521,7 +4521,10 @@ async function paperBatchPage(){
       const out=await apiJob('/api/paper-grades/batch',payload,
         job=>{btn.textContent=`批改中… ${Math.round(job.elapsed||0)} 秒`;});
       toast(`已批改 ${out.summary.graded} 份${out.summary.failed?`，${out.summary.failed} 份失敗`:''}`);
-      $('#pb-status').textContent=`批改完成：${out.summary.graded} 份成功、${out.summary.failed} 份失敗。`;
+      // 失敗原因要看得見，不然只會看到「0 份成功」卻不知道為什麼
+      const reasons=[...new Set((out.failed||[]).map(f=>f.reason).filter(Boolean))];
+      $('#pb-status').innerHTML=`批改完成：${out.summary.graded} 份成功、${out.summary.failed} 份失敗。`
+        +(reasons.length?`<br><span class="small-text">失敗原因：${esc(reasons.slice(0,3).join('；'))}</span>`:'');
       if(!out.summary.failed){lastScan=null;$('#pb-result').innerHTML='';}
       await loadDrafts();
     }catch(e){toast(e.message);}

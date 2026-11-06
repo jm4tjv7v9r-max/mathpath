@@ -7672,6 +7672,10 @@ class Application:
                     failed.append({'studentId': student_id, 'reason': '沒有對應的頁面'})
                     continue
                 payload = {'studentId': student_id, 'title': title, 'pages': imgs}
+                # 外部 AI 模式下單份批改也會再檢查一次同意；這裡沒帶就會每份都 403，
+                # 老師看到的結果就是「批改 0 份」。
+                if 'consentExternal' in body:
+                    payload['consentExternal'] = body['consentExternal']
                 if body.get('paperKeyId'):
                     payload['paperKeyId'] = body['paperKeyId']
                 try:

@@ -4922,6 +4922,29 @@ class PaperDraftTests(unittest.TestCase):
         if out['summary']['failed']:
             self.assertTrue(self.call('GET', '/api/paper-grades/drafts')['drafts'])
 
+    def test_batch_passes_external_consent_down_to_each_paper(self):
+        """外部 AI 模式：逐份呼叫時要帶同意，否則每份都 403，老師只看到「0 份成功」。"""
+        from unittest import mock
+        scan = self.scan()
+        fake = {'questions': [], 'totalQuestions': 1, 'correctCount': 1, 'unreadable': 0,
+                'pending': 0, 'pageWarnings': [], 'failedPages': [], 'earned': 10,
+                'possible': 10, 'score': 100}
+        old_mode = self.app.ai.mode
+        self.app.ai.mode = 'external'
+        try:
+            with mock.patch.object(server, 'pdf_page_images',
+                                   lambda data, max_pages=80: [b'p1', b'p2']), \
+                 mock.patch.object(server, 'validate_image', lambda page: None), \
+                 mock.patch.object(server, 'paper_grade_all', lambda *a, **k: dict(fake)):
+                out = self.call('POST', '/api/paper-grades/batch',
+                                {'draftId': scan['draftId'], 'title': '第三次功課',
+                                 'sheets': [{'studentId': self.student['id'], 'pages': [1, 2]}],
+                                 'consentExternal': True})
+        finally:
+            self.app.ai.mode = old_mode
+        self.assertEqual(out['summary']['graded'], 1, out.get('failed'))
+        self.assertEqual(out['summary']['failed'], 0)
+
     def test_batch_requires_file_or_draft(self):
         self.call('POST', '/api/paper-grades/batch', {'title': 'x', 'sheets': []}, expect=400)
 
