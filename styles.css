@@ -1253,3 +1253,14 @@ body.cr-live-on{overflow:hidden}
 .cr-record strong{display:block;font-size:calc(14.5px*var(--fs))}
 .cr-record-btns{display:flex;gap:10px;align-items:center}
 .cr-record-btns .secondary{padding:7px 14px;font-size:calc(13px*var(--fs))}
+
+/* 課堂應用：提交與互評對話框 */
+.cr-modal-actions{display:flex;justify-content:flex-end;gap:12px;align-items:center;margin-top:16px}
+#cr-sub-prev img{max-width:100%;border-radius:8px;border:1px solid var(--border);margin-top:4px}
+.cr-marks{margin:14px 0 4px;display:flex;flex-direction:column;gap:10px}
+.cr-mark{display:flex;align-items:center;gap:10px;font-size:calc(13.5px*var(--fs))}
+.cr-mark>span{flex:0 0 74px;color:var(--ink-soft,#5f6f66)}
+.cr-mark button{width:38px;height:34px;border:1px solid var(--border);background:#fff;border-radius:8px;
+  color:var(--ink);cursor:pointer;font-size:calc(13px*var(--fs))}
+.cr-mark button:hover{background:var(--mint,#eef5ea)}
+.cr-mark button.on{background:var(--green);border-color:var(--green);color:#fff;font-weight:600}

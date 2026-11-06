@@ -3769,6 +3769,31 @@ function crLive(session) {
   document.body.classList.add('cr-live-on');
 
   const task = () => st.session.tasks[st.idx] || { title: '課堂', text: '', minutes: 0 };
+  const groupName = gid => ((st.session.groups || []).find(g => String(g.id) === String(gid)) || {}).name || '';
+  // 互評平均：每筆先取三個面向平均；三筆以上去掉最高最低（避免人情分）
+  const reviewAvg = gid => {
+    const vals = (st.session.reviews || []).filter(r => String(r.to) === String(gid))
+      .map(r => (Number(r.correct) + Number(r.express) + Number(r.coop)) / 3);
+    if (!vals.length) return null;
+    const use = vals.length >= 3 ? vals.slice().sort((a, b) => a - b).slice(1, -1) : vals;
+    return use.reduce((a, b) => a + b, 0) / use.length;
+  };
+  // 手寫照片先縮到 900px、JPEG 0.7，避免把整堂課的紀錄撐大
+  const shrink = file => new Promise((resolve, reject) => {
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      const ratio = Math.min(1, 900 / (img.width || 900));
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.round((img.width || 900) * ratio);
+      canvas.height = Math.round((img.height || 600) * ratio);
+      canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+      URL.revokeObjectURL(url);
+      resolve(canvas.toDataURL('image/jpeg', 0.7));
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('讀取圖片失敗')); };
+    img.src = url;
+  });
   const resetTimer = () => {
     if (crTimerId) { clearInterval(crTimerId); crTimerId = null; }
     st.running = false;
@@ -3785,6 +3810,7 @@ function crLive(session) {
           <button class="secondary" id="cr-tstart">${st.running ? '暫停' : '開始計時'}</button>
           <button class="secondary" id="cr-draw">抽一組</button>
           <button class="secondary" id="cr-undo">復原</button>
+          <button class="secondary" id="cr-apply">互評併入總分</button>
           <button class="danger" id="cr-end">結束課堂</button>
         </div>
       </header>
@@ -3805,13 +3831,15 @@ function crLive(session) {
             return `<div class="cr-row" data-gid="${gid}">
               <span class="cr-row-name">${esc(x.name || '')}</span>
               <span class="cr-row-score">${sc}</span>
-              <span class="cr-row-flags">${sg.submitted ? '已交' : ''}${sg.help ? ' 求助' : ''}</span>
+              <span class="cr-row-flags">${sg.submitted ? '已交' : ''}${sg.help ? ' 求助' : ''}${reviewAvg(x.id) !== null ? ` · 互評 ${reviewAvg(x.id).toFixed(1)}` : ''}</span>
               <span class="cr-row-btns">
                 <button data-delta="1" data-gid="${gid}">+1</button>
                 <button data-delta="2" data-gid="${gid}">+2</button>
                 <button data-delta="-1" data-gid="${gid}">-1</button>
                 <button data-sub="${gid}">${sg.submitted ? '取消已交' : '標記已交'}</button>
                 <button data-help="${gid}">${sg.help ? '取消求助' : '求助'}</button>
+                <button data-submit="${gid}">${(st.session.submissions || {})[gid] ? '看／改提交' : '提交'}</button>
+                <button data-review="${gid}">互評</button>
               </span></div>`;
           }).join('')}</div>
         </aside>
@@ -3826,6 +3854,71 @@ function crLive(session) {
     el.textContent = crFmt(st.left);
     el.classList.toggle('warn', st.left <= 30);
     el.classList.toggle('done', st.left === 0);
+  };
+
+  const openSubmit = gid => {
+    const cur = (st.session.submissions || {})[gid] || {};
+    modal(`<p class="eyebrow">SUBMIT</p><h2>${esc(groupName(gid))} 提交</h2>
+      <textarea id="cr-sub-text" rows="4" style="width:100%;border:1px solid var(--border);border-radius:8px;padding:9px 10px;line-height:1.7"
+        placeholder="寫下這組的答案或結論…">${esc(cur.text || '')}</textarea>
+      <div style="margin:10px 0 6px"><label class="small-text">手寫照片（可選）
+        <input id="cr-sub-file" type="file" accept="image/*" style="margin-left:6px"></label></div>
+      <div id="cr-sub-prev">${cur.image ? `<img src="${cur.image}" alt="提交的照片">` : ''}</div>
+      <div class="cr-modal-actions">
+        <button class="text-button" id="cr-sub-cancel">取消</button>
+        <button class="primary" id="cr-sub-ok">儲存</button></div>`);
+    let image = cur.image || '';
+    $('#cr-sub-cancel').onclick = () => closeModal();
+    $('#cr-sub-file').onchange = async ev => {
+      const file = ev.target.files[0];
+      if (!file) return;
+      try { image = await shrink(file); $('#cr-sub-prev').innerHTML = `<img src="${image}" alt="提交的照片">`; }
+      catch (e) { toast(e.message); }
+    };
+    $('#cr-sub-ok').onclick = async () => {
+      try {
+        const { session } = await api(`/api/classroom/sessions/${st.session.id}/submit`,
+          { groupId: Number(gid), text: $('#cr-sub-text').value, image });
+        st.session = session; closeModal(); render(); toast('已記錄這組的提交');
+      } catch (e) { toast(e.message); }
+    };
+  };
+
+  const openReview = to => {
+    const groups = st.session.groups || [];
+    if (groups.length < 2) return toast('至少要兩組才能互評。');
+    const from = String(groups.find(g => String(g.id) !== String(to)).id);
+    const marks = { correct: 3, express: 3, coop: 3 };
+    const row = (key, label) => `<div class="cr-mark" data-k="${key}">
+      <span>${label}</span>
+      ${[1, 2, 3, 4, 5].map(n => `<button type="button" data-k="${key}" data-n="${n}"${n === marks[key] ? ' class="on"' : ''}>${n}</button>`).join('')}
+    </div>`;
+    const paint = () => {
+      modal(`<p class="eyebrow">PEER REVIEW</p><h2>互評：${esc(groupName(to))}</h2>
+        <p class="small-text">由哪一組評？</p>
+        <select id="cr-rv-from" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:8px">
+          ${groups.filter(g => String(g.id) !== String(to)).map(g => `<option value="${g.id}"${String(g.id) === from ? ' selected' : ''}>${esc(g.name || '')}</option>`).join('')}
+        </select>
+        <div class="cr-marks">${row('correct', '解法正確')}${row('express', '表達清楚')}${row('coop', '合作參與')}</div>
+        <div class="cr-modal-actions">
+          <button class="text-button" id="cr-rv-cancel">取消</button>
+          <button class="primary" id="cr-rv-ok">儲存</button></div>`);
+      $('#cr-rv-from').onchange = ev => { fromSel = String(ev.target.value); };
+      $$('.cr-mark button').forEach(b => b.onclick = () => {
+        marks[b.dataset.k] = Number(b.dataset.n);
+        $$(`.cr-mark[data-k="${b.dataset.k}"] button`).forEach(x => x.classList.toggle('on', x === b));
+      });
+      $('#cr-rv-cancel').onclick = () => closeModal();
+      $('#cr-rv-ok').onclick = async () => {
+        try {
+          const { session } = await api(`/api/classroom/sessions/${st.session.id}/review`,
+            { from: Number($('#cr-rv-from').value), to: Number(to), ...marks });
+          st.session = session; closeModal(); render(); toast('已記錄互評');
+        } catch (e) { toast(e.message); }
+      };
+    };
+    let fromSel = from;
+    paint();
   };
 
   const bind = () => {
@@ -3868,6 +3961,17 @@ function crLive(session) {
       const gid = b.dataset.help, cur = (st.session.statuses[gid] || {}).help;
       crStatus(gid, { help: !cur });
     });
+    $$('[data-submit]').forEach(b => b.onclick = () => openSubmit(b.dataset.submit));
+    $$('[data-review]').forEach(b => b.onclick = () => openReview(b.dataset.review));
+    $('#cr-apply').onclick = async () => {
+      if (!(st.session.reviews || []).length) return toast('還沒有任何互評。');
+      const ok = await askConfirm('把各組互評平均加進總分？每堂課只能併入一次。', { title: '互評併入總分' });
+      if (!ok) return;
+      try {
+        const { session } = await api(`/api/classroom/sessions/${st.session.id}/apply-reviews`, {});
+        st.session = session; render(); toast('已併入互評分');
+      } catch (e) { toast(e.message); }
+    };
     $('#cr-undo').onclick = async () => {
       try { const { session } = await api(`/api/classroom/sessions/${st.session.id}/undo`, {}); st.session = session; render(); }
       catch (e) { toast(e.message); }

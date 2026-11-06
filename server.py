@@ -723,16 +723,36 @@ def classroom_ensure(db):
                     scores TEXT NOT NULL,
                     statuses TEXT NOT NULL,
                     log TEXT NOT NULL,
+                    submissions TEXT,
+                    reviews TEXT,
                     started_at REAL NOT NULL,
                     ended_at REAL)""")
+    cols = {r['name'] for r in db.execute('PRAGMA table_info(classroom_sessions)')}
+    for name in ('submissions', 'reviews'):
+        if name not in cols:
+            db.execute(f'ALTER TABLE classroom_sessions ADD COLUMN {name} TEXT')
 
 
 def classroom_json(row):
+    keys = row.keys()
     return {'id': row['id'], 'classId': row['class_id'], 'title': row['title'],
             'status': row['status'], 'groups': json.loads(row['groups']),
             'tasks': json.loads(row['tasks']), 'scores': json.loads(row['scores']),
             'statuses': json.loads(row['statuses']), 'log': json.loads(row['log']),
+            'submissions': json.loads((row['submissions'] if 'submissions' in keys else None) or '{}'),
+            'reviews': json.loads((row['reviews'] if 'reviews' in keys else None) or '[]'),
             'startedAt': row['started_at'], 'endedAt': row['ended_at']}
+
+
+def classroom_review_avg(reviews, group_id):
+    """一組的互評平均（每筆先取三個面向平均；三筆以上去掉最高最低）。"""
+    values = [((r.get('correct', 0) + r.get('express', 0) + r.get('coop', 0)) / 3.0)
+              for r in (reviews or []) if str(r.get('to')) == str(group_id)]
+    if not values:
+        return None
+    if len(values) >= 3:
+        values = sorted(values)[1:-1]
+    return sum(values) / len(values)
 
 
 def classroom_groups(students, size, mode='random', averages=None):
@@ -6409,7 +6429,8 @@ class Application:
                     return {'ok': True}, headers
                 return {'session': classroom_json(row)}, headers
         action_match = re.fullmatch(
-            r'/api/classroom/sessions/([1-9]\d{0,17})/(score|undo|status|end|update)', path)
+            r'/api/classroom/sessions/([1-9]\d{0,17})/(score|undo|status|end|update|submit|review|apply-reviews)',
+            path)
         if method == 'POST' and action_match:
             self.teacher(user)
             sid, action = int(action_match.group(1)), action_match.group(2)
@@ -6447,6 +6468,56 @@ class Application:
                         cur['submitted'] = bool(body['submitted'])
                     if 'help' in body:
                         cur['help'] = bool(body['help'])
+                elif action == 'submit':
+                    # 小組提交：文字＋（可選）手寫照片；照片由前端先縮圖成 JPEG data URL
+                    fields(body, ('groupId', 'text', 'image'), ('groupId',))
+                    gid = str(number(body['groupId'], '小組', 1, 999, True))
+                    if gid not in data['scores']:
+                        fail(404, '找不到這個小組。')
+                    image = body.get('image') or ''
+                    if image:
+                        if not isinstance(image, str) or not image.startswith('data:image/'):
+                            fail(400, '圖片格式不正確。')
+                        if len(image) > 400000:
+                            fail(413, '圖片太大，請縮小後再上傳（前端會自動壓縮）。')
+                    data['submissions'][gid] = {'text': str(body.get('text') or '')[:2000],
+                                                'image': image, 'at': time.time()}
+                    cur = data['statuses'].setdefault(gid, {'submitted': False, 'help': False})
+                    cur['submitted'] = True
+                elif action == 'review':
+                    # 組間互評：三個面向各 1–5 分；同一組評同一組只留最新一筆
+                    fields(body, ('from', 'to', 'correct', 'express', 'coop'),
+                           ('from', 'to', 'correct', 'express', 'coop'))
+                    frm = str(number(body['from'], '評分組', 1, 999, True))
+                    to = str(number(body['to'], '被評組', 1, 999, True))
+                    if frm == to:
+                        fail(400, '不能評自己組。')
+                    if frm not in data['scores'] or to not in data['scores']:
+                        fail(404, '找不到這個小組。')
+                    marks = {k: number(body[k], k, 1, 5, True)
+                             for k in ('correct', 'express', 'coop')}
+                    data['reviews'] = [r for r in data['reviews']
+                                       if not (str(r.get('from')) == frm and str(r.get('to')) == to)]
+                    data['reviews'].append({'from': frm, 'to': to, **marks, 'at': time.time()})
+                elif action == 'apply-reviews':
+                    # 把互評平均併進總分（每堂課只做一次）
+                    if any(str(l.get('text')) == '互評' for l in data['log']):
+                        fail(409, '互評分已經併入總分了。')
+                    applied = 0
+                    for g in data['groups']:
+                        avg = classroom_review_avg(data['reviews'], g['id'])
+                        if avg is None:
+                            continue
+                        add = int(round(avg))
+                        if not add:
+                            continue
+                        gid = str(g['id'])
+                        data['scores'][gid] = data['scores'].get(gid, 0) + add
+                        data['log'].append({'at': time.time(), 'groupId': gid, 'delta': add,
+                                            'text': '互評'})
+                        applied += 1
+                    if not applied:
+                        fail(409, '還沒有互評分可以併入。')
                 elif action == 'update':
                     fields(body, ('title', 'groups', 'tasks'), ())
                     if isinstance(body.get('groups'), list) and body['groups']:
@@ -6465,12 +6536,15 @@ class Application:
                     data['endedAt'] = time.time()
                 db.execute(
                     'UPDATE classroom_sessions SET title=?,status=?,groups=?,tasks=?,scores=?,'
-                    'statuses=?,log=?,ended_at=? WHERE id=?',
+                    'statuses=?,log=?,submissions=?,reviews=?,ended_at=? WHERE id=?',
                     (data['title'], data['status'],
                      json.dumps(data['groups'], ensure_ascii=False),
                      json.dumps(data['tasks'], ensure_ascii=False),
                      json.dumps(data['scores']), json.dumps(data['statuses']),
-                     json.dumps(data['log'], ensure_ascii=False), data['endedAt'], sid))
+                     json.dumps(data['log'], ensure_ascii=False),
+                     json.dumps(data.get('submissions') or {}, ensure_ascii=False),
+                     json.dumps(data.get('reviews') or [], ensure_ascii=False),
+                     data['endedAt'], sid))
             return {'session': data}, headers
 
         # ---------- 成績總表（教師用，像 Excel 的網格） ----------

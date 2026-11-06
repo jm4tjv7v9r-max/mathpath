@@ -4963,6 +4963,35 @@ class ClassroomTests(unittest.TestCase):
         self.call('DELETE', f'/api/classroom/sessions/{sid}')
         self.assertEqual(self.call('GET', '/api/classroom/sessions')['sessions'], [])
 
+    def test_submission_and_peer_review(self):
+        """小組提交（文字＋照片上限）與組間互評（可併入總分，且只能併一次）。"""
+        sid, groups = self.make_session()
+        g1, g2, g3 = groups[0]['id'], groups[1]['id'], groups[2]['id']
+
+        sub = self.call('POST', f'/api/classroom/sessions/{sid}/submit',
+                        {'groupId': g1, 'text': 'x=2 或 x=3'})['session']
+        self.assertEqual(sub['submissions'][str(g1)]['text'], 'x=2 或 x=3')
+        self.assertTrue(sub['statuses'][str(g1)]['submitted'], '提交後自動標記已交')
+
+        # 圖片超過 400KB 要擋
+        self.call('POST', f'/api/classroom/sessions/{sid}/submit',
+                  {'groupId': g1, 'text': '', 'image': 'data:image/jpeg;base64,' + 'A' * 400001},
+                  expect=413)
+
+        # 不能評自己組
+        self.call('POST', f'/api/classroom/sessions/{sid}/review',
+                  {'from': g1, 'to': g1, 'correct': 3, 'express': 3, 'coop': 3}, expect=400)
+
+        for frm in (g2, g3):
+            self.call('POST', f'/api/classroom/sessions/{sid}/review',
+                      {'from': frm, 'to': g1, 'correct': 4, 'express': 4, 'coop': 4})
+        got = self.call('GET', f'/api/classroom/sessions/{sid}')['session']
+        self.assertEqual(len(got['reviews']), 2)
+
+        applied = self.call('POST', f'/api/classroom/sessions/{sid}/apply-reviews', {})['session']
+        self.assertEqual(applied['scores'][str(g1)], 4, '互評平均 4 分要併進總分')
+        self.call('POST', f'/api/classroom/sessions/{sid}/apply-reviews', {}, expect=409)
+
     def test_other_teacher_cannot_open_the_class(self):
         sid, _ = self.make_session()
         with self.app.db() as db:
