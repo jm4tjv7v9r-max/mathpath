@@ -1317,3 +1317,7 @@ body.cr-live-on{overflow:hidden}
   font-family:inherit;font-size:calc(15px*var(--fs));line-height:1.8;resize:vertical}
 .cr-stu-actions{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-top:8px}
 #cr-stu-prev img{max-width:100%;border-radius:8px;border:1px solid var(--border);margin-top:8px}
+
+/* 課堂應用：離線提示 */
+.cr-net{margin:4px 0 0;font-size:calc(12.5px*var(--fs));color:#f0b45c;letter-spacing:.5px}
+.cr-live.cr-light .cr-net{color:#a8671a}

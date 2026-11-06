@@ -3609,6 +3609,36 @@ function fileToDataUrl(file){
 // 所有課堂功能都只在「課堂應用」之下：分組 → 任務 → 開始（教師確認）→ 進行 → 紀錄。
 let crTimerId = null;
 let crStudentTimer = null;
+// 離線時先把「加分／標記」排隊，網路回來再依序補送（只排隊，不改伺服器邏輯）
+const CR_OUTBOX = 'crOutbox';
+function crIsOffline(e) {
+  return /無法連接|Failed to fetch|NetworkError|Load failed|network/i.test(String((e && e.message) || e));
+}
+function crOutbox() {
+  try { return JSON.parse(localStorage.getItem(CR_OUTBOX) || '[]'); } catch (e) { return []; }
+}
+function crOutboxSave(list) {
+  try { localStorage.setItem(CR_OUTBOX, JSON.stringify(list)); } catch (e) {}
+}
+function crEnqueue(url, body) {
+  const list = crOutbox();
+  list.push({ url, body, at: Date.now() });
+  crOutboxSave(list);
+}
+async function crFlushOutbox() {
+  const list = crOutbox();
+  let done = 0;
+  while (list.length) {
+    const op = list[0];
+    try { await api(op.url, op.body); list.shift(); done += 1; }
+    catch (e) {
+      if (crIsOffline(e)) break;   // 還是離線：留著下次再送
+      list.shift();                // 其他錯誤（例如課已結束）就丟掉，免得卡住整條佇列
+    }
+  }
+  crOutboxSave(list);
+  return done;
+}
 // 手寫照片縮到 900px、JPEG 0.7（課堂提交用；伺服器上限 400KB）
 function crShrink(file) {
   return new Promise((resolve, reject) => {
@@ -3868,7 +3898,8 @@ function crLive(session) {
     box.innerHTML = `<div class="cr-live-inner">
       <header class="cr-live-head">
         <div><p class="eyebrow">CLASSROOM</p><h2>${esc(s.title || '課堂')}</h2>
-          <p class="cr-code">課堂碼 <strong>${esc(s.code || '—')}</strong></p></div>
+          <p class="cr-code">課堂碼 <strong>${esc(s.code || '—')}</strong></p>
+          ${crOutbox().length ? `<p class="cr-net">離線 · ${crOutbox().length} 筆待同步</p>` : ''}</div>
         <div class="cr-clock" id="cr-clock">${crFmt(st.left)}</div>
         <div class="cr-live-btns">
           <button class="secondary" id="cr-fs-minus" title="字小一點">A−</button>
@@ -4051,7 +4082,19 @@ function crLive(session) {
     };
     $('#cr-undo').onclick = async () => {
       try { const { session } = await api(`/api/classroom/sessions/${st.session.id}/undo`, {}); st.session = session; render(); }
-      catch (e) { toast(e.message); }
+      catch (e) {
+        if (!crIsOffline(e)) return toast(e.message);
+        // 離線復原：只退得掉「還在佇列裡」的那一筆
+        const list = crOutbox();
+        const last = list[list.length - 1];
+        if (!last || last.body.delta === undefined) return toast('離線時只能復原剛才加的分数。');
+        list.pop();
+        crOutboxSave(list);
+        const gid = String(last.body.groupId);
+        st.session.scores[gid] = (st.session.scores[gid] || 0) - last.body.delta;
+        st.session.log.pop();
+        render(); toast('已復原（離線）');
+      }
     };
     $('#cr-end').onclick = async () => {
       const ok = await askConfirm('結束這堂課？結束後不能再加分，紀錄會保存在「課堂紀錄」。', { title: '結束課堂', confirmText: '結束' });
@@ -4070,14 +4113,29 @@ function crLive(session) {
       const { session } = await api(`/api/classroom/sessions/${st.session.id}/score`,
         { groupId: Number(gid), delta, text: delta > 0 ? '加分' : '扣分' });
       st.session = session; render();
-    } catch (e) { toast(e.message); }
+    } catch (e) {
+      if (!crIsOffline(e)) return toast(e.message);
+      // 離線：先在本機加分，並排進佇列，等網路回來補送
+      st.session.scores[gid] = (st.session.scores[gid] || 0) + delta;
+      st.session.log.push({ at: Date.now() / 1000, groupId: String(gid), delta, text: '離線' });
+      crEnqueue(`/api/classroom/sessions/${st.session.id}/score`,
+        { groupId: Number(gid), delta, text: '離線加分' });
+      render(); toast('離線中：已先記下，網路恢復會自動補送');
+    }
   };
   const crStatus = async (gid, patch) => {
     try {
       const { session } = await api(`/api/classroom/sessions/${st.session.id}/status`,
         { groupId: Number(gid), ...patch });
       st.session = session; render();
-    } catch (e) { toast(e.message); }
+    } catch (e) {
+      if (!crIsOffline(e)) return toast(e.message);
+      const cur = st.session.statuses[gid] || { submitted: false, help: false };
+      st.session.statuses[gid] = { ...cur, ...patch };
+      crEnqueue(`/api/classroom/sessions/${st.session.id}/status`,
+        { groupId: Number(gid), ...patch });
+      render();
+    }
   };
 
   const closeLive = () => {
@@ -4089,6 +4147,25 @@ function crLive(session) {
     if (!document.getElementById('cr-live')) { document.removeEventListener('keydown', esc); return; }
     if (ev.key === 'Escape') closeLive();
   });
+
+  // 網路回來就補送離線期間的操作，然後重抓一次課堂狀態
+  const syncOutbox = async () => {
+    if (!crOutbox().length) return;
+    const done = await crFlushOutbox();
+    if (!done) return;
+    try {
+      const { session } = await api('/api/classroom/sessions/' + st.session.id);
+      st.session = session;
+    } catch (e) { /* 仍然離線就等下一次 */ }
+    render();
+    toast(`已補送 ${done} 筆離線操作`);
+  };
+  window.addEventListener('online', syncOutbox);
+  const outboxTimer = setInterval(() => {
+    if (!document.getElementById('cr-live')) { clearInterval(outboxTimer); window.removeEventListener('online', syncOutbox); return; }
+    syncOutbox();
+  }, 20000);
+  syncOutbox();
 
   resetTimer();
   render();
