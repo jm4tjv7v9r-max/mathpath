@@ -4875,5 +4875,108 @@ class PaperDraftTests(unittest.TestCase):
         self.assertEqual(self.call('GET', '/api/paper-grades/drafts')['drafts'], [])
 
 
+
+class ClassroomTests(unittest.TestCase):
+    """課堂應用：分組 → 任務 → 開始（教師確認）→ 計分／狀態 → 結束 → 紀錄。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.app = server.Application(self.tmp.name, server.ROOT)
+        self.app.initialize()
+        with self.app.db() as db:
+            self.teacher = dict(db.execute(
+                "SELECT * FROM users WHERE role='teacher' ORDER BY id LIMIT 1").fetchone())
+            self.class_id = db.execute("INSERT INTO classes(teacher_id,name) VALUES(?,?)",
+                                       (self.teacher['id'], '初三A')).lastrowid
+            for i in range(1, 6):
+                uid = db.execute(
+                    "INSERT INTO users(username,name,role,password,demo,seat,created_by) "
+                    "VALUES(?,?,'student','x',0,?,?)",
+                    (f'cr{i}', f'學生{i}', str(i), self.teacher['id'])).lastrowid
+                db.execute("INSERT INTO class_students(class_id,user_id) VALUES(?,?)",
+                           (self.class_id, uid))
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def call(self, method, path, body=None, expect=200, user=None):
+        try:
+            payload, _ = self.app.dispatch(method, path, body or {}, user or self.teacher,
+                                           None, '127.0.0.1')
+        except server.APIError as exc:
+            self.assertEqual(exc.status, expect, exc.message)
+            return {'error': exc.message}
+        self.assertEqual(expect, 200)
+        return payload
+
+    def make_session(self):
+        groups = self.call('POST', '/api/classroom/groups',
+                           {'classId': self.class_id, 'size': 2})['groups']
+        out = self.call('POST', '/api/classroom/sessions',
+                        {'classId': self.class_id, 'title': '二次函數探究',
+                         'groups': groups,
+                         'tasks': [{'id': 1, 'title': '任務一', 'text': '解 x²-5x+6=0', 'minutes': 8}]})
+        return out['sessionId'], groups
+
+    def test_groups_split_and_mixed_mode(self):
+        groups = self.call('POST', '/api/classroom/groups',
+                           {'classId': self.class_id, 'size': 2})['groups']
+        self.assertEqual(len(groups), 3, '5 人每組 2 人 → 3 組')
+        self.assertEqual(sum(len(g['members']) for g in groups), 5)
+        mixed = self.call('POST', '/api/classroom/groups',
+                          {'classId': self.class_id, 'size': 3, 'mode': 'mixed'})['groups']
+        self.assertEqual(len(mixed), 2)
+
+    def test_session_lifecycle(self):
+        sid, groups = self.make_session()
+        got = self.call('GET', f'/api/classroom/sessions/{sid}')['session']
+        self.assertEqual(got['status'], 'running')
+        self.assertEqual(got['title'], '二次函數探究')
+        self.assertEqual(len(got['groups']), 3)
+        self.assertEqual(len(got['tasks']), 1)
+
+        gid = groups[0]['id']
+        scored = self.call('POST', f'/api/classroom/sessions/{sid}/score',
+                           {'groupId': gid, 'delta': 2, 'text': '完成'})['session']
+        self.assertEqual(scored['scores'][str(gid)], 2)
+        self.assertEqual(len(scored['log']), 1)
+
+        undone = self.call('POST', f'/api/classroom/sessions/{sid}/undo', {})['session']
+        self.assertEqual(undone['scores'][str(gid)], 0)
+        self.assertEqual(undone['log'], [])
+
+        marked = self.call('POST', f'/api/classroom/sessions/{sid}/status',
+                           {'groupId': gid, 'submitted': True})['session']
+        self.assertTrue(marked['statuses'][str(gid)]['submitted'])
+
+        ended = self.call('POST', f'/api/classroom/sessions/{sid}/end', {})['session']
+        self.assertEqual(ended['status'], 'ended')
+        self.assertIsNotNone(ended['endedAt'])
+        # 結束後不能再加分
+        self.call('POST', f'/api/classroom/sessions/{sid}/score',
+                  {'groupId': gid, 'delta': 1}, expect=409)
+
+        listed = self.call('GET', '/api/classroom/sessions')['sessions']
+        self.assertEqual(len(listed), 1)
+        self.assertEqual(listed[0]['groups'], 3)
+
+        self.call('DELETE', f'/api/classroom/sessions/{sid}')
+        self.assertEqual(self.call('GET', '/api/classroom/sessions')['sessions'], [])
+
+    def test_other_teacher_cannot_open_the_class(self):
+        sid, _ = self.make_session()
+        with self.app.db() as db:
+            other = db.execute("SELECT * FROM users WHERE role='teacher' AND id<>? LIMIT 1",
+                               (self.teacher['id'],)).fetchone()
+        if other:
+            self.call('GET', f'/api/classroom/sessions/{sid}', user=dict(other), expect=403)
+
+    def test_requires_teacher(self):
+        with self.app.db() as db:
+            student = dict(db.execute(
+                "SELECT * FROM users WHERE role='student' LIMIT 1").fetchone())
+        self.call('GET', '/api/classroom/sessions', user=student, expect=403)
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)

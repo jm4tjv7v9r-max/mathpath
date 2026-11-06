@@ -876,6 +876,8 @@ function shell(){// 「新手上路」放最後——那是第一次來看的，
      children:[['bank','題庫','list'],['import','試卷拆題入庫'],['newq','新增題目']]},
     {key:'review',label:'批閱',iconId:'edit',
      children:[['mistakes','作業批閱'],['paper','紙本批閱'],['paperbatch','全班紙本批閱']]},
+    {key:'classroom',label:'課堂應用',iconId:'board',
+     children:[['classroom','開始上課'],['classroomRecords','課堂紀錄']]},
     {id:'layout',label:'試卷修正排版'},
     {id:'papers',label:'我的試卷'},
   ];
@@ -896,7 +898,7 @@ function shell(){// 「新手上路」放最後——那是第一次來看的，
     if(S.user?.role!=='student')nav=nav.filter(([id])=>id!=='mock');
     navHtml=nav.map(([id,label])=>navRow(id,label,page===id,false)).join('');
   }
-  $('#nav').innerHTML=navHtml;$('#settings-nav').innerHTML=icon('settings')+'<span>設定與隱私</span>';$('#settings-nav').classList.toggle('active',page==='settings');$('#font-scale').innerHTML=fontScaleControl();$('#theme-switch').innerHTML=themeControl();$('#account').innerHTML=`<span class="avatar">${S.user?(S.user.role==='teacher'?'師':'學'):'M'}</span><span class="account-info">${S.user?esc(S.user.name):'訪客預覽'}<small>${S.user?(S.user.role==='teacher'?'教師工作空間':'中三數學學習者'):'登入後開始學習'}</small></span>${icon(S.user?'chevron':'logout')}`;$('#avatar').textContent=S.user?(S.user.role==='teacher'?'師':'學'):'M';const labels={contests:'數學比賽',guide:'新手上路',homework:S.user?.role==='teacher'?'作業成績':'我的作業',calendar:'日曆',board:'排行榜',mock:'模擬測驗',ai:'模型端點',bank:'數學題庫',practice:'自主練習',import:'試卷拆題入庫',mistakes:S.user?.role==='teacher'?'作業批閱':'我的錯題本',paper:'紙本批閱',paperbatch:'全班紙本批閱',layout:'試卷修正排版',papers:'我的試卷',growth:'學習足跡',newq:'新增題目',settings:'設定與隱私'};$('#crumb').textContent=labels[page] || '數學題庫';renderCalculator();}
+  $('#nav').innerHTML=navHtml;$('#settings-nav').innerHTML=icon('settings')+'<span>設定與隱私</span>';$('#settings-nav').classList.toggle('active',page==='settings');$('#font-scale').innerHTML=fontScaleControl();$('#theme-switch').innerHTML=themeControl();$('#account').innerHTML=`<span class="avatar">${S.user?(S.user.role==='teacher'?'師':'學'):'M'}</span><span class="account-info">${S.user?esc(S.user.name):'訪客預覽'}<small>${S.user?(S.user.role==='teacher'?'教師工作空間':'中三數學學習者'):'登入後開始學習'}</small></span>${icon(S.user?'chevron':'logout')}`;$('#avatar').textContent=S.user?(S.user.role==='teacher'?'師':'學'):'M';const labels={contests:'數學比賽',guide:'新手上路',homework:S.user?.role==='teacher'?'作業成績':'我的作業',calendar:'日曆',board:'排行榜',mock:'模擬測驗',ai:'模型端點',bank:'數學題庫',practice:'自主練習',import:'試卷拆題入庫',mistakes:S.user?.role==='teacher'?'作業批閱':'我的錯題本',paper:'紙本批閱',paperbatch:'全班紙本批閱',classroom:'課堂應用',classroomRecords:'課堂紀錄',layout:'試卷修正排版',papers:'我的試卷',growth:'學習足跡',newq:'新增題目',settings:'設定與隱私'};$('#crumb').textContent=labels[page] || '數學題庫';renderCalculator();}
 
 let calCursor=null,calSelected=null;
 const calPad=n=>String(n).padStart(2,'0');
@@ -3603,6 +3605,350 @@ function fileToDataUrl(file){
 
 // 全班紙本批閱：一次上傳整疊 PDF（≤80 頁），自動切卷、自動認人，
 // 認不出來的由老師在下拉裡指派（座號優先、姓名相似度輔助）。
+// ── 課堂應用（分組教學）────────────────────────────────────────────
+// 所有課堂功能都只在「課堂應用」之下：分組 → 任務 → 開始（教師確認）→ 進行 → 紀錄。
+let crTimerId = null;
+function crFmt(sec) {
+  const m = Math.floor(Math.max(0, sec) / 60), s = Math.max(0, sec) % 60;
+  return String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
+}
+
+async function classroomPage() {
+  if (S.user?.role !== 'teacher') return bank();
+  page = 'classroom'; shell();
+  if (crTimerId) { clearInterval(crTimerId); crTimerId = null; }
+  const classes = await api('/api/score-grid/classes').catch(() => ({ classes: [] }));
+  const list = classes.classes || [];
+  const cid = Number(sessionStorage.getItem('crClass') || 0) || (list[0] ? list[0].id : null);
+  const state = { cid, groups: [], tasks: [], className: '' };
+
+  $('#main').innerHTML = `<div class="fade-in">
+    ${heading('CLASSROOM', '課堂應用', '分組、任務、計時、計分。所有操作都先在這裡準備，按「開始課堂」才正式開始。')}
+    <section class="panel panel-pad">
+      <div class="form-grid">
+        <div class="form-field"><label class="field-label" for="cr-class">班別</label>
+          <select id="cr-class">${list.map(c => `<option value="${c.id}"${c.id === cid ? ' selected' : ''}>${esc(c.name || '')}</option>`).join('')}</select></div>
+        <div class="form-field"><label class="field-label" for="cr-size">每組人數</label>
+          <input id="cr-size" type="number" min="2" max="8" value="4"></div>
+        <div class="form-field"><label class="field-label" for="cr-mode">分組方式</label>
+          <select id="cr-mode"><option value="random">隨機分組</option><option value="mixed">依最近成績異質分組</option></select></div>
+        <div class="form-field"><label class="field-label" for="cr-title">課堂名稱</label>
+          <input id="cr-title" maxlength="120" placeholder="例如：二次函數小組探究"></div>
+      </div>
+      <div class="cr-toolbar">
+        <button class="secondary" id="cr-make">產生分組</button>
+        <button class="secondary" id="cr-again" hidden>重新分組</button>
+        <span class="small-text" id="cr-hint">選好班別與人數，先產生分組。</span>
+      </div>
+      <div id="cr-groups" class="cr-groups"></div>
+
+      <div class="cr-tasks-head"><strong>課堂任務</strong>
+        <span style="display:flex;gap:8px">
+          <button class="secondary" id="cr-frombank">從題庫加入</button>
+          <button class="secondary" id="cr-addtask">＋ 新增任務</button>
+        </span></div>
+      <div id="cr-tasks" class="cr-tasks"></div>
+
+      <div class="cr-startbar">
+        <span class="small-text">按「開始課堂」才會正式開始（會先請你確認）。開始後可以投影、計時、抽組、計分。</span>
+        <button class="primary" id="cr-start">開始課堂</button>
+      </div>
+    </section></div>`;
+
+  const renderGroups = () => {
+    const box = $('#cr-groups');
+    if (!state.groups.length) { box.innerHTML = ''; return; }
+    box.innerHTML = state.groups.map((g, gi) => `<div class="cr-group" data-g="${gi}">
+      <div class="cr-group-head">
+        <input class="cr-gname" data-g="${gi}" value="${esc(g.name || '')}" maxlength="20" aria-label="組名">
+        <span class="small-text">${g.members.length} 人</span>
+      </div>
+      <div class="cr-members">${g.members.map((m, mi) => `<button type="button" class="cr-chip${g.leader === m.id ? ' leader' : ''}" data-g="${gi}" data-m="${mi}" title="點一下設為組長">${esc(m.name || '')}${m.seat ? ` · ${esc(String(m.seat))}` : ''}</button>`).join('')}</div>
+    </div>`).join('');
+    $$('.cr-gname').forEach(inp => inp.onchange = () => {
+      state.groups[Number(inp.dataset.g)].name = inp.value.trim().slice(0, 20) || `第 ${Number(inp.dataset.g) + 1} 組`;
+    });
+    $$('.cr-chip').forEach(b => b.onclick = () => {
+      const g = state.groups[Number(b.dataset.g)];
+      const m = g.members[Number(b.dataset.m)];
+      g.leader = g.leader === m.id ? null : m.id;
+      renderGroups();
+    });
+  };
+
+  const renderTasks = () => {
+    const box = $('#cr-tasks');
+    box.innerHTML = state.tasks.map((t, i) => `<div class="cr-task" data-t="${i}">
+      <div class="cr-task-head">
+        <input class="cr-ttitle" data-t="${i}" value="${esc(t.title || '')}" maxlength="60" aria-label="任務名稱">
+        <label class="small-text">限時 <input class="cr-tmin" data-t="${i}" type="number" min="1" max="120" value="${Number(t.minutes) || 8}"> 分鐘</label>
+        <button class="text-button cr-tdel" data-t="${i}">刪除</button>
+      </div>
+      <textarea class="cr-ttext" data-t="${i}" rows="3" placeholder="題目或任務說明…">${esc(t.text || '')}</textarea>
+    </div>`).join('') || `<p class="small-text">還沒有任務；可以先「新增任務」或「從題庫加入」。</p>`;
+    $$('.cr-ttitle').forEach(i => i.onchange = () => { state.tasks[Number(i.dataset.t)].title = i.value.trim(); });
+    $$('.cr-ttext').forEach(i => i.oninput = () => { state.tasks[Number(i.dataset.t)].text = i.value; });
+    $$('.cr-tmin').forEach(i => i.onchange = () => { state.tasks[Number(i.dataset.t)].minutes = Math.max(1, Math.min(120, Number(i.value) || 8)); });
+    $$('.cr-tdel').forEach(b => b.onclick = () => { state.tasks.splice(Number(b.dataset.t), 1); renderTasks(); });
+  };
+
+  const makeGroups = async () => {
+    if (!state.cid) return toast('請先選擇班別。');
+    try {
+      const out = await api('/api/classroom/groups',
+        { classId: state.cid, size: Number($('#cr-size').value) || 4, mode: $('#cr-mode').value });
+      state.groups = out.groups || [];
+      state.className = out.className || '';
+      $('#cr-again').hidden = false;
+      $('#cr-hint').textContent = `${state.className}：分成 ${state.groups.length} 組。點成員可設為組長。`;
+      renderGroups();
+    } catch (e) { toast(e.message); }
+  };
+
+  $('#cr-class').onchange = ev => {
+    state.cid = Number(ev.target.value) || null;
+    sessionStorage.setItem('crClass', String(state.cid || ''));
+    state.groups = []; $('#cr-groups').innerHTML = ''; $('#cr-again').hidden = true;
+    $('#cr-hint').textContent = '班別已切換，請重新產生分組。';
+  };
+  $('#cr-make').onclick = makeGroups;
+  $('#cr-again').onclick = makeGroups;
+  $('#cr-addtask').onclick = () => {
+    state.tasks.push({ id: state.tasks.length + 1, title: `任務 ${state.tasks.length + 1}`, text: '', minutes: 8 });
+    renderTasks();
+  };
+  $('#cr-frombank').onclick = () => {
+    if (!S.questions?.length) return toast('題庫還沒有題目。');
+    modal(`<p class="eyebrow">FROM BANK</p><h2>從題庫加入任務</h2>
+      <input id="cr-q" placeholder="搜尋題目或知識點…" style="width:100%;margin:6px 0 10px">
+      <div id="cr-qlist" class="cr-qlist"></div>`);
+    const draw = () => {
+      const kw = ($('#cr-q').value || '').trim();
+      const items = S.questions.filter(q => !kw || (q.content || '').includes(kw) || (q.topic || '').includes(kw)).slice(0, 20);
+      $('#cr-qlist').innerHTML = items.map(q => `<button type="button" class="cr-qitem" data-q="${q.id}">
+        <span class="cr-qtag">${esc(q.topic || '')}</span>${esc(String(q.content || '').slice(0, 60))}</button>`).join('') || '<p class="small-text">沒有符合的題目。</p>';
+      $$('.cr-qitem').forEach(b => b.onclick = () => {
+        const q = S.questions.find(x => x.id === Number(b.dataset.q));
+        if (!q) return;
+        state.tasks.push({ id: state.tasks.length + 1, title: q.topic || '題目', text: String(q.content || ''), minutes: 8 });
+        renderTasks(); closeModal(); toast('已加入任務');
+      });
+    };
+    $('#cr-q').oninput = draw;
+    draw();
+  };
+  $('#cr-start').onclick = async () => {
+    if (!state.cid) return toast('請先選擇班別。');
+    if (!state.groups.length) return toast('請先產生分組。');
+    if (!state.tasks.length) return toast('至少加一個課堂任務。');
+    const ok = await askConfirm(
+      `即將開始「${($('#cr-title').value || '未命名課堂').trim()}」：${state.className || ''}、${state.groups.length} 組、${state.tasks.length} 個任務。\n\n開始後才會進入課堂畫面（投影、計時、計分）。`,
+      { title: '開始課堂？', confirmText: '開始課堂' });
+    if (!ok) return;
+    try {
+      const out = await api('/api/classroom/sessions', {
+        classId: state.cid, title: ($('#cr-title').value || '').trim(),
+        groups: state.groups, tasks: state.tasks,
+      });
+      const { session } = await api('/api/classroom/sessions/' + out.sessionId);
+      crLive(session);
+    } catch (e) { toast(e.message); }
+  };
+
+  renderTasks();
+}
+
+// 課堂進行中：全螢幕投影畫面（題目、計時、計分板、抽組）
+function crLive(session) {
+  if (document.getElementById('cr-live')) document.getElementById('cr-live').remove();
+  const st = { session, idx: 0, left: 0, running: false, drawn: null };
+  const box = document.createElement('div');
+  box.id = 'cr-live';
+  box.className = 'cr-live';
+  document.body.appendChild(box);
+  document.body.classList.add('cr-live-on');
+
+  const task = () => st.session.tasks[st.idx] || { title: '課堂', text: '', minutes: 0 };
+  const resetTimer = () => {
+    if (crTimerId) { clearInterval(crTimerId); crTimerId = null; }
+    st.running = false;
+    st.left = (Number(task().minutes) || 0) * 60;
+  };
+
+  const render = () => {
+    const s = st.session, g = s.groups || [], scores = s.scores || {}, stat = s.statuses || {};
+    box.innerHTML = `<div class="cr-live-inner">
+      <header class="cr-live-head">
+        <div><p class="eyebrow">CLASSROOM</p><h2>${esc(s.title || '課堂')}</h2></div>
+        <div class="cr-clock" id="cr-clock">${crFmt(st.left)}</div>
+        <div class="cr-live-btns">
+          <button class="secondary" id="cr-tstart">${st.running ? '暫停' : '開始計時'}</button>
+          <button class="secondary" id="cr-draw">抽一組</button>
+          <button class="secondary" id="cr-undo">復原</button>
+          <button class="danger" id="cr-end">結束課堂</button>
+        </div>
+      </header>
+      <main class="cr-live-main">
+        <section class="cr-stage">
+          <div class="cr-tasknav">
+            <button class="text-button" id="cr-prev">← 上一題</button>
+            <span class="small-text">任務 ${st.idx + 1} / ${(s.tasks || []).length || 1}</span>
+            <button class="text-button" id="cr-next">下一題 →</button>
+          </div>
+          <h1 class="cr-stage-title">${esc(task().title || '')}</h1>
+          <div class="cr-stage-text">${esc(task().text || '（尚未填寫題目）')}</div>
+        </section>
+        <aside class="cr-board">
+          <div class="cr-drawbox" id="cr-drawbox">${st.drawn ? `<span>抽到</span><strong>${esc(st.drawn)}</strong>` : '<span>按「抽一組」</span>'}</div>
+          <div class="cr-rows">${g.map(x => {
+            const gid = String(x.id), sc = scores[gid] || 0, sg = stat[gid] || {};
+            return `<div class="cr-row" data-gid="${gid}">
+              <span class="cr-row-name">${esc(x.name || '')}</span>
+              <span class="cr-row-score">${sc}</span>
+              <span class="cr-row-flags">${sg.submitted ? '已交' : ''}${sg.help ? ' 求助' : ''}</span>
+              <span class="cr-row-btns">
+                <button data-delta="1" data-gid="${gid}">+1</button>
+                <button data-delta="2" data-gid="${gid}">+2</button>
+                <button data-delta="-1" data-gid="${gid}">-1</button>
+                <button data-sub="${gid}">${sg.submitted ? '取消已交' : '標記已交'}</button>
+                <button data-help="${gid}">${sg.help ? '取消求助' : '求助'}</button>
+              </span></div>`;
+          }).join('')}</div>
+        </aside>
+      </main>
+    </div>`;
+    bind();
+  };
+
+  const paintClock = () => {
+    const el = $('#cr-clock');
+    if (!el) return;
+    el.textContent = crFmt(st.left);
+    el.classList.toggle('warn', st.left <= 30);
+    el.classList.toggle('done', st.left === 0);
+  };
+
+  const bind = () => {
+    $('#cr-tstart').onclick = () => {
+      if (st.running) {
+        clearInterval(crTimerId); crTimerId = null; st.running = false;
+        $('#cr-tstart').textContent = '繼續計時';
+        return;
+      }
+      if (st.left <= 0) st.left = (Number(task().minutes) || 0) * 60;
+      st.running = true;
+      $('#cr-tstart').textContent = '暫停';
+      crTimerId = setInterval(() => {
+        st.left -= 1;
+        paintClock();
+        if (st.left <= 0) {
+          clearInterval(crTimerId); crTimerId = null; st.running = false;
+          const b = $('#cr-tstart'); if (b) b.textContent = '時間到';
+          toast('時間到');
+        }
+      }, 1000);
+    };
+    $('#cr-prev').onclick = () => { if (st.idx > 0) { st.idx -= 1; resetTimer(); render(); } };
+    $('#cr-next').onclick = () => {
+      if (st.idx < (st.session.tasks || []).length - 1) { st.idx += 1; resetTimer(); render(); }
+    };
+    $('#cr-draw').onclick = () => {
+      const pool = (st.session.groups || []).map(g => g.name).filter(n => n !== st.drawn);
+      const pick = (pool.length ? pool : (st.session.groups || []).map(g => g.name))[Math.floor(Math.random() * (pool.length || st.session.groups.length))];
+      st.drawn = pick;
+      const el = $('#cr-drawbox');
+      if (el) el.innerHTML = `<span>抽到</span><strong class="cr-pop">${esc(pick || '')}</strong>`;
+    };
+    $$('[data-delta]').forEach(b => b.onclick = () => crScore(Number(b.dataset.delta), b.dataset.gid));
+    $$('[data-sub]').forEach(b => b.onclick = () => {
+      const gid = b.dataset.sub, cur = (st.session.statuses[gid] || {}).submitted;
+      crStatus(gid, { submitted: !cur });
+    });
+    $$('[data-help]').forEach(b => b.onclick = () => {
+      const gid = b.dataset.help, cur = (st.session.statuses[gid] || {}).help;
+      crStatus(gid, { help: !cur });
+    });
+    $('#cr-undo').onclick = async () => {
+      try { const { session } = await api(`/api/classroom/sessions/${st.session.id}/undo`, {}); st.session = session; render(); }
+      catch (e) { toast(e.message); }
+    };
+    $('#cr-end').onclick = async () => {
+      const ok = await askConfirm('結束這堂課？結束後不能再加分，紀錄會保存在「課堂紀錄」。', { title: '結束課堂', confirmText: '結束' });
+      if (!ok) return;
+      try {
+        await api(`/api/classroom/sessions/${st.session.id}/end`, {});
+        closeLive();
+        toast('課堂已結束，紀錄已保存');
+        classroomRecordsPage();
+      } catch (e) { toast(e.message); }
+    };
+  };
+
+  const crScore = async (delta, gid) => {
+    try {
+      const { session } = await api(`/api/classroom/sessions/${st.session.id}/score`,
+        { groupId: Number(gid), delta, text: delta > 0 ? '加分' : '扣分' });
+      st.session = session; render();
+    } catch (e) { toast(e.message); }
+  };
+  const crStatus = async (gid, patch) => {
+    try {
+      const { session } = await api(`/api/classroom/sessions/${st.session.id}/status`,
+        { groupId: Number(gid), ...patch });
+      st.session = session; render();
+    } catch (e) { toast(e.message); }
+  };
+
+  const closeLive = () => {
+    if (crTimerId) { clearInterval(crTimerId); crTimerId = null; }
+    document.body.classList.remove('cr-live-on');
+    box.remove();
+  };
+  document.addEventListener('keydown', function esc(ev) {
+    if (!document.getElementById('cr-live')) { document.removeEventListener('keydown', esc); return; }
+    if (ev.key === 'Escape') closeLive();
+  });
+
+  resetTimer();
+  render();
+}
+
+async function classroomRecordsPage() {
+  if (S.user?.role !== 'teacher') return bank();
+  page = 'classroomRecords'; shell();
+  const out = await api('/api/classroom/sessions').catch(e => ({ error: e.message, sessions: [] }));
+  if (out.error) { $('#main').innerHTML = `<div class="inline-error">${esc(out.error)}</div>`; return; }
+  const rows = out.sessions || [];
+  $('#main').innerHTML = `<div class="fade-in">
+    ${heading('CLASSROOM LOG', '課堂紀錄', '每一堂課的分組、任務與各組得分；可查看詳情或刪除。')}
+    <section class="panel panel-pad">
+      <div class="cr-records">${rows.map(s => `<div class="cr-record" data-s="${s.id}">
+        <div><strong>${esc(s.title || '未命名課堂')}</strong>
+          <span class="small-text">${new Date((s.startedAt || 0) * 1000).toLocaleString()} · ${esc(s.className || '')} · ${s.groups} 組 · 合計 ${s.points} 分${s.status === 'running' ? ' · 進行中' : ''}</span></div>
+        <div class="cr-record-btns"><button class="secondary" data-open="${s.id}">查看</button>
+          <button class="text-button" data-del="${s.id}">刪除</button></div>
+      </div>`).join('') || '<p class="small-text">還沒有課堂紀錄。</p>'}</div>
+    </section></div>`;
+  $$('[data-open]').forEach(b => b.onclick = async () => {
+    try {
+      const { session } = await api('/api/classroom/sessions/' + b.dataset.open);
+      const scores = session.scores || {};
+      modal(`<p class="eyebrow">CLASSROOM</p><h2>${esc(session.title || '')}</h2>
+        <p class="small-text">${new Date((session.startedAt || 0) * 1000).toLocaleString()}${session.endedAt ? ' · 已結束' : ' · 進行中'}</p>
+        <table class="bulk-result"><thead><tr><th>組別</th><th>成員</th><th>得分</th></tr></thead><tbody>
+        ${(session.groups || []).map(g => `<tr><td>${esc(g.name || '')}</td>
+          <td>${(g.members || []).map(m => esc(m.name || '')).join('、')}</td>
+          <td>${scores[String(g.id)] || 0}</td></tr>`).join('')}</tbody></table>
+        <p class="small-text" style="margin-top:10px">任務：${(session.tasks || []).map(t => esc(t.title || '')).join('、') || '—'}</p>`);
+    } catch (e) { toast(e.message); }
+  });
+  $$('[data-del]').forEach(b => b.onclick = async () => {
+    if (!(await askConfirm('刪除這筆課堂紀錄？各組得分與任務內容會一併刪除。'))) return;
+    try { await api('/api/classroom/sessions/' + b.dataset.del, {}, 'DELETE'); toast('已刪除'); classroomRecordsPage(); }
+    catch (e) { toast(e.message); }
+  });
+}
+
 async function paperBatchPage(){
   if(S.user?.role!=='teacher')return bank();
   page='paperbatch';shell();
@@ -5655,7 +6001,8 @@ $('#bulk-class-toggle').onchange=e=>{$('#bulk-class-field').hidden=!e.target.che
 $('#bulk-submit').onclick=async()=>{const {rows,errors}=bulkPreview();if(errors.length)return toast('請先修正名單格式錯誤。');if(!rows.length)return toast('請輸入至少一位學生。');if(rows.length>200)return toast('每批最多200位學生。');const makeClass=$('#bulk-class-toggle').checked,className=$('#bulk-class-name').value.trim();if(makeClass&&!className)return toast('請填寫班級名稱，或取消建立班級。');const b=$('#bulk-submit');b.disabled=true;b.textContent='正在建立…';try{const {users:created}=await api('/api/users/bulk',{students:rows.map(r=>({username:r.username,name:r.name,seat:r.seat,password:r.password}))});let classNote='';if(makeClass){try{const {class:room}=await api('/api/classes',{name:className,studentIds:created.map(u=>u.id)});classNote=`<div class="hint-box" style="margin-top:12px">已同時建立班級「${esc(room.name)}」，共 ${room.studentCount} 位學生，可直接佈置作業。</div>`;}catch(err){classNote=`<div class="inline-error" style="margin-top:12px">帳戶已建立，但班級未建立：${esc(err.message)}可在「作業與成績」重新建立班級。</div>`;}}const merged=rows.map((r,i)=>({username:r.username,password:r.password,name:(created[i]&&created[i].name)||r.name||r.username,seat:(created[i]&&created[i].seat)||r.seat||''}));const hasName=merged.some(r=>r.name!==r.username),hasSeat=merged.some(r=>r.seat);const cols=[['學號',r=>r.username]].concat(hasName?[['姓名',r=>r.name]]:[],hasSeat?[['班內號',r=>r.seat]]:[],[['密碼',r=>r.password]]);const text=[cols.map(c=>c[0]).join('\t'),...merged.map(r=>cols.map(c=>c[1](r)).join('\t'))].join('\n');$('#bulk-result').innerHTML=`<div class="import-warning">已建立 ${created.length} 個帳戶${merged.some(r=>r.name===r.username)?`（${merged.filter(r=>r.name===r.username).length} 個未填姓名，以學號顯示）`:""}。密碼只會顯示這一次，請立即複製並私下發給學生。</div>${classNote}<pre class="code-block">${esc(text)}</pre><button class="secondary wide" id="bulk-copy" style="margin-top:10px">${icon('file')}複製帳號密碼</button>`;$('#bulk-copy').onclick=async()=>{try{await navigator.clipboard.writeText(text);toast('已複製，請妥善保管。');}catch{toast('無法自動複製，請手動選取。');}};$('#bulk-students').value='';$('#bulk-class-toggle').checked=false;$('#bulk-class-field').hidden=true;$('#bulk-class-name').value='';bulkPreview();toast(`已建立 ${created.length} 個學生帳戶。`);}catch(err){$('#bulk-error').textContent=err.message;}finally{b.disabled=false;b.innerHTML=icon('upload')+'批次建立學生帳戶';}};}}catch(e){toast(e.message);}}
 function deploymentHelp(){modal(`<p class="eyebrow">SERVER SETUP</p><h2>啟動與部署說明</h2><p class="modal-intro">資料保存在網站伺服器；實際位置由管理員確認。以下是可選部署方式，不代表目前網站的部署狀態。</p><h3>本機預覽</h3><p class="info-note">雙擊 start.command，或用 Python 3 啟動：</p><pre class="code-block">python3 server.py --host 127.0.0.1 --port 8765</pre><p class="info-note">瀏覽器開啟 http://127.0.0.1:8765。</p><h3>校內連線</h3><p class="info-note">由資訊人員將 --host 設為伺服器的校內 IP，並限制防火牆只允許校內來源；正式使用需反向代理 HTTPS。不要把演示帳戶直接用於全校。</p><h3>目前帳戶範圍</h3><p class="info-note">初始演示配置包含學生與教師帳戶；實際帳戶由管理員確認。教師可在「設定與隱私」建立獨立學生帳戶，避免共用作答紀錄。可在「作業與成績」建立班級並發布作業；校內單一登入及批量帳戶管理仍可再擴充。</p><div class="import-warning">資料保存在網站伺服器；實際位置由管理員確認。預設資料庫路徑為 data/mathpath.sqlite3；備份及保存年限應按學校規定安排。AI 必須另行配置，未配置時手写作答由教師批閱。</div>`);}
 async function navigate(target){if(busy)return toast('目前操作正在進行，請等待完成。');preserveDraft();if(page==='practice'&&strokes.length&&target!=='practice'&&!lastResult&&await askCancel('尚未提交的手寫內容未保存。確定離開？'))return;beginView();$('#sidebar').classList.remove('open');if(target!=='practice'){assignmentContext=null;mockContext=null;stopQuizClock();}page=target;switch(target){case'guide':guidePage();break;
-case'homework':homeworkPage();break;case'scores':scoreGridPage();break;case'paperbatch':paperBatchPage();break;case'calendar':calendarPage();break;case'board':leaderboardPage();break;case'mock':mockPage();break;case'contests':contestsPage();break;case'ai':aiConfigPage();break;case'bank':bank();break;case'practice':practice();break;case'import':importPage();break;case'newq':newQuestionPage();break;case'mistakes':recordsPage();break;case'paper':paperGradePage();break;case'layout':paperLayoutPage();break;case'papers':papersPage();break;case'growth':growthPage();break;case'settings':settingsPage();break;default:bank();}window.scrollTo({top:0,behavior:'instant'});}
+case'homework':homeworkPage();break;case'scores':scoreGridPage();break;case'paperbatch':paperBatchPage();break;
+case'classroom':classroomPage();break;case'classroomRecords':classroomRecordsPage();break;case'calendar':calendarPage();break;case'board':leaderboardPage();break;case'mock':mockPage();break;case'contests':contestsPage();break;case'ai':aiConfigPage();break;case'bank':bank();break;case'practice':practice();break;case'import':importPage();break;case'newq':newQuestionPage();break;case'mistakes':recordsPage();break;case'paper':paperGradePage();break;case'layout':paperLayoutPage();break;case'papers':papersPage();break;case'growth':growthPage();break;case'settings':settingsPage();break;default:bank();}window.scrollTo({top:0,behavior:'instant'});}
 document.addEventListener('click',async e=>{const b=e.target.closest('button');if(!b||b.disabled)return;if(b.dataset.fontScale){applyFontScale(b.dataset.fontScale);shell();toast(`字體已設為「${FONT_SCALES.find(([id])=>id===b.dataset.fontScale)[1]}」，只影響這台裝置。`);return;}
 if(b.dataset.themeId){applyTheme(b.dataset.themeId);shell();toast(`版面已設為「${THEMES.find(([id])=>id===b.dataset.themeId)[1]}」，只影響這台裝置。`);return;}
 if(b.id==='open-math-editor'){openMathEditor();return;}

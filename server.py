@@ -24,6 +24,7 @@ import json
 import math
 import os
 from pathlib import Path
+import random
 import re
 import secrets
 import shutil
@@ -706,6 +707,50 @@ def mask_name(name):
 PAPER_SCAN_MAX_PAGES = 80
 # 掃描草稿保留幾天：80 頁的 PDF 不小，批完就刪；沒批完的留一週讓老師回來續批。
 PAPER_DRAFT_DAYS = 7
+
+
+def classroom_ensure(db):
+    """課堂應用：一節課一列。分組／任務／分數／狀態／操作紀錄全部存 JSON，
+    這樣「分組當下的名單」會被保存下來，之後班級名單再變也不影響歷史紀錄。"""
+    db.execute("""CREATE TABLE IF NOT EXISTS classroom_sessions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    teacher_id INTEGER NOT NULL,
+                    class_id INTEGER,
+                    title TEXT,
+                    status TEXT NOT NULL,
+                    groups TEXT NOT NULL,
+                    tasks TEXT NOT NULL,
+                    scores TEXT NOT NULL,
+                    statuses TEXT NOT NULL,
+                    log TEXT NOT NULL,
+                    started_at REAL NOT NULL,
+                    ended_at REAL)""")
+
+
+def classroom_json(row):
+    return {'id': row['id'], 'classId': row['class_id'], 'title': row['title'],
+            'status': row['status'], 'groups': json.loads(row['groups']),
+            'tasks': json.loads(row['tasks']), 'scores': json.loads(row['scores']),
+            'statuses': json.loads(row['statuses']), 'log': json.loads(row['log']),
+            'startedAt': row['started_at'], 'endedAt': row['ended_at']}
+
+
+def classroom_groups(students, size, mode='random', averages=None):
+    """把學生分成小組：隨機打散，或依最近成績「蛇形分配」（高低分同組）。"""
+    people = [dict(st) for st in students]
+    count = max(1, math.ceil(len(people) / max(2, size)))
+    if mode == 'mixed':
+        people.sort(key=lambda st: (averages or {}).get(st['id'], 0), reverse=True)
+        buckets = [[] for _ in range(count)]
+        for i, st in enumerate(people):
+            row = i // count
+            col = i % count if row % 2 == 0 else count - 1 - (i % count)
+            buckets[col].append(st)
+    else:
+        random.shuffle(people)
+        buckets = [people[i::count] for i in range(count)]
+    return [{'id': i + 1, 'name': f'第 {i + 1} 組', 'leader': None, 'members': b}
+            for i, b in enumerate(buckets) if b]
 
 
 def ensure_paper_drafts(db):
@@ -6269,6 +6314,165 @@ class Application:
                               'totalQuestions': len([q for q in questions if q['correct'] is not None]),
                               'correctCount': sum(1 for q in questions if q['correct'] is True),
                               'questions': questions}}, headers
+        # ---------- 課堂應用（分組教學；所有功能都掛在這裡） ----------
+        if method == 'POST' and path == '/api/classroom/groups':
+            self.teacher(user)
+            fields(body, ('classId', 'size', 'mode'), ('classId',))
+            class_id = number(body['classId'], '班別', 1, 10 ** 18, True)
+            size = number(body.get('size') or 4, '每組人數', 2, 8, True)
+            mode = 'mixed' if body.get('mode') == 'mixed' else 'random'
+            with self.db() as db:
+                row = db.execute('SELECT teacher_id, name FROM classes WHERE id=?',
+                                 (class_id,)).fetchone()
+                if row is None:
+                    fail(404, '找不到這個班別。')
+                if row['teacher_id'] != user['id'] and not self.is_owner(user, db):
+                    fail(403, '只有設立該班級的老師可以使用課堂應用。')
+                students = [dict(r) for r in db.execute(
+                    'SELECT u.id,u.name,u.seat FROM users u JOIN class_students cs '
+                    'ON cs.user_id=u.id WHERE cs.class_id=? '
+                    'ORDER BY COALESCE(u.seat,999), u.id', (class_id,))]
+                averages = {}
+                if mode == 'mixed' and students:
+                    marks = ','.join('?' * len(students))
+                    for r in db.execute(
+                            f'SELECT user_id, AVG(score) AS avg FROM attempts '
+                            f'WHERE user_id IN ({marks}) GROUP BY user_id',
+                            tuple(st['id'] for st in students)):
+                        averages[r['user_id']] = r['avg'] or 0
+            if not students:
+                fail(422, '這個班還沒有學生；先在成績總表匯入名單。')
+            return {'groups': classroom_groups(students, size, mode, averages),
+                    'className': row['name']}, headers
+        if method == 'POST' and path == '/api/classroom/sessions':
+            # 「教師同意才開展」：只有老師按了開始課堂、送出這個請求才會建立課堂
+            self.teacher(user)
+            fields(body, ('classId', 'title', 'groups', 'tasks'), ('classId', 'groups'))
+            class_id = number(body['classId'], '班別', 1, 10 ** 18, True)
+            groups = body['groups']
+            if not isinstance(groups, list) or not 1 <= len(groups) <= 20:
+                fail(400, '請提供 1 至 20 個小組。')
+            for g in groups:
+                if not isinstance(g, dict) or not isinstance(g.get('members'), list):
+                    fail(400, '小組資料格式不正確。')
+            tasks = body.get('tasks') if isinstance(body.get('tasks'), list) else []
+            title = (text(body['title'], '課堂名稱', 120)
+                     if str(body.get('title') or '').strip() else '未命名課堂')
+            with self.db() as db:
+                row = db.execute('SELECT teacher_id FROM classes WHERE id=?', (class_id,)).fetchone()
+                if row is None:
+                    fail(404, '找不到這個班別。')
+                if row['teacher_id'] != user['id'] and not self.is_owner(user, db):
+                    fail(403, '只有設立該班級的老師可以開始課堂。')
+                classroom_ensure(db)
+                scores = {str(g['id']): 0 for g in groups}
+                statuses = {str(g['id']): {'submitted': False, 'help': False} for g in groups}
+                sid = db.execute(
+                    'INSERT INTO classroom_sessions(teacher_id,class_id,title,status,groups,tasks,'
+                    'scores,statuses,log,started_at,ended_at) VALUES(?,?,?,?,?,?,?,?,?,?,NULL)',
+                    (user['id'], class_id, title, 'running',
+                     json.dumps(groups, ensure_ascii=False),
+                     json.dumps(tasks, ensure_ascii=False),
+                     json.dumps(scores), json.dumps(statuses), '[]', time.time())).lastrowid
+            return {'sessionId': sid}, headers
+        if method == 'GET' and path == '/api/classroom/sessions':
+            self.teacher(user)
+            with self.db() as db:
+                classroom_ensure(db)
+                rows = db.execute(
+                    'SELECT s.id,s.title,s.status,s.started_at,s.ended_at,s.scores,s.groups,'
+                    'c.name AS class_name FROM classroom_sessions s '
+                    'LEFT JOIN classes c ON c.id=s.class_id '
+                    'WHERE s.teacher_id=? ORDER BY s.id DESC LIMIT 50', (user['id'],)).fetchall()
+            out = []
+            for r in rows:
+                scores = json.loads(r['scores'] or '{}')
+                out.append({'id': r['id'], 'title': r['title'], 'status': r['status'],
+                            'className': r['class_name'] or '',
+                            'groups': len(json.loads(r['groups'] or '[]')),
+                            'points': sum(scores.values()),
+                            'startedAt': r['started_at'], 'endedAt': r['ended_at']})
+            return {'sessions': out}, headers
+        if method in ('GET', 'DELETE') and re.fullmatch(
+                r'/api/classroom/sessions/([1-9]\d{0,17})', path):
+            self.teacher(user)
+            sid = int(path.rsplit('/', 1)[-1])
+            with self.db() as db:
+                classroom_ensure(db)
+                row = db.execute('SELECT * FROM classroom_sessions WHERE id=?', (sid,)).fetchone()
+                if row is None:
+                    fail(404, '找不到這堂課。')
+                if row['teacher_id'] != user['id'] and not self.is_owner(user, db):
+                    fail(403, '只有這堂課的老師可以查看。')
+                if method == 'DELETE':
+                    db.execute('DELETE FROM classroom_sessions WHERE id=?', (sid,))
+                    return {'ok': True}, headers
+                return {'session': classroom_json(row)}, headers
+        action_match = re.fullmatch(
+            r'/api/classroom/sessions/([1-9]\d{0,17})/(score|undo|status|end|update)', path)
+        if method == 'POST' and action_match:
+            self.teacher(user)
+            sid, action = int(action_match.group(1)), action_match.group(2)
+            with self.db() as db:
+                classroom_ensure(db)
+                row = db.execute('SELECT * FROM classroom_sessions WHERE id=?', (sid,)).fetchone()
+                if row is None:
+                    fail(404, '找不到這堂課。')
+                if row['teacher_id'] != user['id'] and not self.is_owner(user, db):
+                    fail(403, '只有這堂課的老師可以操作。')
+                if row['status'] != 'running' and action != 'end':
+                    fail(409, '這堂課已經結束了。')
+                data = classroom_json(row)
+                if action == 'score':
+                    fields(body, ('groupId', 'delta', 'text'), ('groupId', 'delta'))
+                    gid = str(number(body['groupId'], '小組', 1, 999, True))
+                    if gid not in data['scores']:
+                        fail(404, '找不到這個小組。')
+                    delta = number(body['delta'], '分數', -100, 100, True)
+                    data['scores'][gid] = data['scores'].get(gid, 0) + delta
+                    data['log'].append({'at': time.time(), 'groupId': gid, 'delta': delta,
+                                        'text': str(body.get('text') or '')[:60]})
+                elif action == 'undo':
+                    if not data['log']:
+                        fail(409, '沒有可以復原的操作。')
+                    last = data['log'].pop()
+                    gid = str(last.get('groupId'))
+                    if gid in data['scores']:
+                        data['scores'][gid] -= last.get('delta') or 0
+                elif action == 'status':
+                    fields(body, ('groupId', 'submitted', 'help'), ('groupId',))
+                    gid = str(number(body['groupId'], '小組', 1, 999, True))
+                    cur = data['statuses'].setdefault(gid, {'submitted': False, 'help': False})
+                    if 'submitted' in body:
+                        cur['submitted'] = bool(body['submitted'])
+                    if 'help' in body:
+                        cur['help'] = bool(body['help'])
+                elif action == 'update':
+                    fields(body, ('title', 'groups', 'tasks'), ())
+                    if isinstance(body.get('groups'), list) and body['groups']:
+                        data['groups'] = body['groups']
+                        data['scores'] = {str(g['id']): data['scores'].get(str(g['id']), 0)
+                                          for g in data['groups']}
+                        data['statuses'] = {str(g['id']): data['statuses'].get(
+                            str(g['id']), {'submitted': False, 'help': False})
+                            for g in data['groups']}
+                    if isinstance(body.get('tasks'), list):
+                        data['tasks'] = body['tasks']
+                    if str(body.get('title') or '').strip():
+                        data['title'] = str(body['title']).strip()[:120]
+                else:      # end
+                    data['status'] = 'ended'
+                    data['endedAt'] = time.time()
+                db.execute(
+                    'UPDATE classroom_sessions SET title=?,status=?,groups=?,tasks=?,scores=?,'
+                    'statuses=?,log=?,ended_at=? WHERE id=?',
+                    (data['title'], data['status'],
+                     json.dumps(data['groups'], ensure_ascii=False),
+                     json.dumps(data['tasks'], ensure_ascii=False),
+                     json.dumps(data['scores']), json.dumps(data['statuses']),
+                     json.dumps(data['log'], ensure_ascii=False), data['endedAt'], sid))
+            return {'session': data}, headers
+
         # ---------- 成績總表（教師用，像 Excel 的網格） ----------
         if method == 'GET' and path == '/api/score-grid':
             self.teacher(user)
