@@ -826,6 +826,10 @@ def ensure_paper_drafts(db):
                     pdf BLOB NOT NULL,
                     created_at REAL NOT NULL,
                     updated_at REAL NOT NULL)""")
+    # 批完的草稿不刪（老師要回頭看原卷），只標成 graded，清單就不再顯示。
+    draft_cols = {r['name'] for r in db.execute('PRAGMA table_info(paper_drafts)')}
+    if draft_cols and 'status' not in draft_cols:
+        db.execute("ALTER TABLE paper_drafts ADD COLUMN status TEXT NOT NULL DEFAULT 'pending'")
     db.execute('DELETE FROM paper_drafts WHERE created_at<?',
                (time.time() - PAPER_DRAFT_DAYS * 86400,))
 PAPER_ROSTER_PROMPT = (
@@ -4626,12 +4630,15 @@ def png_data_url(width, height, raw):
     return 'data:image/png;base64,' + base64.b64encode(png).decode()
 
 
-def pdf_page_images(data, max_pages=PAPER_PDF_MAX_PAGES):
+def pdf_page_images(data, max_pages=PAPER_PDF_MAX_PAGES, only=None):
     """把掃描版 PDF 逐頁渲染成 PNG 資料 URL，供教師拆題使用。
 
     教師端沒有「逐頁上傳」的動線，所以由伺服器代勞：文字型 PDF 走 pdf_text()，
     沒有文字層的掃描版就逐頁渲染後交給視覺模型（學生作答的 PDF 已經是這樣處理的）。
     逐頁各送一張圖，一頁一次呼叫；超過頁數上限明確拒絕，不截斷。
+
+    only 給一組 1 起算的頁碼時只渲染這幾頁（批改後回頭看某位學生的卷面用，
+    不必為了一頁把整份 80 頁重新算一遍）。
     """
     if not data.startswith(b'%PDF-'):
         fail(400, '檔案內容不是有效 PDF。')
@@ -4646,7 +4653,11 @@ def pdf_page_images(data, max_pages=PAPER_PDF_MAX_PAGES):
             try:
                 if len(doc) > max_pages:
                     fail(413, f'試卷 PDF 最多 {max_pages} 頁，請分批上傳。')
-                for index in range(len(doc)):
+                if only is None:
+                    indices = list(range(len(doc)))
+                else:
+                    indices = [n - 1 for n in only if isinstance(n, int) and 1 <= n <= len(doc)]
+                for index in indices:
                     page = doc[index]
                     try:
                         pw, ph = page.get_size()
@@ -5283,6 +5294,12 @@ class Application:
             grade_columns = {r['name'] for r in db.execute('PRAGMA table_info(paper_grades)')}
             if grade_columns and 'paper_key_id' not in grade_columns:
                 db.execute('ALTER TABLE paper_grades ADD COLUMN paper_key_id INTEGER')
+            # 批改時記住「這份卷來自哪個掃描草稿、用了哪幾頁」，
+            # 之後老師才能回頭打開原卷核對（PDF 存在草稿裡，不重複存圖）。
+            if grade_columns and 'draft_id' not in grade_columns:
+                db.execute('ALTER TABLE paper_grades ADD COLUMN draft_id INTEGER')
+            if grade_columns and 'page_nums' not in grade_columns:
+                db.execute("ALTER TABLE paper_grades ADD COLUMN page_nums TEXT NOT NULL DEFAULT '[]'")
             db.execute('BEGIN IMMEDIATE')
             # 舊資料只有 questions.paper_id，補進對照表（INSERT OR IGNORE 可重複執行）。
             # 放在 BEGIN 之後：INSERT 會開隱式交易，提前跑會讓這裡的 BEGIN 失敗。
@@ -6247,7 +6264,8 @@ class Application:
         if method == 'POST' and path == '/api/paper-grades':
             # 教師上傳整份紙本功課（題目 + 學生手寫答案），AI 逐題判斷對錯並以 100 分制評分。
             self.teacher(user)
-            fields(body, ('studentId', 'title', 'pages', 'paperKeyId', 'consentExternal'),
+            fields(body, ('studentId', 'title', 'pages', 'paperKeyId', 'consentExternal',
+                          'draftId', 'pageNums'),
                    ('studentId', 'title', 'pages'))
             if 'consentExternal' in body and type(body['consentExternal']) is not bool:
                 fail(400, '外部上傳同意必須是布林值。')
@@ -6291,14 +6309,21 @@ class Application:
             deadline = time.monotonic() + 100
             result = paper_grade_all(self, pages, title, deadline, key)
             detail = json.dumps(result['questions'], ensure_ascii=False)
+            # 原卷出處（只有全班批閱才有）：之後「查看卷面」用得到
+            draft_ref = (number(body['draftId'], '草稿', 1, 10 ** 18, integer=True)
+                         if body.get('draftId') else None)
+            raw_nums = body.get('pageNums') or []
+            page_nums = [n for n in raw_nums
+                         if isinstance(n, int) and not isinstance(n, bool) and 1 <= n <= 999][:10]
             with self.db() as db:
                 cur = db.execute(
                     'INSERT INTO paper_grades(paper_key_id,teacher_id,student_id,title,pages,'
-                    'total_questions,correct_count,score,detail,created_at) '
-                    'VALUES(?,?,?,?,?,?,?,?,?,?)',
+                    'total_questions,correct_count,score,detail,created_at,draft_id,page_nums) '
+                    'VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',
                     (paper_key_id, user['id'], student_id, title, len(pages),
                      result['totalQuestions'], result['correctCount'], result['score'], detail,
-                     datetime.now(timezone.utc).isoformat()))
+                     datetime.now(timezone.utc).isoformat(), draft_ref,
+                     json.dumps(page_nums)))
                 grade_id = cur.lastrowid
             return {'grade': {'id': grade_id, 'studentId': student_id, 'studentName': student['name'],
                               'title': title, 'pages': len(pages),
@@ -6340,6 +6365,33 @@ class Application:
                 db.execute('UPDATE paper_grades SET detail=? WHERE id=?',
                            (json.dumps(questions, ensure_ascii=False), grade_id))
             return {'noteBox': clean}, headers
+        pages_path = re.fullmatch(r'/api/paper-grades/([1-9]\d{0,17})/pages', path)
+        if method == 'GET' and pages_path:
+            # 全班批閱之後回頭看某位學生的原卷：從當初的掃描草稿重新渲染那幾頁。
+            # 不另外存圖，一份 80 頁的 PDF 只留一份，資料庫不會被圖片撐大。
+            self.teacher(user)
+            grade_id = int(pages_path[1])
+            with self.db() as db:
+                row = db.execute('SELECT * FROM paper_grades WHERE id=?', (grade_id,)).fetchone()
+                if row is None:
+                    fail(404, '找不到這筆批改紀錄。')
+                if row['teacher_id'] != user['id'] and not self.is_owner(user, db):
+                    fail(403, '只有批改這份卷的老師可以查看原卷。')
+                draft_id = row['draft_id']
+                try:
+                    nums = json.loads(row['page_nums'] or '[]')
+                except (TypeError, ValueError):
+                    nums = []
+                if not draft_id or not nums:
+                    return {'pages': [], 'pageNums': [],
+                            'notice': '這份卷是逐頁上傳批改的，原圖沒有留在伺服器；分數與逐題紀錄仍可查看。'}, headers
+                draft = db.execute('SELECT pdf FROM paper_drafts WHERE id=?',
+                                   (draft_id,)).fetchone()
+            if draft is None:
+                return {'pages': [], 'pageNums': nums,
+                        'notice': '原卷掃描檔已超過七天被清理，只剩分數與逐題紀錄。'}, headers
+            imgs = pdf_page_images(draft['pdf'], max_pages=PAPER_SCAN_MAX_PAGES, only=nums)
+            return {'pages': imgs, 'pageNums': nums}, headers
         judge_path = re.fullmatch(r'/api/paper-grades/([1-9]\d{0,17})/judge', path)
         if method == 'POST' and judge_path:
             # 教師補判：AI 看不清（correct=null）的題目由教師判定，之後一併重算分數。
@@ -7672,6 +7724,10 @@ class Application:
                     failed.append({'studentId': student_id, 'reason': '沒有對應的頁面'})
                     continue
                 payload = {'studentId': student_id, 'title': title, 'pages': imgs}
+                # 記下原卷出處，批完之後老師可以點開這位學生的卷面核對
+                if draft_id is not None:
+                    payload['draftId'] = draft_id
+                    payload['pageNums'] = [n for n in nums if isinstance(n, int)]
                 # 外部 AI 模式下單份批改也會再檢查一次同意；這裡沒帶就會每份都 403，
                 # 老師看到的結果就是「批改 0 份」。
                 if 'consentExternal' in body:
@@ -7684,10 +7740,11 @@ class Application:
                     done.append({'studentId': student_id, 'grade': result.get('grade')})
                 except APIError as exc:
                     failed.append({'studentId': student_id, 'reason': exc.message})
-            # 全部批完就刪掉草稿（PDF 不小）；有失敗就留著，老師可以補批
+            # 批完不刪草稿：原卷留著讓老師點開核對，清單只列還沒批完的（status=pending）
             if draft_id is not None and not failed:
                 with self.db() as db:
-                    db.execute('DELETE FROM paper_drafts WHERE id=?', (draft_id,))
+                    db.execute("UPDATE paper_drafts SET status='graded', updated_at=? WHERE id=?",
+                               (time.time(), draft_id))
             return {'graded': done, 'failed': failed,
                     'summary': {'graded': len(done), 'failed': len(failed)}}, headers
         if method == 'POST' and path == '/api/paper-grades/scan':
@@ -7758,7 +7815,8 @@ class Application:
                 ensure_paper_drafts(db)
                 rows = db.execute(
                     'SELECT id,title,class_id,pages,sheets,created_at FROM paper_drafts '
-                    'WHERE teacher_id=? ORDER BY id DESC LIMIT 20', (user['id'],)).fetchall()
+                    "WHERE teacher_id=? AND COALESCE(status,'pending')='pending' "
+                    'ORDER BY id DESC LIMIT 20', (user['id'],)).fetchall()
                 names = {r['id']: r['name'] for r in db.execute('SELECT id,name FROM classes')}
             drafts = []
             for row in rows:

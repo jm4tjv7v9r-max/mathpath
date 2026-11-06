@@ -4525,10 +4525,58 @@ async function paperBatchPage(){
       const reasons=[...new Set((out.failed||[]).map(f=>f.reason).filter(Boolean))];
       $('#pb-status').innerHTML=`批改完成：${out.summary.graded} 份成功、${out.summary.failed} 份失敗。`
         +(reasons.length?`<br><span class="small-text">失敗原因：${esc(reasons.slice(0,3).join('；'))}</span>`:'');
-      if(!out.summary.failed){lastScan=null;$('#pb-result').innerHTML='';}
+      renderBatchResults(out);
+      if(!out.summary.failed)lastScan=null;
       await loadDrafts();
     }catch(e){toast(e.message);}
     btn.disabled=false;btn.textContent='確認並開始批改';
+  }
+  // 批改結果：每份一行，可打開該學生的原卷逐題核對（原卷由掃描草稿重新渲染）。
+  function renderBatchResults(out){
+    const roster=(lastScan&&lastScan.res&&lastScan.res.roster)||[];
+    const nameOf=id=>{
+      const r=roster.find(x=>Number(x.id)===Number(id));
+      return r?r.name:`學生 ${id}`;
+    };
+    const graded=out.graded||[],failed=out.failed||[];
+    const rows=graded.map(x=>{
+      const g=x.grade||{};
+      const pending=g.pending?` · <span class="paper-pending">${g.pending} 題待判</span>`:'';
+      return `<tr data-grade-row="${g.id||''}">
+        <td>${esc(g.studentName||nameOf(x.studentId))}</td>
+        <td><strong>${g.score==null?'—':fmtScore(g.score)}</strong> <span class="small-text">/ 100</span></td>
+        <td class="small-text">${g.totalQuestions==null?'—':g.totalQuestions} 題 · 對 ${g.correctCount==null?'—':g.correctCount}${pending}</td>
+        <td>${g.id?`<button class="secondary" data-view-grade="${g.id}">查看卷面</button>`:''}</td></tr>`;
+    }).join('');
+    const failRows=failed.map(x=>`<tr><td>${esc(nameOf(x.studentId))}</td>
+      <td colspan="2" class="small-text" style="color:#b8453b">${esc(x.reason||'批改失敗')}</td><td></td></tr>`).join('');
+    $('#pb-result').innerHTML=`<section class="panel panel-pad" style="margin-top:12px">
+      <h2 style="margin-bottom:8px">批改結果</h2>
+      <table class="board-table"><thead><tr><th>學生</th><th>分數</th><th>判定</th><th></th></tr></thead>
+        <tbody>${rows}${failRows}</tbody></table>
+      <p class="field-hint">按「查看卷面」打開該學生的原卷，可逐題核對 AI 的判斷；批註可拖動。</p>
+      <div id="pb-viewer"></div></section>`;
+    $$('[data-view-grade]').forEach(b=>b.onclick=()=>{
+      const hit=graded.find(x=>String((x.grade||{}).id)===b.dataset.viewGrade);
+      if(hit)openPaperPages(hit.grade);
+    });
+  }
+  async function openPaperPages(grade){
+    const box=$('#pb-viewer');
+    if(!box||!grade)return;
+    box.innerHTML='<p class="small-text">載入原卷…</p>';
+    try{
+      const out=await api(`/api/paper-grades/${grade.id}/pages`);
+      if(!(out.pages||[]).length){
+        box.innerHTML=`<p class="small-text">${esc(out.notice||'這份卷沒有留存原圖，只能看下面的逐題紀錄。')}</p>`;
+        paperPages=[];paperGradeId=grade.id;
+        box.insertAdjacentHTML('beforeend',paperResultHtml(grade));
+        return;
+      }
+      paperPages=out.pages;paperGradeId=grade.id;
+      box.innerHTML=paperResultHtml(grade);
+      box.scrollIntoView({block:'start',behavior:'smooth'});
+    }catch(e){box.innerHTML=`<p class="error-text">${esc(e.message)}</p>`;}
   }
   function renderBatch(res,keep){
     const pick=(i,cur)=>String((keep&&keep[i])||cur||'');

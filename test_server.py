@@ -3900,17 +3900,18 @@ class DataAdminTests(unittest.TestCase):
         self.assertEqual(board['termStart'], '2026-09-01', '學年從 9/1 起算')
 
         # 得分榜：中三按本月得分排，中三甲 30 > 中三乙 12
+        # （對外一律遮蔽姓名：中三甲 → 中X甲）
         s3 = board['score']['中三']
-        self.assertEqual([x['name'] for x in s3], ['中三甲', '中三乙'])
+        self.assertEqual([x['name'] for x in s3], ['中X甲', '中X乙'])
         self.assertEqual(s3[0]['rank'], 1)
         self.assertEqual(s3[0]['monthScore'], 30)
         self.assertEqual(s3[0]['termScore'], 40, '開學至今＝9 月 10 + 10 月 30')
         self.assertEqual(s3[0]['totalScore'], 47, '累積含上學年的 7 分')
-        self.assertEqual(board['score']['中二'][0]['name'], '中二甲', '不同年級分開排')
+        self.assertEqual(board['score']['中二'][0]['name'], '中X甲', '不同年級分開排')
 
         # 進步榜：中三甲 30/10 = 3.0，中三乙 12/12 = 1.0
         p3 = board['progress']['中三']
-        self.assertEqual(p3[0]['name'], '中三甲')
+        self.assertEqual(p3[0]['name'], '中X甲')
         self.assertEqual(p3[0]['ratio'], 3.0)
         self.assertEqual(p3[1]['ratio'], 1.0)
         self.assertNotIn('中二', board['progress'], '中二甲上月沒有分數，不列入進步榜')
@@ -3957,7 +3958,7 @@ class DataAdminTests(unittest.TestCase):
         self.assertEqual(g['correctCount'], 2)
         self.assertEqual(g['unreadable'], 1)
         self.assertAlmostEqual(g['score'], 66.7, places=1)
-        self.assertEqual(g['studentName'], '紙本學生')
+        self.assertEqual(g['studentName'], '紙XX生', '對外顯示遮蔽姓名（紙本學生 → 紙XX生）')
         _, listing, _ = self.request('GET', '/api/paper-grades', cookie=self.teacher, expect=200)
         self.assertEqual(listing['grades'][0]['title'], '第一次功課')
         self.assertEqual(len(listing['grades'][0]['questions']), 4)
@@ -4944,6 +4945,33 @@ class PaperDraftTests(unittest.TestCase):
             self.app.ai.mode = old_mode
         self.assertEqual(out['summary']['graded'], 1, out.get('failed'))
         self.assertEqual(out['summary']['failed'], 0)
+
+    def test_graded_draft_is_kept_so_the_teacher_can_reopen_the_paper(self):
+        """批完不刪草稿：老師要能點開學生原卷核對；清單不再顯示已批完的。"""
+        from unittest import mock
+        scan = self.scan()
+        fake = {'questions': [], 'totalQuestions': 1, 'correctCount': 1, 'unreadable': 0,
+                'pending': 0, 'pageWarnings': [], 'failedPages': [], 'earned': 10,
+                'possible': 10, 'score': 100}
+        with mock.patch.object(server, 'pdf_page_images',
+                               lambda data, max_pages=80, only=None: [b'p1', b'p2']), \
+             mock.patch.object(server, 'validate_image', lambda page: None), \
+             mock.patch.object(server, 'paper_grade_all', lambda *a, **k: dict(fake)):
+            out = self.call('POST', '/api/paper-grades/batch',
+                            {'draftId': scan['draftId'], 'title': '第三次功課',
+                             'sheets': [{'studentId': self.student['id'], 'pages': [1, 2]}],
+                             'consentExternal': True})
+        self.assertEqual(out['summary']['graded'], 1, out.get('failed'))
+        self.assertEqual(self.call('GET', '/api/paper-grades/drafts')['drafts'], [],
+                         '批完的草稿不該留在「未完成的批閱」')
+        gid = out['graded'][0]['grade']['id']
+        render = mock.Mock(side_effect=lambda data, max_pages=80, only=None: [b'p1', b'p2'])
+        with mock.patch.object(server, 'pdf_page_images', render):
+            pages = self.call('GET', f'/api/paper-grades/{gid}/pages')
+        self.assertEqual(pages['pageNums'], [1, 2])
+        self.assertEqual(len(pages['pages']), 2)
+        self.assertEqual(render.call_args.kwargs.get('only'), [1, 2],
+                         '只渲染這位學生的頁，不要重算整份 80 頁')
 
     def test_batch_requires_file_or_draft(self):
         self.call('POST', '/api/paper-grades/batch', {'title': 'x', 'sheets': []}, expect=400)
