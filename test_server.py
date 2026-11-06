@@ -4992,6 +4992,30 @@ class ClassroomTests(unittest.TestCase):
         self.assertEqual(applied['scores'][str(g1)], 4, '互評平均 4 分要併進總分')
         self.call('POST', f'/api/classroom/sessions/{sid}/apply-reviews', {}, expect=409)
 
+    def test_export_classroom_scores_to_grade_grid(self):
+        """結束課堂後可把各組分數寫進成績總表：新增一欄，組員各得該組分數。"""
+        sid, groups = self.make_session()
+        g1 = groups[0]['id']
+        self.call('POST', f'/api/classroom/sessions/{sid}/score',
+                  {'groupId': g1, 'delta': 3})
+        self.call('POST', f'/api/classroom/sessions/{sid}/end', {})
+        out = self.call('POST', f'/api/classroom/sessions/{sid}/to-grade', {})
+        self.assertEqual(out['students'], 5, '全班 5 人各得自己所屬組別的分數')
+
+        grid = self.call('GET', '/api/score-grid', {'classId': self.class_id})
+        self.assertEqual(len(grid['columns']), 1, '成績總表要多一欄')
+        self.assertEqual(grid['columns'][0]['title'], '課堂表現 · 二次函數探究')
+        members = {m['id'] for m in groups[0]['members']}
+        for row in grid['students']:
+            self.assertEqual(row['cells'][0]['score'], 3 if row['id'] in members else 0)
+
+        got = self.call('GET', f'/api/classroom/sessions/{sid}')['session']
+        self.assertTrue(got['gradeAssignmentId'])
+        # 不能重複匯出
+        self.call('POST', f'/api/classroom/sessions/{sid}/to-grade', {}, expect=409)
+        # 列表要標示已匯出
+        self.assertTrue(self.call('GET', '/api/classroom/sessions')['sessions'][0]['graded'])
+
     def test_other_teacher_cannot_open_the_class(self):
         sid, _ = self.make_session()
         with self.app.db() as db:

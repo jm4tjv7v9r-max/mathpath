@@ -4029,7 +4029,10 @@ async function classroomRecordsPage() {
       <div class="cr-records">${rows.map(s => `<div class="cr-record" data-s="${s.id}">
         <div><strong>${esc(s.title || '未命名課堂')}</strong>
           <span class="small-text">${new Date((s.startedAt || 0) * 1000).toLocaleString()} · ${esc(s.className || '')} · ${s.groups} 組 · 合計 ${s.points} 分${s.status === 'running' ? ' · 進行中' : ''}</span></div>
-        <div class="cr-record-btns"><button class="secondary" data-open="${s.id}">查看</button>
+        <div class="cr-record-btns">
+          ${s.graded ? '<span class="small-text">已匯出成績</span>'
+                     : (s.status === 'ended' ? `<button class="secondary" data-grade="${s.id}">匯出成績</button>` : '')}
+          <button class="secondary" data-open="${s.id}">查看</button>
           <button class="text-button" data-del="${s.id}">刪除</button></div>
       </div>`).join('') || '<p class="small-text">還沒有課堂紀錄。</p>'}</div>
     </section></div>`;
@@ -4044,6 +4047,18 @@ async function classroomRecordsPage() {
           <td>${(g.members || []).map(m => esc(m.name || '')).join('、')}</td>
           <td>${scores[String(g.id)] || 0}</td></tr>`).join('')}</tbody></table>
         <p class="small-text" style="margin-top:10px">任務：${(session.tasks || []).map(t => esc(t.title || '')).join('、') || '—'}</p>`);
+    } catch (e) { toast(e.message); }
+  });
+  // 匯出課堂成績：在成績總表新增一欄，組員各得該組分數（之後仍可手改）
+  $$('[data-grade]').forEach(b => b.onclick = async () => {
+    const ok = await askConfirm(
+      '在成績總表新增一欄「課堂表現」，各組成員會得到自己所屬組別的分數。\n\n之後仍可在成績總表逐格修改。',
+      { title: '匯出課堂成績', confirmText: '匯出' });
+    if (!ok) return;
+    try {
+      const out = await api(`/api/classroom/sessions/${b.dataset.grade}/to-grade`, {});
+      toast(`已寫入 ${out.students} 位學生（${out.title}）`);
+      classroomRecordsPage();
     } catch (e) { toast(e.message); }
   });
   $$('[data-del]').forEach(b => b.onclick = async () => {

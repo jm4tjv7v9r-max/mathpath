@@ -725,10 +725,11 @@ def classroom_ensure(db):
                     log TEXT NOT NULL,
                     submissions TEXT,
                     reviews TEXT,
+                    grade_assignment_id INTEGER,
                     started_at REAL NOT NULL,
                     ended_at REAL)""")
     cols = {r['name'] for r in db.execute('PRAGMA table_info(classroom_sessions)')}
-    for name in ('submissions', 'reviews'):
+    for name in ('submissions', 'reviews', 'grade_assignment_id'):
         if name not in cols:
             db.execute(f'ALTER TABLE classroom_sessions ADD COLUMN {name} TEXT')
 
@@ -741,6 +742,8 @@ def classroom_json(row):
             'statuses': json.loads(row['statuses']), 'log': json.loads(row['log']),
             'submissions': json.loads((row['submissions'] if 'submissions' in keys else None) or '{}'),
             'reviews': json.loads((row['reviews'] if 'reviews' in keys else None) or '[]'),
+            'gradeAssignmentId': (row['grade_assignment_id']
+                                  if 'grade_assignment_id' in keys else None),
             'startedAt': row['started_at'], 'endedAt': row['ended_at']}
 
 
@@ -6401,7 +6404,7 @@ class Application:
                 classroom_ensure(db)
                 rows = db.execute(
                     'SELECT s.id,s.title,s.status,s.started_at,s.ended_at,s.scores,s.groups,'
-                    'c.name AS class_name FROM classroom_sessions s '
+                    's.grade_assignment_id,c.name AS class_name FROM classroom_sessions s '
                     'LEFT JOIN classes c ON c.id=s.class_id '
                     'WHERE s.teacher_id=? ORDER BY s.id DESC LIMIT 50', (user['id'],)).fetchall()
             out = []
@@ -6411,6 +6414,7 @@ class Application:
                             'className': r['class_name'] or '',
                             'groups': len(json.loads(r['groups'] or '[]')),
                             'points': sum(scores.values()),
+                            'graded': bool(r['grade_assignment_id']),
                             'startedAt': r['started_at'], 'endedAt': r['ended_at']})
             return {'sessions': out}, headers
         if method in ('GET', 'DELETE') and re.fullmatch(
@@ -6429,8 +6433,8 @@ class Application:
                     return {'ok': True}, headers
                 return {'session': classroom_json(row)}, headers
         action_match = re.fullmatch(
-            r'/api/classroom/sessions/([1-9]\d{0,17})/(score|undo|status|end|update|submit|review|apply-reviews)',
-            path)
+            r'/api/classroom/sessions/([1-9]\d{0,17})/'
+            r'(score|undo|status|end|update|submit|review|apply-reviews|to-grade)', path)
         if method == 'POST' and action_match:
             self.teacher(user)
             sid, action = int(action_match.group(1)), action_match.group(2)
@@ -6441,9 +6445,10 @@ class Application:
                     fail(404, '找不到這堂課。')
                 if row['teacher_id'] != user['id'] and not self.is_owner(user, db):
                     fail(403, '只有這堂課的老師可以操作。')
-                if row['status'] != 'running' and action != 'end':
+                if row['status'] != 'running' and action not in ('end', 'to-grade'):
                     fail(409, '這堂課已經結束了。')
                 data = classroom_json(row)
+                result_extra = None
                 if action == 'score':
                     fields(body, ('groupId', 'delta', 'text'), ('groupId', 'delta'))
                     gid = str(number(body['groupId'], '小組', 1, 999, True))
@@ -6518,6 +6523,53 @@ class Application:
                         applied += 1
                     if not applied:
                         fail(409, '還沒有互評分可以併入。')
+                elif action == 'to-grade':
+                    # 把這堂課的組別分數寫進成績總表：新增一欄，組員各得該組分數
+                    if data.get('gradeAssignmentId'):
+                        fail(409, '這堂課已經匯出到成績總表了。')
+                    if not data.get('classId'):
+                        fail(400, '這堂課沒有對應班級，無法匯出成績。')
+                    cls = db.execute('SELECT teacher_id, name FROM classes WHERE id=?',
+                                     (data['classId'],)).fetchone()
+                    if cls is None:
+                        fail(404, '找不到這堂課的班級。')
+                    if cls['teacher_id'] != user['id'] and not self.is_owner(user, db):
+                        fail(403, '只有該班老師可以匯出成績。')
+                    db.execute("""CREATE TABLE IF NOT EXISTS score_overrides (
+                                    assignment_id INTEGER NOT NULL,
+                                    user_id INTEGER NOT NULL,
+                                    score REAL NOT NULL,
+                                    updated_by INTEGER,
+                                    updated_at TEXT NOT NULL,
+                                    PRIMARY KEY (assignment_id, user_id))""")
+                    grade_title = ('課堂表現 · ' + (data['title'] or '課堂'))[:120]
+                    aid = db.execute(
+                        'INSERT INTO assignments(teacher_id,class_id,class_name,title,description,'
+                        'due_at,created_at,allow_late,kind,duration_minutes,ai_grading) '
+                        "VALUES(?,?,?,?,?,?,?,1,'homework',0,1)",
+                        (user['id'], data['classId'], cls['name'], grade_title,
+                         '（課堂應用匯出）', utc_now(), utc_now())).lastrowid
+                    count = 0
+                    for g in data['groups']:
+                        score = max(0, min(1000, int(data['scores'].get(str(g['id'])) or 0)))
+                        for member in g.get('members') or []:
+                            uid = member.get('id')
+                            if not uid:
+                                continue
+                            db.execute(
+                                'INSERT INTO score_overrides(assignment_id,user_id,score,'
+                                'updated_by,updated_at) VALUES(?,?,?,?,?) '
+                                'ON CONFLICT(assignment_id,user_id) DO UPDATE SET '
+                                'score=excluded.score, updated_by=excluded.updated_by, '
+                                'updated_at=excluded.updated_at',
+                                (aid, uid, score, user['id'], utc_now()))
+                            count += 1
+                    if not count:
+                        fail(422, '這堂課的小組沒有成員，沒有可以寫入的學生。')
+                    data['gradeAssignmentId'] = aid
+                    data['gradeTitle'] = grade_title
+                    result_extra = {'assignmentId': aid, 'title': grade_title,
+                                    'students': count}
                 elif action == 'update':
                     fields(body, ('title', 'groups', 'tasks'), ())
                     if isinstance(body.get('groups'), list) and body['groups']:
@@ -6536,7 +6588,8 @@ class Application:
                     data['endedAt'] = time.time()
                 db.execute(
                     'UPDATE classroom_sessions SET title=?,status=?,groups=?,tasks=?,scores=?,'
-                    'statuses=?,log=?,submissions=?,reviews=?,ended_at=? WHERE id=?',
+                    'statuses=?,log=?,submissions=?,reviews=?,grade_assignment_id=?,'
+                    'ended_at=? WHERE id=?',
                     (data['title'], data['status'],
                      json.dumps(data['groups'], ensure_ascii=False),
                      json.dumps(data['tasks'], ensure_ascii=False),
@@ -6544,8 +6597,8 @@ class Application:
                      json.dumps(data['log'], ensure_ascii=False),
                      json.dumps(data.get('submissions') or {}, ensure_ascii=False),
                      json.dumps(data.get('reviews') or [], ensure_ascii=False),
-                     data['endedAt'], sid))
-            return {'session': data}, headers
+                     data.get('gradeAssignmentId'), data['endedAt'], sid))
+            return {'session': data, **(result_extra or {})}, headers
 
         # ---------- 成績總表（教師用，像 Excel 的網格） ----------
         if method == 'GET' and path == '/api/score-grid':
