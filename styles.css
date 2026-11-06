@@ -1264,3 +1264,32 @@ body.cr-live-on{overflow:hidden}
   color:var(--ink);cursor:pointer;font-size:calc(13px*var(--fs))}
 .cr-mark button:hover{background:var(--mint,#eef5ea)}
 .cr-mark button.on{background:var(--green);border-color:var(--green);color:#fff;font-weight:600}
+
+/* 課堂應用：流程模板 */
+.cr-tpls{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 12px}
+.cr-tpl{border:1px dashed var(--border);background:#fff;border-radius:999px;padding:6px 13px;
+  font-size:calc(12.5px*var(--fs));color:var(--ink);cursor:pointer}
+.cr-tpl:hover{background:var(--mint,#eef5ea);border-style:solid}
+
+/* 課堂應用：投影淺色模式（亮教室用） */
+.cr-live.cr-light{background:#f6f8f4;color:#1b2a22}
+.cr-live.cr-light .cr-live-head h2{color:#14211a}
+.cr-live.cr-light .cr-live-head .eyebrow{color:#5b8a6f}
+.cr-live.cr-light .cr-clock{color:#1f3a2c}
+.cr-live.cr-light .cr-clock.warn{color:#b5701a}
+.cr-live.cr-light .cr-clock.done{color:#b8453b}
+.cr-live.cr-light .cr-live-btns .secondary{background:#fff;border-color:#cfdcd2;color:#22352b}
+.cr-live.cr-light .cr-live-btns .secondary:hover{background:#eef4ee}
+.cr-live.cr-light .cr-stage{background:#fff;border-color:#dbe5dc}
+.cr-live.cr-light .cr-stage-title{color:#14211a}
+.cr-live.cr-light .cr-stage-text{color:#24382c}
+.cr-live.cr-light .cr-tasknav .text-button{color:#2f6b4c}
+.cr-live.cr-light .cr-tasknav .small-text{color:#5f7a69}
+.cr-live.cr-light .cr-drawbox{border-color:#c8d8cc;color:#5f7a69}
+.cr-live.cr-light .cr-drawbox strong{color:#14211a}
+.cr-live.cr-light .cr-row{background:#fff;border-color:#dbe5dc}
+.cr-live.cr-light .cr-row-name{color:#14211a}
+.cr-live.cr-light .cr-row-score{color:#a8761f}
+.cr-live.cr-light .cr-row-flags{color:#3f7a5c}
+.cr-live.cr-light .cr-row-btns button{background:#f2f6f1;border-color:#cfdcd2;color:#22352b}
+.cr-live.cr-light .cr-row-btns button:hover{background:#e4eee5}

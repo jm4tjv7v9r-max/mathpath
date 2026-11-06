@@ -3608,6 +3608,23 @@ function fileToDataUrl(file){
 // ── 課堂應用（分組教學）────────────────────────────────────────────
 // 所有課堂功能都只在「課堂應用」之下：分組 → 任務 → 開始（教師確認）→ 進行 → 紀錄。
 let crTimerId = null;
+// 常見的課堂流程：一鍵把任務排好，不用每次重打
+const CR_TEMPLATES = [
+  { id: 'flow', name: '小測 → 討論 → 發表 → 互評', tasks: [
+    { title: '個人小測', text: '先各自完成黑板上的題目，不討論。', minutes: 5 },
+    { title: '小組討論', text: '比較組員的答案：找出不同解法，以及大家都犯的錯。', minutes: 8 },
+    { title: '小組發表', text: '派一位組員說明你們的解法（每組 1 分鐘）。', minutes: 6 },
+    { title: '組間互評', text: '用三個面向評分：解法正確、表達清楚、合作參與。', minutes: 4 },
+  ] },
+  { id: 'race', name: '解題競賽', tasks: [
+    { title: '第一輪', text: '各組同時解題；最快完成而且正確的組加分。', minutes: 6 },
+    { title: '第二輪', text: '換一題較難的：組內先討論兩分鐘，再派代表寫答案。', minutes: 8 },
+  ] },
+  { id: 'jigsaw', name: '拼圖法（各組不同題）', tasks: [
+    { title: '專家組', text: '每組負責一題，先把這一題的解法完全弄懂。', minutes: 8 },
+    { title: '回原組教學', text: '每人把自己那一題教給同組其他成員。', minutes: 10 },
+  ] },
+];
 function crFmt(sec) {
   const m = Math.floor(Math.max(0, sec) / 60), s = Math.max(0, sec) % 60;
   return String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
@@ -3647,6 +3664,8 @@ async function classroomPage() {
           <button class="secondary" id="cr-frombank">從題庫加入</button>
           <button class="secondary" id="cr-addtask">＋ 新增任務</button>
         </span></div>
+      <div class="cr-tpls" id="cr-tpls">${CR_TEMPLATES.map(t =>
+        `<button type="button" class="cr-tpl" data-tpl="${t.id}">${esc(t.name)}</button>`).join('')}</div>
       <div id="cr-tasks" class="cr-tasks"></div>
 
       <div class="cr-startbar">
@@ -3713,6 +3732,16 @@ async function classroomPage() {
   };
   $('#cr-make').onclick = makeGroups;
   $('#cr-again').onclick = makeGroups;
+  $$('[data-tpl]').forEach(b => b.onclick = async () => {
+    const tpl = CR_TEMPLATES.find(t => t.id === b.dataset.tpl);
+    if (!tpl) return;
+    if (state.tasks.length && !(await askConfirm(
+      `套用「${tpl.name}」會取代目前 ${state.tasks.length} 個任務，確定嗎？`,
+      { title: '套用課堂流程', confirmText: '套用' }))) return;
+    state.tasks = tpl.tasks.map((t, i) => ({ id: i + 1, ...t }));
+    renderTasks();
+    toast(`已套用「${tpl.name}」`);
+  });
   $('#cr-addtask').onclick = () => {
     state.tasks.push({ id: state.tasks.length + 1, title: `任務 ${state.tasks.length + 1}`, text: '', minutes: 8 });
     renderTasks();
@@ -3769,6 +3798,21 @@ function crLive(session) {
   document.body.classList.add('cr-live-on');
 
   const task = () => st.session.tasks[st.idx] || { title: '課堂', text: '', minutes: 0 };
+  // 投影字級與淺／深色：記在這台裝置，下一堂課沿用
+  st.scale = Math.min(1.6, Math.max(0.8, Number(localStorage.getItem('crScale')) || 1));
+  box.style.setProperty('--fs', st.scale.toFixed(2));
+  const setScale = v => {
+    st.scale = Math.min(1.6, Math.max(0.8, Math.round(v * 10) / 10));
+    box.style.setProperty('--fs', st.scale.toFixed(2));
+    try { localStorage.setItem('crScale', st.scale.toFixed(2)); } catch (e) {}
+  };
+  const setLight = on => {
+    box.classList.toggle('cr-light', !!on);
+    const b = $('#cr-theme');
+    if (b) b.textContent = on ? '深色' : '淺色';
+    try { localStorage.setItem('crLight', on ? '1' : '0'); } catch (e) {}
+  };
+  if (localStorage.getItem('crLight') === '1') box.classList.add('cr-light');
   const groupName = gid => ((st.session.groups || []).find(g => String(g.id) === String(gid)) || {}).name || '';
   // 互評平均：每筆先取三個面向平均；三筆以上去掉最高最低（避免人情分）
   const reviewAvg = gid => {
@@ -3807,6 +3851,10 @@ function crLive(session) {
         <div><p class="eyebrow">CLASSROOM</p><h2>${esc(s.title || '課堂')}</h2></div>
         <div class="cr-clock" id="cr-clock">${crFmt(st.left)}</div>
         <div class="cr-live-btns">
+          <button class="secondary" id="cr-fs-minus" title="字小一點">A−</button>
+          <button class="secondary" id="cr-fs-plus" title="字大一點">A＋</button>
+          <button class="secondary" id="cr-theme">${box.classList.contains('cr-light') ? '深色' : '淺色'}</button>
+          <button class="secondary" id="cr-full">全屏</button>
           <button class="secondary" id="cr-tstart">${st.running ? '暫停' : '開始計時'}</button>
           <button class="secondary" id="cr-draw">抽一組</button>
           <button class="secondary" id="cr-undo">復原</button>
@@ -3922,6 +3970,13 @@ function crLive(session) {
   };
 
   const bind = () => {
+    $('#cr-fs-minus').onclick = () => setScale((st.scale || 1) - 0.1);
+    $('#cr-fs-plus').onclick = () => setScale((st.scale || 1) + 0.1);
+    $('#cr-theme').onclick = () => setLight(!box.classList.contains('cr-light'));
+    $('#cr-full').onclick = () => {
+      if (document.fullscreenElement) document.exitFullscreen?.();
+      else document.documentElement.requestFullscreen?.();
+    };
     $('#cr-tstart').onclick = () => {
       if (st.running) {
         clearInterval(crTimerId); crTimerId = null; st.running = false;
