@@ -4893,6 +4893,22 @@ class PaperDraftTests(unittest.TestCase):
         self.assertEqual(one['sheets'][0]['pages'], [1, 2], '同一份卷的兩頁要併在一起')
         self.assertEqual(len(one['roster']), 1)
 
+    def test_scan_accepts_class_id_as_a_string(self):
+        """前端 select.value 是字串（"3"）：以前一選班別就報「班別必須是數字」。"""
+        import base64
+        from unittest import mock
+        pdf = 'data:application/pdf;base64,' + base64.b64encode(b'%PDF-1.4 fake').decode()
+        with mock.patch.object(server, 'pdf_page_images',
+                               lambda data, max_pages=80: [b'p1']), \
+             mock.patch.object(server, 'paper_roster', lambda app, pages: [
+                 {'page': 1, 'seat': 7, 'name': '陳大文', 'isFirst': True}]):
+            out = self.call('POST', '/api/paper-grades/scan',
+                            {'file': pdf, 'classId': str(self.class_id), 'title': '字串班別'})
+        self.assertEqual(out['summary']['papers'], 1)
+        # 真的不是數字還是要擋
+        self.call('POST', '/api/paper-grades/scan',
+                  {'file': pdf, 'classId': 'abc', 'title': 'x'}, expect=400)
+
     def test_batch_accepts_a_draft_instead_of_a_file(self):
         from unittest import mock
         scan = self.scan()

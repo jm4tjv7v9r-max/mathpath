@@ -4380,7 +4380,7 @@ async function paperBatchPage(){
     try{
       const data=await fileToDataUrl(file);
       const res=await apiJob('/api/paper-grades/scan',
-        {file:data,classId:$('#pb-class').value||null,title:($('#pb-title').value||'').trim(),
+        {file:data,classId:Number($('#pb-class').value)||null,title:($('#pb-title').value||'').trim(),
          consentExternal:S.ai?.mode==='external'},
         job=>{$('#pb-status').textContent=`掃描中… ${Math.round(job.elapsed||0)} 秒`;});
       renderBatch(res);

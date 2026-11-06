@@ -7697,7 +7697,15 @@ class Application:
             if kind != 'pdf':
                 fail(400, '請上傳 PDF（一次把所有學生的卷掃成一份 PDF）。')
             class_id = body.get('classId')
-            class_id = number(class_id, '班別', 1, 10 ** 18, True) if class_id else None
+            # 前端 select.value 是字串（"3"）：這裡自己收斂，免得舊版前端一選班別就報「班別必須是數字」
+            if class_id not in (None, ''):
+                try:
+                    class_id = int(str(class_id).strip())
+                except (TypeError, ValueError):
+                    fail(400, '班別必須是數字。')
+                class_id = number(class_id, '班別', 1, 10 ** 18, True)
+            else:
+                class_id = None
             self.ai.consent(body.get('consentExternal'))
             pages = pdf_page_images(data, max_pages=PAPER_SCAN_MAX_PAGES)
             if not pages:
