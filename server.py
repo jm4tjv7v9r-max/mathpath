@@ -110,7 +110,8 @@ def query_allowed(path, query):
     測試是直接呼叫 dispatch，繞過了這一層；所以真實 HTTP 的這道檢查要單獨測，
     否則「我的試卷」的年份／級別／學段篩選會在線上直接 400。
     """
-    return not query or path in QUERY_PATHS
+    return not query or path in QUERY_PATHS or bool(
+        re.fullmatch(r'/api/paper-grades/drafts/[1-9]\d{0,17}/pages', path))
 # 需要串流下載的教師端點（不經過一般 JSON 回應）。
 ADMIN_DOWNLOADS = ('/api/admin/backup/db', '/api/admin/archive/questions',
                    '/api/admin/archive/students')
@@ -4667,6 +4668,15 @@ def pdf_page_images(data, max_pages=PAPER_PDF_MAX_PAGES, only=None):
                         bitmap = page.render(scale=scale, force_bitmap_format=pdfium.raw.FPDFBitmap_BGR,
                                              rev_byteorder=True, fill_color=(255, 255, 255, 255))
                         try:
+                            # 橫向掃描（寬 > 高）：轉成直向再送出。
+                            # 手機橫著拍、或整疊卷橫放掃描時，AI 看到的字是躺著的，
+                            # 辨識與批改都會失準；老師核對時也要歪著頭看。
+                            if bitmap.width > bitmap.height:
+                                bitmap.close()
+                                bitmap = page.render(scale=scale, rotation=90,
+                                                     force_bitmap_format=pdfium.raw.FPDFBitmap_BGR,
+                                                     rev_byteorder=True,
+                                                     fill_color=(255, 255, 255, 255))
                             width, height, stride = bitmap.width, bitmap.height, bitmap.stride
                             raw = bytearray()
                             for y in range(height):
@@ -4730,6 +4740,13 @@ def student_pdf_answer(data):
                         bitmap = page.render(scale=scale, force_bitmap_format=pdfium.raw.FPDFBitmap_BGR,
                                              rev_byteorder=True, fill_color=(255, 255, 255, 255))
                         try:
+                            # 橫向頁同樣轉正，否則學生橫著拍的照片批改時字是躺著的
+                            if bitmap.width > bitmap.height:
+                                bitmap.close()
+                                bitmap = page.render(scale=scale, rotation=90,
+                                                     force_bitmap_format=pdfium.raw.FPDFBitmap_BGR,
+                                                     rev_byteorder=True,
+                                                     fill_color=(255, 255, 255, 255))
                             rows = [bytes(bitmap.buffer[y * bitmap.stride:y * bitmap.stride + bitmap.width * 3])
                                     for y in range(bitmap.height)]
                             pages.append((bitmap.width, bitmap.height, rows))
@@ -7844,6 +7861,31 @@ class Application:
                               'sheets': json.loads(row['sheets']),
                               'roster': json.loads(row['roster']),
                               'createdAt': row['created_at']}}, headers
+        draft_pages = re.fullmatch(r'/api/paper-grades/drafts/([1-9]\d{0,17})/pages', path)
+        if method == 'GET' and draft_pages:
+            # 配對表上先看卷面：確認 AI 切的頁對不對，再決定這份卷指派給誰。
+            self.teacher(user)
+            draft_id = int(draft_pages.group(1))
+            raw_q = dict(parse_qsl(query or ''))
+            nums = []
+            for part in str(raw_q.get('nums') or '').split(','):
+                part = part.strip()
+                if part.isdigit():
+                    n = int(part)
+                    if 1 <= n <= PAPER_SCAN_MAX_PAGES:
+                        nums.append(n)
+            if not nums:
+                fail(400, '請指定要看哪幾頁。')
+            with self.db() as db:
+                ensure_paper_drafts(db)
+                row = db.execute('SELECT teacher_id, pdf FROM paper_drafts WHERE id=?',
+                                 (draft_id,)).fetchone()
+                if row is None:
+                    fail(404, '找不到這份草稿（可能已批改或超過七天）。')
+                if row['teacher_id'] != user['id'] and not self.is_owner(user, db):
+                    fail(403, '只有建立這份草稿的老師可以查看卷面。')
+            imgs = pdf_page_images(row['pdf'], max_pages=PAPER_SCAN_MAX_PAGES, only=nums[:10])
+            return {'pages': imgs, 'pageNums': nums[:10]}, headers
         if method == 'DELETE' and re.fullmatch(r'/api/paper-grades/drafts/([1-9]\d{0,17})', path):
             self.teacher(user)
             draft_id = int(path.rsplit('/', 1)[-1])

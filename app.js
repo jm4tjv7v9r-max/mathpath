@@ -4582,18 +4582,36 @@ async function paperBatchPage(){
     const pick=(i,cur)=>String((keep&&keep[i])||cur||'');
     const opts=(i,cur)=>`<option value="">（未指派）</option>`+
       (res.roster||[]).map(u=>`<option value="${u.id}"${String(u.id)===pick(i,cur)?' selected':''}>${esc(u.name)}${u.seat?' · '+esc(u.seat):''}</option>`).join('');
+    // 卷面預覽要靠草稿裡的 PDF；掃描結果是 draftId，續批載入的草稿是 id
+    const viewId=res.draftId||res.id||null;
     const rows=(res.sheets||[]).map((sh,i)=>`<tr>
       <td>${i+1}</td>
       <td>${sh.pages.join('、')}</td>
+      <td>${viewId?`<button class="text-button" data-view-sheet="${i}">查看</button>`:'<span class="small-text">—</span>'}</td>
       <td>${sh.seat??''}</td>
       <td>${esc(sh.name||'')}</td>
       <td>${sh.matchedBy==='seat'?'座號':sh.matchedBy==='name'?'姓名':''}</td>
       <td><select data-sheet="${i}">${opts(i,sh.studentId)}</select></td></tr>`).join('');
     $('#pb-result').innerHTML=`<div class="sg-wrap" style="margin-top:12px"><table class="score-grid">
-      <thead><tr><th>#</th><th>頁碼</th><th>讀到座號</th><th>讀到姓名</th><th>配對方式</th><th>指派給</th></tr></thead>
+      <thead><tr><th>#</th><th>頁碼</th><th>卷面</th><th>讀到座號</th><th>讀到姓名</th><th>配對方式</th><th>指派給</th></tr></thead>
       <tbody>${rows}</tbody></table></div>
-      <p class="field-hint">認不出來的請用右邊下拉指派，然後按下面的按鈕逐份批改。</p>
+      <p class="field-hint">認不出來的請用右邊下拉指派，然後按下面的按鈕逐份批改。按「查看」可先看這份卷的實際畫面，確認 AI 切的頁對不對。</p>
+      <div id="pb-sheet-viewer"></div>
       <div class="sg-bulk-actions"><button class="primary" id="pb-grade">確認並開始批改</button></div>`;
+    $$('[data-view-sheet]').forEach(b=>b.onclick=async()=>{
+      const sh=(res.sheets||[])[Number(b.dataset.viewSheet)];
+      const box=$('#pb-sheet-viewer');
+      if(!sh||!box)return;
+      box.innerHTML='<p class="small-text">載入卷面…</p>';
+      try{
+        const out=await api(`/api/paper-grades/drafts/${viewId}/pages?nums=${sh.pages.join(',')}`);
+        const pages=out.pages||[];
+        box.innerHTML=pages.length
+          ? `<div class="paper-pages">${pages.map((src,i)=>`<figure class="paper-page"><img src="${src}" alt="第 ${sh.pages[i]} 頁"><figcaption>第 ${sh.pages[i]} 頁</figcaption></figure>`).join('')}</div>`
+          : `<p class="small-text">${esc(out.notice||'沒有可顯示的頁面。')}</p>`;
+        box.scrollIntoView({block:'nearest'});
+      }catch(e){box.innerHTML=`<p class="error-text">${esc(e.message)}</p>`;}
+    });
     $('#pb-grade').onclick=()=>gradeBatch(res);
   }
 }

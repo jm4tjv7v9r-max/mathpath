@@ -4973,6 +4973,25 @@ class PaperDraftTests(unittest.TestCase):
         self.assertEqual(render.call_args.kwargs.get('only'), [1, 2],
                          '只渲染這位學生的頁，不要重算整份 80 頁')
 
+    def test_draft_pages_can_be_previewed_before_grading(self):
+        """配對表要能先看卷面：只渲染指定頁，而且查詢參數要放行。"""
+        from unittest import mock
+        scan = self.scan()
+        path = f"/api/paper-grades/drafts/{scan['draftId']}/pages"
+        self.assertTrue(server.query_allowed(path, 'nums=1,2'),
+                        '配對表的卷面預覽要能帶 ?nums=')
+        render = mock.Mock(side_effect=lambda data, max_pages=80, only=None: [b'p1', b'p2'])
+        with mock.patch.object(server, 'pdf_page_images', render):
+            payload, _ = self.app.dispatch('GET', path, {}, self.teacher, None,
+                                           '127.0.0.1', 'nums=1,2')
+        self.assertEqual(payload['pageNums'], [1, 2])
+        self.assertEqual(render.call_args.kwargs.get('only'), [1, 2],
+                         '只渲染這兩頁，不要重算整份 PDF')
+        # 沒指定頁碼要明確擋掉（不然會去渲染 80 頁）
+        with self.assertRaises(server.APIError) as ctx:
+            self.app.dispatch('GET', path, {}, self.teacher, None, '127.0.0.1', '')
+        self.assertEqual(ctx.exception.status, 400)
+
     def test_batch_requires_file_or_draft(self):
         self.call('POST', '/api/paper-grades/batch', {'title': 'x', 'sheets': []}, expect=400)
 
