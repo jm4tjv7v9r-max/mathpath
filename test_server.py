@@ -5039,6 +5039,36 @@ class PaperDraftTests(unittest.TestCase):
         draft = self.call('GET', f"/api/paper-grades/drafts/{out['draftId']}")['draft']
         self.assertEqual(draft['rotation'], 180)
 
+    def test_confirmed_paper_goes_into_the_score_grid(self):
+        """確認分數後要自動寫進成績總表（同名功課共用一個欄位）。"""
+        from unittest import mock
+        scan = self.scan()
+        fake = {'questions': [{'number': '1', 'question': 'q', 'studentAnswer': 'a',
+                               'correct': True, 'level': 'excellent', 'credit': 1.0,
+                               'points': 10, 'box': None, 'note': 'ok'}],
+                'totalQuestions': 1, 'correctCount': 1, 'unreadable': 0, 'pending': 0,
+                'pageWarnings': [], 'failedPages': [], 'earned': 10, 'possible': 10,
+                'score': 88}
+        with mock.patch.object(server, 'pdf_page_images',
+                               lambda data, max_pages=80, only=None, rotation=None,
+                               rotations=None: [b'p1', b'p2']), \
+             mock.patch.object(server, 'validate_image', lambda page: None), \
+             mock.patch.object(server, 'paper_grade_all', lambda *a, **k: dict(fake)):
+            out = self.call('POST', '/api/paper-grades/batch',
+                            {'draftId': scan['draftId'], 'title': '第三次功課',
+                             'sheets': [{'studentId': self.student['id'], 'pages': [1]}],
+                             'consentExternal': True})
+        gid = out['graded'][0]['grade']['id']
+        r = self.call('POST', f'/api/paper-grades/{gid}/confirm', {'confirmed': True})
+        self.assertTrue(r['assignmentId'], '確認後要產生／找到成績總表的欄位')
+        grid = self.call('GET', '/api/score-grid', {'classId': self.class_id})
+        titles = [c['title'] for c in grid['columns']]
+        self.assertIn('第三次功課', titles)
+        row = [s for s in grid['students'] if s['id'] == self.student['id']][0]
+        idx = titles.index('第三次功課')
+        self.assertEqual(row['cells'][idx]['score'], 88)
+        self.assertTrue(row['cells'][idx]['overridden'], '紙本分數以教師調整的形式存入')
+
     def test_teacher_can_confirm_and_lock_a_grade(self):
         """按「確認學生分數」後鎖定；要改再解鎖。"""
         from unittest import mock

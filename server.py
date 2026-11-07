@@ -5167,6 +5167,54 @@ def paper_score(questions):
             'earned': round(earned, 1), 'possible': round(possible, 1), 'pending': pending}
 
 
+def paper_to_grade_grid(db, grade_id):
+    """把一筆紙本批改寫進成績總表：同一份功課（同名）共用一個欄位。
+
+    分數存進 score_overrides，成績總表就會像其他欄位一樣顯示、可再手動改。
+    找不到學生所屬班級時回 None（批改紀錄仍然保留，只是不進總表）。
+    """
+    row = db.execute('SELECT * FROM paper_grades WHERE id=?', (grade_id,)).fetchone()
+    if row is None:
+        return None
+    db.execute("""CREATE TABLE IF NOT EXISTS score_overrides (
+                    assignment_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    score REAL NOT NULL,
+                    updated_by INTEGER,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (assignment_id, user_id))""")
+    cls = db.execute('SELECT class_id FROM class_students WHERE user_id=? '
+                     'ORDER BY class_id LIMIT 1', (row['student_id'],)).fetchone()
+    class_id = row['class_id'] or (cls['class_id'] if cls else None)
+    if class_id is None:
+        return None
+    aid = row['assignment_id']
+    if aid and not db.execute('SELECT 1 FROM assignments WHERE id=?', (aid,)).fetchone():
+        aid = None
+    if not aid:
+        found = db.execute(
+            "SELECT id FROM assignments WHERE teacher_id=? AND COALESCE(class_id,0)=? "
+            "AND title=? AND description LIKE '（紙本批閱）%' ORDER BY id LIMIT 1",
+            (row['teacher_id'], class_id, row['title'])).fetchone()
+        aid = found['id'] if found else None
+    if not aid:
+        cname = db.execute('SELECT name FROM classes WHERE id=?', (class_id,)).fetchone()
+        aid = db.execute(
+            'INSERT INTO assignments(teacher_id,class_id,class_name,title,description,'
+            'due_at,created_at,allow_late,kind,duration_minutes,ai_grading) '
+            "VALUES(?,?,?,?,?,?,?,1,'homework',0,1)",
+            (row['teacher_id'], class_id, (cname['name'] if cname else ''),
+             row['title'], '（紙本批閱）', utc_now(), utc_now())).lastrowid
+    db.execute(
+        'INSERT INTO score_overrides(assignment_id,user_id,score,updated_by,updated_at) '
+        'VALUES(?,?,?,?,?) ON CONFLICT(assignment_id,user_id) DO UPDATE SET '
+        'score=excluded.score, updated_by=excluded.updated_by, updated_at=excluded.updated_at',
+        (aid, row['student_id'], row['score'], row['teacher_id'], utc_now()))
+    db.execute('UPDATE paper_grades SET assignment_id=?, class_id=? WHERE id=?',
+               (aid, class_id, grade_id))
+    return aid
+
+
 def paper_grade_all(app, pages, title, deadline, key=None):
     """逐頁辨識後彙總。"""
     graded, warnings, failures = [], [], []
@@ -5346,7 +5394,9 @@ class Application:
                     score REAL NOT NULL,
                     detail TEXT NOT NULL DEFAULT '[]',
                     created_at TEXT NOT NULL,
-                    confirmed_at TEXT);
+                    confirmed_at TEXT,
+                    assignment_id INTEGER,
+                    class_id INTEGER);
                 CREATE TABLE IF NOT EXISTS paper_templates (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     owner_id INTEGER NOT NULL REFERENCES users(id),
@@ -5480,6 +5530,11 @@ class Application:
             # 教師按「確認學生分數」後鎖定，避免之後誤改
             if grade_columns and 'confirmed_at' not in grade_columns:
                 db.execute('ALTER TABLE paper_grades ADD COLUMN confirmed_at TEXT')
+            # 匯入成績總表用：指回那一個欄位（同一份功課共用）
+            if grade_columns and 'assignment_id' not in grade_columns:
+                db.execute('ALTER TABLE paper_grades ADD COLUMN assignment_id INTEGER')
+            if grade_columns and 'class_id' not in grade_columns:
+                db.execute('ALTER TABLE paper_grades ADD COLUMN class_id INTEGER')
             db.execute('BEGIN IMMEDIATE')
             # 舊資料只有 questions.paper_id，補進對照表（INSERT OR IGNORE 可重複執行）。
             # 放在 BEGIN 之後：INSERT 會開隱式交易，提前跑會讓這裡的 BEGIN 失敗。
@@ -6663,6 +6718,7 @@ class Application:
             if type(val) is not bool:
                 fail(400, '確認狀態必須是布林值。')
             grade_id = int(confirm_path[1])
+            aid = None
             with self.db() as db:
                 row = db.execute('SELECT teacher_id FROM paper_grades WHERE id=?',
                                  (grade_id,)).fetchone()
@@ -6672,7 +6728,10 @@ class Application:
                     fail(403, '只能確認自己建立的批改紀錄。')
                 db.execute('UPDATE paper_grades SET confirmed_at=? WHERE id=?',
                            (datetime.now(timezone.utc).isoformat() if val else None, grade_id))
-            return {'confirmed': val}, headers
+                # 確認即代表定案：同步寫進成績總表（同名功課共用一個欄位）
+                if val:
+                    aid = paper_to_grade_grid(db, grade_id)
+            return {'confirmed': val, 'assignmentId': aid}, headers
         # ---------- 課堂應用（分組教學；所有功能都掛在這裡） ----------
         if method == 'POST' and path == '/api/classroom/groups':
             self.teacher(user)

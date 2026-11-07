@@ -6801,13 +6801,15 @@ if(b.id==='open-math-editor'){openMathEditor();return;}
     const next=b.dataset.paperConfirm==='1';
     b.disabled=true;
     try{
-      await api(`/api/paper-grades/${paperGradeId}/confirm`,{confirmed:next});
+      const r=await api(`/api/paper-grades/${paperGradeId}/confirm`,{confirmed:next});
       if(paperCurrentGrade){
         paperCurrentGrade.confirmed=next;
         const box=$('#pb-viewer')||$('#paper-result');
         if(box)box.innerHTML=paperResultHtml(paperCurrentGrade);
       }
-      toast(next?'已確認分數，這份卷已鎖定。':'已解鎖，可以再修改。');
+      toast(next
+        ? (r.assignmentId?'已確認分數，並匯入成績總表。':'已確認分數（這位學生沒有班級，未匯入成績總表）。')
+        : '已解鎖，可以再修改。');
     }catch(err){b.disabled=false;toast(err.message);}
     return;
   }
