@@ -4871,7 +4871,7 @@ class PaperDraftTests(unittest.TestCase):
         from unittest import mock
         pdf = 'data:application/pdf;base64,' + base64.b64encode(b'%PDF-1.4 fake').decode()
         with mock.patch.object(server, 'pdf_page_images',
-                               lambda data, max_pages=80, only=None, rotation=None: [b'p1', b'p2']), \
+                               lambda data, max_pages=80, only=None, rotation=None, rotations=None: [b'p1', b'p2']), \
              mock.patch.object(server, 'paper_roster', lambda app, pages: [
                  {'page': 1, 'seat': 7, 'name': '陳大文', 'isFirst': True},
                  {'page': 2, 'seat': None, 'name': None, 'isFirst': False}]):
@@ -4900,7 +4900,7 @@ class PaperDraftTests(unittest.TestCase):
         from unittest import mock
         pdf = 'data:application/pdf;base64,' + base64.b64encode(b'%PDF-1.4 fake').decode()
         with mock.patch.object(server, 'pdf_page_images',
-                               lambda data, max_pages=80, only=None, rotation=None: [b'p1']), \
+                               lambda data, max_pages=80, only=None, rotation=None, rotations=None: [b'p1']), \
              mock.patch.object(server, 'paper_roster', lambda app, pages: [
                  {'page': 1, 'seat': 7, 'name': '陳大文', 'isFirst': True}]):
             out = self.call('POST', '/api/paper-grades/scan',
@@ -4914,7 +4914,7 @@ class PaperDraftTests(unittest.TestCase):
         from unittest import mock
         scan = self.scan()
         with mock.patch.object(server, 'pdf_page_images',
-                               lambda data, max_pages=80, only=None, rotation=None: [b'p1', b'p2']):
+                               lambda data, max_pages=80, only=None, rotation=None, rotations=None: [b'p1', b'p2']):
             out = self.call('POST', '/api/paper-grades/batch',
                             {'draftId': scan['draftId'], 'title': '第三次功課',
                              'sheets': [{'studentId': self.student['id'], 'pages': [1, 2]}]})
@@ -4934,7 +4934,7 @@ class PaperDraftTests(unittest.TestCase):
         self.app.ai.mode = 'external'
         try:
             with mock.patch.object(server, 'pdf_page_images',
-                                   lambda data, max_pages=80, only=None, rotation=None: [b'p1', b'p2']), \
+                                   lambda data, max_pages=80, only=None, rotation=None, rotations=None: [b'p1', b'p2']), \
                  mock.patch.object(server, 'validate_image', lambda page: None), \
                  mock.patch.object(server, 'paper_grade_all', lambda *a, **k: dict(fake)):
                 out = self.call('POST', '/api/paper-grades/batch',
@@ -4954,7 +4954,7 @@ class PaperDraftTests(unittest.TestCase):
                 'pending': 0, 'pageWarnings': [], 'failedPages': [], 'earned': 10,
                 'possible': 10, 'score': 100}
         with mock.patch.object(server, 'pdf_page_images',
-                               lambda data, max_pages=80, only=None, rotation=None: [b'p1', b'p2']), \
+                               lambda data, max_pages=80, only=None, rotation=None, rotations=None: [b'p1', b'p2']), \
              mock.patch.object(server, 'validate_image', lambda page: None), \
              mock.patch.object(server, 'paper_grade_all', lambda *a, **k: dict(fake)):
             out = self.call('POST', '/api/paper-grades/batch',
@@ -4965,7 +4965,7 @@ class PaperDraftTests(unittest.TestCase):
         self.assertEqual(self.call('GET', '/api/paper-grades/drafts')['drafts'], [],
                          '批完的草稿不該留在「未完成的批閱」')
         gid = out['graded'][0]['grade']['id']
-        render = mock.Mock(side_effect=lambda data, max_pages=80, only=None, rotation=None: [b'p1', b'p2'])
+        render = mock.Mock(side_effect=lambda data, max_pages=80, only=None, rotation=None, rotations=None: [b'p1', b'p2'])
         with mock.patch.object(server, 'pdf_page_images', render):
             pages = self.call('GET', f'/api/paper-grades/{gid}/pages')
         self.assertEqual(pages['pageNums'], [1, 2])
@@ -4980,7 +4980,7 @@ class PaperDraftTests(unittest.TestCase):
         path = f"/api/paper-grades/drafts/{scan['draftId']}/pages"
         self.assertTrue(server.query_allowed(path, 'nums=1,2'),
                         '配對表的卷面預覽要能帶 ?nums=')
-        render = mock.Mock(side_effect=lambda data, max_pages=80, only=None, rotation=None: [b'p1', b'p2'])
+        render = mock.Mock(side_effect=lambda data, max_pages=80, only=None, rotation=None, rotations=None: [b'p1', b'p2'])
         with mock.patch.object(server, 'pdf_page_images', render):
             payload, _ = self.app.dispatch('GET', path, {}, self.teacher, None,
                                            '127.0.0.1', 'nums=1,2')
@@ -4997,7 +4997,8 @@ class PaperDraftTests(unittest.TestCase):
         import base64
         from unittest import mock
         pdf = 'data:application/pdf;base64,' + base64.b64encode(b'%PDF-1.4 fake').decode()
-        render = mock.Mock(side_effect=lambda data, max_pages=80, only=None, rotation=None:
+        render = mock.Mock(side_effect=lambda data, max_pages=80, only=None, rotation=None,
+                           rotations=None:
                            [b'p1', b'p2'])
         with mock.patch.object(server, 'pdf_page_images', render), \
              mock.patch.object(server, 'paper_orientation', lambda app, image: 180), \
@@ -5006,8 +5007,9 @@ class PaperDraftTests(unittest.TestCase):
             out = self.call('POST', '/api/paper-grades/scan',
                             {'file': pdf, 'classId': self.class_id, 'title': '倒轉'})
         self.assertEqual(out['rotation'], 180)
-        rotations = [c.kwargs.get('rotation') for c in render.call_args_list]
-        self.assertIn(180, rotations, '判定 180° 後要重新渲染成直向')
+        calls = [c.kwargs.get('rotations') or c.kwargs.get('rotation')
+                 for c in render.call_args_list]
+        self.assertIn([180, 180], calls, '判定 180° 後要逐頁轉正重新渲染')
         # 草稿要記住方向，之後看卷面與批改才會跟掃描時一致
         draft = self.call('GET', f"/api/paper-grades/drafts/{out['draftId']}")['draft']
         self.assertEqual(draft['rotation'], 180)
@@ -5022,6 +5024,24 @@ class PaperDraftTests(unittest.TestCase):
         self.assertEqual(draft['rotation'], 90)
         self.call('POST', f"/api/paper-grades/drafts/{scan['draftId']}/rotation",
                   {'rotation': 45}, expect=400)
+
+    def test_each_page_can_have_its_own_rotation(self):
+        """雙面掃描正反面方向常不同：逐頁判斷、逐頁轉，不要一個方向套全份。"""
+        import base64
+        from unittest import mock
+        pdf = 'data:application/pdf;base64,' + base64.b64encode(b'%PDF-1.4 fake').decode()
+        render = mock.Mock(side_effect=lambda data, max_pages=80, only=None, rotation=None,
+                           rotations=None: [b'p1', b'p2'])
+        with mock.patch.object(server, 'pdf_page_images', render), \
+             mock.patch.object(server, 'paper_orientations', lambda app, pages: [180, 0]), \
+             mock.patch.object(server, 'paper_roster', lambda app, pages: [
+                 {'page': 1, 'seat': 7, 'name': '陳大文', 'isFirst': True},
+                 {'page': 2, 'seat': None, 'name': None, 'isFirst': False}]):
+            out = self.call('POST', '/api/paper-grades/scan',
+                            {'file': pdf, 'classId': self.class_id, 'title': '混合方向'})
+        self.assertEqual(out['rotations'], [180, 0])
+        calls = [c.kwargs.get('rotations') for c in render.call_args_list]
+        self.assertIn([180, 0], calls, '每頁各自的方向要傳進去')
 
     def test_batch_requires_file_or_draft(self):
         self.call('POST', '/api/paper-grades/batch', {'title': 'x', 'sheets': []}, expect=400)

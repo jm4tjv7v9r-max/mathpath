@@ -834,6 +834,9 @@ def ensure_paper_drafts(db):
     # 掃描時 AI 判定的頁面方向（0/90/180/270）；NULL＝沒有判斷，用粗略修正
     if draft_cols and 'rotation' not in draft_cols:
         db.execute('ALTER TABLE paper_drafts ADD COLUMN rotation INTEGER')
+    # 逐頁方向（JSON 陣列，index 0＝第 1 頁）：雙面掃描正反面可能不同
+    if draft_cols and 'rotations' not in draft_cols:
+        db.execute('ALTER TABLE paper_drafts ADD COLUMN rotations TEXT')
     db.execute('DELETE FROM paper_drafts WHERE created_at<?',
                (time.time() - PAPER_DRAFT_DAYS * 86400,))
 PAPER_ROSTER_PROMPT = (
@@ -845,20 +848,22 @@ PAPER_ROSTER_PROMPT = (
 
 
 PAPER_ORIENT_PROMPT = (
-    '下面是一頁學生紙本作業的掃描圖。請只判斷這一頁的內容方向，不要理會內容對錯或字跡好壞：'
-    '文字正常（由左至右、由上至下）＝0；'
-    '內容順時針轉了 90 度（字頭朝右）＝90；'
-    '內容上下顛倒（字頭朝下）＝180；'
-    '內容逆時針轉了 90 度（字頭朝左）＝270。'
+    '下面是一頁學生紙本作業的掃描圖。請判斷「這一頁要順時針轉多少度，內容才會變正」，'
+    '不要理會內容對錯或字跡好壞。'
+    '判斷線索：卷面標題（例如「小測」「測驗」「一元二次不等式」）應該在頁面最上方、由左至右讀；'
+    '班級／姓名／學號欄通常在標題下方；題號 1、2、3 應該由上往下遞增；'
+    '文字應該是由左至右、由上而下。'
+    '正常＝0；要順時針轉 90 度才正＝90；要轉 180 度（上下顛倒）＝180；'
+    '要順時針轉 270 度（即逆時針 90 度）＝270。'
     '只回傳 JSON：{"rotation": 0}、{"rotation": 90}、{"rotation": 180} 或 {"rotation": 270}。'
     '看不清楚就回 0，不要猜。'
 )
 
 
 def paper_orientation(app, image):
-    """問 AI「這頁要不要轉正」，回 0／90／180／270；判斷不到回 None。
+    """問 AI「這頁要順時針轉幾度才正」，回 0／90／180／270；判斷不到回 None。
 
-    上下顛倒（180°）從寬高比完全看不出來，只能看字的方向；
+    上下顛倒（180°）從寬高比完全看不出來，只能看字與標題的方向；
     先轉正再認人、再批改，準確度差很多。
     """
     if not image:
@@ -875,6 +880,11 @@ def paper_orientation(app, image):
     except (TypeError, ValueError):
         return None
     return rot if rot in (0, 90, 180, 270) else None
+
+
+def paper_orientations(app, pages):
+    """逐頁問方向（雙面掃描正反面可能不同）；判斷不到的那頁回 None。"""
+    return [paper_orientation(app, image) for image in pages]
 
 
 def paper_roster(app, pages):
@@ -4667,7 +4677,7 @@ def png_data_url(width, height, raw):
     return 'data:image/png;base64,' + base64.b64encode(png).decode()
 
 
-def pdf_page_images(data, max_pages=PAPER_PDF_MAX_PAGES, only=None, rotation=None):
+def pdf_page_images(data, max_pages=PAPER_PDF_MAX_PAGES, only=None, rotation=None, rotations=None):
     """把掃描版 PDF 逐頁渲染成 PNG 資料 URL，供教師拆題使用。
 
     教師端沒有「逐頁上傳」的動線，所以由伺服器代勞：文字型 PDF 走 pdf_text()，
@@ -4677,8 +4687,8 @@ def pdf_page_images(data, max_pages=PAPER_PDF_MAX_PAGES, only=None, rotation=Non
     only 給一組 1 起算的頁碼時只渲染這幾頁（批改後回頭看某位學生的卷面用，
     不必為了一頁把整份 80 頁重新算一遍）。
 
-    rotation 給 0／90／180／270 就照它轉；不給（None）時只做「橫向轉直向」的
-    粗略修正。上下顛倒（180°）看不出來，要由 AI 先判方向再傳進來。
+    rotation 給 0／90／180／270 就整份照它轉；rotations 是逐頁的方向（index 0＝第 1 頁，
+    雙面掃描常有正反面方向不同的情況）；兩個都不給時只做「橫向轉直向」的粗略修正。
     """
     if not data.startswith(b'%PDF-'):
         fail(400, '檔案內容不是有效 PDF。')
@@ -4704,8 +4714,12 @@ def pdf_page_images(data, max_pages=PAPER_PDF_MAX_PAGES, only=None, rotation=Non
                         if not (math.isfinite(pw) and math.isfinite(ph) and pw > 0 and ph > 0):
                             fail(422, 'PDF 頁面尺寸無效。')
                         scale = min(2.0, 1200 / pw, 1600 / ph)
-                        if rotation is not None:
-                            bitmap = page.render(scale=scale, rotation=int(rotation),
+                        # 逐頁方向優先（雙面掃描正反面常不一樣），其次才是整份統一值
+                        page_rot = rotation
+                        if rotations is not None and index < len(rotations):
+                            page_rot = rotations[index]
+                        if page_rot is not None:
+                            bitmap = page.render(scale=scale, rotation=int(page_rot),
                                                  force_bitmap_format=pdfium.raw.FPDFBitmap_BGR,
                                                  rev_byteorder=True,
                                                  fill_color=(255, 255, 255, 255))
@@ -4719,7 +4733,7 @@ def pdf_page_images(data, max_pages=PAPER_PDF_MAX_PAGES, only=None, rotation=Non
                             # 手機橫著拍、或整疊卷橫放掃描時，AI 看到的字是躺著的，
                             # 辨識與批改都會失準；老師核對時也要歪著頭看。
                             # 上下顛倒（180°）看不出來，靠 paper_orientation() 先問 AI。
-                            if rotation is None and bitmap.width > bitmap.height:
+                            if page_rot is None and bitmap.width > bitmap.height:
                                 bitmap.close()
                                 bitmap = page.render(scale=scale, rotation=90,
                                                      force_bitmap_format=pdfium.raw.FPDFBitmap_BGR,
@@ -6450,13 +6464,17 @@ class Application:
                 if not draft_id or not nums:
                     return {'pages': [], 'pageNums': [],
                             'notice': '這份卷是逐頁上傳批改的，原圖沒有留在伺服器；分數與逐題紀錄仍可查看。'}, headers
-                draft = db.execute('SELECT pdf, rotation FROM paper_drafts WHERE id=?',
+                draft = db.execute('SELECT pdf, rotation, rotations FROM paper_drafts WHERE id=?',
                                    (draft_id,)).fetchone()
             if draft is None:
                 return {'pages': [], 'pageNums': nums,
                         'notice': '原卷掃描檔已超過七天被清理，只剩分數與逐題紀錄。'}, headers
+            try:
+                rots = json.loads(draft['rotations']) if draft['rotations'] else None
+            except (TypeError, ValueError):
+                rots = None
             imgs = pdf_page_images(draft['pdf'], max_pages=PAPER_SCAN_MAX_PAGES, only=nums,
-                                   rotation=draft['rotation'])
+                                   rotation=draft['rotation'], rotations=rots)
             return {'pages': imgs, 'pageNums': nums}, headers
         judge_path = re.fullmatch(r'/api/paper-grades/([1-9]\d{0,17})/judge', path)
         if method == 'POST' and judge_path:
@@ -7753,19 +7771,23 @@ class Application:
             if draft_id is not None:
                 with self.db() as db:
                     ensure_paper_drafts(db)
-                    row = db.execute('SELECT teacher_id,pdf,title,rotation FROM paper_drafts WHERE id=?',
-                                     (draft_id,)).fetchone()
+                    row = db.execute('SELECT teacher_id,pdf,title,rotation,rotations '
+                                     'FROM paper_drafts WHERE id=?', (draft_id,)).fetchone()
                     if row is None:
                         fail(404, '找不到這份草稿（可能已批改或超過七天）。')
                     if row['teacher_id'] != user['id'] and not self.is_owner(user, db):
                         fail(403, '只有建立這份草稿的老師可以批改。')
                 data = row['pdf']
                 draft_rotation = row['rotation']
+                try:
+                    draft_rotations = json.loads(row['rotations']) if row['rotations'] else None
+                except (TypeError, ValueError):
+                    draft_rotations = None
                 title = title or (row['title'] or '')
                 kind = 'pdf'
             else:
                 kind, data = decode_paper(body['file'])
-                draft_rotation = None
+                draft_rotation, draft_rotations = None, None
             if kind != 'pdf':
                 fail(400, '請上傳 PDF。')
             if not title:
@@ -7774,7 +7796,8 @@ class Application:
             if not isinstance(sheets, list) or not 1 <= len(sheets) <= 80:
                 fail(400, '請提供 1 至 80 份卷。')
             self.ai.consent(body.get('consentExternal'))
-            pages = pdf_page_images(data, max_pages=PAPER_SCAN_MAX_PAGES, rotation=draft_rotation)
+            pages = pdf_page_images(data, max_pages=PAPER_SCAN_MAX_PAGES,
+                                    rotation=draft_rotation, rotations=draft_rotations)
             if not pages:
                 fail(422, 'PDF 沒有可讀的頁面。')
             done, failed = [], []
@@ -7836,20 +7859,20 @@ class Application:
             else:
                 class_id = None
             self.ai.consent(body.get('consentExternal'))
-            # 先看第一頁要不要轉正（上下顛倒、躺著掃都靠這一步），
-            # 轉好之後才認人、才批改，否則 AI 讀倒著的字會認錯人、判錯分。
+            # 逐頁先判方向（雙面掃描正反面常不一樣），轉正之後才認人、才批改，
+            # 否則 AI 讀倒著的字會認錯人、判錯分。
             raw_pages = pdf_page_images(data, max_pages=PAPER_SCAN_MAX_PAGES, rotation=0)
             if not raw_pages:
                 fail(422, 'PDF 沒有可讀的頁面。')
-            rotation = paper_orientation(self, raw_pages[0])
-            if rotation is None:
-                # 沒有 AI（或判斷失敗）：退回「橫向轉直向」的粗略修正
+            probed = paper_orientations(self, raw_pages)
+            if all(r is None for r in probed):
+                # 完全沒有 AI（或每頁都判斷失敗）：退回「橫向轉直向」的粗略修正
                 pages = pdf_page_images(data, max_pages=PAPER_SCAN_MAX_PAGES)
-                rotation = None
-            elif rotation:
-                pages = pdf_page_images(data, max_pages=PAPER_SCAN_MAX_PAGES, rotation=rotation)
+                rotations = None
             else:
-                pages = raw_pages
+                rotations = [r or 0 for r in probed]
+                pages = (pdf_page_images(data, max_pages=PAPER_SCAN_MAX_PAGES, rotations=rotations)
+                         if any(rotations) else raw_pages)
             roster = paper_roster(self, pages)
             with self.db() as db:
                 if class_id:
@@ -7876,15 +7899,19 @@ class Application:
                     ensure_paper_drafts(db)
                     draft_id = db.execute(
                         'INSERT INTO paper_drafts(teacher_id,class_id,title,pages,sheets,roster,pdf,'
-                        'created_at,updated_at,rotation) VALUES(?,?,?,?,?,?,?,?,?,?)',
+                        'created_at,updated_at,rotation,rotations) VALUES(?,?,?,?,?,?,?,?,?,?,?)',
                         (user['id'], class_id, draft_title, len(pages),
                          json.dumps(sheets, ensure_ascii=False),
                          json.dumps(roster_out, ensure_ascii=False),
-                         data, time.time(), time.time(), rotation)).lastrowid
+                         data, time.time(), time.time(),
+                         rotations[0] if rotations else None,
+                         json.dumps(rotations) if rotations else None)).lastrowid
             except Exception:
                 draft_id = None      # 存不下也不影響這次掃描結果
             return {'sheets': sheets, 'pages': len(pages), 'draftId': draft_id,
-                    'roster': roster_out, 'rotation': rotation,
+                    'roster': roster_out,
+                    'rotation': rotations[0] if rotations else None,
+                    'rotations': rotations,
                     'summary': {'papers': len(sheets),
                                 'matched': sum(1 for x in sheets if x['studentId']),
                                 'unmatched': sum(1 for x in sheets if not x['studentId'])}}, headers
@@ -7923,6 +7950,7 @@ class Application:
                               'sheets': json.loads(row['sheets']),
                               'roster': json.loads(row['roster']),
                               'rotation': row['rotation'],
+                              'rotations': json.loads(row['rotations']) if row['rotations'] else None,
                               'createdAt': row['created_at']}}, headers
         draft_pages = re.fullmatch(r'/api/paper-grades/drafts/([1-9]\d{0,17})/pages', path)
         if method == 'GET' and draft_pages:
@@ -7941,14 +7969,18 @@ class Application:
                 fail(400, '請指定要看哪幾頁。')
             with self.db() as db:
                 ensure_paper_drafts(db)
-                row = db.execute('SELECT teacher_id, pdf, rotation FROM paper_drafts WHERE id=?',
-                                 (draft_id,)).fetchone()
+                row = db.execute('SELECT teacher_id, pdf, rotation, rotations FROM paper_drafts '
+                                 'WHERE id=?', (draft_id,)).fetchone()
                 if row is None:
                     fail(404, '找不到這份草稿（可能已批改或超過七天）。')
                 if row['teacher_id'] != user['id'] and not self.is_owner(user, db):
                     fail(403, '只有建立這份草稿的老師可以查看卷面。')
+            try:
+                rots = json.loads(row['rotations']) if row['rotations'] else None
+            except (TypeError, ValueError):
+                rots = None
             imgs = pdf_page_images(row['pdf'], max_pages=PAPER_SCAN_MAX_PAGES, only=nums[:10],
-                                   rotation=row['rotation'])
+                                   rotation=row['rotation'], rotations=rots)
             return {'pages': imgs, 'pageNums': nums[:10]}, headers
         draft_rotation = re.fullmatch(r'/api/paper-grades/drafts/([1-9]\d{0,17})/rotation', path)
         if method == 'POST' and draft_rotation:
@@ -7961,15 +7993,16 @@ class Application:
             draft_id = int(draft_rotation.group(1))
             with self.db() as db:
                 ensure_paper_drafts(db)
-                row = db.execute('SELECT teacher_id FROM paper_drafts WHERE id=?',
+                row = db.execute('SELECT teacher_id, pages FROM paper_drafts WHERE id=?',
                                  (draft_id,)).fetchone()
                 if row is None:
                     fail(404, '找不到這份草稿（可能已批改或超過七天）。')
                 if row['teacher_id'] != user['id'] and not self.is_owner(user, db):
                     fail(403, '只有建立這份草稿的老師可以改方向。')
-                db.execute('UPDATE paper_drafts SET rotation=?, updated_at=? WHERE id=?',
-                           (rot, time.time(), draft_id))
-            return {'rotation': rot}, headers
+                rotations = [rot] * max(0, int(row['pages'] or 0))
+                db.execute('UPDATE paper_drafts SET rotation=?, rotations=?, updated_at=? WHERE id=?',
+                           (rot, json.dumps(rotations), time.time(), draft_id))
+            return {'rotation': rot, 'rotations': rotations}, headers
         if method == 'DELETE' and re.fullmatch(r'/api/paper-grades/drafts/([1-9]\d{0,17})', path):
             self.teacher(user)
             draft_id = int(path.rsplit('/', 1)[-1])
