@@ -5039,6 +5039,24 @@ class PaperDraftTests(unittest.TestCase):
         draft = self.call('GET', f"/api/paper-grades/drafts/{out['draftId']}")['draft']
         self.assertEqual(draft['rotation'], 180)
 
+    def test_blank_answers_count_as_wrong(self):
+        """未作答一律 0 分；但「看不清」仍留待教師判定，不冤枉學生。"""
+        questions = [
+            {'number': '1', 'studentAnswer': '', 'correct': None, 'credit': None,
+             'level': 'unreadable', 'note': ''},
+            {'number': '2', 'studentAnswer': '（空白，未作答）', 'correct': None, 'credit': None,
+             'level': 'unreadable', 'note': ''},
+            {'number': '3', 'studentAnswer': '', 'correct': None, 'credit': None,
+             'level': 'unreadable', 'note': '字跡看不清'},
+            {'number': '4', 'studentAnswer': 'x=3', 'correct': True, 'credit': 1.0,
+             'level': 'excellent', 'note': ''},
+        ]
+        out = server.mark_blank_wrong(questions)
+        self.assertEqual([q['correct'] for q in out], [False, False, None, True])
+        self.assertEqual([q['credit'] for q in out], [0.0, 0.0, None, 1.0])
+        self.assertEqual(out[0]['note'], '未作答')
+        self.assertEqual(out[2]['note'], '字跡看不清', '看不清不改成「未作答」')
+
     def test_teacher_can_edit_the_ai_score_and_note(self):
         """教師可以直接改某題得分與批註，總分即時重算。"""
         from unittest import mock

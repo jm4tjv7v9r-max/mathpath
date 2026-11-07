@@ -5109,6 +5109,31 @@ def paper_grade_page(app, image, page_no, total_pages, title, key=None):
     return {'questions': clean, 'warning': warning}
 
 
+BLANK_ANSWERS = ('', '(空白，未作答)', '（空白，未作答）', '未作答',
+                 '空白', '(空白)', '（空白）', '沒有作答', '无作答')
+UNCLEAR_HINTS = ('看不清', '無法辨認', '无法辨认', '模糊', '遮住', '字跡不清')
+
+
+def mark_blank_wrong(questions):
+    """未作答一律算錯（0 分），老師不必逐題按「判錯」。
+
+    「看不清／被遮住」不算未作答——那些留給教師判斷，免得冤枉學生。
+    """
+    for q in questions:
+        ans = str(q.get('studentAnswer') or '').strip()
+        if ans not in BLANK_ANSWERS:
+            continue
+        hint = f"{q.get('reason') or ''}{q.get('note') or ''}"
+        if any(k in hint for k in UNCLEAR_HINTS):
+            continue
+        q['correct'] = False
+        q['credit'] = 0.0
+        q['level'] = 'wrong'
+        if not q.get('note'):
+            q['note'] = '未作答'
+    return questions
+
+
 def paper_score(questions):
     """配分與計分。
 
@@ -5172,6 +5197,8 @@ def paper_grade_all(app, pages, title, deadline, key=None):
         w = max(0.0, min(1.0 - x, w))
         h = max(0.0, min(1.0 - y, h, 0.4))
         q['box'] = {'x': round(x, 4), 'y': round(y, 4), 'w': round(w, 4), 'h': round(h, 4)}
+    # 未作答一律算錯：AI 對空白題常給 null（待判定），老師還要逐題點「判錯」太麻煩。
+    mark_blank_wrong(graded)
     summary = paper_score(graded)
     return {'questions': graded, 'pageWarnings': warnings, 'failedPages': failures,
             'totalQuestions': len(judged),
@@ -6511,6 +6538,9 @@ class Application:
                 if not 0 <= index < len(questions):
                     fail(400, '題目序號超出範圍。')
                 questions[index]['noteBox'] = clean
+                # 標記「這是老師拖過的」：之後重繪就用這個位置，
+                # 不再理會 AI 原本亂放的 noteBox
+                questions[index]['noteBoxTeacher'] = True
                 db.execute('UPDATE paper_grades SET detail=? WHERE id=?',
                            (json.dumps(questions, ensure_ascii=False), grade_id))
             return {'noteBox': clean}, headers
