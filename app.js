@@ -4592,12 +4592,33 @@ async function paperBatchPage(){
       <td>${esc(sh.name||'')}</td>
       <td>${sh.matchedBy==='seat'?'座號':sh.matchedBy==='name'?'姓名':''}</td>
       <td><select data-sheet="${i}">${opts(i,sh.studentId)}</select></td></tr>`).join('');
-    $('#pb-result').innerHTML=`<div class="sg-wrap" style="margin-top:12px"><table class="score-grid">
+    $('#pb-result').innerHTML=`<div class="sg-toolbar" style="margin-top:12px">
+      <label class="small-text">卷面方向
+        <select id="pb-rot">
+          <option value="0"${(res.rotation||0)===0?' selected':''}>正常</option>
+          <option value="90"${res.rotation===90?' selected':''}>順時針 90°</option>
+          <option value="180"${res.rotation===180?' selected':''}>上下顛倒 180°</option>
+          <option value="270"${res.rotation===270?' selected':''}>逆時針 90°</option>
+        </select>
+      </label>
+      <span class="small-text">AI 已先判斷方向；看不對可在這裡改，再按「查看」重看。</span>
+    </div>
+    <div class="sg-wrap" style="margin-top:8px"><table class="score-grid">
       <thead><tr><th>#</th><th>頁碼</th><th>卷面</th><th>讀到座號</th><th>讀到姓名</th><th>配對方式</th><th>指派給</th></tr></thead>
       <tbody>${rows}</tbody></table></div>
       <p class="field-hint">認不出來的請用右邊下拉指派，然後按下面的按鈕逐份批改。按「查看」可先看這份卷的實際畫面，確認 AI 切的頁對不對。</p>
       <div id="pb-sheet-viewer"></div>
       <div class="sg-bulk-actions"><button class="primary" id="pb-grade">確認並開始批改</button></div>`;
+    $('#pb-rot').onchange=async ev=>{
+      const rot=Number(ev.target.value);
+      if(!viewId){toast('這份卷沒有存草稿，無法改方向。');return;}
+      try{
+        await api(`/api/paper-grades/drafts/${viewId}/rotation`,{rotation:rot});
+        res.rotation=rot;
+        const box=$('#pb-sheet-viewer');if(box)box.innerHTML='';
+        toast('卷面方向已更新，按「查看」重新載入。');
+      }catch(e){toast(e.message);}
+    };
     $$('[data-view-sheet]').forEach(b=>b.onclick=async()=>{
       const sh=(res.sheets||[])[Number(b.dataset.viewSheet)];
       const box=$('#pb-sheet-viewer');
