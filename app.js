@@ -3548,6 +3548,7 @@ function paperResultHtml(g){
       return `<span class="paper-mark" data-box-index="${idx}" style="left:${b.x*100}%;top:${b.y*100}%;width:${b.w*100}%;height:${b.h*100}%" title="拖動可移動這個框">
         <span class="paper-mark-no">${esc(q.number)}</span>
         <span class="paper-mark-sym">${sym}${doll}</span>
+        <span class="paper-mark-resize" title="拖動右下角可調整大小"></span>
       </span>`;
     }).join('');
     // 評註：預設放在該題框的右下角；老師拖過就以拖動的位置為準（noteBoxTeacher）
@@ -3588,28 +3589,36 @@ function paperResultHtml(g){
       <button class="${confirmed?'secondary':'primary'}" data-paper-confirm="${confirmed?'0':'1'}">${confirmed?'更改分數':'確認學生分數'}</button>
     </div></section>`;
 }
-// 拖動：批註與題目框都可以拖（滑鼠與觸控），放開後保存位置。
+// 拖動：批註、題目框可移動；題目框右下角把手可調整大小。放開後保存。
 let paperDrag=null;
 document.addEventListener('pointerdown',e=>{
   if(!e.target.closest||!paperGradeId)return;
-  const note=e.target.closest('.paper-note');
-  const mark=note?null:e.target.closest('.paper-mark');
+  const handle=e.target.closest('.paper-mark-resize');
+  const note=handle?null:e.target.closest('.paper-note');
+  const mark=note?null:(handle?handle.closest('.paper-mark'):e.target.closest('.paper-mark'));
   const el=note||mark;
   if(!el)return;
   const fig=el.closest('.paper-page'),img=fig&&fig.querySelector('img');
   if(!img)return;
   e.preventDefault();
-  paperDrag={kind:note?'note':'mark',el,img,
+  paperDrag={kind:handle?'resize':(note?'note':'mark'),el,img,
              startX:e.clientX,startY:e.clientY,
              left:el.offsetLeft,top:el.offsetTop,
+             startW:el.offsetWidth,startH:el.offsetHeight,
              index:Number(note?el.dataset.noteIndex:el.dataset.boxIndex)};
   el.classList.add('dragging');
   try{el.setPointerCapture(e.pointerId);}catch(_){}
 });
 document.addEventListener('pointermove',e=>{
   if(!paperDrag)return;
-  paperDrag.el.style.left=(paperDrag.left+e.clientX-paperDrag.startX)+'px';
-  paperDrag.el.style.top=(paperDrag.top+e.clientY-paperDrag.startY)+'px';
+  const dx=e.clientX-paperDrag.startX,dy=e.clientY-paperDrag.startY;
+  if(paperDrag.kind==='resize'){
+    paperDrag.el.style.width=Math.max(40,paperDrag.startW+dx)+'px';
+    paperDrag.el.style.height=Math.max(28,paperDrag.startH+dy)+'px';
+    return;
+  }
+  paperDrag.el.style.left=(paperDrag.left+dx)+'px';
+  paperDrag.el.style.top=(paperDrag.top+dy)+'px';
 });
 document.addEventListener('pointerup',async()=>{
   if(!paperDrag)return;
@@ -3621,7 +3630,7 @@ document.addEventListener('pointerup',async()=>{
   try{
     await api(`/api/paper-grades/${paperGradeId}/notes`,
       kind==='note'?{index,noteBox:box}:{index,box});
-    toast(kind==='note'?'評註位置已保存。':'題目框位置已保存。');
+    toast(kind==='note'?'評註位置已保存。':(kind==='resize'?'題目框大小已保存。':'題目框位置已保存。'));
   }
   catch(err){toast(err.message);}
 });

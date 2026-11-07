@@ -822,6 +822,13 @@ html[data-theme=night] .paper-bad{color:#e88a7a}
   color:#c0392b;background:transparent;font-weight:700;line-height:1;
   pointer-events:auto;cursor:move;touch-action:none;user-select:none}
 .paper-mark.dragging{outline:1px dashed #c0392b;background:#c0392b0d}
+/* 右下角把手：拖動可調整題目框大小 */
+.paper-mark-resize{position:absolute;right:-5px;bottom:-5px;width:11px;height:11px;
+  border:1px solid #c0392b;background:#fff;border-radius:3px;cursor:nwse-resize;
+  pointer-events:auto;opacity:.85}
+.paper-mark-resize:hover{opacity:1;background:#c0392b}
+html[data-theme=night] .paper-mark-resize{background:#2a2a2a;border-color:#ff8a7a}
+html[data-theme=night] .paper-mark-resize:hover{background:#ff8a7a}
 .paper-mark{border-color:#c0392bb3;color:#c0392b;background:transparent}
 /* 框內三件事：左上題號、左邊判定符號、右下評語 */
 .paper-mark-no{position:absolute;left:3px;top:1px;font-size:calc(11px*var(--fs));
