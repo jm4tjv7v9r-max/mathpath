@@ -808,6 +808,12 @@ html[data-theme=night] .paper-ok{color:#5ed0ae}
 html[data-theme=night] .paper-bad{color:#e88a7a}
 /* 紙本批改：在照片上標出批閱 */
 .paper-pages{display:flex;flex-wrap:wrap;gap:14px;margin:12px 0}
+/* 批改卷與原卷並排：每頁一行，左邊帶標記、右邊乾淨 */
+.paper-compare{display:flex;flex-direction:column;gap:16px;margin:12px 0}
+.paper-compare-row{display:grid;grid-template-columns:1fr 1fr;gap:14px;align-items:start}
+.paper-compare-row .paper-page{max-width:100%}
+.paper-page-raw{border-style:dashed}
+@media(max-width:900px){.paper-compare-row{grid-template-columns:1fr}}
 .paper-page{position:relative;margin:0;max-width:calc(50% - 7px);border:1px solid var(--border);border-radius:12px;overflow:hidden;background:var(--surface-soft)}
 .paper-page img{display:block;width:100%;height:auto}
 .paper-page figcaption{position:absolute;left:8px;top:8px;background:#00000088;color:#fff;font-size:12px;padding:2px 8px;border-radius:6px}

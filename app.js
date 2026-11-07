@@ -3524,13 +3524,18 @@ function paperResultHtml(g){
     // 整份作業一題都判定不了：第一頁右下角用橙色大字提醒
     const allUnreadable=qs.length>0&&qs.every(q=>q.level==='unreadable'||q.correct===null);
     const warn=(i===0&&allUnreadable)?`<div class="paper-warn"><strong>AI 無法辨識這份作業</strong><span>請教師逐題判定，或重新上傳更清晰的照片</span></div>`:'';
-    return `<figure class="paper-page"><img src="${src}" alt="第 ${i+1} 頁"><figcaption>第 ${i+1} 頁</figcaption>${badge}${warn}<div class="paper-marks">${marks}</div>${notes}</figure>`;
+    // 左邊批改卷（標記＋批註）、右邊原卷（乾淨，方便對照）
+    const gradedFig=`<figure class="paper-page"><img src="${src}" alt="批改卷 第 ${i+1} 頁"><figcaption>批改卷 · 第 ${i+1} 頁</figcaption>${badge}${warn}<div class="paper-marks">${marks}</div>${notes}</figure>`;
+    const rawFig=`<figure class="paper-page paper-page-raw"><img src="${src}" alt="原卷 第 ${i+1} 頁"><figcaption>原卷 · 第 ${i+1} 頁</figcaption></figure>`;
+    return `<div class="paper-compare-row">${gradedFig}${rawFig}</div>`;
   }).join('');
   return `<section class="panel panel-pad" style="margin-top:16px">
     <p class="small-text">${esc(g.studentName||'')} · ${esc(g.title)} · ${g.pages} 頁 · 可判斷 ${g.totalQuestions} 題、答對 ${g.correctCount} 題${g.pending?` · <strong class="paper-pending">${g.pending} 題待教師判定</strong>`:''}</p>
     ${(g.failedPages||[]).length?`<div class="paper-page-warnings"><div class="paper-warn-line"><strong>⚠️ 第 ${g.failedPages.map(f=>f.page).join('、')} 頁沒有批改到</strong>模型在這一頁失敗（${esc(g.failedPages[0].error||'無法辨識')}）。這些頁的題目沒有計分，請重新上傳這幾頁，或請教師手動補分。</div></div>`:''}
     ${(g.pageWarnings||[]).length?`<div class="paper-page-warnings">${g.pageWarnings.map(w=>`<div class="paper-warn-line"><strong>⚠️ 第 ${w.page} 頁可能跨頁</strong>${esc(w.text)}</div>`).join('')}</div>`:''}
-    ${pagesHtml?`<div class="paper-pages">${pagesHtml}</div>`:''}
+    ${pagesHtml?`<div class="paper-compare">
+      <p class="small-text" style="margin:0">左：批改卷（AI 標記與批註，可拖動）　右：原卷（對照用）</p>
+      ${pagesHtml}</div>`:''}
     <table class="board-table" style="margin-top:10px"><thead><tr><th>題號</th><th>題目</th><th>學生答案</th><th>配分</th><th>判定</th><th>批註</th></tr></thead><tbody>${rows}</tbody></table>
     <p class="field-hint">AI 判定僅供參考，請教師覆核後才當作正式成績。待判定的題目請按「判對／判錯」，分數會立即重算。批註可直接拖動到合適位置。</p></section>`;
 }
