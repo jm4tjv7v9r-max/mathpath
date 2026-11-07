@@ -5001,6 +5001,24 @@ class PaperDraftTests(unittest.TestCase):
         self.assertEqual(render.call_args.kwargs.get('only'), [1, 2],
                          '只渲染這位學生的頁，不要重算整份 80 頁')
 
+    def test_old_draft_gets_rotation_probed_when_viewing(self):
+        """舊草稿沒有逐頁方向：查看時要問 AI 並寫回，否則看到的是倒過來的卷。"""
+        from unittest import mock
+        scan = self.scan()
+        with self.app.db() as db:
+            db.execute('UPDATE paper_drafts SET rotation=NULL, rotations=NULL WHERE id=?',
+                       (scan['draftId'],))
+        render = mock.Mock(side_effect=lambda data, max_pages=80, only=None, rotation=None,
+                           rotations=None: [b'p1', b'p2'])
+        with mock.patch.object(server, 'pdf_page_images', render), \
+             mock.patch.object(server, 'paper_orientation', lambda app, image: 180):
+            payload, _ = self.app.dispatch(
+                'GET', f"/api/paper-grades/drafts/{scan['draftId']}/pages",
+                {}, self.teacher, None, '127.0.0.1', 'nums=1,2')
+        self.assertEqual(len(payload['pages']), 2)
+        draft = self.call('GET', f"/api/paper-grades/drafts/{scan['draftId']}")['draft']
+        self.assertEqual(draft['rotations'], [180, 180], '判斷結果要寫回草稿')
+
     def test_draft_pages_can_be_previewed_before_grading(self):
         """配對表要能先看卷面：只渲染指定頁，而且查詢參數要放行。"""
         from unittest import mock

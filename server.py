@@ -910,6 +910,43 @@ def paper_orientations(app, pages):
     return [paper_orientation(app, image) for image in pages]
 
 
+def paper_ensure_rotations(app, draft_row, nums):
+    """取得草稿的逐頁方向；舊草稿沒有記錄時，只對要看的這幾頁問 AI 並寫回。
+
+    早期掃描的草稿只存了單一 rotation（甚至沒有），查看卷面時就會用「寬>高才轉」
+    的粗略規則，上下顛倒（180°）完全看不出來——老師看到的圖就是倒的。
+    """
+    total = int(draft_row['pages'] or 0)
+    try:
+        raw = json.loads(draft_row['rotations']) if draft_row['rotations'] else None
+    except (TypeError, ValueError):
+        raw = None
+    if raw and len(raw) >= total:
+        return raw[:total]
+    rots = list(raw or [])
+    if len(rots) < total:
+        base = int(draft_row['rotation'] or 0)
+        rots += [base] * (total - len(rots))
+    if raw is None and nums:
+        imgs = pdf_page_images(draft_row['pdf'], max_pages=PAPER_SCAN_MAX_PAGES,
+                               only=nums, rotation=0)
+        for k, n in enumerate(nums):
+            if k < len(imgs) and 1 <= n <= total:
+                r = paper_orientation(app, imgs[k])
+                if r:
+                    rots[n - 1] = r
+        # 就算判斷結果全是 0 也寫回：下次不必再問一次
+        try:
+            with app.db() as db:
+                db.execute('UPDATE paper_drafts SET rotations=?, rotation=? WHERE id=?',
+                           (json.dumps(rots),
+                            rots[0] if rots and len(set(rots)) == 1 else None,
+                            draft_row['id']))
+        except Exception:
+            pass
+    return rots
+
+
 def paper_roster(app, pages):
     """逐頁讀「這頁是誰的、是不是新的一份卷」，回一份清單（順序＝PDF 頁序）。"""
     out = []
@@ -6631,17 +6668,14 @@ class Application:
                 if not draft_id or not nums:
                     return {'pages': [], 'pageNums': [],
                             'notice': '這份卷是逐頁上傳批改的，原圖沒有留在伺服器；分數與逐題紀錄仍可查看。'}, headers
-                draft = db.execute('SELECT pdf, rotation, rotations FROM paper_drafts WHERE id=?',
-                                   (draft_id,)).fetchone()
+                draft = db.execute('SELECT id, pdf, pages, rotation, rotations '
+                                   'FROM paper_drafts WHERE id=?', (draft_id,)).fetchone()
             if draft is None:
                 return {'pages': [], 'pageNums': nums,
                         'notice': '原卷掃描檔已超過七天被清理，只剩分數與逐題紀錄。'}, headers
-            try:
-                rots = json.loads(draft['rotations']) if draft['rotations'] else None
-            except (TypeError, ValueError):
-                rots = None
+            rots = paper_ensure_rotations(self, draft, nums)
             imgs = pdf_page_images(draft['pdf'], max_pages=PAPER_SCAN_MAX_PAGES, only=nums,
-                                   rotation=draft['rotation'], rotations=rots)
+                                   rotations=rots)
             return {'pages': imgs, 'pageNums': nums}, headers
         judge_path = re.fullmatch(r'/api/paper-grades/([1-9]\d{0,17})/judge', path)
         if method == 'POST' and judge_path:
@@ -8240,18 +8274,16 @@ class Application:
                 fail(400, '請指定要看哪幾頁。')
             with self.db() as db:
                 ensure_paper_drafts(db)
-                row = db.execute('SELECT teacher_id, pdf, rotation, rotations FROM paper_drafts '
-                                 'WHERE id=?', (draft_id,)).fetchone()
+                row = db.execute('SELECT id, teacher_id, pdf, pages, rotation, rotations '
+                                 'FROM paper_drafts WHERE id=?', (draft_id,)).fetchone()
                 if row is None:
                     fail(404, '找不到這份草稿（可能已批改或超過七天）。')
                 if row['teacher_id'] != user['id'] and not self.is_owner(user, db):
                     fail(403, '只有建立這份草稿的老師可以查看卷面。')
-            try:
-                rots = json.loads(row['rotations']) if row['rotations'] else None
-            except (TypeError, ValueError):
-                rots = None
+            # 舊草稿沒存逐頁方向：只對要看的這幾頁問 AI 並寫回，免得看到倒過來的卷
+            rots = paper_ensure_rotations(self, row, nums[:10])
             imgs = pdf_page_images(row['pdf'], max_pages=PAPER_SCAN_MAX_PAGES, only=nums[:10],
-                                   rotation=row['rotation'], rotations=rots)
+                                   rotations=rots)
             return {'pages': imgs, 'pageNums': nums[:10]}, headers
         draft_rotation = re.fullmatch(r'/api/paper-grades/drafts/([1-9]\d{0,17})/rotation', path)
         if method == 'POST' and draft_rotation:
