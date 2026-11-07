@@ -1152,6 +1152,11 @@ html[data-theme=night] .nav-item .count.due{background:#3a2c1d;color:#e0b083}
 .bulk-result th,.bulk-result td{border:1px solid var(--border-tertiary,#e6e3da);padding:4px 8px;text-align:left}
 .bulk-result th{background:var(--paper,#fff)}
 
+/* 配對表：已確認並鎖定的那一行 */
+.score-grid tr.pb-locked td{background:var(--surface,#f7f6f2)}
+.score-grid tr.pb-locked select:disabled{opacity:.75;cursor:not-allowed}
+.score-grid tr.pb-locked [data-confirm]{color:var(--green,#3b6d11)}
+
 /* 配對表：該班還沒配到卷的學生 */
 .pb-unmatched{margin:12px 0;padding:12px;border:1px solid var(--border);border-radius:10px;
   background:var(--surface,#f7f6f2)}

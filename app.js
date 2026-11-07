@@ -4522,12 +4522,15 @@ async function paperBatchPage(){
     const title=($('#pb-title').value||'').trim();
     if(!title)return toast('請先填功課名稱。');
     const sheets=[];
+    let unconfirmed=0;
     $$('[data-sheet]').forEach(sel=>{
       const i=Number(sel.dataset.sheet);
       if(!sel.value)return;
+      if(!(res.sheets[i]&&res.sheets[i].confirmed)){unconfirmed+=1;return;}
       sheets.push({studentId:Number(sel.value),pages:res.sheets[i].pages});
     });
-    if(!sheets.length)return toast('至少要指派一位學生。');
+    if(!sheets.length)return toast('請先逐份按「確認」鎖定配對，確認後才能批改。');
+    if(unconfirmed)toast(`有 ${unconfirmed} 份未確認，已跳過；要一起批請按「全部確認」。`);
     const btn=$('#pb-grade');btn.disabled=true;btn.textContent='批改中…';
     try{
       const payload=lastScan.draftId
@@ -4606,15 +4609,20 @@ async function paperBatchPage(){
       return (r===0||r===90||r===180||r===270)?r:(res.rotation||0);
     };
     const rotOpts=cur=>[0,90,180,270].map(r=>`<option value="${r}"${cur===r?' selected':''}>${r}°</option>`).join('');
-    const rows=(res.sheets||[]).map((sh,i)=>`<tr>
+    const rows=(res.sheets||[]).map((sh,i)=>{
+      const locked=!!sh.confirmed;
+      const dis=locked?' disabled':'';
+      return `<tr data-sheet-row="${i}"${locked?' class="pb-locked"':''}>
       <td>${i+1}</td>
       <td>${sh.pages.join('、')}</td>
       <td>${viewId?`<button class="text-button" data-view-sheet="${i}">查看</button>`:'<span class="small-text">—</span>'}</td>
-      <td><select class="sg-rot" data-sheet-rot="${i}">${rotOpts(rotOf(sh))}</select></td>
+      <td><select class="sg-rot" data-sheet-rot="${i}"${dis}>${rotOpts(rotOf(sh))}</select></td>
       <td>${sh.seat??''}</td>
       <td>${esc(sh.name||'')}</td>
       <td>${sh.matchedBy==='seat'?'座號':sh.matchedBy==='name'?'姓名':''}</td>
-      <td><select data-sheet="${i}">${opts(i,sh.studentId)}</select></td></tr>`).join('');
+      <td><select data-sheet="${i}"${dis}>${opts(i,sh.studentId)}</select></td>
+      <td><button class="text-button" data-confirm="${i}">${locked?'更改':'確認'}</button></td></tr>`;
+    }).join('');
     $('#pb-result').innerHTML=`<div class="sg-toolbar" style="margin-top:12px">
       <label class="small-text">全部卷面方向
         <select id="pb-rot">
@@ -4625,11 +4633,12 @@ async function paperBatchPage(){
         </select>
       </label>
       <span class="small-text">AI 已先判斷；某一份卷不對就改它那一行的「方向」，只影響該學生。</span>
+      <button class="secondary" id="pb-confirm-all">全部確認</button>
     </div>
     <div class="sg-wrap" style="margin-top:8px"><table class="score-grid">
-      <thead><tr><th>#</th><th>頁碼</th><th>卷面</th><th>方向</th><th>讀到座號</th><th>讀到姓名</th><th>配對方式</th><th>指派給</th></tr></thead>
+      <thead><tr><th>#</th><th>頁碼</th><th>卷面</th><th>方向</th><th>讀到座號</th><th>讀到姓名</th><th>配對方式</th><th>指派給</th><th>確認</th></tr></thead>
       <tbody>${rows}</tbody></table></div>
-      <p class="field-hint">認不出來的請用右邊下拉指派，然後按下面的按鈕逐份批改。按「查看」可先看這份卷的實際畫面，確認 AI 切的頁對不對。</p>
+      <p class="field-hint">逐份核對「指派給」是否正確，按「確認」鎖住（確認後才能批改）；發現錯了按「更改」解鎖。按「查看」可先看這份卷的實際畫面。</p>
       <div id="pb-unmatched"></div>
       <div id="pb-sheet-viewer"></div>
       <div class="sg-bulk-actions"><button class="primary" id="pb-grade">確認並開始批改</button></div>`;
@@ -4677,6 +4686,35 @@ async function paperBatchPage(){
       }catch(e){toast(e.message);}
     });
     $$('[data-view-sheet]').forEach(b=>b.onclick=()=>loadSheet(Number(b.dataset.viewSheet)));
+    // 逐份確認：確認後鎖住這一行的指派與方向，要改再按「更改」
+    const applyLock=i=>{
+      const tr=$(`tr[data-sheet-row="${i}"]`),sh=(res.sheets||[])[i];
+      if(!tr||!sh)return;
+      tr.classList.toggle('pb-locked',!!sh.confirmed);
+      tr.querySelectorAll('[data-sheet],[data-sheet-rot]').forEach(el=>{el.disabled=!!sh.confirmed;});
+      const btn=tr.querySelector('[data-confirm]');
+      if(btn)btn.textContent=sh.confirmed?'更改':'確認';
+    };
+    $$('[data-confirm]').forEach(btn=>btn.onclick=async()=>{
+      const i=Number(btn.dataset.confirm),sh=(res.sheets||[])[i];
+      if(!sh||!viewId)return toast('這份卷沒有存草稿，無法確認。');
+      const next=!sh.confirmed;
+      try{
+        await api(`/api/paper-grades/drafts/${viewId}/confirm`,{index:i,confirmed:next});
+        sh.confirmed=next;
+        applyLock(i);
+        toast(next?`第 ${i+1} 份已確認並鎖定`:`第 ${i+1} 份已解鎖，可再更改`);
+      }catch(e){toast(e.message);}
+    });
+    $('#pb-confirm-all').onclick=async()=>{
+      if(!viewId)return toast('這份卷沒有存草稿，無法確認。');
+      try{
+        const out=await api(`/api/paper-grades/drafts/${viewId}/confirm`,{all:true,confirmed:true});
+        res.sheets=out.sheets||res.sheets;
+        (res.sheets||[]).forEach((_,i)=>applyLock(i));
+        toast('已全部確認並鎖定');
+      }catch(e){toast(e.message);}
+    };
     // 該班還沒配到卷的學生：沒交、沒掃到，或 AI 沒認出來。
     // 每次改「指派給」都重算，老師一眼看得出還欠誰。
     const updateUnmatched=()=>{

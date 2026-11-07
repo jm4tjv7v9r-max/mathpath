@@ -5039,6 +5039,21 @@ class PaperDraftTests(unittest.TestCase):
         draft = self.call('GET', f"/api/paper-grades/drafts/{out['draftId']}")['draft']
         self.assertEqual(draft['rotation'], 180)
 
+    def test_confirm_locks_each_sheet(self):
+        """逐份確認：存進草稿的 sheets，之後可解鎖；越界與非布林要擋。"""
+        scan = self.scan()
+        base = f"/api/paper-grades/drafts/{scan['draftId']}/confirm"
+        out = self.call('POST', base, {'index': 0, 'confirmed': True})
+        self.assertTrue(out['sheets'][0]['confirmed'])
+        draft = self.call('GET', f"/api/paper-grades/drafts/{scan['draftId']}")['draft']
+        self.assertTrue(draft['sheets'][0]['confirmed'], '重新載入草稿要保留確認狀態')
+        out = self.call('POST', base, {'index': 0, 'confirmed': False})
+        self.assertFalse(out['sheets'][0]['confirmed'])
+        out = self.call('POST', base, {'all': True, 'confirmed': True})
+        self.assertTrue(all(s.get('confirmed') for s in out['sheets']))
+        self.call('POST', base, {'index': 9, 'confirmed': True}, expect=400)
+        self.call('POST', base, {'index': 0, 'confirmed': 'yes'}, expect=400)
+
     def test_can_rotate_a_single_paper(self):
         """每一份卷可以獨立轉角度：只改它那幾頁，不影響其他學生。"""
         scan = self.scan()

@@ -8095,6 +8095,39 @@ class Application:
                 db.execute('UPDATE paper_drafts SET rotation=?, rotations=?, updated_at=? WHERE id=?',
                            (summary, json.dumps(rotations), time.time(), draft_id))
             return {'rotation': rot, 'rotations': rotations}, headers
+        draft_confirm = re.fullmatch(r'/api/paper-grades/drafts/([1-9]\d{0,17})/confirm', path)
+        if method == 'POST' and draft_confirm:
+            # 老師逐份確認「這份卷確實是這位學生」之後就鎖住，避免誤改；
+            # 要改再按一次「更改」解鎖。
+            self.teacher(user)
+            fields(body, ('index', 'confirmed', 'all'), ('confirmed',))
+            confirmed = body['confirmed']
+            if type(confirmed) is not bool:
+                fail(400, '確認狀態必須是布林值。')
+            do_all = bool(body.get('all'))
+            index = None
+            if not do_all:
+                index = number(body['index'], '卷序號', 0, 999, integer=True)
+            draft_id = int(draft_confirm.group(1))
+            with self.db() as db:
+                ensure_paper_drafts(db)
+                row = db.execute('SELECT teacher_id, sheets FROM paper_drafts WHERE id=?',
+                                 (draft_id,)).fetchone()
+                if row is None:
+                    fail(404, '找不到這份草稿（可能已批改或超過七天）。')
+                if row['teacher_id'] != user['id'] and not self.is_owner(user, db):
+                    fail(403, '只有建立這份草稿的老師可以確認配對。')
+                sheets = json.loads(row['sheets'])
+                if do_all:
+                    for sh in sheets:
+                        sh['confirmed'] = confirmed
+                else:
+                    if not 0 <= index < len(sheets):
+                        fail(400, '卷序號超出範圍。')
+                    sheets[index]['confirmed'] = confirmed
+                db.execute('UPDATE paper_drafts SET sheets=?, updated_at=? WHERE id=?',
+                           (json.dumps(sheets, ensure_ascii=False), time.time(), draft_id))
+            return {'sheets': sheets}, headers
         if method == 'DELETE' and re.fullmatch(r'/api/paper-grades/drafts/([1-9]\d{0,17})', path):
             self.teacher(user)
             draft_id = int(path.rsplit('/', 1)[-1])
