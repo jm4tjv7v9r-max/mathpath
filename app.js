@@ -3608,8 +3608,11 @@ document.addEventListener('focusout',async e=>{
     const note=(el.textContent||'').trim();
     if(note===String(el.dataset.orig||''))return;
     try{
-      await api(`/api/paper-grades/${paperGradeId}/judge`,{index:i,note});
+      const r=await api(`/api/paper-grades/${paperGradeId}/judge`,{index:i,note});
       el.dataset.orig=note;
+      // 卷上框內的評語也要跟著更新，不能只改表格
+      const box=$('#pb-viewer')||$('#paper-result');
+      if(box&&r.grade)box.innerHTML=paperResultHtml(r.grade);
       toast('批註已更新');
     }catch(err){toast(err.message);}
   }

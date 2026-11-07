@@ -6593,9 +6593,18 @@ class Application:
                            (json.dumps(questions, ensure_ascii=False), summary['score'],
                             len([q for q in questions if q['correct'] is not None]),
                             sum(1 for q in questions if q['correct'] is True), grade_id))
-            return {'grade': {'id': grade_id, 'score': summary['score'],
+            # 回傳完整的一份，前端重繪卷面時才不會少了學生名／頁數／頁面警告
+            with self.db() as db:
+                student = db.execute('SELECT name FROM users WHERE id=?',
+                                     (row['student_id'],)).fetchone()
+            return {'grade': {'id': grade_id,
+                              'studentId': row['student_id'],
+                              'studentName': mask_name(student['name']) if student else '',
+                              'title': row['title'], 'pages': row['pages'],
+                              'score': summary['score'],
                               'earned': summary['earned'], 'possible': summary['possible'],
                               'pending': summary['pending'],
+                              'pageWarnings': [], 'failedPages': [],
                               'totalQuestions': len([q for q in questions if q['correct'] is not None]),
                               'correctCount': sum(1 for q in questions if q['correct'] is True),
                               'questions': questions}}, headers

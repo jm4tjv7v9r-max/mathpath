@@ -5066,6 +5066,9 @@ class PaperDraftTests(unittest.TestCase):
                       {'index': 0, 'note': '改過的批註'})
         self.assertEqual(r['grade']['questions'][0]['note'], '改過的批註')
         self.assertEqual(r['grade']['questions'][0]['credit'], 0.5, '只改批註不影響分數')
+        # 重繪卷面要用的欄位不能少，否則學生名／頁數會變成空白
+        self.assertTrue(r['grade'].get('studentName'))
+        self.assertEqual(r['grade']['pages'], 1)
         self.call('POST', f'/api/paper-grades/{gid}/judge', {'index': 0, 'credit': 2},
                   expect=400)
 
