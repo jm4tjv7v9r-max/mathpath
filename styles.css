@@ -818,9 +818,9 @@ html[data-theme=night] .paper-bad{color:#e88a7a}
 .paper-page img{display:block;width:100%;height:auto}
 .paper-page figcaption{position:absolute;left:8px;top:8px;background:#00000088;color:#fff;font-size:12px;padding:2px 8px;border-radius:6px}
 .paper-marks{position:absolute;inset:0;pointer-events:none}
-.paper-mark{position:absolute;display:grid;place-items:center;border:1px solid;border-radius:8px;
+.paper-mark{position:absolute;display:grid;place-items:center;border:1px dashed;border-radius:8px;
   font-weight:700;font-size:calc(22px*var(--fs));background:transparent}
-.paper-mark{border-color:#c0392bb3;color:#c0392b;background:#c0392b0a}
+.paper-mark{border-color:#c0392bb3;color:#c0392b;background:transparent}
 
 
 .paper-pending{color:#c0392b;font-weight:700}
@@ -839,12 +839,14 @@ html[data-theme=night] .paper-bad{color:#e88a7a}
   color:#c0392b;line-height:1;text-shadow:0 1px 2px #fff,0 0 6px #fff}
 .paper-score-badge small{font-size:14px;font-weight:400;margin-left:2px}
 .paper-note{position:absolute;color:#c0392b;font-size:13px;font-weight:600;line-height:1.4;
-  background:#ffffffc9;padding:2px 5px;border-radius:4px;cursor:move;touch-action:none;
-  white-space:pre-wrap;border:1px solid #c0392b55}
-.paper-note.dragging{outline:1px dashed #c0392b;background:#fff}
+  background:transparent;padding:2px 5px;border-radius:4px;cursor:move;touch-action:none;
+  white-space:pre-wrap;border:1px dashed #c0392bb3;
+  text-shadow:0 0 3px #fff,0 0 2px #fff,0 0 6px #fff}
+.paper-note.dragging{outline:1px dashed #c0392b;background:#ffffffdd}
 .paper-part{color:#c0392b;font-weight:700}
 html[data-theme=night] .paper-score-badge,html[data-theme=night] .paper-note{color:#ff8a7a}
-html[data-theme=night] .paper-note{background:#00000099;border-color:#ff8a7a55}
+html[data-theme=night] .paper-note{background:transparent;border-color:#ff8a7a66;
+  text-shadow:0 0 4px #000,0 0 3px #000}
 /* 紙本批改：等級標籤、鼓勵句、全對公仔 */
 .paper-level{color:#c0392b;font-weight:700}
 .paper-doll{font-size:calc(18px*var(--fs))}
