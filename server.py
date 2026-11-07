@@ -8174,19 +8174,29 @@ class Application:
             with self.db() as db:
                 ensure_paper_drafts(db)
                 rows = db.execute(
-                    'SELECT id,title,class_id,pages,sheets,created_at FROM paper_drafts '
-                    "WHERE teacher_id=? AND COALESCE(status,'pending')='pending' "
-                    'ORDER BY id DESC LIMIT 20', (user['id'],)).fetchall()
+                    'SELECT id,title,class_id,pages,sheets,created_at,status FROM paper_drafts '
+                    'WHERE teacher_id=? ORDER BY id DESC LIMIT 20', (user['id'],)).fetchall()
                 names = {r['id']: r['name'] for r in db.execute('SELECT id,name FROM classes')}
+                # 這份草稿已經批了誰、幾分：續批時要標出來，不用重新猜
+                graded = {}
+                for g in db.execute('SELECT id, draft_id, student_id, score, confirmed_at '
+                                    'FROM paper_grades WHERE draft_id IS NOT NULL'):
+                    graded.setdefault(g['draft_id'], []).append(
+                        {'gradeId': g['id'], 'studentId': g['student_id'],
+                         'score': g['score'], 'confirmed': bool(g['confirmed_at'])})
             drafts = []
             for row in rows:
                 sheets = json.loads(row['sheets'])
+                mine = graded.get(row['id'], [])
                 drafts.append({'id': row['id'], 'title': row['title'] or '',
                                'classId': row['class_id'],
                                'className': names.get(row['class_id']) or '',
                                'pages': row['pages'], 'papers': len(sheets),
                                'matched': sum(1 for x in sheets if x.get('studentId')),
                                'unmatched': sum(1 for x in sheets if not x.get('studentId')),
+                               'status': row['status'] or 'pending',
+                               'gradedCount': len(mine),
+                               'graded': mine,
                                'createdAt': row['created_at']})
             return {'drafts': drafts}, headers
         if method == 'GET' and re.fullmatch(r'/api/paper-grades/drafts/([1-9]\d{0,17})', path):
@@ -8199,12 +8209,19 @@ class Application:
                     fail(404, '找不到這份草稿（可能已批改或超過七天）。')
                 if row['teacher_id'] != user['id'] and not self.is_owner(user, db):
                     fail(403, '只有建立這份草稿的老師可以開啟。')
+                mine = [{'gradeId': g['id'], 'studentId': g['student_id'],
+                         'score': g['score'], 'confirmed': bool(g['confirmed_at'])}
+                        for g in db.execute(
+                            'SELECT id, student_id, score, confirmed_at FROM paper_grades '
+                            'WHERE draft_id=?', (draft_id,))]
             return {'draft': {'id': row['id'], 'title': row['title'] or '',
                               'classId': row['class_id'], 'pages': row['pages'],
                               'sheets': json.loads(row['sheets']),
                               'roster': json.loads(row['roster']),
                               'rotation': row['rotation'],
                               'rotations': json.loads(row['rotations']) if row['rotations'] else None,
+                              'status': row['status'] or 'pending',
+                              'graded': mine,
                               'createdAt': row['created_at']}}, headers
         draft_pages = re.fullmatch(r'/api/paper-grades/drafts/([1-9]\d{0,17})/pages', path)
         if method == 'GET' and draft_pages:

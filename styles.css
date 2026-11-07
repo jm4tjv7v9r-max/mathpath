@@ -1205,6 +1205,15 @@ html[data-theme=night] .nav-item .count.due{background:#3a2c1d;color:#e0b083}
 .pb-chip{padding:3px 10px;border:1px solid var(--border-tertiary,#e6e3da);border-radius:999px;
   background:var(--paper,#fff);font-size:calc(12.5px*var(--fs))}
 
+/* 未完成的批閱：狀態標籤與已批記號 */
+.pb-badge{display:inline-block;margin-left:6px;padding:1px 8px;border-radius:999px;
+  font-size:calc(11px*var(--fs));font-weight:500;background:var(--surface,#f7f6f2);
+  color:var(--ink-soft,#6b6a63)}
+.pb-badge.done{background:#e6f2dc;color:#3b6d11}
+.pb-badge.doing{background:#fdf6dc;color:#8a6d1b}
+.pb-done-mark{color:#3b6d11;font-weight:700}
+.score-grid tr.pb-graded td{background:#f4f9ef}
+
 /* 全班紙本批閱：內嵌的「匯入全班學生」面板 */
 .pb-import{margin-top:14px;border-top:1px solid var(--border-tertiary,#e6e3da);padding-top:12px}.pb-import-head{display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap}
 .pb-import-head .small-text{margin-left:6px}

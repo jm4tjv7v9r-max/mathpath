@@ -4987,8 +4987,11 @@ class PaperDraftTests(unittest.TestCase):
                              'sheets': [{'studentId': self.student['id'], 'pages': [1, 2]}],
                              'consentExternal': True})
         self.assertEqual(out['summary']['graded'], 1, out.get('failed'))
-        self.assertEqual(self.call('GET', '/api/paper-grades/drafts')['drafts'], [],
-                         '批完的草稿不該留在「未完成的批閱」')
+        drafts = self.call('GET', '/api/paper-grades/drafts')['drafts']
+        self.assertEqual(len(drafts), 1, '批完的草稿要留著，老師才能回來看進度')
+        self.assertEqual(drafts[0]['status'], 'graded')
+        self.assertEqual(drafts[0]['gradedCount'], 1)
+        self.assertEqual(drafts[0]['graded'][0]['studentId'], self.student['id'])
         gid = out['graded'][0]['grade']['id']
         render = mock.Mock(side_effect=lambda data, max_pages=80, only=None, rotation=None, rotations=None: [b'p1', b'p2'])
         with mock.patch.object(server, 'pdf_page_images', render):

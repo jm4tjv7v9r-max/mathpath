@@ -4534,15 +4534,21 @@ async function paperBatchPage(){
     try{list=(await api('/api/paper-grades/drafts')).drafts||[];}catch(e){list=[];}
     panel.hidden=!list.length;
     if(!list.length){box.innerHTML='';return;}
-    box.innerHTML=list.map(d=>`<div class="pb-draft">
+    box.innerHTML=list.map(d=>{
+      const done=d.gradedCount||0;
+      const tag=d.status==='graded'
+        ? `<span class="pb-badge done">已批 ${done}/${d.papers}</span>`
+        : (done?`<span class="pb-badge doing">批到一半 ${done}/${d.papers}</span>`
+               :'<span class="pb-badge">未批</span>');
+      return `<div class="pb-draft">
       <div class="pb-draft-main">
-        <strong>${esc(d.title||'（未命名）')}</strong>
+        <strong>${esc(d.title||'（未命名）')} ${tag}</strong>
         <span class="small-text">${new Date((d.createdAt||0)*1000).toLocaleDateString()} · ${d.pages} 頁 · ${d.papers} 份卷${d.unmatched?` · ${d.unmatched} 份未認出`:''}${d.className?` · ${esc(d.className)}`:''}</span>
       </div>
       <div class="pb-draft-actions">
-        <button class="secondary" data-resume="${d.id}">繼續</button>
+        <button class="secondary" data-resume="${d.id}">${d.status==='graded'?'查看進度':'繼續'}</button>
         <button class="text-button" data-drop="${d.id}">刪除</button>
-      </div></div>`).join('');
+      </div></div>`;}).join('');
     $$('[data-resume]').forEach(b=>b.onclick=()=>resumeDraft(Number(b.dataset.resume)));
     $$('[data-drop]').forEach(b=>b.onclick=async()=>{
       if(!(await askConfirm('刪除這份草稿？之後要批就得重新掃描（會再花一次 AI 費用）。')))return;
@@ -4639,15 +4645,23 @@ async function paperBatchPage(){
     const title=($('#pb-title').value||'').trim();
     if(!title)return toast('請先填功課名稱。');
     const sheets=[];
-    let unconfirmed=0;
+    let unconfirmed=0,already=0;
+    const doneIds=new Set((res.graded||[]).map(g=>Number(g.studentId)));
     $$('[data-sheet]').forEach(sel=>{
       const i=Number(sel.dataset.sheet);
       if(!sel.value)return;
       if(!(res.sheets[i]&&res.sheets[i].confirmed)){unconfirmed+=1;return;}
+      // 續批時跳過先前已批過的學生，避免重複花 AI 費用
+      if(doneIds.has(Number(sel.value))){already+=1;return;}
       sheets.push({studentId:Number(sel.value),pages:res.sheets[i].pages});
     });
-    if(!sheets.length)return toast('請先逐份按「確認」鎖定配對，確認後才能批改。');
-    if(unconfirmed)toast(`有 ${unconfirmed} 份未確認，已跳過；要一起批請按「全部確認」。`);
+    if(!sheets.length){
+      return toast(already?'這些卷都已經批改過了（可按「查看」逐份核對）。':'請先逐份按「確認」鎖定配對，確認後才能批改。');
+    }
+    const skipped=[];
+    if(unconfirmed)skipped.push(`${unconfirmed} 份未確認`);
+    if(already)skipped.push(`${already} 份先前已批改`);
+    if(skipped.length)toast(`已跳過：${skipped.join('、')}。`);
     const btn=$('#pb-grade');btn.disabled=true;btn.textContent='批改中…';
     try{
       const payload=lastScan.draftId
@@ -4729,8 +4743,11 @@ async function paperBatchPage(){
     const rows=(res.sheets||[]).map((sh,i)=>{
       const locked=!!sh.confirmed;
       const dis=locked?' disabled':'';
-      return `<tr data-sheet-row="${i}"${locked?' class="pb-locked"':''}>
-      <td>${i+1}</td>
+      // 這份卷是否已經批過（續批時要一眼看出還欠誰）
+      const done=(res.graded||[]).find(g=>Number(g.studentId)===Number(sh.studentId));
+      const cls=[locked?'pb-locked':'',done?'pb-graded':''].filter(Boolean).join(' ');
+      return `<tr data-sheet-row="${i}"${cls?` class="${cls}"`:''}>
+      <td>${i+1}${done?` <span class="pb-done-mark" title="已批改 ${fmtScore(done.score)} 分">✓</span>`:''}</td>
       <td>${sh.pages.join('、')}</td>
       <td>${viewId?`<button class="text-button" data-view-sheet="${i}">查看</button>`:'<span class="small-text">—</span>'}</td>
       <td><select class="sg-rot" data-sheet-rot="${i}"${dis}>${rotOpts(rotOf(sh))}</select></td>
