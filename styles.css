@@ -818,9 +818,21 @@ html[data-theme=night] .paper-bad{color:#e88a7a}
 .paper-page img{display:block;width:100%;height:auto}
 .paper-page figcaption{position:absolute;left:8px;top:8px;background:#00000088;color:#fff;font-size:12px;padding:2px 8px;border-radius:6px}
 .paper-marks{position:absolute;inset:0;pointer-events:none}
-.paper-mark{position:absolute;display:grid;place-items:center;border:1px dashed;border-radius:8px;
-  font-weight:700;font-size:calc(22px*var(--fs));background:transparent}
+.paper-mark{position:absolute;border:1px dashed;border-radius:8px;
+  color:#c0392b;background:transparent;font-weight:700;line-height:1}
 .paper-mark{border-color:#c0392bb3;color:#c0392b;background:transparent}
+/* 框內三件事：左上題號、左邊判定符號、右下評語 */
+.paper-mark-no{position:absolute;left:3px;top:1px;font-size:calc(11px*var(--fs));
+  font-weight:700;text-shadow:0 0 3px #fff,0 0 2px #fff}
+.paper-mark-sym{position:absolute;left:3px;top:50%;transform:translateY(-50%);
+  font-size:calc(20px*var(--fs));text-shadow:0 0 3px #fff,0 0 2px #fff}
+.paper-mark-note{position:absolute;right:3px;bottom:2px;max-width:72%;text-align:right;
+  font-size:calc(11px*var(--fs));font-weight:600;line-height:1.25;white-space:pre-wrap;
+  text-shadow:0 0 3px #fff,0 0 2px #fff,0 0 6px #fff}
+html[data-theme=night] .paper-mark{color:#ff8a7a;border-color:#ff8a7a66}
+html[data-theme=night] .paper-mark-no,
+html[data-theme=night] .paper-mark-sym,
+html[data-theme=night] .paper-mark-note{text-shadow:0 0 4px #000,0 0 3px #000}
 
 
 .paper-pending{color:#c0392b;font-weight:700}

@@ -3519,25 +3519,28 @@ function paperResultHtml(g){
   }).join('');
   const pagesHtml=(paperPages||[]).map((src,i)=>{
     const pageQs=qs.filter(q=>q.page===i+1);
-    // 題目框：一律紅色
+    // 題目框：虛線、透明底；框內左上角題號、左邊判定符號、右下角評語
     const marks=pageQs.filter(q=>q.box).map(q=>{
       const b=q.box;
       const lv=q.level||(q.correct===null?'unreadable':q.correct===true?'excellent':q.correct==='partial'?'partial':'wrong');
-      const sym=lv==='unreadable'?'?':lv==='excellent'?'✓🎉':lv==='good'?'◑':lv==='partial'?'◐':lv==='weak'?'◔':'✗';
-      return `<span class="paper-mark" style="left:${b.x*100}%;top:${b.y*100}%;width:${b.w*100}%;height:${b.h*100}%">${sym}</span>`;
-    }).join('');
-    // 批註：紅色文字，放在 AI 找的空白處；可拖動
-    const notes=pageQs.filter(q=>q.note&&q.noteBox).map(q=>{
-      const b=q.noteBox,idx=qs.indexOf(q);
-      return `<div class="paper-note" data-note-index="${idx}" style="left:${b.x*100}%;top:${b.y*100}%;width:${b.w*100}%" title="拖動可移動批註">${esc(q.note)}</div>`;
+      const sym=lv==='unreadable'?'?':lv==='excellent'?'✓':lv==='good'?'◑':lv==='partial'?'◐':lv==='weak'?'◔':'✗';
+      const doll=lv==='excellent'?'🎉':'';
+      // 框內空間有限：評語只放前 40 字，完整內容看下面的評分表
+      const raw=q.note||q.reason||'';
+      const note=raw.length>40?raw.slice(0,40)+'…':raw;
+      return `<span class="paper-mark" style="left:${b.x*100}%;top:${b.y*100}%;width:${b.w*100}%;height:${b.h*100}%">
+        <span class="paper-mark-no">${esc(q.number)}</span>
+        <span class="paper-mark-sym">${sym}${doll}</span>
+        ${note?`<span class="paper-mark-note">${esc(note)}</span>`:''}
+      </span>`;
     }).join('');
     // 成績在第一頁右上角（30px）
     const badge=i===0?`<div class="paper-score-badge">${g.score}<small>/100</small></div>`:'';
     // 整份作業一題都判定不了：第一頁右下角用橙色大字提醒
     const allUnreadable=qs.length>0&&qs.every(q=>q.level==='unreadable'||q.correct===null);
     const warn=(i===0&&allUnreadable)?`<div class="paper-warn"><strong>AI 無法辨識這份作業</strong><span>請教師逐題判定，或重新上傳更清晰的照片</span></div>`:'';
-    // 左邊批改卷（標記＋批註）、右邊原卷（乾淨，方便對照）
-    const gradedFig=`<figure class="paper-page"><img src="${src}" alt="批改卷 第 ${i+1} 頁"><figcaption>批改卷 · 第 ${i+1} 頁</figcaption>${badge}${warn}<div class="paper-marks">${marks}</div>${notes}</figure>`;
+    // 左邊批改卷（標記＋評語）、右邊原卷（乾淨，方便對照）
+    const gradedFig=`<figure class="paper-page"><img src="${src}" alt="批改卷 第 ${i+1} 頁"><figcaption>批改卷 · 第 ${i+1} 頁</figcaption>${badge}${warn}<div class="paper-marks">${marks}</div></figure>`;
     const rawFig=`<figure class="paper-page paper-page-raw"><img src="${src}" alt="原卷 第 ${i+1} 頁"><figcaption>原卷 · 第 ${i+1} 頁</figcaption></figure>`;
     return `<div class="paper-compare-row">${gradedFig}${rawFig}</div>`;
   }).join('');
