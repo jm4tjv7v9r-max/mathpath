@@ -4630,6 +4630,7 @@ async function paperBatchPage(){
       <thead><tr><th>#</th><th>頁碼</th><th>卷面</th><th>方向</th><th>讀到座號</th><th>讀到姓名</th><th>配對方式</th><th>指派給</th></tr></thead>
       <tbody>${rows}</tbody></table></div>
       <p class="field-hint">認不出來的請用右邊下拉指派，然後按下面的按鈕逐份批改。按「查看」可先看這份卷的實際畫面，確認 AI 切的頁對不對。</p>
+      <div id="pb-unmatched"></div>
       <div id="pb-sheet-viewer"></div>
       <div class="sg-bulk-actions"><button class="primary" id="pb-grade">確認並開始批改</button></div>`;
     let viewing=-1;
@@ -4676,6 +4677,24 @@ async function paperBatchPage(){
       }catch(e){toast(e.message);}
     });
     $$('[data-view-sheet]').forEach(b=>b.onclick=()=>loadSheet(Number(b.dataset.viewSheet)));
+    // 該班還沒配到卷的學生：沒交、沒掃到，或 AI 沒認出來。
+    // 每次改「指派給」都重算，老師一眼看得出還欠誰。
+    const updateUnmatched=()=>{
+      const box=$('#pb-unmatched');
+      if(!box)return;
+      const roster=res.roster||[];
+      if(!roster.length){box.innerHTML='';return;}
+      const taken=new Set($$('[data-sheet]').map(s=>Number(s.value)).filter(Boolean));
+      const missing=roster.filter(u=>!taken.has(u.id));
+      box.innerHTML=missing.length
+        ? `<div class="pb-unmatched"><strong>尚未配對 ${missing.length} 人</strong>
+            <span class="small-text">（沒交、沒掃到，或 AI 沒認出）</span>
+            <div class="pb-unmatched-list">${missing.map(u=>
+              `<span class="pb-chip">${esc(u.name)}${u.seat?' · '+esc(u.seat):''}</span>`).join('')}</div></div>`
+        : `<p class="small-text">全班 ${roster.length} 人都已配對到卷。</p>`;
+    };
+    $$('[data-sheet]').forEach(sel=>sel.addEventListener('change',updateUnmatched));
+    updateUnmatched();
     $('#pb-grade').onclick=()=>gradeBatch(res);
   }
 }
@@ -6627,7 +6646,13 @@ if(b.id==='open-math-editor'){openMathEditor();return;}
     const index=Number(b.dataset.paperJudge),verdict=b.dataset.paperVerdict==='1';
     b.disabled=true;
     api(`/api/paper-grades/${paperGradeId}/judge`,{index,correct:verdict})
-      .then(r=>{$('#paper-result').innerHTML=paperResultHtml(r.grade);toast(`已更新：${r.grade.score} / 100`);})
+      .then(r=>{
+        // 單份批改用 #paper-result；全班批閱的結果在 #pb-viewer，以前只找前者就報
+        // Cannot set properties of null (setting 'innerHTML')
+        const box=$('#pb-viewer')||$('#paper-result');
+        if(box)box.innerHTML=paperResultHtml(r.grade);
+        toast(`已更新：${r.grade.score} / 100`);
+      })
       .catch(err=>{b.disabled=false;toast(err.message);});
     return;
   }if(b.dataset.page)return navigate(b.dataset.page);if(b.dataset.assignment)return assignmentPage(Number(b.dataset.assignment));if(b.dataset.mock)return mockExamPage(Number(b.dataset.mock));

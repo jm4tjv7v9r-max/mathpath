@@ -1152,9 +1152,15 @@ html[data-theme=night] .nav-item .count.due{background:#3a2c1d;color:#e0b083}
 .bulk-result th,.bulk-result td{border:1px solid var(--border-tertiary,#e6e3da);padding:4px 8px;text-align:left}
 .bulk-result th{background:var(--paper,#fff)}
 
+/* 配對表：該班還沒配到卷的學生 */
+.pb-unmatched{margin:12px 0;padding:12px;border:1px solid var(--border);border-radius:10px;
+  background:var(--surface,#f7f6f2)}
+.pb-unmatched-list{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.pb-chip{padding:3px 10px;border:1px solid var(--border-tertiary,#e6e3da);border-radius:999px;
+  background:var(--paper,#fff);font-size:calc(12.5px*var(--fs))}
+
 /* 全班紙本批閱：內嵌的「匯入全班學生」面板 */
-.pb-import{margin-top:14px;border-top:1px solid var(--border-tertiary,#e6e3da);padding-top:12px}
-.pb-import-head{display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap}
+.pb-import{margin-top:14px;border-top:1px solid var(--border-tertiary,#e6e3da);padding-top:12px}.pb-import-head{display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap}
 .pb-import-head .small-text{margin-left:6px}
 .pb-import-box{margin-top:10px;padding:12px;border:1px solid var(--border);border-radius:10px;
   background:var(--surface,#f7f6f2)}
