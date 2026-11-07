@@ -4599,16 +4599,24 @@ async function paperBatchPage(){
       (res.roster||[]).map(u=>`<option value="${u.id}"${String(u.id)===pick(i,cur)?' selected':''}>${esc(u.name)}${u.seat?' · '+esc(u.seat):''}</option>`).join('');
     // 卷面預覽要靠草稿裡的 PDF；掃描結果是 draftId，續批載入的草稿是 id
     const viewId=res.draftId||res.id||null;
+    // 每一份卷自己的角度：取該份第一頁的設定，沒有就退回整份的值
+    const rotOf=sh=>{
+      const list=Array.isArray(res.rotations)?res.rotations:[];
+      const r=list[sh.pages[0]-1];
+      return (r===0||r===90||r===180||r===270)?r:(res.rotation||0);
+    };
+    const rotOpts=cur=>[0,90,180,270].map(r=>`<option value="${r}"${cur===r?' selected':''}>${r}°</option>`).join('');
     const rows=(res.sheets||[]).map((sh,i)=>`<tr>
       <td>${i+1}</td>
       <td>${sh.pages.join('、')}</td>
       <td>${viewId?`<button class="text-button" data-view-sheet="${i}">查看</button>`:'<span class="small-text">—</span>'}</td>
+      <td><select class="sg-rot" data-sheet-rot="${i}">${rotOpts(rotOf(sh))}</select></td>
       <td>${sh.seat??''}</td>
       <td>${esc(sh.name||'')}</td>
       <td>${sh.matchedBy==='seat'?'座號':sh.matchedBy==='name'?'姓名':''}</td>
       <td><select data-sheet="${i}">${opts(i,sh.studentId)}</select></td></tr>`).join('');
     $('#pb-result').innerHTML=`<div class="sg-toolbar" style="margin-top:12px">
-      <label class="small-text">卷面方向
+      <label class="small-text">全部卷面方向
         <select id="pb-rot">
           <option value="0"${(res.rotation||0)===0?' selected':''}>正常</option>
           <option value="90"${res.rotation===90?' selected':''}>順時針 90°</option>
@@ -4616,38 +4624,58 @@ async function paperBatchPage(){
           <option value="270"${res.rotation===270?' selected':''}>逆時針 90°</option>
         </select>
       </label>
-      <span class="small-text">AI 已先判斷方向；看不對可在這裡改，再按「查看」重看。</span>
+      <span class="small-text">AI 已先判斷；某一份卷不對就改它那一行的「方向」，只影響該學生。</span>
     </div>
     <div class="sg-wrap" style="margin-top:8px"><table class="score-grid">
-      <thead><tr><th>#</th><th>頁碼</th><th>卷面</th><th>讀到座號</th><th>讀到姓名</th><th>配對方式</th><th>指派給</th></tr></thead>
+      <thead><tr><th>#</th><th>頁碼</th><th>卷面</th><th>方向</th><th>讀到座號</th><th>讀到姓名</th><th>配對方式</th><th>指派給</th></tr></thead>
       <tbody>${rows}</tbody></table></div>
       <p class="field-hint">認不出來的請用右邊下拉指派，然後按下面的按鈕逐份批改。按「查看」可先看這份卷的實際畫面，確認 AI 切的頁對不對。</p>
       <div id="pb-sheet-viewer"></div>
       <div class="sg-bulk-actions"><button class="primary" id="pb-grade">確認並開始批改</button></div>`;
-    $('#pb-rot').onchange=async ev=>{
-      const rot=Number(ev.target.value);
-      if(!viewId){toast('這份卷沒有存草稿，無法改方向。');return;}
-      try{
-        await api(`/api/paper-grades/drafts/${viewId}/rotation`,{rotation:rot});
-        res.rotation=rot;
-        const box=$('#pb-sheet-viewer');if(box)box.innerHTML='';
-        toast('卷面方向已更新，按「查看」重新載入。');
-      }catch(e){toast(e.message);}
-    };
-    $$('[data-view-sheet]').forEach(b=>b.onclick=async()=>{
-      const sh=(res.sheets||[])[Number(b.dataset.viewSheet)];
+    let viewing=-1;
+    const loadSheet=async i=>{
+      const sh=(res.sheets||[])[i];
       const box=$('#pb-sheet-viewer');
       if(!sh||!box)return;
+      viewing=i;
       box.innerHTML='<p class="small-text">載入卷面…</p>';
       try{
         const out=await api(`/api/paper-grades/drafts/${viewId}/pages?nums=${sh.pages.join(',')}`);
         const pages=out.pages||[];
         box.innerHTML=pages.length
-          ? `<div class="paper-pages">${pages.map((src,i)=>`<figure class="paper-page"><img src="${src}" alt="第 ${sh.pages[i]} 頁"><figcaption>第 ${sh.pages[i]} 頁</figcaption></figure>`).join('')}</div>`
+          ? `<div class="paper-pages">${pages.map((src,k)=>`<figure class="paper-page"><img src="${src}" alt="第 ${sh.pages[k]} 頁"><figcaption>第 ${sh.pages[k]} 頁</figcaption></figure>`).join('')}</div>`
           : `<p class="small-text">${esc(out.notice||'沒有可顯示的頁面。')}</p>`;
         box.scrollIntoView({block:'nearest'});
       }catch(e){box.innerHTML=`<p class="error-text">${esc(e.message)}</p>`;}
+    };
+    // 整份一起轉
+    $('#pb-rot').onchange=async ev=>{
+      const rot=Number(ev.target.value);
+      if(!viewId){toast('這份卷沒有存草稿，無法改方向。');return;}
+      try{
+        const out=await api(`/api/paper-grades/drafts/${viewId}/rotation`,{rotation:rot});
+        res.rotation=rot;
+        res.rotations=out.rotations||res.rotations;
+        $$('[data-sheet-rot]').forEach(sel=>{sel.value=String(rot);});
+        $('#pb-sheet-viewer').innerHTML='';
+        viewing=-1;
+        toast('全部卷面方向已更新，按「查看」重新載入。');
+      }catch(e){toast(e.message);}
+    };
+    // 只轉某一份卷（某個學生的答卷）
+    $$('[data-sheet-rot]').forEach(sel=>sel.onchange=async()=>{
+      const i=Number(sel.dataset.sheetRot),sh=(res.sheets||[])[i];
+      const rot=Number(sel.value);
+      if(!viewId||!sh){toast('這份卷沒有存草稿，無法改方向。');return;}
+      try{
+        const out=await api(`/api/paper-grades/drafts/${viewId}/rotation`,
+          {rotation:rot,pages:sh.pages});
+        res.rotations=out.rotations||res.rotations;
+        toast(`第 ${i+1} 份卷已轉 ${rot}°`);
+        if(viewing===i)await loadSheet(i);
+      }catch(e){toast(e.message);}
     });
+    $$('[data-view-sheet]').forEach(b=>b.onclick=()=>loadSheet(Number(b.dataset.viewSheet)));
     $('#pb-grade').onclick=()=>gradeBatch(res);
   }
 }

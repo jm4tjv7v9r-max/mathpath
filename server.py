@@ -8049,24 +8049,51 @@ class Application:
             return {'pages': imgs, 'pageNums': nums[:10]}, headers
         draft_rotation = re.fullmatch(r'/api/paper-grades/drafts/([1-9]\d{0,17})/rotation', path)
         if method == 'POST' and draft_rotation:
-            # AI 判錯方向時老師自己改：只改這個草稿的轉向，之後看卷面與批改都照它。
+            # AI 判錯方向時老師自己改。帶 pages 就只轉那幾頁（某一份卷），
+            # 不帶就是整份草稿一起轉。
             self.teacher(user)
-            fields(body, ('rotation',), ('rotation',))
+            fields(body, ('rotation', 'pages'), ('rotation',))
             rot = body['rotation']
             if rot not in (0, 90, 180, 270):
                 fail(400, '方向只能是 0、90、180 或 270。')
+            only_pages = []
+            raw_pages = body.get('pages')
+            if raw_pages not in (None, []):
+                if not isinstance(raw_pages, list):
+                    fail(400, '頁碼格式不正確。')
+                for n in raw_pages:
+                    if isinstance(n, int) and not isinstance(n, bool) and 1 <= n <= PAPER_SCAN_MAX_PAGES:
+                        only_pages.append(n)
+                if not only_pages:
+                    fail(400, '頁碼格式不正確。')
+                only_pages = only_pages[:10]
             draft_id = int(draft_rotation.group(1))
             with self.db() as db:
                 ensure_paper_drafts(db)
-                row = db.execute('SELECT teacher_id, pages FROM paper_drafts WHERE id=?',
+                row = db.execute('SELECT teacher_id, pages, rotations FROM paper_drafts WHERE id=?',
                                  (draft_id,)).fetchone()
                 if row is None:
                     fail(404, '找不到這份草稿（可能已批改或超過七天）。')
                 if row['teacher_id'] != user['id'] and not self.is_owner(user, db):
                     fail(403, '只有建立這份草稿的老師可以改方向。')
-                rotations = [rot] * max(0, int(row['pages'] or 0))
+                total = max(0, int(row['pages'] or 0))
+                try:
+                    rotations = json.loads(row['rotations']) if row['rotations'] else []
+                except (TypeError, ValueError):
+                    rotations = []
+                if not isinstance(rotations, list) or len(rotations) < total:
+                    rotations = (rotations or []) + [0] * total
+                    rotations = rotations[:total]
+                if only_pages:
+                    for n in only_pages:
+                        if 1 <= n <= total:
+                            rotations[n - 1] = rot
+                else:
+                    rotations = [rot] * total
+                # 單一 rotation 欄位保留給舊版前端：只在這幾頁都同一個角度時才有意義
+                summary = rotations[0] if rotations and len(set(rotations)) == 1 else None
                 db.execute('UPDATE paper_drafts SET rotation=?, rotations=?, updated_at=? WHERE id=?',
-                           (rot, json.dumps(rotations), time.time(), draft_id))
+                           (summary, json.dumps(rotations), time.time(), draft_id))
             return {'rotation': rot, 'rotations': rotations}, headers
         if method == 'DELETE' and re.fullmatch(r'/api/paper-grades/drafts/([1-9]\d{0,17})', path):
             self.teacher(user)

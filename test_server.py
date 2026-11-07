@@ -5039,6 +5039,18 @@ class PaperDraftTests(unittest.TestCase):
         draft = self.call('GET', f"/api/paper-grades/drafts/{out['draftId']}")['draft']
         self.assertEqual(draft['rotation'], 180)
 
+    def test_can_rotate_a_single_paper(self):
+        """每一份卷可以獨立轉角度：只改它那幾頁，不影響其他學生。"""
+        scan = self.scan()
+        base = f"/api/paper-grades/drafts/{scan['draftId']}/rotation"
+        out = self.call('POST', base, {'rotation': 90, 'pages': [2]})
+        self.assertEqual(out['rotations'], [0, 90], '只轉第 2 頁')
+        out = self.call('POST', base, {'rotation': 180, 'pages': [1]})
+        self.assertEqual(out['rotations'], [180, 90], '再轉第 1 頁，第 2 頁保持')
+        out = self.call('POST', base, {'rotation': 0})
+        self.assertEqual(out['rotations'], [0, 0], '不帶 pages 就是整份')
+        self.call('POST', base, {'rotation': 90, 'pages': [99]}, expect=400)
+
     def test_teacher_can_override_rotation(self):
         """AI 判錯方向時老師可以自己改，改了要存進草稿。"""
         scan = self.scan()

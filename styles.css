@@ -1127,6 +1127,9 @@ html[data-theme=night] .nav-item .count.due{background:#3a2c1d;color:#e0b083}
 .score-grid .sg-name{text-align:left;font-weight:500;position:sticky;left:52px;background:var(--paper,#fff);z-index:1}
 .score-grid thead .sg-name{left:52px;z-index:3;background:var(--surface,#f7f6f2)}
 .score-grid .sg-cell{cursor:text;min-width:64px}
+/* 配對表：每一份卷各自的方向 */
+.score-grid .sg-rot{padding:2px 4px;border:1px solid var(--border);border-radius:6px;
+  background:var(--paper,#fff);color:var(--ink);font-size:calc(12px*var(--fs))}
 .score-grid .sg-cell:hover{background:var(--surface-green,#eef5ea)}
 .score-grid .sg-cell:focus{outline:2px solid var(--green,#3b6d11);outline-offset:-2px;background:#fff}
 .score-grid .sg-cell.edited{background:#fdf6dc}
