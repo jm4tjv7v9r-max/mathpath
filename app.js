@@ -3650,7 +3650,7 @@ document.addEventListener('focusout',async e=>{
     if(raw===String(el.dataset.orig||''))return;
     try{
       const r=await api(`/api/paper-grades/${paperGradeId}/judge`,{index:i,credit:val/max});
-      const box=$('#pb-viewer')||$('#paper-result');
+      const box=$('#pb-viewer')||$('#pb-sheet-viewer')||$('#paper-result');
       if(box)box.innerHTML=paperResultHtml(r.grade);
       toast(`已改分：這題 ${val} 分，總分 ${r.grade.score} / 100`);
     }catch(err){toast(err.message);el.value=el.dataset.orig||'';}
@@ -3664,7 +3664,7 @@ document.addEventListener('focusout',async e=>{
       const r=await api(`/api/paper-grades/${paperGradeId}/judge`,{index:i,note});
       el.dataset.orig=note;
       // 卷上框內的評語也要跟著更新，不能只改表格
-      const box=$('#pb-viewer')||$('#paper-result');
+      const box=$('#pb-viewer')||$('#pb-sheet-viewer')||$('#paper-result');
       if(box&&r.grade)box.innerHTML=paperResultHtml(r.grade);
       toast('批註已更新');
     }catch(err){toast(err.message);}
@@ -4736,7 +4736,8 @@ async function paperBatchPage(){
     }catch(e){toast(e.message);}
   }
   async function openPaperPages(grade){
-    const box=$('#pb-viewer');
+    // 批改結果在 #pb-viewer；配對表的卷面預覽區是 #pb-sheet-viewer
+    const box=$('#pb-viewer')||$('#pb-sheet-viewer');
     if(!box||!grade)return;
     box.innerHTML='<p class="small-text">載入原卷…</p>';
     try{
@@ -4774,7 +4775,8 @@ async function paperBatchPage(){
       return `<tr data-sheet-row="${i}"${cls?` class="${cls}"`:''}>
       <td>${i+1}${done?` <span class="pb-done-mark" title="已批改 ${fmtScore(done.score)} 分">✓</span>`:''}</td>
       <td>${sh.pages.join('、')}</td>
-      <td>${viewId?`<button class="text-button" data-view-sheet="${i}">查看</button>`:'<span class="small-text">—</span>'}</td>
+      <td>${done?`<button class="text-button" data-view-grade-btn="${done.gradeId}">查看批改</button>`
+        :(viewId?`<button class="text-button" data-view-sheet="${i}">查看</button>`:'<span class="small-text">—</span>')}</td>
       <td><select class="sg-rot" data-sheet-rot="${i}"${dis}>${rotOpts(rotOf(sh))}</select></td>
       <td>${sh.seat??''}</td>
       <td>${esc(sh.name||'')}</td>
@@ -4845,6 +4847,8 @@ async function paperBatchPage(){
       }catch(e){toast(e.message);}
     });
     $$('[data-view-sheet]').forEach(b=>b.onclick=()=>loadSheet(Number(b.dataset.viewSheet)));
+    // 已批改的學生：直接打開批改結果（帶紅框、✓、評註），不是乾淨的原卷
+    $$('[data-view-grade-btn]').forEach(b=>b.onclick=()=>openGradeById(Number(b.dataset.viewGradeBtn)));
     // 逐份確認：確認後鎖住這一行的指派與方向，要改再按「更改」
     const applyLock=i=>{
       const tr=$(`tr[data-sheet-row="${i}"]`),sh=(res.sheets||[])[i];
@@ -6846,7 +6850,7 @@ if(b.id==='open-math-editor'){openMathEditor();return;}
       const r=await api(`/api/paper-grades/${paperGradeId}/confirm`,{confirmed:next});
       if(paperCurrentGrade){
         paperCurrentGrade.confirmed=next;
-        const box=$('#pb-viewer')||$('#paper-result');
+        const box=$('#pb-viewer')||$('#pb-sheet-viewer')||$('#paper-result');
         if(box)box.innerHTML=paperResultHtml(paperCurrentGrade);
       }
       toast(next
@@ -6862,7 +6866,7 @@ if(b.id==='open-math-editor'){openMathEditor();return;}
       .then(r=>{
         // 單份批改用 #paper-result；全班批閱的結果在 #pb-viewer，以前只找前者就報
         // Cannot set properties of null (setting 'innerHTML')
-        const box=$('#pb-viewer')||$('#paper-result');
+        const box=$('#pb-viewer')||$('#pb-sheet-viewer')||$('#paper-result');
         if(box)box.innerHTML=paperResultHtml(r.grade);
         toast(`已更新：${r.grade.score} / 100`);
       })
