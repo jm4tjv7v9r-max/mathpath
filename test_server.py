@@ -4878,6 +4878,18 @@ class PaperDraftTests(unittest.TestCase):
             return self.call('POST', '/api/paper-grades/scan',
                              {'file': pdf, 'classId': self.class_id, 'title': title})
 
+    def test_teacher_can_force_pages_per_paper(self):
+        """指定「每幾頁一份」時完全不看 AI 判斷：29 頁選每頁一份就是 29 份。"""
+        roster = [{'page': i, 'seat': None, 'name': None, 'isFirst': False}
+                  for i in range(1, 30)]
+        sheets = server.match_papers(roster, [], pages_per=1)
+        self.assertEqual(len(sheets), 29)
+        self.assertEqual([s['pages'] for s in sheets], [[i] for i in range(1, 30)])
+        pairs = server.match_papers(roster, [], pages_per=2)
+        self.assertEqual(len(pairs), 15, '29 頁每兩頁一份 → 15 份（最後一份 1 頁）')
+        self.assertEqual(pairs[0]['pages'], [1, 2])
+        self.assertEqual(pairs[-1]['pages'], [29])
+
     def test_pages_with_different_names_are_split_into_separate_papers(self):
         """AI 把每頁都判成續頁時，姓名不同仍要切開（一頁一份卷最常見）。"""
         roster = [{'page': i, 'seat': i, 'name': f'學生{i}', 'isFirst': False}

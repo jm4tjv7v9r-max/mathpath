@@ -927,33 +927,49 @@ def _name_score(written, stored):
     return score
 
 
-def match_papers(roster, students):
-    """把逐頁結果併成「一份卷」並配對學生：座號優先，姓名相似度輔助。"""
+def match_papers(roster, students, pages_per=None):
+    """把逐頁結果併成「一份卷」並配對學生：座號優先，姓名相似度輔助。
+
+    pages_per 由老師指定「每幾頁一份」時直接照切，完全不看 AI 的判斷——
+    一頁一份卷、每兩頁一份卷這種固定格式，人工指定比讓模型猜可靠得多。
+    """
     by_seat = {}
     for st in students:
         try:
             by_seat[int(str(st['seat']).strip())] = st
         except (TypeError, ValueError):
             continue
-    sheets, current = [], None
-    for page in roster:
-        # 切卷依據（任何一項成立就開新的一份）：
-        # ① AI 說這頁有卷頭 ② 座號換了 ③ 姓名換了
-        # ③ 是兜底：AI 有時把每頁都當成續頁，但一頁一份卷時姓名每頁都不同，
-        #   只靠 ① 會把整疊 29 頁併成一份。
-        starts = page['isFirst'] or current is None
-        if not starts and page['seat'] and current['seat'] and page['seat'] != current['seat']:
-            starts = True
-        if not starts and page['name'] and current['name'] and page['name'] != current['name']:
-            starts = True
-        if starts:
-            current = {'seat': page['seat'], 'name': page['name'], 'pages': [page['page']],
-                       'studentId': None, 'matchedBy': None, 'confidence': 0}
-            sheets.append(current)
-        else:
-            current['pages'].append(page['page'])
-            current['seat'] = current['seat'] or page['seat']
-            current['name'] = current['name'] or page['name']
+    sheets = []
+    if pages_per:
+        for i in range(0, len(roster), pages_per):
+            chunk = roster[i:i + pages_per]
+            if not chunk:
+                continue
+            seat = next((p['seat'] for p in chunk if p['seat']), None)
+            name = next((p['name'] for p in chunk if p['name']), None)
+            sheets.append({'seat': seat, 'name': name,
+                           'pages': [p['page'] for p in chunk],
+                           'studentId': None, 'matchedBy': None, 'confidence': 0})
+    else:
+        current = None
+        for page in roster:
+            # 切卷依據（任何一項成立就開新的一份）：
+            # ① AI 說這頁有卷頭 ② 座號換了 ③ 姓名換了
+            # ②③ 是兜底：AI 有時把每頁都當成續頁，一頁一份卷時座號／姓名每頁都不同，
+            #     只靠 ① 會把整疊 29 頁併成一份。
+            starts = page['isFirst'] or current is None
+            if not starts and page['seat'] and current['seat'] and page['seat'] != current['seat']:
+                starts = True
+            if not starts and page['name'] and current['name'] and page['name'] != current['name']:
+                starts = True
+            if starts:
+                current = {'seat': page['seat'], 'name': page['name'], 'pages': [page['page']],
+                           'studentId': None, 'matchedBy': None, 'confidence': 0}
+                sheets.append(current)
+            else:
+                current['pages'].append(page['page'])
+                current['seat'] = current['seat'] or page['seat']
+                current['name'] = current['name'] or page['name']
     for sheet in sheets:
         if sheet['seat'] and sheet['seat'] in by_seat:
             st = by_seat[sheet['seat']]
@@ -7850,7 +7866,8 @@ class Application:
                     'summary': {'graded': len(done), 'failed': len(failed)}}, headers
         if method == 'POST' and path == '/api/paper-grades/scan':
             self.teacher(user)
-            fields(body, ('file', 'classId', 'title', 'consentExternal', 'async'), ('file',))
+            fields(body, ('file', 'classId', 'title', 'consentExternal', 'async', 'split'),
+                   ('file',))
             if body.get('async'):
                 return {'jobId': self.start_job(
                     user, lambda: self.dispatch(method, path, {**body, 'async': False},
@@ -7869,6 +7886,16 @@ class Application:
             else:
                 class_id = None
             self.ai.consent(body.get('consentExternal'))
+            # 老師直接指定「每幾頁一份」時就不靠 AI 猜切卷（一頁一份、兩頁一份最常見）
+            split = body.get('split')
+            pages_per = None
+            if split not in (None, '', 'auto'):
+                try:
+                    pages_per = int(str(split).strip())
+                except (TypeError, ValueError):
+                    fail(400, '切卷方式不正確。')
+                if not 1 <= pages_per <= 10:
+                    fail(400, '每份卷的頁數必須介於 1 和 10。')
             # 逐頁先判方向（雙面掃描正反面常不一樣），轉正之後才認人、才批改，
             # 否則 AI 讀倒著的字會認錯人、判錯分。
             raw_pages = pdf_page_images(data, max_pages=PAPER_SCAN_MAX_PAGES, rotation=0)
@@ -7898,7 +7925,7 @@ class Application:
                     students = [dict(r) for r in db.execute(
                         "SELECT id,name,seat FROM users WHERE role='student' "
                         'ORDER BY ' + SEAT_ORDER_BARE + ', id')]
-            sheets = match_papers(roster, students)
+            sheets = match_papers(roster, students, pages_per)
             roster_out = [{'id': st['id'], 'name': st['name'], 'seat': st['seat']}
                           for st in students]
             # 存成草稿：重新整理、換頁、隔天再回來都不用重掃（重掃＝80 頁的 AI 費用）

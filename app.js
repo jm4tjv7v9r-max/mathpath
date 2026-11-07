@@ -4346,7 +4346,16 @@ async function paperBatchPage(){
           <input id="pb-title" maxlength="200" placeholder="例如：第三次功課"></div>
         <div class="form-field"><label class="field-label" for="pb-file">PDF（≤80 頁）</label>
           <input id="pb-file" type="file" accept="application/pdf"></div>
+        <div class="form-field"><label class="field-label" for="pb-split">切卷方式</label>
+          <select id="pb-split">
+            <option value="auto">自動（AI 判斷卷頭）</option>
+            <option value="1">每頁一份</option>
+            <option value="2">每兩頁一份</option>
+            <option value="3">每三頁一份</option>
+            <option value="4">每四頁一份</option>
+          </select></div>
       </div>
+      <p class="field-hint">切卷方式選「自動」時 AI 會找卷頭（標題、姓名、得分欄）；如果 AI 把整疊切成一份，改成「每頁一份」或「每兩頁一份」就一定正確。</p>
       <div style="margin-top:10px"><button class="primary" id="pb-go">開始掃描</button>
         <span class="small-text" id="pb-status"></span></div>
 
@@ -4381,13 +4390,16 @@ async function paperBatchPage(){
       const data=await fileToDataUrl(file);
       const res=await apiJob('/api/paper-grades/scan',
         {file:data,classId:Number($('#pb-class').value)||null,title:($('#pb-title').value||'').trim(),
+         split:$('#pb-split').value,
          consentExternal:S.ai?.mode==='external'},
         job=>{$('#pb-status').textContent=`掃描中… ${Math.round(job.elapsed||0)} 秒`;});
       renderBatch(res);
       lastScan={file:data,res,draftId:res.draftId||null};
       $('#pb-roster-info').textContent=(res.roster||[]).length?`（目前 ${res.roster.length} 人）`:'（還沒有學生）';
       $('#pb-status').textContent=`共 ${res.pages} 頁、切成 ${res.summary.papers} 份卷；認出 ${res.summary.matched} 份。`
-        +(res.draftId?'（已存成草稿，可離開頁面稍後再批）':'');
+        +(res.draftId?'（已存成草稿，可離開頁面稍後再批）':'')
+        +((res.summary.papers===1&&res.pages>3&&$('#pb-split').value==='auto')
+          ?'　⚠️ 只切成 1 份卷，AI 可能沒認出卷頭；請把「切卷方式」改成「每頁一份」或「每兩頁一份」再掃一次。':'');
       await loadDrafts();
     }catch(e){toast(e.message);$('#pb-status').textContent='';}
     btn.disabled=false;
