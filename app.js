@@ -4359,8 +4359,16 @@ async function paperBatchPage(){
             <option value="3">每三頁一份</option>
             <option value="4">每四頁一份</option>
           </select></div>
+        <div class="form-field"><label class="field-label" for="pb-rotate">掃描前旋轉</label>
+          <select id="pb-rotate">
+            <option value="auto">自動（AI 判斷方向）</option>
+            <option value="0">不轉</option>
+            <option value="90">順時針 90°</option>
+            <option value="180">上下顛倒 180°</option>
+            <option value="270">逆時針 90°</option>
+          </select></div>
       </div>
-      <p class="field-hint">切卷方式選「自動」時 AI 會找卷頭（標題、姓名、得分欄）；如果 AI 把整疊切成一份，改成「每頁一份」或「每兩頁一份」就一定正確。</p>
+      <p class="field-hint">切卷方式選「自動」時 AI 會找卷頭（標題、姓名、得分欄）；如果 AI 把整疊切成一份，改成「每頁一份」或「每兩頁一份」就一定正確。旋轉角度選固定值時會跳過 AI 判方向（省一半呼叫），之後仍可在配對表逐份微調。</p>
       <div style="margin-top:10px"><button class="primary" id="pb-go">開始掃描</button>
         <span class="small-text" id="pb-status"></span></div>
 
@@ -4395,7 +4403,7 @@ async function paperBatchPage(){
       const data=await fileToDataUrl(file);
       const res=await apiJob('/api/paper-grades/scan',
         {file:data,classId:Number($('#pb-class').value)||null,title:($('#pb-title').value||'').trim(),
-         split:$('#pb-split').value,
+         split:$('#pb-split').value,rotate:$('#pb-rotate').value,
          consentExternal:S.ai?.mode==='external'},
         job=>{$('#pb-status').textContent=`掃描中… ${Math.round(job.elapsed||0)} 秒`;});
       renderBatch(res);

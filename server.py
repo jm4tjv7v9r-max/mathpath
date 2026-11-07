@@ -7888,7 +7888,7 @@ class Application:
                     'summary': {'graded': len(done), 'failed': len(failed)}}, headers
         if method == 'POST' and path == '/api/paper-grades/scan':
             self.teacher(user)
-            fields(body, ('file', 'classId', 'title', 'consentExternal', 'async', 'split'),
+            fields(body, ('file', 'classId', 'title', 'consentExternal', 'async', 'split', 'rotate'),
                    ('file',))
             if body.get('async'):
                 return {'jobId': self.start_job(
@@ -7918,20 +7918,35 @@ class Application:
                     fail(400, '切卷方式不正確。')
                 if not 1 <= pages_per <= 10:
                     fail(400, '每份卷的頁數必須介於 1 和 10。')
+            # 掃描前先指定角度：不用問 AI，整份照這個角度渲染（省一半呼叫、結果可控）
+            forced_rot = None
+            rotate = body.get('rotate')
+            if rotate not in (None, '', 'auto'):
+                try:
+                    forced_rot = int(str(rotate).strip())
+                except (TypeError, ValueError):
+                    fail(400, '旋轉角度不正確。')
+                if forced_rot not in (0, 90, 180, 270):
+                    fail(400, '旋轉角度只能是 0、90、180 或 270。')
             # 逐頁先判方向（雙面掃描正反面常不一樣），轉正之後才認人、才批改，
             # 否則 AI 讀倒著的字會認錯人、判錯分。
             raw_pages = pdf_page_images(data, max_pages=PAPER_SCAN_MAX_PAGES, rotation=0)
             if not raw_pages:
                 fail(422, 'PDF 沒有可讀的頁面。')
-            probed = paper_orientations(self, raw_pages)
-            if all(r is None for r in probed):
-                # 完全沒有 AI（或每頁都判斷失敗）：退回「橫向轉直向」的粗略修正
-                pages = pdf_page_images(data, max_pages=PAPER_SCAN_MAX_PAGES)
-                rotations = None
+            if forced_rot is not None:
+                rotations = [forced_rot] * len(raw_pages)
+                pages = (pdf_page_images(data, max_pages=PAPER_SCAN_MAX_PAGES, rotation=forced_rot)
+                         if forced_rot else raw_pages)
             else:
-                rotations = [r or 0 for r in probed]
-                pages = (pdf_page_images(data, max_pages=PAPER_SCAN_MAX_PAGES, rotations=rotations)
-                         if any(rotations) else raw_pages)
+                probed = paper_orientations(self, raw_pages)
+                if all(r is None for r in probed):
+                    # 完全沒有 AI（或每頁都判斷失敗）：退回「橫向轉直向」的粗略修正
+                    pages = pdf_page_images(data, max_pages=PAPER_SCAN_MAX_PAGES)
+                    rotations = None
+                else:
+                    rotations = [r or 0 for r in probed]
+                    pages = (pdf_page_images(data, max_pages=PAPER_SCAN_MAX_PAGES, rotations=rotations)
+                             if any(rotations) else raw_pages)
             roster = paper_roster(self, pages)
             with self.db() as db:
                 if class_id:

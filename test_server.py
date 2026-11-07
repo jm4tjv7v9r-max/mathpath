@@ -5039,6 +5039,27 @@ class PaperDraftTests(unittest.TestCase):
         draft = self.call('GET', f"/api/paper-grades/drafts/{out['draftId']}")['draft']
         self.assertEqual(draft['rotation'], 180)
 
+    def test_scan_can_take_a_fixed_rotation(self):
+        """掃描前指定角度：跳過 AI 判方向（省一半呼叫），整份照這個角度渲染。"""
+        import base64
+        from unittest import mock
+        pdf = 'data:application/pdf;base64,' + base64.b64encode(b'%PDF-1.4 fake').decode()
+        render = mock.Mock(side_effect=lambda data, max_pages=80, only=None, rotation=None,
+                           rotations=None: [b'p1', b'p2'])
+        with mock.patch.object(server, 'pdf_page_images', render), \
+             mock.patch.object(server, 'paper_orientations',
+                               side_effect=AssertionError('指定了角度就不該再問 AI')), \
+             mock.patch.object(server, 'paper_roster', lambda app, pages: [
+                 {'page': 1, 'seat': 7, 'name': '陳大文', 'isFirst': True},
+                 {'page': 2, 'seat': None, 'name': None, 'isFirst': False}]):
+            out = self.call('POST', '/api/paper-grades/scan',
+                            {'file': pdf, 'classId': self.class_id, 'title': '固定角度',
+                             'rotate': 270})
+        self.assertEqual(out['rotations'], [270, 270])
+        self.assertEqual(out['rotation'], 270)
+        self.call('POST', '/api/paper-grades/scan',
+                  {'file': pdf, 'classId': self.class_id, 'title': 'x', 'rotate': 45}, expect=400)
+
     def test_confirm_locks_each_sheet(self):
         """逐份確認：存進草稿的 sheets，之後可解鎖；越界與非布林要擋。"""
         scan = self.scan()
