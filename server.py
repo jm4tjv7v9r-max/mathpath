@@ -6512,21 +6512,25 @@ class Application:
                               'score': result['score'], 'questions': result['questions']}}, headers
         notes_path = re.fullmatch(r'/api/paper-grades/([1-9]\d{0,17})/notes', path)
         if method == 'POST' and notes_path:
-            # 教師拖動批註後保存位置（0–1 相對座標）。
+            # 教師拖動批註或題目框後保存位置（0–1 相對座標）。兩者可以分開存。
             self.teacher(user)
-            fields(body, ('index', 'noteBox'), ('index', 'noteBox'))
+            fields(body, ('index', 'noteBox', 'box'), ('index',))
             index = number(body['index'], '題目序號', 0, 999, integer=True)
-            box = body['noteBox']
-            if not isinstance(box, dict):
-                fail(400, '批註位置格式不正確。')
-            try:
-                values = [float(box[k]) for k in ('x', 'y', 'w', 'h')]
-            except (KeyError, TypeError, ValueError):
-                fail(400, '批註位置格式不正確。')
-            if not all(math.isfinite(v) for v in values) or values[2] <= 0 or values[3] <= 0:
-                fail(400, '批註位置格式不正確。')
-            clean = {'x': round(values[0], 4), 'y': round(values[1], 4),
-                     'w': round(values[2], 4), 'h': round(values[3], 4)}
+            if 'noteBox' not in body and 'box' not in body:
+                fail(400, '沒有要保存的位置。')
+
+            def clean_box(raw, label):
+                if not isinstance(raw, dict):
+                    fail(400, f'{label}格式不正確。')
+                try:
+                    values = [float(raw[k]) for k in ('x', 'y', 'w', 'h')]
+                except (KeyError, TypeError, ValueError):
+                    fail(400, f'{label}格式不正確。')
+                if not all(math.isfinite(v) for v in values) or values[2] <= 0 or values[3] <= 0:
+                    fail(400, f'{label}格式不正確。')
+                return {'x': round(values[0], 4), 'y': round(values[1], 4),
+                        'w': round(values[2], 4), 'h': round(values[3], 4)}
+
             grade_id = int(notes_path[1])
             with self.db() as db:
                 row = db.execute('SELECT * FROM paper_grades WHERE id=?', (grade_id,)).fetchone()
@@ -6537,13 +6541,17 @@ class Application:
                 questions = json.loads(row['detail'])
                 if not 0 <= index < len(questions):
                     fail(400, '題目序號超出範圍。')
-                questions[index]['noteBox'] = clean
-                # 標記「這是老師拖過的」：之後重繪就用這個位置，
-                # 不再理會 AI 原本亂放的 noteBox
-                questions[index]['noteBoxTeacher'] = True
+                if 'noteBox' in body:
+                    questions[index]['noteBox'] = clean_box(body['noteBox'], '批註位置')
+                    # 標記「這是老師拖過的」：之後重繪就用這個位置，
+                    # 不再理會 AI 原本亂放的 noteBox
+                    questions[index]['noteBoxTeacher'] = True
+                if 'box' in body:
+                    questions[index]['box'] = clean_box(body['box'], '題目框位置')
                 db.execute('UPDATE paper_grades SET detail=? WHERE id=?',
                            (json.dumps(questions, ensure_ascii=False), grade_id))
-            return {'noteBox': clean}, headers
+            return {'noteBox': questions[index].get('noteBox'),
+                    'box': questions[index].get('box')}, headers
         pages_path = re.fullmatch(r'/api/paper-grades/([1-9]\d{0,17})/pages', path)
         if method == 'GET' and pages_path:
             # 全班批閱之後回頭看某位學生的原卷：從當初的掃描草稿重新渲染那幾頁。

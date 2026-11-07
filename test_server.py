@@ -5039,6 +5039,38 @@ class PaperDraftTests(unittest.TestCase):
         draft = self.call('GET', f"/api/paper-grades/drafts/{out['draftId']}")['draft']
         self.assertEqual(draft['rotation'], 180)
 
+    def test_teacher_can_move_the_question_box(self):
+        """題目框可拖動：只改 box，不影響 noteBox；反之亦然。"""
+        from unittest import mock
+        scan = self.scan()
+        fake = {'questions': [{'number': '1', 'question': 'q', 'studentAnswer': 'a',
+                               'correct': True, 'level': 'excellent', 'credit': 1.0,
+                               'points': 10, 'box': {'x': 0.1, 'y': 0.2, 'w': 0.5, 'h': 0.3},
+                               'note': 'n'}],
+                'totalQuestions': 1, 'correctCount': 1, 'unreadable': 0, 'pending': 0,
+                'pageWarnings': [], 'failedPages': [], 'earned': 10, 'possible': 10,
+                'score': 100}
+        with mock.patch.object(server, 'pdf_page_images',
+                               lambda data, max_pages=80, only=None, rotation=None,
+                               rotations=None: [b'p1', b'p2']), \
+             mock.patch.object(server, 'validate_image', lambda page: None), \
+             mock.patch.object(server, 'paper_grade_all', lambda *a, **k: dict(fake)):
+            out = self.call('POST', '/api/paper-grades/batch',
+                            {'draftId': scan['draftId'], 'title': 't',
+                             'sheets': [{'studentId': self.student['id'], 'pages': [1]}],
+                             'consentExternal': True})
+        gid = out['graded'][0]['grade']['id']
+        base = f'/api/paper-grades/{gid}/notes'
+        r = self.call('POST', base, {'index': 0,
+                                     'box': {'x': 0.3, 'y': 0.4, 'w': 0.5, 'h': 0.2}})
+        self.assertEqual(r['box']['x'], 0.3)
+        self.assertIsNone(r['noteBox'], '沒傳 noteBox 就不該被改')
+        r = self.call('POST', base, {'index': 0,
+                                     'noteBox': {'x': 0.1, 'y': 0.1, 'w': 0.2, 'h': 0.05}})
+        self.assertEqual(r['box']['x'], 0.3, '改批註不影響題目框')
+        self.assertEqual(r['noteBox']['x'], 0.1)
+        self.call('POST', base, {'index': 0}, expect=400)
+
     def test_blank_answers_count_as_wrong(self):
         """未作答一律 0 分；但「看不清」仍留待教師判定，不冤枉學生。"""
         questions = [

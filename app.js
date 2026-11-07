@@ -3533,13 +3533,14 @@ function paperResultHtml(g){
   }).join('');
   const pagesHtml=(paperPages||[]).map((src,i)=>{
     const pageQs=qs.filter(q=>q.page===i+1);
-    // 題目框：虛線、透明底；框內左上角題號、左邊判定符號
+    // 題目框：虛線、透明底；框內左上角題號、左邊判定符號；可拖動調整位置
     const marks=pageQs.filter(q=>q.box).map(q=>{
       const b=q.box;
       const lv=q.level||(q.correct===null?'unreadable':q.correct===true?'excellent':q.correct==='partial'?'partial':'wrong');
       const sym=lv==='unreadable'?'?':lv==='excellent'?'✓':lv==='good'?'◑':lv==='partial'?'◐':lv==='weak'?'◔':'✗';
       const doll=lv==='excellent'?'🎉':'';
-      return `<span class="paper-mark" style="left:${b.x*100}%;top:${b.y*100}%;width:${b.w*100}%;height:${b.h*100}%">
+      const idx=qs.indexOf(q);
+      return `<span class="paper-mark" data-box-index="${idx}" style="left:${b.x*100}%;top:${b.y*100}%;width:${b.w*100}%;height:${b.h*100}%" title="拖動可移動這個框">
         <span class="paper-mark-no">${esc(q.number)}</span>
         <span class="paper-mark-sym">${sym}${doll}</span>
       </span>`;
@@ -3576,17 +3577,23 @@ function paperResultHtml(g){
     <table class="board-table" style="margin-top:10px"><thead><tr><th>題號</th><th>題目</th><th>學生答案</th><th>配分</th><th>判定</th><th>批註</th></tr></thead><tbody>${rows}</tbody></table>
     <p class="field-hint">AI 判定僅供參考，請教師覆核後才當作正式成績。待判定的題目請按「判對／判錯」，分數會立即重算。批註可直接拖動到合適位置。</p></section>`;
 }
-// 批註拖動：pointer 事件（滑鼠與觸控都支援），放開後保存位置。
+// 拖動：批註與題目框都可以拖（滑鼠與觸控），放開後保存位置。
 let paperDrag=null;
 document.addEventListener('pointerdown',e=>{
-  const note=e.target.closest?e.target.closest('.paper-note'):null;
-  if(!note||!paperGradeId)return;
-  const fig=note.closest('.paper-page'),img=fig&&fig.querySelector('img');
+  if(!e.target.closest||!paperGradeId)return;
+  const note=e.target.closest('.paper-note');
+  const mark=note?null:e.target.closest('.paper-mark');
+  const el=note||mark;
+  if(!el)return;
+  const fig=el.closest('.paper-page'),img=fig&&fig.querySelector('img');
   if(!img)return;
   e.preventDefault();
-  paperDrag={el:note,img,startX:e.clientX,startY:e.clientY,left:note.offsetLeft,top:note.offsetTop,index:Number(note.dataset.noteIndex)};
-  note.classList.add('dragging');
-  try{note.setPointerCapture(e.pointerId);}catch(_){}
+  paperDrag={kind:note?'note':'mark',el,img,
+             startX:e.clientX,startY:e.clientY,
+             left:el.offsetLeft,top:el.offsetTop,
+             index:Number(note?el.dataset.noteIndex:el.dataset.boxIndex)};
+  el.classList.add('dragging');
+  try{el.setPointerCapture(e.pointerId);}catch(_){}
 });
 document.addEventListener('pointermove',e=>{
   if(!paperDrag)return;
@@ -3595,12 +3602,16 @@ document.addEventListener('pointermove',e=>{
 });
 document.addEventListener('pointerup',async()=>{
   if(!paperDrag)return;
-  const {el,img,index}=paperDrag;paperDrag=null;
+  const {kind,el,img,index}=paperDrag;paperDrag=null;
   el.classList.remove('dragging');
   const w=img.clientWidth||1,h=img.clientHeight||1;
   const box={x:Math.max(0,Math.min(1,el.offsetLeft/w)),y:Math.max(0,Math.min(1,el.offsetTop/h)),
              w:Math.max(0.05,Math.min(1,el.offsetWidth/w)),h:Math.max(0.02,Math.min(1,el.offsetHeight/h))};
-  try{await api(`/api/paper-grades/${paperGradeId}/notes`,{index,noteBox:box});toast('批註位置已保存。');}
+  try{
+    await api(`/api/paper-grades/${paperGradeId}/notes`,
+      kind==='note'?{index,noteBox:box}:{index,box});
+    toast(kind==='note'?'評註位置已保存。':'題目框位置已保存。');
+  }
   catch(err){toast(err.message);}
 });
 
