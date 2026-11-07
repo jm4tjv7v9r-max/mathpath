@@ -4878,6 +4878,19 @@ class PaperDraftTests(unittest.TestCase):
             return self.call('POST', '/api/paper-grades/scan',
                              {'file': pdf, 'classId': self.class_id, 'title': title})
 
+    def test_pages_with_different_names_are_split_into_separate_papers(self):
+        """AI 把每頁都判成續頁時，姓名不同仍要切開（一頁一份卷最常見）。"""
+        roster = [{'page': i, 'seat': i, 'name': f'學生{i}', 'isFirst': False}
+                  for i in range(1, 4)]
+        students = [{'id': i, 'name': f'學生{i}', 'seat': str(i)} for i in range(1, 4)]
+        sheets = server.match_papers(roster, students)
+        self.assertEqual(len(sheets), 3, '三頁三個不同姓名 → 三份卷')
+        self.assertEqual([s['pages'] for s in sheets], [[1], [2], [3]])
+        # 同一人兩頁（姓名相同）仍然是一份
+        same = [{'page': 1, 'seat': 7, 'name': '陳大文', 'isFirst': True},
+                {'page': 2, 'seat': 7, 'name': '陳大文', 'isFirst': False}]
+        self.assertEqual(len(server.match_papers(same, students)), 1)
+
     def test_scan_saves_a_draft_that_can_be_reopened(self):
         scan = self.scan()
         self.assertTrue(scan.get('draftId'), '掃描後要回傳草稿編號')

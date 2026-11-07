@@ -841,8 +841,11 @@ def ensure_paper_drafts(db):
                (time.time() - PAPER_DRAFT_DAYS * 86400,))
 PAPER_ROSTER_PROMPT = (
     '你是數學科教師助理。下面是一疊學生紙本作業的其中一頁，請讀出卷面上寫的學生身分。'
+    '每一頁都要獨立判斷，不要假設它跟上一頁是同一份卷。'
     '只回傳 JSON：{"student": {"seat": 座號或null, "name": 姓名或null, "id": 學號或null},'
-    '"isFirst": 這頁是不是一份新卷的第一頁, "pageNo": 卷上寫的頁碼或null}。'
+    '"isFirst": 這頁是不是一份新卷的第一頁（頁面上方有卷頭——標題、時間／滿分、班級、姓名、學號、'
+    '得分欄——就是新卷的第一頁；只有題目、沒有卷頭才算續頁）, "pageNo": 卷上寫的頁碼或null}。'
+    '就算覺得是續頁，只要頁面上有姓名或座號欄，也要讀出來。'
     '讀不到就給 null，不要猜、不要用題目內容推測姓名。'
 )
 
@@ -934,8 +937,15 @@ def match_papers(roster, students):
             continue
     sheets, current = [], None
     for page in roster:
-        starts = page['isFirst'] or current is None or (
-            page['seat'] and current['seat'] and page['seat'] != current['seat'])
+        # 切卷依據（任何一項成立就開新的一份）：
+        # ① AI 說這頁有卷頭 ② 座號換了 ③ 姓名換了
+        # ③ 是兜底：AI 有時把每頁都當成續頁，但一頁一份卷時姓名每頁都不同，
+        #   只靠 ① 會把整疊 29 頁併成一份。
+        starts = page['isFirst'] or current is None
+        if not starts and page['seat'] and current['seat'] and page['seat'] != current['seat']:
+            starts = True
+        if not starts and page['name'] and current['name'] and page['name'] != current['name']:
+            starts = True
         if starts:
             current = {'seat': page['seat'], 'name': page['name'], 'pages': [page['page']],
                        'studentId': None, 'matchedBy': None, 'confidence': 0}
