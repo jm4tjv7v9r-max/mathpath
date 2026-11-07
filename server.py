@@ -863,6 +863,27 @@ PAPER_ORIENT_PROMPT = (
 )
 
 
+def _ai_retry(app, prompt, payload, image, model, temperature=0, attempts=3):
+    """AI 呼叫，遇到「每分鐘上限」就等一會再試。
+
+    掃一疊 29 頁要 58 次呼叫（判方向＋認人），雲端預設每人每分鐘 30 次，
+    不重試的話第 15 頁之後全部讀不到姓名，整份卷就配不到學生。
+    """
+    last = None
+    for i in range(attempts):
+        try:
+            return app.ai.call(prompt, payload, image=image, model=model,
+                               temperature=temperature)
+        except APIError as exc:
+            last = exc
+            # 每日額度用完就別再等；每分鐘的可以等窗口滑過去（60 秒滑動窗口）
+            if getattr(exc, 'status', None) == 429 and '每日' not in exc.message and i < attempts - 1:
+                time.sleep(25)
+                continue
+            raise
+    raise last
+
+
 def paper_orientation(app, image):
     """問 AI「這頁要順時針轉幾度才正」，回 0／90／180／270；判斷不到回 None。
 
@@ -872,8 +893,7 @@ def paper_orientation(app, image):
     if not image:
         return None
     try:
-        result = app.ai.call(PAPER_ORIENT_PROMPT, {'page': 1}, image=image,
-                             model=app.ai.vision, temperature=0)
+        result = _ai_retry(app, PAPER_ORIENT_PROMPT, {'page': 1}, image, app.ai.vision)
     except APIError:
         return None
     if not isinstance(result, dict):
@@ -894,11 +914,12 @@ def paper_roster(app, pages):
     """逐頁讀「這頁是誰的、是不是新的一份卷」，回一份清單（順序＝PDF 頁序）。"""
     out = []
     for index, image in enumerate(pages, 1):
+        failure = None
         try:
-            result = app.ai.call(PAPER_ROSTER_PROMPT, {'page': index}, image=image,
-                                 model=app.ai.vision, temperature=0)
-        except APIError:
+            result = _ai_retry(app, PAPER_ROSTER_PROMPT, {'page': index}, image, app.ai.vision)
+        except APIError as exc:
             result = None
+            failure = exc.message
         student = (result or {}).get('student') if isinstance(result, dict) else None
         student = student if isinstance(student, dict) else {}
         seat = student.get('seat')
@@ -909,7 +930,8 @@ def paper_roster(app, pages):
         out.append({'page': index,
                     'seat': seat,
                     'name': str(student.get('name') or '').strip()[:40] or None,
-                    'isFirst': bool((result or {}).get('isFirst')) if isinstance(result, dict) else None})
+                    'isFirst': bool((result or {}).get('isFirst')) if isinstance(result, dict) else None,
+                    'failed': failure})
     return out
 
 
@@ -7945,10 +7967,16 @@ class Application:
                          json.dumps(rotations) if rotations else None)).lastrowid
             except Exception:
                 draft_id = None      # 存不下也不影響這次掃描結果
+            # 哪些頁完全讀不到身分（AI 失敗或字跡認不出）：前端要提醒老師手動指派
+            unread = [p['page'] for p in roster if not p['name'] and not p['seat']]
+            ai_failed = [{'page': p['page'], 'reason': p['failed']}
+                         for p in roster if p.get('failed')]
             return {'sheets': sheets, 'pages': len(pages), 'draftId': draft_id,
                     'roster': roster_out,
                     'rotation': rotations[0] if rotations else None,
                     'rotations': rotations,
+                    'unreadPages': unread,
+                    'aiFailures': ai_failed,
                     'summary': {'papers': len(sheets),
                                 'matched': sum(1 for x in sheets if x['studentId']),
                                 'unmatched': sum(1 for x in sheets if not x['studentId'])}}, headers

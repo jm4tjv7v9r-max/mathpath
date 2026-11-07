@@ -4399,7 +4399,10 @@ async function paperBatchPage(){
       $('#pb-status').textContent=`共 ${res.pages} 頁、切成 ${res.summary.papers} 份卷；認出 ${res.summary.matched} 份。`
         +(res.draftId?'（已存成草稿，可離開頁面稍後再批）':'')
         +((res.summary.papers===1&&res.pages>3&&$('#pb-split').value==='auto')
-          ?'　⚠️ 只切成 1 份卷，AI 可能沒認出卷頭；請把「切卷方式」改成「每頁一份」或「每兩頁一份」再掃一次。':'');
+          ?'　⚠️ 只切成 1 份卷，AI 可能沒認出卷頭；請把「切卷方式」改成「每頁一份」或「每兩頁一份」再掃一次。':'')
+        +((res.unreadPages||[]).length
+          ?`　⚠️ 有 ${res.unreadPages.length} 頁讀不到姓名（第 ${res.unreadPages.slice(0,8).join('、')}${res.unreadPages.length>8?'…':''} 頁），請用右邊下拉指派。`
+          :'');
       await loadDrafts();
     }catch(e){toast(e.message);$('#pb-status').textContent='';}
     btn.disabled=false;
