@@ -845,6 +845,11 @@ html[data-theme=night] .paper-mark-note{text-shadow:0 0 4px #000,0 0 3px #000}
 .paper-note-cell{cursor:text;min-width:160px;white-space:pre-wrap}
 .paper-note-cell:hover{background:var(--surface-green,#eef5ea)}
 .paper-note-cell:focus{outline:2px solid var(--green,#3b6d11);outline-offset:-2px;background:#fff}
+/* 確認學生分數：右下角的鎖定按鈕 */
+.paper-confirm-bar{display:flex;justify-content:space-between;align-items:center;gap:12px;
+  margin-top:14px;padding-top:12px;border-top:1px solid var(--border-tertiary,#e6e3da);
+  flex-wrap:wrap}
+.paper-confirm-bar .small-text{flex:1;min-width:220px}
 .paper-judge{display:flex;gap:6px;margin-top:4px}
 .paper-judge .text-button{font-size:calc(12px*var(--fs));padding:2px 6px;border:1px solid var(--border);border-radius:6px}
 @media(max-width:900px){.paper-page{max-width:100%}}

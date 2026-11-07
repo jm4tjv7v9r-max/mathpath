@@ -5039,6 +5039,36 @@ class PaperDraftTests(unittest.TestCase):
         draft = self.call('GET', f"/api/paper-grades/drafts/{out['draftId']}")['draft']
         self.assertEqual(draft['rotation'], 180)
 
+    def test_teacher_can_confirm_and_lock_a_grade(self):
+        """按「確認學生分數」後鎖定；要改再解鎖。"""
+        from unittest import mock
+        scan = self.scan()
+        fake = {'questions': [{'number': '1', 'question': 'q', 'studentAnswer': 'a',
+                               'correct': True, 'level': 'excellent', 'credit': 1.0,
+                               'points': 10, 'box': None, 'note': 'ok'}],
+                'totalQuestions': 1, 'correctCount': 1, 'unreadable': 0, 'pending': 0,
+                'pageWarnings': [], 'failedPages': [], 'earned': 10, 'possible': 10,
+                'score': 100}
+        with mock.patch.object(server, 'pdf_page_images',
+                               lambda data, max_pages=80, only=None, rotation=None,
+                               rotations=None: [b'p1', b'p2']), \
+             mock.patch.object(server, 'validate_image', lambda page: None), \
+             mock.patch.object(server, 'paper_grade_all', lambda *a, **k: dict(fake)):
+            out = self.call('POST', '/api/paper-grades/batch',
+                            {'draftId': scan['draftId'], 'title': 't',
+                             'sheets': [{'studentId': self.student['id'], 'pages': [1]}],
+                             'consentExternal': True})
+        gid = out['graded'][0]['grade']['id']
+        base = f'/api/paper-grades/{gid}/confirm'
+        r = self.call('POST', base, {'confirmed': True})
+        self.assertTrue(r['confirmed'])
+        grades = self.call('GET', '/api/paper-grades')['grades']
+        self.assertTrue([g for g in grades if g['id'] == gid][0]['confirmed'],
+                        '列表要帶確認狀態')
+        r = self.call('POST', base, {'confirmed': False})
+        self.assertFalse(r['confirmed'])
+        self.call('POST', base, {'confirmed': 'yes'}, expect=400)
+
     def test_teacher_can_move_the_question_box(self):
         """題目框可拖動：只改 box，不影響 noteBox；反之亦然。"""
         from unittest import mock

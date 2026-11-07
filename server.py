@@ -5345,7 +5345,8 @@ class Application:
                     correct_count INTEGER NOT NULL,
                     score REAL NOT NULL,
                     detail TEXT NOT NULL DEFAULT '[]',
-                    created_at TEXT NOT NULL);
+                    created_at TEXT NOT NULL,
+                    confirmed_at TEXT);
                 CREATE TABLE IF NOT EXISTS paper_templates (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     owner_id INTEGER NOT NULL REFERENCES users(id),
@@ -5476,6 +5477,9 @@ class Application:
                 db.execute('ALTER TABLE paper_grades ADD COLUMN draft_id INTEGER')
             if grade_columns and 'page_nums' not in grade_columns:
                 db.execute("ALTER TABLE paper_grades ADD COLUMN page_nums TEXT NOT NULL DEFAULT '[]'")
+            # 教師按「確認學生分數」後鎖定，避免之後誤改
+            if grade_columns and 'confirmed_at' not in grade_columns:
+                db.execute('ALTER TABLE paper_grades ADD COLUMN confirmed_at TEXT')
             db.execute('BEGIN IMMEDIATE')
             # 舊資料只有 questions.paper_id，補進對照表（INSERT OR IGNORE 可重複執行）。
             # 放在 BEGIN 之後：INSERT 會開隱式交易，提前跑會讓這裡的 BEGIN 失敗。
@@ -6643,12 +6647,32 @@ class Application:
                               'studentName': mask_name(student['name']) if student else '',
                               'title': row['title'], 'pages': row['pages'],
                               'score': summary['score'],
+                              'confirmed': bool(row['confirmed_at']),
                               'earned': summary['earned'], 'possible': summary['possible'],
                               'pending': summary['pending'],
                               'pageWarnings': [], 'failedPages': [],
                               'totalQuestions': len([q for q in questions if q['correct'] is not None]),
                               'correctCount': sum(1 for q in questions if q['correct'] is True),
                               'questions': questions}}, headers
+        confirm_path = re.fullmatch(r'/api/paper-grades/([1-9]\d{0,17})/confirm', path)
+        if method == 'POST' and confirm_path:
+            # 教師確認這份卷的分數：確認後鎖定，避免之後誤改；要改再解鎖。
+            self.teacher(user)
+            fields(body, ('confirmed',), ('confirmed',))
+            val = body['confirmed']
+            if type(val) is not bool:
+                fail(400, '確認狀態必須是布林值。')
+            grade_id = int(confirm_path[1])
+            with self.db() as db:
+                row = db.execute('SELECT teacher_id FROM paper_grades WHERE id=?',
+                                 (grade_id,)).fetchone()
+                if row is None:
+                    fail(404, '找不到這筆批改紀錄。')
+                if row['teacher_id'] != user['id'] and not self.is_owner(user, db):
+                    fail(403, '只能確認自己建立的批改紀錄。')
+                db.execute('UPDATE paper_grades SET confirmed_at=? WHERE id=?',
+                           (datetime.now(timezone.utc).isoformat() if val else None, grade_id))
+            return {'confirmed': val}, headers
         # ---------- 課堂應用（分組教學；所有功能都掛在這裡） ----------
         if method == 'POST' and path == '/api/classroom/groups':
             self.teacher(user)
@@ -8264,6 +8288,7 @@ class Application:
                                 'pages': r['pages'], 'totalQuestions': r['total_questions'],
                                 'correctCount': r['correct_count'], 'score': r['score'],
                                 'createdAt': r['created_at'],
+                                'confirmed': bool(r['confirmed_at']),
                                 'questions': json.loads(r['detail'])} for r in rows]}, headers
         board_path = re.fullmatch(r'/api/leaderboard(?:/(\d{4}-\d{2}))?', path)
         if method == 'GET' and board_path:

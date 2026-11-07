@@ -3481,7 +3481,7 @@ async function paperPageData(file){
   ctx.drawImage(img,0,0,out.width,out.height);
   return imageDataUrl(out);
 }
-let paperPages=[],paperGradeId=null;
+let paperPages=[],paperGradeId=null,paperCurrentGrade=null;
 // 五級鼓勵句：同一份功課內不重複（用 used 集合挑沒用過的）。
 const PAPER_PRAISE={
   excellent:['完全正確，思路很清楚！','這題漂亮，答案和過程都對。','做得很好，繼續保持這個水準。','完全正確，看得出你掌握了方法。','答對了，而且寫得很完整。','這題難不倒你，很好。'],
@@ -3503,7 +3503,9 @@ function paperPraise(level,used){
 }
 const PAPER_LEVEL_LABEL={excellent:'完全正確',good:'大致正確',partial:'部分正確',weak:'少部分正確',wrong:'完全錯誤',unreadable:'無法辨認'};
 function paperResultHtml(g){
+  paperCurrentGrade=g;
   const qs=g.questions||[];
+  const confirmed=!!g.confirmed;
   const used=new Set();   // 同一份功課內，鼓勵句不重複
   const levelOf=(q)=>q.level||(q.correct===null?'unreadable':q.correct===true?'excellent':q.correct==='partial'?'partial':'wrong');
   const markOf=(q)=>{
@@ -3516,20 +3518,23 @@ function paperResultHtml(g){
   const rows=qs.map((q,i)=>{
     const lv=levelOf(q);
     const praise=paperPraise(lv,used);
-    const fix=q.correct===null?`<div class="paper-judge"><button class="text-button" data-paper-judge="${i}" data-paper-verdict="1">判對</button><button class="text-button" data-paper-judge="${i}" data-paper-verdict="0">判錯</button></div>`:'';
+    const fix=(q.correct===null&&!confirmed)?`<div class="paper-judge"><button class="text-button" data-paper-judge="${i}" data-paper-verdict="1">判對</button><button class="text-button" data-paper-judge="${i}" data-paper-verdict="0">判錯</button></div>`:'';
     // 這題實際得分（0–points）：老師可以直接改，改完分數與等級會一起重算
     const earned=(q.points!=null&&q.credit!=null)?Math.round(q.points*q.credit*10)/10:null;
     const scoreCell=q.points
       ? `<input class="paper-score-input" type="number" min="0" max="${q.points}" step="0.5"
            data-score-index="${i}" data-max="${q.points}" data-orig="${earned??''}"
-           value="${earned??''}" title="可直接改這題得分（0–${q.points}）"><span class="small-text"> / ${q.points}</span>`
+           value="${earned??''}" title="可直接改這題得分（0–${q.points}）"${confirmed?' disabled':''}><span class="small-text"> / ${q.points}</span>`
       : '<span class="small-text">平均</span>';
     const noteText=esc(q.note||q.reason||'');
+    const noteCell=confirmed
+      ? `<td class="small-text">${noteText}</td>`
+      : `<td class="small-text paper-note-cell" contenteditable="true" data-note-index="${i}"
+        data-orig="${noteText}" title="點一下可直接改批註">${noteText}</td>`;
     return `<tr><td>${esc(q.number)}</td><td>${mathText(q.question||'')}</td><td>${mathText(q.studentAnswer||'—')}</td>
       <td>${scoreCell}</td>
       <td>${markOf(q)}${fix}${praise?`<div class="paper-praise">${esc(praise)}</div>`:''}</td>
-      <td class="small-text paper-note-cell" contenteditable="true" data-note-index="${i}"
-        data-orig="${noteText}" title="點一下可直接改批註">${noteText}</td></tr>`;
+      ${noteCell}</tr>`;
   }).join('');
   const pagesHtml=(paperPages||[]).map((src,i)=>{
     const pageQs=qs.filter(q=>q.page===i+1);
@@ -3575,7 +3580,13 @@ function paperResultHtml(g){
       <p class="small-text" style="margin:0">左：批改卷（AI 標記與批註，可拖動）　右：原卷（對照用）</p>
       ${pagesHtml}</div>`:''}
     <table class="board-table" style="margin-top:10px"><thead><tr><th>題號</th><th>題目</th><th>學生答案</th><th>配分</th><th>判定</th><th>批註</th></tr></thead><tbody>${rows}</tbody></table>
-    <p class="field-hint">AI 判定僅供參考，請教師覆核後才當作正式成績。待判定的題目請按「判對／判錯」，分數會立即重算。批註可直接拖動到合適位置。</p></section>`;
+    <p class="field-hint">AI 判定僅供參考，請教師覆核後才當作正式成績。待判定的題目請按「判對／判錯」，分數會立即重算。批註可直接拖動到合適位置。</p>
+    <div class="paper-confirm-bar">
+      <span class="small-text">${confirmed
+        ? '✅ 已確認分數，這份卷已鎖定。要修改請按右邊「更改分數」。'
+        : '核對無誤後按「確認學生分數」，這份卷會鎖定，避免之後誤改。'}</span>
+      <button class="${confirmed?'secondary':'primary'}" data-paper-confirm="${confirmed?'0':'1'}">${confirmed?'更改分數':'確認學生分數'}</button>
+    </div></section>`;
 }
 // 拖動：批註與題目框都可以拖（滑鼠與觸控），放開後保存位置。
 let paperDrag=null;
@@ -6775,6 +6786,20 @@ if(b.id==='open-math-editor'){openMathEditor();return;}
     b.disabled=true;
     api(`/api/classes/${cid}/delete`,{}).then(()=>{toast('班級已刪除。');homeworkPage();})
       .catch(err=>{b.disabled=false;toast(err.message);});
+    return;
+  }
+  if(b.dataset.paperConfirm!==undefined&&paperGradeId){
+    const next=b.dataset.paperConfirm==='1';
+    b.disabled=true;
+    try{
+      await api(`/api/paper-grades/${paperGradeId}/confirm`,{confirmed:next});
+      if(paperCurrentGrade){
+        paperCurrentGrade.confirmed=next;
+        const box=$('#pb-viewer')||$('#paper-result');
+        if(box)box.innerHTML=paperResultHtml(paperCurrentGrade);
+      }
+      toast(next?'已確認分數，這份卷已鎖定。':'已解鎖，可以再修改。');
+    }catch(err){b.disabled=false;toast(err.message);}
     return;
   }
   if(b.dataset.paperJudge!==undefined&&paperGradeId){
