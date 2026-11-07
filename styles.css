@@ -818,9 +818,9 @@ html[data-theme=night] .paper-bad{color:#e88a7a}
 .paper-page img{display:block;width:100%;height:auto}
 .paper-page figcaption{position:absolute;left:8px;top:8px;background:#00000088;color:#fff;font-size:12px;padding:2px 8px;border-radius:6px}
 .paper-marks{position:absolute;inset:0;pointer-events:none}
-.paper-mark{position:absolute;display:grid;place-items:center;border:2px solid;border-radius:8px;
-  font-weight:700;font-size:calc(22px*var(--fs));background:#fff8}
-.paper-mark{border-color:#c0392b;color:#c0392b;background:#c0392b1a}
+.paper-mark{position:absolute;display:grid;place-items:center;border:1px solid;border-radius:8px;
+  font-weight:700;font-size:calc(22px*var(--fs));background:transparent}
+.paper-mark{border-color:#c0392bb3;color:#c0392b;background:#c0392b0a}
 
 
 .paper-pending{color:#c0392b;font-weight:700}
