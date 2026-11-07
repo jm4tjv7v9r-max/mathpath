@@ -19,7 +19,21 @@ function katexHtml(tex, display){
 }
 function mathText(value){
   const raw = String(value ?? '');
-  if(raw.indexOf('$') < 0) return esc(raw);
+  if(raw.indexOf('$') < 0){
+    // 整段都是數學式（沒有中文）就直接排版：AI 有時回傳 "x^2-3x-10<0" 這種純算式
+    const trimmed = raw.trim();
+    if(trimmed
+       && /^[0-9A-Za-z\s+\-*/=<>^_{}()\[\].,|\\≥≤≠×÷−±]+$/.test(trimmed)
+       && /[\^_=<>≥≤≠]/.test(trimmed)){
+      // Unicode 數學符號換成 LaTeX，否則 KaTeX 會報錯
+      const tex=trimmed
+        .replace(/≥/g,'\\ge ').replace(/≤/g,'\\le ').replace(/≠/g,'\\ne ')
+        .replace(/×/g,'\\times ').replace(/÷/g,'\\div ')
+        .replace(/−/g,'-').replace(/±/g,'\\pm ');
+      return katexHtml(tex, false);
+    }
+    return esc(raw);
+  }
   const re = /\$\$([\s\S]+?)\$\$|\$([^$\n]+?)\$/g;
   const out = [];
   let last = 0, m;
