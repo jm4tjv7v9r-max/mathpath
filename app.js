@@ -4674,13 +4674,19 @@ async function paperBatchPage(){
       const reasons=[...new Set((out.failed||[]).map(f=>f.reason).filter(Boolean))];
       $('#pb-status').innerHTML=`批改完成：${out.summary.graded} 份成功、${out.summary.failed} 份失敗。`
         +(reasons.length?`<br><span class="small-text">失敗原因：${esc(reasons.slice(0,3).join('；'))}</span>`:'');
+      // 把本次批改併進 res.graded：之後再按批改會跳過這些學生，
+      // 結果列表也才看得到「先前批過的」而不會消失。
+      res.graded=(res.graded||[]).concat((out.graded||[]).map(x=>({
+        gradeId:x.grade&&x.grade.id, studentId:x.studentId,
+        score:x.grade&&x.grade.score, confirmed:false})));
       renderBatchResults(out);
-      if(!out.summary.failed)lastScan=null;
+      // 不把 lastScan 清空：還有未確認的卷可以接著批
       await loadDrafts();
     }catch(e){toast(e.message);}
     btn.disabled=false;btn.textContent='確認並開始批改';
   }
   // 批改結果：每份一行，可打開該學生的原卷逐題核對（原卷由掃描草稿重新渲染）。
+  // 續批時也要列出「先前批過的」，不能只顯示這一次的。
   function renderBatchResults(out){
     const roster=(lastScan&&lastScan.res&&lastScan.res.roster)||[];
     const nameOf=id=>{
@@ -4688,6 +4694,9 @@ async function paperBatchPage(){
       return r?r.name:`學生 ${id}`;
     };
     const graded=out.graded||[],failed=out.failed||[];
+    const doneIds=new Set(graded.map(x=>Number(x.studentId)));
+    const prev=((lastScan&&lastScan.res&&lastScan.res.graded)||[])
+      .filter(g=>!doneIds.has(Number(g.studentId)));
     const rows=graded.map(x=>{
       const g=x.grade||{};
       const pending=g.pending?` · <span class="paper-pending">${g.pending} 題待判</span>`:'';
@@ -4697,18 +4706,34 @@ async function paperBatchPage(){
         <td class="small-text">${g.totalQuestions==null?'—':g.totalQuestions} 題 · 對 ${g.correctCount==null?'—':g.correctCount}${pending}</td>
         <td>${g.id?`<button class="secondary" data-view-grade="${g.id}">查看卷面</button>`:''}</td></tr>`;
     }).join('');
+    // 先前批過的（續批）：只有分數，按「查看」再去拉完整紀錄
+    const prevRows=prev.map(g=>`<tr>
+      <td>${esc(nameOf(g.studentId))}</td>
+      <td><strong>${g.score==null?'—':fmtScore(g.score)}</strong> <span class="small-text">/ 100</span></td>
+      <td class="small-text">先前批改${g.confirmed?' · 已確認':''}</td>
+      <td><button class="secondary" data-view-grade="${g.gradeId}">查看卷面</button></td></tr>`).join('');
     const failRows=failed.map(x=>`<tr><td>${esc(nameOf(x.studentId))}</td>
       <td colspan="2" class="small-text" style="color:#b8453b">${esc(x.reason||'批改失敗')}</td><td></td></tr>`).join('');
     $('#pb-result').innerHTML=`<section class="panel panel-pad" style="margin-top:12px">
-      <h2 style="margin-bottom:8px">批改結果</h2>
+      <h2 style="margin-bottom:8px">批改結果（${graded.length+prev.length} 份）</h2>
       <table class="board-table"><thead><tr><th>學生</th><th>分數</th><th>判定</th><th></th></tr></thead>
-        <tbody>${rows}${failRows}</tbody></table>
+        <tbody>${rows}${prevRows}${failRows}</tbody></table>
       <p class="field-hint">按「查看卷面」打開該學生的原卷，可逐題核對 AI 的判斷；批註可拖動。</p>
       <div id="pb-viewer"></div></section>`;
     $$('[data-view-grade]').forEach(b=>b.onclick=()=>{
       const hit=graded.find(x=>String((x.grade||{}).id)===b.dataset.viewGrade);
-      if(hit)openPaperPages(hit.grade);
+      if(hit)return openPaperPages(hit.grade);
+      return openGradeById(Number(b.dataset.viewGrade));
     });
+  }
+  // 先前批過的紀錄只有編號：從列表拉回完整內容再顯示
+  async function openGradeById(gid){
+    try{
+      const all=(await api('/api/paper-grades')).grades||[];
+      const g=all.find(x=>Number(x.id)===Number(gid));
+      if(!g)return toast('找不到這筆批改紀錄。');
+      await openPaperPages(g);
+    }catch(e){toast(e.message);}
   }
   async function openPaperPages(grade){
     const box=$('#pb-viewer');
