@@ -824,6 +824,13 @@ html[data-theme=night] .paper-bad{color:#e88a7a}
 
 
 .paper-pending{color:#c0392b;font-weight:700}
+/* 教師改 AI 的評分與批註 */
+.paper-score-input{width:58px;padding:3px 4px;border:1px solid var(--border);border-radius:6px;
+  background:var(--paper,#fff);color:var(--ink);font-size:calc(13px*var(--fs));text-align:center}
+.paper-score-input:focus{outline:2px solid var(--green,#3b6d11);outline-offset:-2px}
+.paper-note-cell{cursor:text;min-width:160px;white-space:pre-wrap}
+.paper-note-cell:hover{background:var(--surface-green,#eef5ea)}
+.paper-note-cell:focus{outline:2px solid var(--green,#3b6d11);outline-offset:-2px;background:#fff}
 .paper-judge{display:flex;gap:6px;margin-top:4px}
 .paper-judge .text-button{font-size:calc(12px*var(--fs));padding:2px 6px;border:1px solid var(--border);border-radius:6px}
 @media(max-width:900px){.paper-page{max-width:100%}}

@@ -3503,7 +3503,19 @@ function paperResultHtml(g){
     const lv=levelOf(q);
     const praise=paperPraise(lv,used);
     const fix=q.correct===null?`<div class="paper-judge"><button class="text-button" data-paper-judge="${i}" data-paper-verdict="1">判對</button><button class="text-button" data-paper-judge="${i}" data-paper-verdict="0">判錯</button></div>`:'';
-    return `<tr><td>${esc(q.number)}</td><td>${mathText(q.question||'')}</td><td>${mathText(q.studentAnswer||'—')}</td><td>${q.points?`${q.points} 分`:'<span class="small-text">平均</span>'}</td><td>${markOf(q)}${fix}</td><td class="small-text">${esc(q.note||q.reason||'')}${praise?`<div class="paper-praise">${esc(praise)}</div>`:''}</td></tr>`;
+    // 這題實際得分（0–points）：老師可以直接改，改完分數與等級會一起重算
+    const earned=(q.points!=null&&q.credit!=null)?Math.round(q.points*q.credit*10)/10:null;
+    const scoreCell=q.points
+      ? `<input class="paper-score-input" type="number" min="0" max="${q.points}" step="0.5"
+           data-score-index="${i}" data-max="${q.points}" data-orig="${earned??''}"
+           value="${earned??''}" title="可直接改這題得分（0–${q.points}）"><span class="small-text"> / ${q.points}</span>`
+      : '<span class="small-text">平均</span>';
+    const noteText=esc(q.note||q.reason||'');
+    return `<tr><td>${esc(q.number)}</td><td>${mathText(q.question||'')}</td><td>${mathText(q.studentAnswer||'—')}</td>
+      <td>${scoreCell}</td>
+      <td>${markOf(q)}${fix}${praise?`<div class="paper-praise">${esc(praise)}</div>`:''}</td>
+      <td class="small-text paper-note-cell" contenteditable="true" data-note-index="${i}"
+        data-orig="${noteText}" title="點一下可直接改批註">${noteText}</td></tr>`;
   }).join('');
   const pagesHtml=(paperPages||[]).map((src,i)=>{
     const pageQs=qs.filter(q=>q.page===i+1);
@@ -3565,6 +3577,39 @@ document.addEventListener('pointerup',async()=>{
              w:Math.max(0.05,Math.min(1,el.offsetWidth/w)),h:Math.max(0.02,Math.min(1,el.offsetHeight/h))};
   try{await api(`/api/paper-grades/${paperGradeId}/notes`,{index,noteBox:box});toast('批註位置已保存。');}
   catch(err){toast(err.message);}
+});
+
+// 教師直接改 AI 的評分與批註：失焦就存，值沒變就不送。
+document.addEventListener('focusout',async e=>{
+  const el=e.target;
+  if(!el||!paperGradeId||!el.classList)return;
+  if(el.classList.contains('paper-score-input')){
+    const i=Number(el.dataset.scoreIndex),max=Number(el.dataset.max||0);
+    const raw=(el.value||'').trim();
+    if(raw===''||!max)return;
+    const val=Number(raw);
+    if(!Number.isFinite(val)||val<0||val>max){
+      toast(`分數請介於 0 到 ${max}`);el.value=el.dataset.orig||'';return;
+    }
+    if(raw===String(el.dataset.orig||''))return;
+    try{
+      const r=await api(`/api/paper-grades/${paperGradeId}/judge`,{index:i,credit:val/max});
+      const box=$('#pb-viewer')||$('#paper-result');
+      if(box)box.innerHTML=paperResultHtml(r.grade);
+      toast(`已改分：這題 ${val} 分，總分 ${r.grade.score} / 100`);
+    }catch(err){toast(err.message);el.value=el.dataset.orig||'';}
+    return;
+  }
+  if(el.classList.contains('paper-note-cell')){
+    const i=Number(el.dataset.noteIndex);
+    const note=(el.textContent||'').trim();
+    if(note===String(el.dataset.orig||''))return;
+    try{
+      await api(`/api/paper-grades/${paperGradeId}/judge`,{index:i,note});
+      el.dataset.orig=note;
+      toast('批註已更新');
+    }catch(err){toast(err.message);}
+  }
 });
 
 // 批改紀錄：按功課名稱分組，一眼看出「批了誰、還缺誰、上次批到哪」。

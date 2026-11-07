@@ -5039,6 +5039,36 @@ class PaperDraftTests(unittest.TestCase):
         draft = self.call('GET', f"/api/paper-grades/drafts/{out['draftId']}")['draft']
         self.assertEqual(draft['rotation'], 180)
 
+    def test_teacher_can_edit_the_ai_score_and_note(self):
+        """教師可以直接改某題得分與批註，總分即時重算。"""
+        from unittest import mock
+        scan = self.scan()
+        fake = {'questions': [{'number': '1', 'question': 'q', 'studentAnswer': 'a',
+                               'correct': True, 'level': 'excellent', 'credit': 1.0,
+                               'points': 10, 'box': None, 'note': '原本的批註'}],
+                'totalQuestions': 1, 'correctCount': 1, 'unreadable': 0, 'pending': 0,
+                'pageWarnings': [], 'failedPages': [], 'earned': 10, 'possible': 10,
+                'score': 100}
+        with mock.patch.object(server, 'pdf_page_images',
+                               lambda data, max_pages=80, only=None, rotation=None,
+                               rotations=None: [b'p1', b'p2']), \
+             mock.patch.object(server, 'validate_image', lambda page: None), \
+             mock.patch.object(server, 'paper_grade_all', lambda *a, **k: dict(fake)):
+            out = self.call('POST', '/api/paper-grades/batch',
+                            {'draftId': scan['draftId'], 'title': 't',
+                             'sheets': [{'studentId': self.student['id'], 'pages': [1]}],
+                             'consentExternal': True})
+        gid = out['graded'][0]['grade']['id']
+        r = self.call('POST', f'/api/paper-grades/{gid}/judge', {'index': 0, 'credit': 0.5})
+        self.assertEqual(r['grade']['score'], 50, '10 分的題給一半 → 總分 50')
+        self.assertEqual(r['grade']['questions'][0]['correct'], 'partial')
+        r = self.call('POST', f'/api/paper-grades/{gid}/judge',
+                      {'index': 0, 'note': '改過的批註'})
+        self.assertEqual(r['grade']['questions'][0]['note'], '改過的批註')
+        self.assertEqual(r['grade']['questions'][0]['credit'], 0.5, '只改批註不影響分數')
+        self.call('POST', f'/api/paper-grades/{gid}/judge', {'index': 0, 'credit': 2},
+                  expect=400)
+
     def test_scan_can_take_a_fixed_rotation(self):
         """掃描前指定角度：跳過 AI 判方向（省一半呼叫），整份照這個角度渲染。"""
         import base64

@@ -4985,6 +4985,8 @@ PAPER_GRADE_INSTRUCTION = (
     '① points：題目上標示的分數（例如「（5 分）」就是 5）；題目沒標分數就給 null，不要自己猜。'
     '② box：這道題（含題目與學生答案）在照片上的位置，用 0–1 的相對座標 '
     '{"x":左, "y":上, "w":寬, "h":高}；這是為了在照片上標出批閱結果。'
+    '**框的上下邊界必須停在下一題題號之前，絕對不可以框到另一題**；'
+    '單一題目的框高度不要超過這一頁的 40%，寧可少框也不要跨到別題。'
     '③ level：把這題的作答分成五個等級之一（必須是下列其中一個字串）：'
     '\"excellent\" 完全正確（答案與過程都對）；'
     '\"good\" 大致正確（有小瑕疵：漏單位、格式不規範、最後一步小錯但思路正確）；'
@@ -5150,6 +5152,23 @@ def paper_grade_all(app, pages, title, deadline, key=None):
         if page['warning']:
             warnings.append({'page': index, 'text': page['warning']})
     judged = [x for x in graded if x['correct'] is not None]
+    # 框不可以跨到下一題：模型有時框太大，這裡硬性收斂（高度最多 40%、不超出頁面）
+    for q in graded:
+        box = q.get('box')
+        if not isinstance(box, dict):
+            continue
+        try:
+            x, y, w, h = (float(box[k]) for k in ('x', 'y', 'w', 'h'))
+        except (KeyError, TypeError, ValueError):
+            q['box'] = None
+            continue
+        if not all(math.isfinite(v) for v in (x, y, w, h)):
+            q['box'] = None
+            continue
+        x, y = max(0.0, min(1.0, x)), max(0.0, min(1.0, y))
+        w = max(0.0, min(1.0 - x, w))
+        h = max(0.0, min(1.0 - y, h, 0.4))
+        q['box'] = {'x': round(x, 4), 'y': round(y, 4), 'w': round(w, 4), 'h': round(h, 4)}
     summary = paper_score(graded)
     return {'questions': graded, 'pageWarnings': warnings, 'failedPages': failures,
             'totalQuestions': len(judged),
@@ -6526,13 +6545,20 @@ class Application:
             return {'pages': imgs, 'pageNums': nums}, headers
         judge_path = re.fullmatch(r'/api/paper-grades/([1-9]\d{0,17})/judge', path)
         if method == 'POST' and judge_path:
-            # 教師補判：AI 看不清（correct=null）的題目由教師判定，之後一併重算分數。
+            # 教師改 AI 的批閱：判定（對／錯）、得分比例、批註文字都可以改。
+            # 只傳其中一項就只改那一項，其餘保持不動。
             self.teacher(user)
-            fields(body, ('index', 'correct'), ('index', 'correct'))
+            fields(body, ('index', 'correct', 'credit', 'note'), ('index',))
             index = number(body['index'], '題目序號', 0, 999, integer=True)
-            verdict = body['correct']
-            if verdict not in (True, False):
+            has_correct = 'correct' in body
+            has_credit = 'credit' in body
+            has_note = 'note' in body
+            if not (has_correct or has_credit or has_note):
+                fail(400, '沒有要修改的內容。')
+            if has_correct and body['correct'] not in (True, False):
                 fail(400, '判定只能是對或錯。')
+            credit = number(body['credit'], '得分比例', 0, 1) if has_credit else None
+            note = text(body['note'], '批註', 200) if has_note else None
             grade_id = int(judge_path[1])
             with self.db() as db:
                 row = db.execute('SELECT * FROM paper_grades WHERE id=?', (grade_id,)).fetchone()
@@ -6543,9 +6569,24 @@ class Application:
                 questions = json.loads(row['detail'])
                 if not 0 <= index < len(questions):
                     fail(400, '題目序號超出範圍。')
-                questions[index]['correct'] = verdict
-                questions[index]['credit'] = 1.0 if verdict else 0.0
-                questions[index]['judgedByTeacher'] = True
+                q = questions[index]
+                if has_correct:
+                    q['correct'] = body['correct']
+                    q['credit'] = 1.0 if body['correct'] else 0.0
+                    q['level'] = 'excellent' if body['correct'] else 'wrong'
+                if has_credit:
+                    q['credit'] = credit
+                    # 分數與等級要一致，否則卷面標記與總分會互相矛盾
+                    if credit >= 0.999:
+                        q['correct'], q['level'] = True, 'excellent'
+                    elif credit <= 0.001:
+                        q['correct'], q['level'] = False, 'wrong'
+                    else:
+                        q['correct'] = 'partial'
+                        q['level'] = 'good' if credit >= 0.75 else 'partial'
+                if has_note:
+                    q['note'] = note
+                q['judgedByTeacher'] = True
                 summary = paper_score(questions)
                 db.execute('UPDATE paper_grades SET detail=?, score=?, total_questions=?, correct_count=? '
                            'WHERE id=?',
