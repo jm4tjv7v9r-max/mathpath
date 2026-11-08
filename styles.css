@@ -1392,3 +1392,39 @@ body.cr-live-on{overflow:hidden}
 /* 課堂應用：離線提示 */
 .cr-net{margin:4px 0 0;font-size:calc(12.5px*var(--fs));color:#f0b45c;letter-spacing:.5px}
 .cr-live.cr-light .cr-net{color:#a8671a}
+
+/* 紙本批改評分表：手機（≤760px）改成卡片，不再擠成六欄 */
+@media(max-width:760px){
+  .paper-q-table{display:block}
+  .paper-q-table thead{display:none}
+  .paper-q-table tbody{display:block}
+  .paper-q-table tr{display:block;position:relative;margin:0 0 12px;padding:12px 12px 10px;
+    border:1px solid var(--border);border-radius:12px;background:var(--paper,#fff)}
+  .paper-q-table td{display:block;border:0;padding:0 0 8px;white-space:normal}
+  .paper-q-table td:last-child{padding-bottom:0}
+  /* 每格左上角顯示欄位名稱，讓卡片一眼看懂 */
+  .paper-q-table td::before{content:attr(data-label);display:block;
+    font-size:calc(11px*var(--fs));letter-spacing:.5px;color:var(--muted-2,#8a8880);
+    margin-bottom:3px}
+  /* 題號做成卡片右上角的圓標，不佔一行 */
+  .paper-q-table td.pq-no{position:absolute;right:10px;top:10px;padding:0}
+  .paper-q-table td.pq-no::before{content:none}
+  .paper-q-table td.pq-no{font-weight:700;color:var(--green,#3b6d11);
+    font-size:calc(13px*var(--fs));border:1px solid var(--border);border-radius:999px;
+    padding:1px 9px;background:var(--surface-soft,#f7f6f2)}
+  /* 題目、學生答案的算式允許橫向捲動，長式不會撐破卡片 */
+  .paper-q-table td.pq-q .katex-display,
+  .paper-q-table td.pq-ans .katex-display{overflow-x:auto;overflow-y:hidden}
+  .paper-q-table td.pq-q, .paper-q-table td.pq-ans{overflow-x:auto}
+  .paper-q-table td.pq-q, .paper-q-table td.pq-ans{-webkit-overflow-scrolling:touch}
+  .paper-q-table td.pq-score, .paper-q-table td.pq-mark{display:inline-block;width:auto;
+    padding-right:16px;vertical-align:top}
+  .paper-q-table td.pq-score::before, .paper-q-table td.pq-mark::before{display:block}
+  .paper-q-table .paper-score-input{width:64px}
+  .paper-q-table .paper-note-cell{min-width:0}
+  .paper-q-table .paper-note-cell:empty::after{content:'點一下寫批註';color:var(--muted-2,#8a8880)}
+  .paper-q-table td.pq-note{margin-top:2px;padding-top:8px;border-top:1px dashed var(--border)}
+  /* 確認列在窄螢幕靠左堆疊，按鈕滿寬好按 */
+  .paper-confirm-bar{flex-direction:column;align-items:stretch}
+  .paper-confirm-bar button{width:100%}
+}

@@ -3527,13 +3527,17 @@ function paperResultHtml(g){
            value="${earned??''}" title="可直接改這題得分（0–${q.points}）"${confirmed?' disabled':''}><span class="small-text"> / ${q.points}</span>`
       : '<span class="small-text">平均</span>';
     const noteText=esc(q.note||q.reason||'');
+    // data-label：手機上表格會變成卡片，用 ::before 顯示欄位名稱
     const noteCell=confirmed
-      ? `<td class="small-text">${noteText}</td>`
-      : `<td class="small-text paper-note-cell" contenteditable="true" data-note-index="${i}"
-        data-orig="${noteText}" title="點一下可直接改批註">${noteText}</td>`;
-    return `<tr><td>${esc(q.number)}</td><td>${mathText(q.question||'')}</td><td>${mathText(q.studentAnswer||'—')}</td>
-      <td>${scoreCell}</td>
-      <td>${markOf(q)}${fix}${praise?`<div class="paper-praise">${esc(praise)}</div>`:''}</td>
+      ? `<td class="small-text pq-note" data-label="批註">${noteText}</td>`
+      : `<td class="small-text paper-note-cell pq-note" contenteditable="true" data-note-index="${i}"
+        data-label="批註" data-orig="${noteText}" title="點一下可直接改批註">${noteText}</td>`;
+    return `<tr>
+      <td class="pq-no" data-label="題號">${esc(q.number)}</td>
+      <td class="pq-q" data-label="題目">${mathText(q.question||'')}</td>
+      <td class="pq-ans" data-label="學生答案">${mathText(q.studentAnswer||'—')}</td>
+      <td class="pq-score" data-label="配分">${scoreCell}</td>
+      <td class="pq-mark" data-label="判定">${markOf(q)}${fix}${praise?`<div class="paper-praise">${esc(praise)}</div>`:''}</td>
       ${noteCell}</tr>`;
   }).join('');
   const pagesHtml=(paperPages||[]).map((src,i)=>{
@@ -3580,7 +3584,7 @@ function paperResultHtml(g){
     ${pagesHtml?`<div class="paper-compare">
       <p class="small-text" style="margin:0">左：批改卷（AI 標記與批註，可拖動）　右：原卷（對照用）</p>
       ${pagesHtml}</div>`:''}
-    <table class="board-table" style="margin-top:10px"><thead><tr><th>題號</th><th>題目</th><th>學生答案</th><th>配分</th><th>判定</th><th>批註</th></tr></thead><tbody>${rows}</tbody></table>
+    <table class="board-table paper-q-table" style="margin-top:10px"><thead><tr><th>題號</th><th>題目</th><th>學生答案</th><th>配分</th><th>判定</th><th>批註</th></tr></thead><tbody>${rows}</tbody></table>
     <p class="field-hint">AI 判定僅供參考，請教師覆核後才當作正式成績。待判定的題目請按「判對／判錯」，分數會立即重算。批註可直接拖動到合適位置。</p>
     <div class="paper-confirm-bar">
       <span class="small-text">${confirmed
