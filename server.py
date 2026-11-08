@@ -60,6 +60,15 @@ QUERY_PATHS = ('/api/calendar', '/api/papers',
                '/api/score-grid', '/api/score-grid/export',
                '/api/admin/archive/students', '/api/admin/archive/questions',
                '/api/admin/restore/questions', '/api/admin/restore/students')
+# 真正支援 DELETE 的路徑。HTTP 層放行 DELETE 之後，若不在此清單就回 405
+# （「這個資源不支援刪除」），而不是繞完整個 dispatch 才回 404——兩者對前端
+# 的意義不同：404 會被當成「網址打錯」，405 才是「方法不對」。
+DELETE_PATHS = tuple(re.compile(p) for p in (
+    r'/api/classroom/sessions/[1-9]\d{0,17}',
+    r'/api/paper-templates/[1-9]\d{0,17}',
+    r'/api/papers/[1-9]\d{0,17}',
+    r'/api/paper-grades/drafts/[1-9]\d{0,17}',
+))
 # users.seat 是 TEXT：直接排會變成 '10' < '2' < '3'，座號 12 排到 3 前面。
 # 一律轉成整數再排；沒有座號的放最後。
 SEAT_ORDER = "CASE WHEN COALESCE(u.seat,'')='' THEN 9999 ELSE CAST(u.seat AS INTEGER) END"
@@ -9999,6 +10008,10 @@ class Handler(BaseHTTPRequestHandler):
                 # 之前這一關只認 GET／POST，前端按「刪除」會拿到「僅支援 GET 和 POST」。
                 if self.command not in ('POST', 'DELETE'):
                     fail(405, '僅支援 GET、POST 與 DELETE。')
+                if self.command == 'DELETE' and not any(
+                        p.fullmatch(path) for p in DELETE_PATHS):
+                    # 路徑存在（例如 /api/logout 只收 POST）但這個資源不支援刪除
+                    fail(405, '此資源不支援刪除，請用 POST。')
                 if self.command == 'POST' and path in RESTORE_UPLOADS:
                     # 還原檔案可能很大，先驗身分再串流寫入暫存檔，不整份讀進記憶體。
                     restore_app = self.server.app

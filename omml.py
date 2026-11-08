@@ -6,7 +6,19 @@
 from __future__ import annotations
 
 import re
-from lxml import etree
+try:                      # lxml 只有 Word（OMML）輸出才需要；缺了也不該讓整個網站起不來
+    from lxml import etree
+except ImportError:       # pragma: no cover - 只有未安裝 lxml 的環境會走到
+    etree = None
+
+
+def _etree():
+    """取得 lxml 的 etree；沒安裝時給出看得懂的訊息，而不是 ImportError。"""
+    if etree is None:
+        raise RuntimeError(
+            'Word 方程式需要 lxml 才能轉換：請執行 '
+            '`python3 -m pip install -r requirements.txt`（或單獨安裝 lxml）。')
+    return etree
 
 M_NS = 'http://schemas.openxmlformats.org/officeDocument/2006/math'
 W_NS = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
@@ -50,7 +62,7 @@ def _m(tag):
 
 
 def _el(tag, *children, **attrs):
-    e = etree.Element(_m(tag))
+    e = _etree().Element(_m(tag))
     for k, v in attrs.items():
         e.set(_m(k), v)
     for c in children:
@@ -373,7 +385,7 @@ def _wrap(node, out: str) -> str:
 
 
 def _node_to_latex(el) -> str:
-    tag = etree.QName(el).localname
+    tag = _etree().QName(el).localname
 
     if tag in ('oMath', 'oMathPara', 'e', 'num', 'den', 'sub', 'sup', 'deg'):
         return ''.join(_node_to_latex(c) for c in el)
@@ -449,11 +461,12 @@ def omml_latex_of_paragraph(p) -> str:
     少了 tab 就分不出四個選項，整行會被當成一個選項塞進題幹。
     """
     out = []
+    _e = _etree()
     for child in p._p:
-        local = etree.QName(child).localname
+        local = _e.QName(child).localname
         if local == 'r':
             for node in child:
-                kind = etree.QName(node).localname
+                kind = _e.QName(node).localname
                 if kind == 't':
                     out.append(node.text or '')
                 elif kind == 'tab':

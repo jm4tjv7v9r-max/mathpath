@@ -1428,3 +1428,112 @@ body.cr-live-on{overflow:hidden}
   .paper-confirm-bar{flex-direction:column;align-items:stretch}
   .paper-confirm-bar button{width:100%}
 }
+
+/* ══════════════════════════════════════════════════════════════
+   動態層：進場、懸停、按壓、載入。全部包在 no-preference 裡，
+   系統設「減少動態」時一律不生效（無障礙）。
+   ══════════════════════════════════════════════════════════════ */
+@media (prefers-reduced-motion:no-preference){
+  @keyframes mpRise{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+  @keyframes mpPop{0%{opacity:0;transform:scale(.94)}62%{opacity:1;transform:scale(1.015)}100%{opacity:1;transform:scale(1)}}
+  @keyframes mpToastIn{from{opacity:0;transform:translate(-50%,20px) scale(.96)}to{opacity:1;transform:translate(-50%,0) scale(1)}}
+  @keyframes mpMarkIn{0%{opacity:0;transform:scale(.82)}100%{opacity:1;transform:scale(1)}}
+  @keyframes mpGrowX{from{transform:scaleX(0)}to{transform:scaleX(1)}}
+  @keyframes mpGrowY{from{transform:scaleY(0)}to{transform:scaleY(1)}}
+  @keyframes mpPulse{0%{box-shadow:0 0 0 0 rgba(25,124,104,.4)}70%{box-shadow:0 0 0 7px rgba(25,124,104,0)}100%{box-shadow:0 0 0 0 rgba(25,124,104,0)}}
+  @keyframes mpFlash{0%{background:#d8efe2}100%{background:transparent}}
+  @keyframes mpBarIn{from{transform:translateY(-50%) scaleY(0)}to{transform:translateY(-50%) scaleY(1)}}
+
+  /* 1. 換頁：內容輕輕升起 */
+  .fade-in{animation:mpRise .38s cubic-bezier(.22,.7,.3,1) both}
+  #main>.panel,#main>section.panel,#main>form{animation:mpRise .4s cubic-bezier(.22,.7,.3,1) both}
+
+  /* 2. 清單逐項進場（只做前 7 項，避免長列表拖太久） */
+  .question-list .question-card,.records-panel .record,.pb-draft,
+  .board-table tbody tr,.metric-row .metric,.practice-set,.cr-card{
+    animation:mpRise .36s cubic-bezier(.22,.7,.3,1) both}
+  .question-list .question-card:nth-child(2),.records-panel .record:nth-child(2),
+  .pb-draft:nth-child(2),.board-table tbody tr:nth-child(2),.metric-row .metric:nth-child(2){animation-delay:35ms}
+  .question-list .question-card:nth-child(3),.records-panel .record:nth-child(3),
+  .pb-draft:nth-child(3),.board-table tbody tr:nth-child(3),.metric-row .metric:nth-child(3){animation-delay:70ms}
+  .question-list .question-card:nth-child(4),.records-panel .record:nth-child(4),
+  .pb-draft:nth-child(4),.board-table tbody tr:nth-child(4),.metric-row .metric:nth-child(4){animation-delay:105ms}
+  .question-list .question-card:nth-child(5),.records-panel .record:nth-child(5),
+  .pb-draft:nth-child(5),.board-table tbody tr:nth-child(5),.metric-row .metric:nth-child(5){animation-delay:140ms}
+  .question-list .question-card:nth-child(6),.records-panel .record:nth-child(6),
+  .pb-draft:nth-child(6),.board-table tbody tr:nth-child(6){animation-delay:175ms}
+  .question-list .question-card:nth-child(n+7),.records-panel .record:nth-child(n+7),
+  .pb-draft:nth-child(n+7),.board-table tbody tr:nth-child(n+7){animation-delay:205ms}
+
+  /* 3. 懸停：卡片微微浮起，清單往右挪一點 */
+  .metric{transition:transform .24s cubic-bezier(.2,.7,.3,1),box-shadow .24s,border-color .24s}
+  .metric:hover{transform:translateY(-3px);box-shadow:0 12px 28px rgba(20,58,46,.075);border-color:#d9e8dc}
+  .question-card{transition:transform .2s ease,background .2s}
+  .question-card:hover{transform:translateX(3px)}
+  .pb-draft{transition:transform .2s ease,box-shadow .2s,border-color .2s}
+  .pb-draft:hover{transform:translateY(-2px);box-shadow:0 8px 22px rgba(20,58,46,.07);border-color:#d9e8dc}
+  .paper-page{transition:transform .26s cubic-bezier(.2,.7,.3,1),box-shadow .26s}
+  .paper-page:hover{transform:translateY(-2px);box-shadow:0 10px 26px rgba(20,58,46,.08)}
+  .board-table tbody tr{transition:background .16s}
+  .board-table tbody tr:hover{background:var(--surface-green,#eef6f0)}
+  .board-table tbody tr{animation-name:mpRise}
+  .board-table tbody tr:hover{animation-name:none}   /* 懸停時不要被進場動畫卡住 */
+
+  /* 4. 按壓手感 */
+  button.primary:active,button.secondary:active,.text-button:active,
+  .segmented button:active,.nav-item:active{transform:translateY(1px) scale(.99)}
+
+  /* 5. 提示條：從下往上滑入 */
+  .toast.show{animation:mpToastIn .26s cubic-bezier(.2,.7,.3,1)}
+
+  /* 6. 彈窗：放大淡入 */
+  .modal{animation:mpPop .26s cubic-bezier(.2,.7,.3,1)}
+  .modal-backdrop{animation:fadeIn .18s ease-out}
+
+  /* 7. 側欄：選中項左邊長出一條綠線 */
+  .nav-item{position:relative}
+  .nav-item.active::before{content:"";position:absolute;left:0;top:50%;width:3px;height:58%;
+    border-radius:0 3px 3px 0;background:var(--green);transform:translateY(-50%) scaleY(1);
+    animation:mpBarIn .24s ease-out}
+  .nav-item .chev{transition:transform .2s ease}
+
+  /* 8. 批改卷：紅框一題一題冒出來 */
+  .paper-marks .paper-mark{animation:mpMarkIn .3s cubic-bezier(.2,.7,.3,1) both}
+  .paper-marks .paper-mark:nth-child(2){animation-delay:45ms}
+  .paper-marks .paper-mark:nth-child(3){animation-delay:90ms}
+  .paper-marks .paper-mark:nth-child(4){animation-delay:135ms}
+  .paper-marks .paper-mark:nth-child(5){animation-delay:180ms}
+  .paper-marks .paper-mark:nth-child(6){animation-delay:225ms}
+  .paper-marks .paper-mark:nth-child(n+7){animation-delay:270ms}
+  .paper-score-badge{animation:mpPop .5s cubic-bezier(.2,.7,.3,1) both}
+
+  /* 9. 進度條與長條圖：由左／由下長出來 */
+  .progress-fill{transform-origin:left center;animation:mpGrowX .8s cubic-bezier(.2,.7,.3,1) both}
+  .chart-column .bar{transform-origin:bottom center;animation:mpGrowY .7s cubic-bezier(.2,.7,.3,1) both}
+  .chart-column:nth-child(2) .bar{animation-delay:60ms}
+  .chart-column:nth-child(3) .bar{animation-delay:120ms}
+  .chart-column:nth-child(4) .bar{animation-delay:180ms}
+  .chart-column:nth-child(5) .bar{animation-delay:240ms}
+  .chart-column:nth-child(n+6) .bar{animation-delay:300ms}
+  .metric-spark i{transform-origin:bottom;animation:mpGrowY .5s ease-out both}
+  .metric-spark i:nth-child(2){animation-delay:60ms}.metric-spark i:nth-child(3){animation-delay:120ms}
+  .metric-spark i:nth-child(4){animation-delay:180ms}.metric-spark i:nth-child(5){animation-delay:240ms}
+  .metric-spark i:nth-child(n+6){animation-delay:300ms}
+
+  /* 10. 課堂進行中的綠點：緩慢呼吸 */
+  .status-dot,.cr-live-dot{animation:mpPulse 2.6s ease-out infinite}
+
+  /* 11. 成績改動後的短暫高亮 */
+  .sg-cell.saved,.paper-score-input.saved{animation:mpFlash .9s ease-out}
+
+  /* 12. 輸入框聚焦時的光暈過渡 */
+  input,select,textarea{transition:border-color .16s,box-shadow .16s,background .16s}
+  .search-field input:focus{background:#fff}
+}
+
+@media (prefers-reduced-motion:no-preference){
+  /* 側欄分組展開時，子項逐個落下 */
+  .nav-children:not([hidden]){animation:mpRise .22s ease-out both}
+  /* 掃描結果、匯入面板出現時淡入 */
+  #pb-result:not(:empty),#bulk-result:not(:empty),#pb-unmatched:not(:empty){animation:mpRise .3s ease-out both}
+}

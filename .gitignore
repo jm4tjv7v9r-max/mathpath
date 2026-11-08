@@ -15,3 +15,6 @@ bench/results-*.md
 .ingest-token
 # 排程寫不進網站時的暫存結果
 competitions-inbox.json
+
+# 測試用的暫存目錄（沙箱禁止刪除時留下的工作區臨時檔）
+.tmp_test/

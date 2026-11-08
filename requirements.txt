@@ -2,5 +2,8 @@
 pypdf
 pypdfium2>=5.0,<6
 python-docx>=1.1,<2
+# Word 方程式（OMML）轉換直接用到 lxml。python-docx 雖然會順帶裝上，
+# 但那是它的實作細節，這裡明寫，避免哪天換版本就整個網站起不來。
+lxml>=4.9
 # 教師匯入行事曆要讀 .xlsx
 openpyxl>=3.1,<4

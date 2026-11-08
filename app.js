@@ -6087,6 +6087,12 @@ async function scoreGridPage(){
     td.classList.toggle('edited',value!==null);
     td.classList.toggle('empty',value===null);
     td.title=value!==null?'教師調整過（按右鍵還原）':'系統依作答計算';
+    // 存檔後閃一下綠底，讓老師看得出「這一格剛存好」（同一格連續改也重播）
+    td.classList.remove('saved');
+    void td.offsetWidth;
+    td.classList.add('saved');
+    clearTimeout(td._savedTimer);
+    td._savedTimer=setTimeout(()=>td.classList.remove('saved'),950);
   };
   // 右鍵「還原系統分數」要把系統算的分數抓回來（本地不知道原始分數是多少），
   // 只重抓資料並更新那一列，不整頁重畫。
