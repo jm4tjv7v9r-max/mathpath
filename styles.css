@@ -1537,3 +1537,55 @@ body.cr-live-on{overflow:hidden}
   /* 掃描結果、匯入面板出現時淡入 */
   #pb-result:not(:empty),#bulk-result:not(:empty),#pb-unmatched:not(:empty){animation:mpRise .3s ease-out both}
 }
+
+/* ── 全班紙本批閱的配對表（9 欄）在手機上改成卡片 ───────────────── */
+@media(max-width:760px){
+  .pb-sheet-table{display:block;width:100%;border-collapse:collapse}
+  .pb-sheet-table thead{display:none}
+  .pb-sheet-table tbody{display:block}
+  .pb-sheet-table tr{display:block;position:relative;margin:0 0 12px;padding:12px;
+    border:1px solid var(--border);border-radius:12px;background:var(--paper,#fff)}
+  .pb-sheet-table tr.pb-locked{background:var(--surface,#f7f6f2)}
+  .pb-sheet-table tr.pb-graded{background:#f4f9ef}
+  .pb-sheet-table td{display:block;border:0;padding:0 0 10px;text-align:left;
+    white-space:normal;background:transparent}
+  .pb-sheet-table td::before{content:attr(data-label);display:block;
+    font-size:calc(11px*var(--fs));letter-spacing:.5px;color:var(--muted-2,#8a8880);margin-bottom:3px}
+  /* 第幾份：右上角圓標，不佔一行 */
+  .pb-sheet-table td.pb-no{position:absolute;right:10px;top:10px;padding:1px 9px;
+    border:1px solid var(--border);border-radius:999px;background:var(--paper,#fff);
+    font-weight:700;color:var(--green,#3b6d11);font-size:calc(12.5px*var(--fs))}
+  .pb-sheet-table td.pb-no::before{content:none}
+  /* 卷面、方向、讀到的座號／姓名／配對方式：兩三個並排，省掉好幾行 */
+  .pb-sheet-table td.pb-view,.pb-sheet-table td.pb-rot,
+  .pb-sheet-table td.pb-seat,.pb-sheet-table td.pb-name,.pb-sheet-table td.pb-match{
+    display:inline-block;width:auto;padding-right:16px;vertical-align:top}
+  .pb-sheet-table td.pb-rot select{width:auto}
+  .pb-sheet-table td.pb-assign select{width:100%}
+  .pb-sheet-table td.pb-confirm{padding:10px 0 0;border-top:1px dashed var(--border)}
+  .pb-sheet-table td.pb-confirm button{width:100%;padding:9px;border:1px solid var(--border);
+    border-radius:9px;background:var(--paper,#fff);font-size:calc(13.5px*var(--fs))}
+  .pb-sheet-table tr.pb-locked td.pb-confirm button{background:var(--surface,#f7f6f2)}
+  /* 工具列在窄螢幕堆疊 */
+  .sg-toolbar{gap:8px}
+  .sg-toolbar>.small-text{flex:1 1 100%}
+}
+
+/* 配對表：讀不到的欄位（座號／姓名／配對方式）在手機上不要留空行 */
+@media(max-width:760px){
+  .pb-sheet-table td.pb-seat:empty,
+  .pb-sheet-table td.pb-name:empty,
+  .pb-sheet-table td.pb-match:empty{display:none}
+}
+
+/* 配對表：讀不到的欄位（座號／姓名／配對方式）在手機上不要留空行 */
+@media(max-width:760px){
+  .pb-sheet-table td.pb-seat:empty,
+  .pb-sheet-table td.pb-name:empty,
+  .pb-sheet-table td.pb-match:empty{display:none}
+}
+
+/* 配對表變卡片後不需要外層的固定高度與邊框，避免卡片被塞進小框裡捲動 */
+@media(max-width:760px){
+  .pb-sheet-wrap{max-height:none;overflow:visible;border:0;border-radius:0}
+}

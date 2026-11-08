@@ -4777,16 +4777,16 @@ async function paperBatchPage(){
       const done=(res.graded||[]).find(g=>Number(g.studentId)===Number(sh.studentId));
       const cls=[locked?'pb-locked':'',done?'pb-graded':''].filter(Boolean).join(' ');
       return `<tr data-sheet-row="${i}"${cls?` class="${cls}"`:''}>
-      <td>${i+1}${done?` <span class="pb-done-mark" title="已批改 ${fmtScore(done.score)} 分">✓</span>`:''}</td>
-      <td>${sh.pages.join('、')}</td>
-      <td>${done?`<button class="text-button" data-view-grade-btn="${done.gradeId}">查看批改</button>`
+      <td class="pb-no" data-label="#">${i+1}${done?` <span class="pb-done-mark" title="已批改 ${fmtScore(done.score)} 分">✓</span>`:''}</td>
+      <td class="pb-pages" data-label="頁碼">${sh.pages.join('、')}</td>
+      <td class="pb-view" data-label="卷面">${done?`<button class="text-button" data-view-grade-btn="${done.gradeId}">查看批改</button>`
         :(viewId?`<button class="text-button" data-view-sheet="${i}">查看</button>`:'<span class="small-text">—</span>')}</td>
-      <td><select class="sg-rot" data-sheet-rot="${i}"${dis}>${rotOpts(rotOf(sh))}</select></td>
-      <td>${sh.seat??''}</td>
-      <td>${esc(sh.name||'')}</td>
-      <td>${sh.matchedBy==='seat'?'座號':sh.matchedBy==='name'?'姓名':''}</td>
-      <td><select data-sheet="${i}"${dis}>${opts(i,sh.studentId)}</select></td>
-      <td><button class="text-button" data-confirm="${i}">${locked?'更改':'確認'}</button></td></tr>`;
+      <td class="pb-rot" data-label="方向"><select class="sg-rot" data-sheet-rot="${i}"${dis}>${rotOpts(rotOf(sh))}</select></td>
+      <td class="pb-seat" data-label="讀到座號">${sh.seat??''}</td>
+      <td class="pb-name" data-label="讀到姓名">${esc(sh.name||'')}</td>
+      <td class="pb-match" data-label="配對方式">${sh.matchedBy==='seat'?'座號':sh.matchedBy==='name'?'姓名':''}</td>
+      <td class="pb-assign" data-label="指派給"><select data-sheet="${i}"${dis}>${opts(i,sh.studentId)}</select></td>
+      <td class="pb-confirm" data-label="確認"><button class="text-button" data-confirm="${i}">${locked?'更改':'確認'}</button></td></tr>`;
     }).join('');
     $('#pb-result').innerHTML=`<div class="sg-toolbar" style="margin-top:12px">
       <label class="small-text">全部卷面方向
@@ -4800,7 +4800,7 @@ async function paperBatchPage(){
       <span class="small-text">AI 已先判斷；某一份卷不對就改它那一行的「方向」，只影響該學生。</span>
       <button class="secondary" id="pb-confirm-all">全部確認</button>
     </div>
-    <div class="sg-wrap" style="margin-top:8px"><table class="score-grid">
+    <div class="sg-wrap pb-sheet-wrap" style="margin-top:8px"><table class="score-grid pb-sheet-table">
       <thead><tr><th>#</th><th>頁碼</th><th>卷面</th><th>方向</th><th>讀到座號</th><th>讀到姓名</th><th>配對方式</th><th>指派給</th><th>確認</th></tr></thead>
       <tbody>${rows}</tbody></table></div>
       <p class="field-hint">逐份核對「指派給」是否正確，按「確認」鎖住（確認後才能批改）；發現錯了按「更改」解鎖。按「查看」可先看這份卷的實際畫面。</p>
