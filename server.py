@@ -859,6 +859,19 @@ PAPER_ROSTER_PROMPT = (
 )
 
 
+PAPER_REMATCH_PROMPT = (
+    '你是數學科教師助理，正在做「第二次配對」。第一次認人讀不到座號與姓名，'
+    '現在要放寬條件，只從「還沒配對的學生名單」中挑出最可能的一位。'
+    'payload.candidates 是尚未配對的學生（id／name／seat）；name 中間的字被遮蔽成 X，'
+    '卷上手寫的是完整姓名，請用看得見的字去比對，不要因為有 X 就放棄。'
+    '可用的線索：只認得部分的姓名、只認得一個數字的座號、簽名、筆跡、卷頭格式、'
+    '頁碼、卷上任何角落的記號，以及候選名單中哪個名字的字形最像。'
+    '真的完全認不出時也要選一個最合理的候選，並把 confidence 壓到 0.3 以下。'
+    '只回傳 JSON：{"studentId": 候選的 id, "confidence": 0到1, "reason": "30字內理由"}。'
+    'studentId 必須是 candidates 裡的其中一個 id，不可以自己編。'
+)
+
+
 PAPER_ORIENT_PROMPT = (
     '下面是一頁學生紙本作業的掃描圖。請判斷「這一頁要順時針轉多少度，內容才會變正」，'
     '不要理會內容對錯或字跡好壞。'
@@ -1053,6 +1066,85 @@ def match_papers(roster, students, pages_per=None):
             sheet.update(studentId=best['id'], matchedName=best['name'],
                          matchedBy='name', confidence=round(min(1.0, best_score / 4), 2))
     return sheets
+
+
+def paper_second_match(app, sheets, students, pages, max_calls=40):
+    """二次檢視配對：讀不到座號／姓名時放寬條件，改由「尚未配對的學生」反查。
+
+    第一次配對靠卷面上的座號／姓名；手寫字認不出來時，卷仍要有人認領。
+    這裡改成「消去法」：把已經配對的學生扣掉，剩下的候選交給 AI 對著卷面挑，
+    比讓模型憑空猜一個名字可靠得多。
+
+    - 已配對、或老師已按「確認」鎖住的卷，一律不動。
+    - 只剩一位候選：直接指派（remaining，信心 0.85）。
+    - 多位候選：問 AI 挑最可能的一位（ai2），回傳信心與理由。
+    - AI 沒設定／失敗，且「未配對人數 == 未配對卷數」時，按名單順序暫配
+      （order，信心 0.3）；人數不相等就不猜，留給老師。
+
+    所有二次配對都標 `secondPass=True`；信心 < 0.7 再標 `needsReview=True`，
+    而且**不會自動確認**——老師仍要逐份按「確認」才算數。
+    """
+    stats = {'tried': 0, 'matched': 0, 'byAi': 0, 'byRemaining': 0, 'byOrder': 0}
+    used = {sh.get('studentId') for sh in sheets if sh.get('studentId')}
+    pool = [st for st in students if st.get('id') not in used]
+    todo = [sh for sh in sheets if not sh.get('studentId') and not sh.get('confirmed')]
+    if not todo or not pool:
+        return sheets, stats
+    ai_on = bool(getattr(getattr(app, 'ai', None), 'configured', False))
+    # 只有「一人一卷」時才敢用順序兜底，避免人數不等時把卷硬塞給別人
+    order_ok = len(pool) == len(todo)
+    calls = 0
+    for sh in todo:
+        if not pool:
+            break
+        stats['tried'] += 1
+        chosen = how = None
+        conf, reason = 0.0, ''
+        if len(pool) == 1:
+            chosen, how = pool[0], 'remaining'
+            conf, reason = 0.85, '全班只剩這位學生未配對'
+        elif ai_on and calls < max_calls:
+            page_no = (sh.get('pages') or [1])[0]
+            image = pages[page_no - 1] if isinstance(page_no, int) and 1 <= page_no <= len(pages) else None
+            if image:
+                calls += 1
+                payload = {
+                    'page': page_no,
+                    'candidates': [{'id': st['id'], 'name': st['name'],
+                                    'seat': st.get('seat')} for st in pool[:40]],
+                    'firstRead': {'seat': sh.get('seat'), 'name': sh.get('name')},
+                }
+                try:
+                    res = _ai_retry(app, PAPER_REMATCH_PROMPT, payload, image, app.ai.vision)
+                except APIError:
+                    res = None
+                if isinstance(res, dict):
+                    try:
+                        sid = int(str(res.get('studentId')).strip())
+                    except (TypeError, ValueError):
+                        sid = None
+                    hit = next((st for st in pool if st['id'] == sid), None)
+                    if hit is not None:
+                        chosen, how = hit, 'ai2'
+                        try:
+                            conf = float(res.get('confidence'))
+                        except (TypeError, ValueError):
+                            conf = 0.5
+                        conf = max(0.0, min(1.0, conf))
+                        reason = str(res.get('reason') or '依卷面線索放寬比對')[:60]
+        if chosen is None and order_ok:
+            chosen, how = pool[0], 'order'
+            conf, reason = 0.3, 'AI 未能判定，按剩餘名單順序暫配（請覆核）'
+        if chosen is None:
+            continue
+        sh.update(studentId=chosen['id'], matchedName=chosen['name'],
+                  matchedBy=how, confidence=round(conf, 2),
+                  secondPass=True, matchReason=reason,
+                  needsReview=conf < 0.7)
+        pool = [st for st in pool if st['id'] != chosen['id']]
+        stats['matched'] += 1
+        stats[{'ai2': 'byAi', 'remaining': 'byRemaining', 'order': 'byOrder'}[how]] += 1
+    return sheets, stats
 
 
 def figure_needed(topic):
@@ -4946,6 +5038,21 @@ def student_pdf_answer(data):
 PAPER_LEVELS = {'excellent': 1.0, 'good': 0.85, 'partial': 0.6, 'weak': 0.35, 'wrong': 0.0}
 
 
+PAPER_SECOND_GRADE_PROMPT = (
+    '你是數學科教師助理，正在做「第二次批改」。第一次批改對部分題目看不清或無法判定，'
+    '請重新看同一頁，放寬標準，綜合字跡殘留、上下文、題型與常見解法，判斷「最可能的情況」——'
+    '不要因為字跡潦草就全部回 null。'
+    'payload.questions 是第一次批改的結果（number／question／studentAnswer／correct／reason）。'
+    '只回傳 JSON：{"questions":[{"number":題號, "studentAnswer":最可能讀到的作答或null, '
+    '"correct":true或false或"partial", "credit":0到1, "confidence":0到1, '
+    '"reason":30字內判斷依據}]}。'
+    'number 要對應 payload.questions 的題號；沒把握就把 confidence 設低，但仍要給最可能的判定。'
+    '卷面確實空白、完全沒有字跡時，不要腦補答案：回 correct:false、credit:0、'
+    'confidence 高，並在 reason 寫「空白未作答」。'
+    '若有 reference（教師確認的標準答案），以它為準判斷，不要自己另解一遍。'
+)
+
+
 def level_from_credit(credit):
     if credit is None:
         return 'unreadable'
@@ -5180,6 +5287,113 @@ def mark_blank_wrong(questions):
     return questions
 
 
+def _paper_uncertain(q):
+    """這題值不值得二次批改：待判定、看不清、或第一次的備註裡有疑慮。"""
+    ans = str(q.get('studentAnswer') or '').strip()
+    if ans in BLANK_ANSWERS:
+        return False          # 空白題由 mark_blank_wrong 直接判錯，不必再花一次 AI
+    if q.get('correct') is None or q.get('level') == 'unreadable':
+        return True
+    hint = f"{q.get('reason') or ''}{q.get('note') or ''}"
+    return any(k in hint for k in UNCLEAR_HINTS)
+
+
+def paper_second_grade(app, pages, questions, title, key=None, deadline=None):
+    """二次批改：把第一次「看不清／待判定」的題目，用同一頁圖再判一次，取最可能的情況。
+
+    不是把整份卷重批一次（那會讓 AI 費用翻倍），而是每頁只多一次呼叫，
+    對象是該頁所有題目——模型看過第一次的結果後要給出「最可能的判定」與信心值。
+
+    合併規則（取最可能）：
+    - 信心 ≥ 0.55：採用第二次的 correct／credit／等級，標 secondPass。
+    - 信心 < 0.55：保留第一次（仍待教師判定），但把「最可能的猜測」記進
+      secondGuess 與 reason，老師看卷面時有個參考，不會兩手空空。
+    - 第二次說「空白未作答」：直接判錯，符合「未作答一律當錯」。
+    """
+    stats = {'pages': 0, 'compared': 0, 'changed': 0, 'resolved': 0}
+    by_page = {}
+    for idx, q in enumerate(questions):
+        if not _paper_uncertain(q):
+            continue
+        pno = int(q.get('page') or 1)
+        by_page.setdefault(pno, []).append((idx, q))
+    if not by_page or not getattr(getattr(app, 'ai', None), 'configured', False):
+        return questions, stats
+    for pno in sorted(by_page):
+        if deadline and time.monotonic() > deadline:
+            break
+        image = pages[pno - 1] if 1 <= pno <= len(pages) else None
+        if not image:
+            continue
+        page_qs = [q for q in questions if int(q.get('page') or 1) == pno]
+        payload = {
+            'title': title, 'page': pno,
+            'questions': [{'number': q.get('number'), 'question': q.get('question') or '',
+                           'studentAnswer': q.get('studentAnswer') or '',
+                           'correct': q.get('correct'), 'reason': q.get('reason') or ''}
+                          for q in page_qs],
+        }
+        if key:
+            payload['reference'] = key
+        instruction = (PAPER_SECOND_GRADE_PROMPT +
+                       f'這是「{title}」第 {pno} 頁的第二次批改；請逐題給最可能的判定。')
+        try:
+            res = _ai_retry(app, instruction, payload, image, app.ai.vision)
+        except APIError:
+            continue
+        items = res.get('questions') if isinstance(res, dict) else None
+        if not isinstance(items, list):
+            continue
+        stats['pages'] += 1
+        lookup = {}
+        for item in items:
+            if isinstance(item, dict):
+                lookup[str(item.get('number') or '').strip()] = item
+        for idx, q in by_page[pno]:
+            item = lookup.get(str(q.get('number') or '').strip())
+            if not item:
+                continue
+            stats['compared'] += 1
+            raw_correct = item.get('correct')
+            if raw_correct not in (True, False, 'partial'):
+                continue
+            try:
+                credit = float(item.get('credit'))
+                conf = float(item.get('confidence'))
+            except (TypeError, ValueError):
+                continue
+            if not (math.isfinite(credit) and math.isfinite(conf)):
+                continue
+            credit = max(0.0, min(1.0, credit))
+            conf = max(0.0, min(1.0, conf))
+            reason = str(item.get('reason') or '').strip()[:60]
+            guess = {'correct': raw_correct, 'credit': round(credit, 2),
+                     'confidence': round(conf, 2), 'reason': reason}
+            new_ans = str(item.get('studentAnswer') or '').strip()[:2000]
+            if conf < 0.55:
+                q['secondGuess'] = guess
+                q['reason'] = (str(q.get('reason') or '') +
+                               f'（二次批改最可能：{"對" if raw_correct is True else "錯" if raw_correct is False else "部分正確"}，'
+                               f'信心 {conf:.0%}；仍待判定）')[:400]
+                continue
+            correct = True if raw_correct is True else (False if raw_correct is False else 'partial')
+            q['correct'] = correct
+            q['credit'] = round(credit, 2)
+            q['level'] = level_from_credit(credit)
+            if new_ans and new_ans not in BLANK_ANSWERS:
+                q['studentAnswer'] = new_ans
+            if '空白' in reason or '未作答' in reason:
+                q['correct'], q['credit'], q['level'] = False, 0.0, 'wrong'
+            q['secondPass'] = True
+            q['secondConfidence'] = round(conf, 2)
+            q['secondGuess'] = guess
+            q['note'] = (f'（二次批改：{reason}）' + str(q.get('note') or ''))[:200]
+            stats['changed'] += 1
+            if q['correct'] is not None:
+                stats['resolved'] += 1
+    return questions, stats
+
+
 def paper_score(questions):
     """配分與計分。
 
@@ -5261,8 +5475,12 @@ def paper_to_grade_grid(db, grade_id):
     return aid
 
 
-def paper_grade_all(app, pages, title, deadline, key=None):
-    """逐頁辨識後彙總。"""
+def paper_grade_all(app, pages, title, deadline, key=None, second_grade=False):
+    """逐頁辨識後彙總。
+
+    second_grade=True 時，對「看不清／待判定」的題目再多看一次，取最可能的判定
+    （每頁最多多一次 AI 呼叫，不是整份重批）。
+    """
     graded, warnings, failures = [], [], []
     for index, image in enumerate(pages, 1):
         if time.monotonic() > deadline:
@@ -5293,13 +5511,18 @@ def paper_grade_all(app, pages, title, deadline, key=None):
         q['box'] = {'x': round(x, 4), 'y': round(y, 4), 'w': round(w, 4), 'h': round(h, 4)}
     # 未作答一律算錯：AI 對空白題常給 null（待判定），老師還要逐題點「判錯」太麻煩。
     mark_blank_wrong(graded)
+    # 二次批閱（由老師勾選）：只對「看不清／待判定」的題目再看一次，取最可能的情況。
+    second = None
+    if second_grade:
+        graded, second = paper_second_grade(app, pages, graded, title, key, deadline)
+        judged = [x for x in graded if x['correct'] is not None]
     summary = paper_score(graded)
     return {'questions': graded, 'pageWarnings': warnings, 'failedPages': failures,
             'totalQuestions': len(judged),
             'correctCount': sum(1 for x in judged if x['correct']),
             'unreadable': len(graded) - len(judged), 'pending': summary['pending'],
             'earned': summary['earned'], 'possible': summary['possible'],
-            'score': summary['score']}
+            'score': summary['score'], 'secondGrade': second}
 
 
 def leaderboard_payload(db, month):
@@ -6546,10 +6769,14 @@ class Application:
             # 教師上傳整份紙本功課（題目 + 學生手寫答案），AI 逐題判斷對錯並以 100 分制評分。
             self.teacher(user)
             fields(body, ('studentId', 'title', 'pages', 'paperKeyId', 'consentExternal',
-                          'draftId', 'pageNums'),
+                          'draftId', 'pageNums', 'secondGrade'),
                    ('studentId', 'title', 'pages'))
             if 'consentExternal' in body and type(body['consentExternal']) is not bool:
                 fail(400, '外部上傳同意必須是布林值。')
+            # 二次批閱由老師決定：不勾就維持原本一次批改，不花額外的 AI 呼叫。
+            if 'secondGrade' in body and type(body['secondGrade']) is not bool:
+                fail(400, '二次批閱必須是布林值。')
+            second_grade = bool(body.get('secondGrade'))
             student_id = number(body['studentId'], '學生', 1, 10 ** 18, integer=True)
             title = text(body['title'], '功課名稱', 200)
             pages = body['pages']
@@ -6588,7 +6815,8 @@ class Application:
                 key = json.loads(key_row['questions'])
             self.ai.consent(body.get('consentExternal'))
             deadline = time.monotonic() + 100
-            result = paper_grade_all(self, pages, title, deadline, key)
+            result = paper_grade_all(self, pages, title, deadline, key,
+                                     second_grade=second_grade)
             detail = json.dumps(result['questions'], ensure_ascii=False)
             # 原卷出處（只有全班批閱才有）：之後「查看卷面」用得到
             draft_ref = (number(body['draftId'], '草稿', 1, 10 ** 18, integer=True)
@@ -6614,7 +6842,8 @@ class Application:
                               'pageWarnings': result['pageWarnings'],
                               'failedPages': result.get('failedPages', []),
                               'earned': result['earned'], 'possible': result['possible'],
-                              'score': result['score'], 'questions': result['questions']}}, headers
+                              'score': result['score'], 'questions': result['questions'],
+                              'secondGrade': result.get('secondGrade')}}, headers
         notes_path = re.fullmatch(r'/api/paper-grades/([1-9]\d{0,17})/notes', path)
         if method == 'POST' and notes_path:
             # 教師拖動批註或題目框後保存位置（0–1 相對座標）。兩者可以分開存。
@@ -8023,11 +8252,14 @@ class Application:
             # 全班一次批改：前端把切好的「學生 → 頁碼」送回來，這裡逐份呼叫單份批改。
             self.teacher(user)
             fields(body, ('file', 'draftId', 'title', 'sheets', 'paperKeyId',
-                          'consentExternal', 'async'), ('sheets',))
+                          'consentExternal', 'async', 'secondGrade'), ('sheets',))
             if body.get('async'):
                 return {'jobId': self.start_job(
                     user, lambda: self.dispatch(method, path, {**body, 'async': False},
                                                 user, token_hash, ip)[0])}, headers
+            if 'secondGrade' in body and type(body['secondGrade']) is not bool:
+                fail(400, '二次批閱必須是布林值。')
+            second_grade = bool(body.get('secondGrade'))
             draft_id = number(body['draftId'], '草稿', 1, 10 ** 18, True) if body.get('draftId') else None
             if draft_id is None and not body.get('file'):
                 fail(400, '請提供 PDF 或草稿編號。')
@@ -8066,6 +8298,7 @@ class Application:
             if not pages:
                 fail(422, 'PDF 沒有可讀的頁面。')
             done, failed = [], []
+            second_total = {'pages': 0, 'compared': 0, 'changed': 0, 'resolved': 0}
             for sheet in sheets:
                 if not isinstance(sheet, dict):
                     continue
@@ -8090,10 +8323,17 @@ class Application:
                     payload['consentExternal'] = body['consentExternal']
                 if body.get('paperKeyId'):
                     payload['paperKeyId'] = body['paperKeyId']
+                # 老師勾了「二次 AI 批閱」才往下傳：每份卷只補判看不清的題目。
+                if second_grade:
+                    payload['secondGrade'] = True
                 try:
                     result = self.dispatch('POST', '/api/paper-grades', payload,
                                            user, token_hash, ip)[0]
-                    done.append({'studentId': student_id, 'grade': result.get('grade')})
+                    g = result.get('grade') or {}
+                    sg = g.get('secondGrade') or {}
+                    for k in second_total:
+                        second_total[k] += int(sg.get(k) or 0)
+                    done.append({'studentId': student_id, 'grade': g})
                 except APIError as exc:
                     failed.append({'studentId': student_id, 'reason': exc.message})
             # 批完不刪草稿：原卷留著讓老師點開核對，清單只列還沒批完的（status=pending）
@@ -8102,7 +8342,8 @@ class Application:
                     db.execute("UPDATE paper_drafts SET status='graded', updated_at=? WHERE id=?",
                                (time.time(), draft_id))
             return {'graded': done, 'failed': failed,
-                    'summary': {'graded': len(done), 'failed': len(failed)}}, headers
+                    'summary': {'graded': len(done), 'failed': len(failed),
+                                'secondGrade': second_total if second_grade else None}}, headers
         if method == 'POST' and path == '/api/paper-grades/scan':
             self.teacher(user)
             fields(body, ('file', 'classId', 'title', 'consentExternal', 'async', 'split', 'rotate'),
@@ -8180,6 +8421,9 @@ class Application:
                         "SELECT id,name,seat FROM users WHERE role='student' "
                         'ORDER BY ' + SEAT_ORDER_BARE + ', id')]
             sheets = match_papers(roster, students, pages_per)
+            # 二次檢視配對：讀不到座號／姓名的卷，改從「還沒配對的學生」反查，
+            # 不要留一堆空白等老師逐份猜。結果一律標 secondPass，仍要老師確認。
+            sheets, second_stats = paper_second_match(self, sheets, students, pages)
             roster_out = [{'id': st['id'], 'name': st['name'], 'seat': st['seat']}
                           for st in students]
             # 存成草稿：重新整理、換頁、隔天再回來都不用重掃（重掃＝80 頁的 AI 費用）
@@ -8209,6 +8453,7 @@ class Application:
                     'rotations': rotations,
                     'unreadPages': unread,
                     'aiFailures': ai_failed,
+                    'secondMatch': second_stats,
                     'summary': {'papers': len(sheets),
                                 'matched': sum(1 for x in sheets if x['studentId']),
                                 'unmatched': sum(1 for x in sheets if not x['studentId'])}}, headers
@@ -8266,6 +8511,42 @@ class Application:
                               'status': row['status'] or 'pending',
                               'graded': mine,
                               'createdAt': row['created_at']}}, headers
+        draft_rematch = re.fullmatch(r'/api/paper-grades/drafts/([1-9]\d{0,17})/rematch', path)
+        if method == 'POST' and draft_rematch:
+            # 二次檢視配對：舊草稿／掃描時認不出人的卷，重新用「尚未配對名單」反查。
+            # 不重掃 PDF 的 AI，只重渲染頁面；已經確認（鎖住）的卷一律不動。
+            self.teacher(user)
+            fields(body, ('consentExternal',), ())
+            if 'consentExternal' in body and type(body['consentExternal']) is not bool:
+                fail(400, '外部上傳同意必須是布林值。')
+            self.ai.consent(body.get('consentExternal'))
+            draft_id = int(draft_rematch.group(1))
+            with self.db() as db:
+                ensure_paper_drafts(db)
+                row = db.execute('SELECT id,teacher_id,pdf,pages,sheets,roster,rotation,rotations '
+                                 'FROM paper_drafts WHERE id=?', (draft_id,)).fetchone()
+                if row is None:
+                    fail(404, '找不到這份草稿（可能已批改或超過七天）。')
+                if row['teacher_id'] != user['id'] and not self.is_owner(user, db):
+                    fail(403, '只有建立這份草稿的老師可以重新配對。')
+            try:
+                sheets = json.loads(row['sheets'])
+                students = json.loads(row['roster'])
+                rots = json.loads(row['rotations']) if row['rotations'] else None
+            except (TypeError, ValueError):
+                fail(400, '這份草稿的資料不完整，請重新掃描。')
+            pages = pdf_page_images(row['pdf'], max_pages=PAPER_SCAN_MAX_PAGES,
+                                    rotation=row['rotation'], rotations=rots)
+            if not pages:
+                fail(422, 'PDF 沒有可讀的頁面。')
+            sheets, second_stats = paper_second_match(self, sheets, students, pages)
+            with self.db() as db:
+                db.execute('UPDATE paper_drafts SET sheets=?, updated_at=? WHERE id=?',
+                           (json.dumps(sheets, ensure_ascii=False), time.time(), draft_id))
+            return {'sheets': sheets, 'secondMatch': second_stats,
+                    'summary': {'papers': len(sheets),
+                                'matched': sum(1 for x in sheets if x.get('studentId')),
+                                'unmatched': sum(1 for x in sheets if not x.get('studentId'))}}, headers
         draft_pages = re.fullmatch(r'/api/paper-grades/drafts/([1-9]\d{0,17})/pages', path)
         if method == 'GET' and draft_pages:
             # 配對表上先看卷面：確認 AI 切的頁對不對，再決定這份卷指派給誰。

@@ -1214,6 +1214,24 @@ html[data-theme=night] .nav-item .count.due{background:#3a2c1d;color:#e0b083}
 .pb-done-mark{color:#3b6d11;font-weight:700}
 .score-grid tr.pb-graded td{background:#f4f9ef}
 
+/* 二次批閱（老師可選）＋二次配對的標記 */
+.sg-bulk-actions{align-items:center;gap:14px;flex-wrap:wrap}
+.pb-second-opt{display:flex;align-items:center;gap:10px;margin-right:auto;cursor:pointer;
+  font-size:calc(13px*var(--fs));color:var(--ink);line-height:1.35}
+.pb-second-opt input{width:18px;height:18px;margin:0;flex:0 0 auto;accent-color:#3b6d11}
+.pb-second-opt span{display:flex;flex-direction:column}
+.pb-second-opt small{color:var(--ink-soft,#6b6a63);font-size:calc(11.5px*var(--fs))}
+.pb-second-tag{display:inline-block;margin-left:6px;padding:1px 8px;border-radius:999px;
+  background:#e8f0fb;color:#1d4ed8;font-size:calc(11px*var(--fs));font-weight:600;white-space:nowrap}
+.pb-second-tag.pb-second-warn{background:#fdf1dc;color:#9a5b12}
+.pb-second-guess{margin-top:4px;font-size:calc(11.5px*var(--fs));color:#8a6d1b;line-height:1.4}
+.score-grid tr.pb-review td{background:#fffaf0}
+html[data-theme=night] .pb-second-opt{color:#e8ece9}
+html[data-theme=night] .pb-second-opt small,html[data-theme=night] .pb-second-guess{color:#a9b6b1}
+html[data-theme=night] .pb-second-tag{background:#1e3a5f;color:#9fc3f0}
+html[data-theme=night] .pb-second-tag.pb-second-warn{background:#3a2f1c;color:#e0b877}
+html[data-theme=night] .score-grid tr.pb-review td{background:#2a2418}
+
 /* 全班紙本批閱：內嵌的「匯入全班學生」面板 */
 .pb-import{margin-top:14px;border-top:1px solid var(--border-tertiary,#e6e3da);padding-top:12px}.pb-import-head{display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap}
 .pb-import-head .small-text{margin-left:6px}

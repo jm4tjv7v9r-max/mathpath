@@ -3482,6 +3482,26 @@ async function paperPageData(file){
   return imageDataUrl(out);
 }
 let paperPages=[],paperGradeId=null,paperCurrentGrade=null;
+// 批次批改的結果（給「教師改判後即時更新列表」用）
+let paperBatchGrades=null;
+// 教師按「判對／判錯」或直接改分後，批次結果列表的那一行也要跟著更新：
+// 分數、答對題數、還有幾題待判。否則卷面改了、列表仍是舊數字，老師會以為沒生效。
+function updatePaperRow(g){
+  if(!g||g.id==null)return;
+  const tr=$(`tr[data-grade-row="${g.id}"]`);
+  if(tr){
+    const cells=tr.children;
+    if(cells[1])cells[1].innerHTML=`<strong>${g.score==null?'—':fmtScore(g.score)}</strong> <span class="small-text">/ 100</span>`;
+    if(cells[2]){
+      const pending=g.pending?` · <span class="paper-pending">${g.pending} 題待判</span>`:'';
+      cells[2].innerHTML=`${g.totalQuestions==null?'—':g.totalQuestions} 題 · 對 ${g.correctCount==null?'—':g.correctCount}${pending}`;
+    }
+  }
+  if(paperBatchGrades){
+    const hit=paperBatchGrades.find(x=>String((x.grade||{}).id)===String(g.id));
+    if(hit)hit.grade=Object.assign({},hit.grade,g);
+  }
+}
 // 五級鼓勵句：同一份功課內不重複（用 used 集合挑沒用過的）。
 const PAPER_PRAISE={
   excellent:['完全正確，思路很清楚！','這題漂亮，答案和過程都對。','做得很好，繼續保持這個水準。','完全正確，看得出你掌握了方法。','答對了，而且寫得很完整。','這題難不倒你，很好。'],
@@ -3527,6 +3547,12 @@ function paperResultHtml(g){
            value="${earned??''}" title="可直接改這題得分（0–${q.points}）"${confirmed?' disabled':''}><span class="small-text"> / ${q.points}</span>`
       : '<span class="small-text">平均</span>';
     const noteText=esc(q.note||q.reason||'');
+    // 二次批閱的痕跡：已補判的標出信心；仍待判但二次有猜測的，直接把「最可能」寫給老師看
+    const secondTag=q.secondPass
+      ? `<div class="pb-second-tag" title="${esc((q.secondGuess&&q.secondGuess.reason)||'二次批閱')}">二次批閱${q.secondConfidence!=null?` ${Math.round(q.secondConfidence*100)}%`:''}</div>`
+      : (q.correct===null&&q.secondGuess
+        ? `<div class="pb-second-guess">最可能：${q.secondGuess.correct===true?'對':q.secondGuess.correct===false?'錯':'部分正確'}（信心 ${Math.round((q.secondGuess.confidence||0)*100)}%）</div>`
+        : '');
     // data-label：手機上表格會變成卡片，用 ::before 顯示欄位名稱
     const noteCell=confirmed
       ? `<td class="small-text pq-note" data-label="批註">${noteText}</td>`
@@ -3537,7 +3563,7 @@ function paperResultHtml(g){
       <td class="pq-q" data-label="題目">${mathText(q.question||'')}</td>
       <td class="pq-ans" data-label="學生答案">${mathText(q.studentAnswer||'—')}</td>
       <td class="pq-score" data-label="配分">${scoreCell}</td>
-      <td class="pq-mark" data-label="判定">${markOf(q)}${fix}${praise?`<div class="paper-praise">${esc(praise)}</div>`:''}</td>
+      <td class="pq-mark" data-label="判定">${markOf(q)}${fix}${secondTag}${praise?`<div class="paper-praise">${esc(praise)}</div>`:''}</td>
       ${noteCell}</tr>`;
   }).join('');
   const pagesHtml=(paperPages||[]).map((src,i)=>{
@@ -3656,6 +3682,7 @@ document.addEventListener('focusout',async e=>{
       const r=await api(`/api/paper-grades/${paperGradeId}/judge`,{index:i,credit:val/max});
       const box=$('#pb-viewer')||$('#pb-sheet-viewer')||$('#paper-result');
       if(box)box.innerHTML=paperResultHtml(r.grade);
+      updatePaperRow(r.grade);
       toast(`已改分：這題 ${val} 分，總分 ${r.grade.score} / 100`);
     }catch(err){toast(err.message);el.value=el.dataset.orig||'';}
     return;
@@ -3670,6 +3697,7 @@ document.addEventListener('focusout',async e=>{
       // 卷上框內的評語也要跟著更新，不能只改表格
       const box=$('#pb-viewer')||$('#pb-sheet-viewer')||$('#paper-result');
       if(box&&r.grade)box.innerHTML=paperResultHtml(r.grade);
+      updatePaperRow(r.grade);
       toast('批註已更新');
     }catch(err){toast(err.message);}
   }
@@ -4667,17 +4695,28 @@ async function paperBatchPage(){
     if(already)skipped.push(`${already} 份先前已批改`);
     if(skipped.length)toast(`已跳過：${skipped.join('、')}。`);
     const btn=$('#pb-grade');btn.disabled=true;btn.textContent='批改中…';
+    // 由老師決定要不要二次批閱；不勾就維持一次批改，不花額外的 AI 呼叫
+    const secondGrade=!!($('#pb-second-grade')&&$('#pb-second-grade').checked);
+    try{localStorage.setItem('paperSecondGrade',secondGrade?'1':'0');}catch(_){}
     try{
       const payload=lastScan.draftId
         ? {draftId:lastScan.draftId,title,sheets,consentExternal:S.ai?.mode==='external'}
         : {file:lastScan.file,title,sheets,consentExternal:S.ai?.mode==='external'};
+      if(secondGrade)payload.secondGrade=true;
       const out=await apiJob('/api/paper-grades/batch',payload,
         job=>{btn.textContent=`批改中… ${Math.round(job.elapsed||0)} 秒`;});
       toast(`已批改 ${out.summary.graded} 份${out.summary.failed?`，${out.summary.failed} 份失敗`:''}`);
       // 失敗原因要看得見，不然只會看到「0 份成功」卻不知道為什麼
       const reasons=[...new Set((out.failed||[]).map(f=>f.reason).filter(Boolean))];
+      // 二次批閱的成效也要講清楚：補判了幾題、還有幾題要老師自己看
+      const sg=out.summary&&out.summary.secondGrade;
+      const secondText=sg&&(sg.changed||sg.compared)
+        ? `<br><span class="small-text">二次批閱：補判 ${sg.changed} 題`
+          +`${sg.compared>sg.changed?`，仍有 ${sg.compared-sg.changed} 題看不清（已記下最可能的猜測）`:''}。</span>`
+        : (secondGrade?'<br><span class="small-text">二次批閱：沒有需要補判的題目。</span>':'');
       $('#pb-status').innerHTML=`批改完成：${out.summary.graded} 份成功、${out.summary.failed} 份失敗。`
-        +(reasons.length?`<br><span class="small-text">失敗原因：${esc(reasons.slice(0,3).join('；'))}</span>`:'');
+        +(reasons.length?`<br><span class="small-text">失敗原因：${esc(reasons.slice(0,3).join('；'))}</span>`:'')
+        +secondText;
       // 把本次批改併進 res.graded：之後再按批改會跳過這些學生，
       // 結果列表也才看得到「先前批過的」而不會消失。
       res.graded=(res.graded||[]).concat((out.graded||[]).map(x=>({
@@ -4698,6 +4737,8 @@ async function paperBatchPage(){
       return r?r.name:`學生 ${id}`;
     };
     const graded=out.graded||[],failed=out.failed||[];
+    // 教師改判後要回頭更新這裡的資料，否則再按「查看卷面」會看到舊分數
+    paperBatchGrades=graded;
     const doneIds=new Set(graded.map(x=>Number(x.studentId)));
     const prev=((lastScan&&lastScan.res&&lastScan.res.graded)||[])
       .filter(g=>!doneIds.has(Number(g.studentId)));
@@ -4711,7 +4752,7 @@ async function paperBatchPage(){
         <td>${g.id?`<button class="secondary" data-view-grade="${g.id}">查看卷面</button>`:''}</td></tr>`;
     }).join('');
     // 先前批過的（續批）：只有分數，按「查看」再去拉完整紀錄
-    const prevRows=prev.map(g=>`<tr>
+    const prevRows=prev.map(g=>`<tr data-grade-row="${g.gradeId}">
       <td>${esc(nameOf(g.studentId))}</td>
       <td><strong>${g.score==null?'—':fmtScore(g.score)}</strong> <span class="small-text">/ 100</span></td>
       <td class="small-text">先前批改${g.confirmed?' · 已確認':''}</td>
@@ -4775,7 +4816,14 @@ async function paperBatchPage(){
       const dis=locked?' disabled':'';
       // 這份卷是否已經批過（續批時要一眼看出還欠誰）
       const done=(res.graded||[]).find(g=>Number(g.studentId)===Number(sh.studentId));
-      const cls=[locked?'pb-locked':'',done?'pb-graded':''].filter(Boolean).join(' ');
+      const cls=[locked?'pb-locked':'',done?'pb-graded':'',sh.secondPass&&sh.needsReview?'pb-review':''].filter(Boolean).join(' ');
+      // 二次配對：不只寫「座號／姓名」，要讓老師看得出這是放寬條件後認出來的，要覆核
+      const how=sh.matchedBy==='seat'?'座號':sh.matchedBy==='name'?'姓名'
+        :sh.matchedBy==='ai2'?'二次比對':sh.matchedBy==='remaining'?'唯一剩餘'
+        :sh.matchedBy==='order'?'暫配':'';
+      const tag=sh.secondPass
+        ?`<span class="pb-second-tag${sh.needsReview?' pb-second-warn':''}" title="${esc(sh.matchReason||'二次配對，請覆核')}">${Math.round((sh.confidence||0)*100)}%</span>`
+        :'';
       return `<tr data-sheet-row="${i}"${cls?` class="${cls}"`:''}>
       <td class="pb-no" data-label="#">${i+1}${done?` <span class="pb-done-mark" title="已批改 ${fmtScore(done.score)} 分">✓</span>`:''}</td>
       <td class="pb-pages" data-label="頁碼">${sh.pages.join('、')}</td>
@@ -4784,7 +4832,7 @@ async function paperBatchPage(){
       <td class="pb-rot" data-label="方向"><select class="sg-rot" data-sheet-rot="${i}"${dis}>${rotOpts(rotOf(sh))}</select></td>
       <td class="pb-seat" data-label="讀到座號">${sh.seat??''}</td>
       <td class="pb-name" data-label="讀到姓名">${esc(sh.name||'')}</td>
-      <td class="pb-match" data-label="配對方式">${sh.matchedBy==='seat'?'座號':sh.matchedBy==='name'?'姓名':''}</td>
+      <td class="pb-match" data-label="配對方式">${how}${tag}</td>
       <td class="pb-assign" data-label="指派給"><select data-sheet="${i}"${dis}>${opts(i,sh.studentId)}</select></td>
       <td class="pb-confirm" data-label="確認"><button class="text-button" data-confirm="${i}">${locked?'更改':'確認'}</button></td></tr>`;
     }).join('');
@@ -4798,15 +4846,22 @@ async function paperBatchPage(){
         </select>
       </label>
       <span class="small-text">AI 已先判斷；某一份卷不對就改它那一行的「方向」，只影響該學生。</span>
+      <button class="secondary" id="pb-rematch" title="讀不到座號／姓名時，改從「還沒配對的學生名單」反查">二次檢視配對</button>
       <button class="secondary" id="pb-confirm-all">全部確認</button>
     </div>
     <div class="sg-wrap pb-sheet-wrap" style="margin-top:8px"><table class="score-grid pb-sheet-table">
       <thead><tr><th>#</th><th>頁碼</th><th>卷面</th><th>方向</th><th>讀到座號</th><th>讀到姓名</th><th>配對方式</th><th>指派給</th><th>確認</th></tr></thead>
       <tbody>${rows}</tbody></table></div>
-      <p class="field-hint">逐份核對「指派給」是否正確，按「確認」鎖住（確認後才能批改）；發現錯了按「更改」解鎖。按「查看」可先看這份卷的實際畫面。</p>
+      <p class="field-hint">逐份核對「指派給」是否正確，按「確認」鎖住（確認後才能批改）；發現錯了按「更改」解鎖。按「查看」可先看這份卷的實際畫面。認不出人的卷可按「二次檢視配對」，系統會放寬條件，從尚未配對的學生名單裡找。</p>
       <div id="pb-unmatched"></div>
       <div id="pb-sheet-viewer"></div>
-      <div class="sg-bulk-actions"><button class="primary" id="pb-grade">確認並開始批改</button></div>`;
+      <div class="sg-bulk-actions">
+        <label class="pb-second-opt" title="只對「看不清／待判定」的題目再看一次（每頁最多多一次 AI 呼叫），不是整份重批">
+          <input type="checkbox" id="pb-second-grade">
+          <span>二次 AI 批閱<small>補判看不清的題目，取最可能的情況</small></span>
+        </label>
+        <button class="primary" id="pb-grade">確認並開始批改</button>
+      </div>`;
     let viewing=-1;
     const loadSheet=async i=>{
       const sh=(res.sheets||[])[i];
@@ -4882,6 +4937,30 @@ async function paperBatchPage(){
         toast('已全部確認並鎖定');
       }catch(e){toast(e.message);}
     };
+    // 二次批閱：記住老師的選擇（預設不勾，避免每次批改都多花 AI 呼叫）
+    const secondEl=$('#pb-second-grade');
+    try{if(secondEl)secondEl.checked=localStorage.getItem('paperSecondGrade')==='1';}catch(_){}
+    // 二次檢視配對：不重掃 PDF，只把「還沒配對的卷」從剩餘名單反查；
+    // 已確認鎖住的卷不動，結果仍要老師逐份覆核。
+    const rematchBtn=$('#pb-rematch');
+    if(rematchBtn)rematchBtn.onclick=async()=>{
+      if(!viewId)return toast('這份卷沒有存草稿，無法重新配對。');
+      const keep={};
+      $$('[data-sheet]').forEach(sel=>{keep[sel.dataset.sheet]=sel.value;});
+      rematchBtn.disabled=true;rematchBtn.textContent='比對中…';
+      try{
+        const out=await api(`/api/paper-grades/drafts/${viewId}/rematch`,
+          {consentExternal:S.ai?.mode==='external'});
+        const st=out.secondMatch||{};
+        renderBatch(Object.assign({},res,{sheets:out.sheets||res.sheets,secondMatch:st}),keep);
+        toast(st.matched
+          ?`二次配對：新認出 ${st.matched} 份（AI 比對 ${st.byAi||0}、唯一剩餘 ${st.byRemaining||0}、暫配 ${st.byOrder||0}），請逐份覆核。`
+          :'二次配對完成：沒有新的配對，請手動指派。');
+      }catch(e){
+        rematchBtn.disabled=false;rematchBtn.textContent='二次檢視配對';
+        toast(e.message);
+      }
+    };
     // 該班還沒配到卷的學生：沒交、沒掃到，或 AI 沒認出來。
     // 每次改「指派給」都重算，老師一眼看得出還欠誰。
     const updateUnmatched=()=>{
@@ -4931,6 +5010,10 @@ async function paperGradePage(){
       </div>
       <label class="consent-check"><input type="checkbox" id="paper-consent">
         <span>我同意把這份功課（題目與學生作答）傳送給外部 AI 模型辨識與批改。同一份功課只需勾一次，換功課時請重新確認。</span></label>
+      <label class="pb-second-opt" style="margin-top:10px" title="只對「看不清／待判定」的題目再看一次（每頁最多多一次 AI 呼叫），不是整份重批">
+        <input type="checkbox" id="paper-second-grade">
+        <span>二次 AI 批閱<small>補判看不清的題目，取最可能的情況（可選）</small></span>
+      </label>
     </section>
     <section class="panel panel-pad" style="margin-bottom:16px">
       <h2 style="margin-bottom:6px">第一步：建立答案卷（建議先做）</h2>
@@ -5121,7 +5204,9 @@ async function paperGradePage(){
       for(let i=0;i<files.length;i++){btn.innerHTML=`${icon('clock')}處理第 ${i+1}/${files.length} 頁…`;pages.push(await paperPageData(files[i]));}
       btn.innerHTML=`${icon('spark')}AI 判斷中…`;
       const keyId=Number($('#paper-key').value||0);
-      const out=await api('/api/paper-grades',{studentId,title,pages,consentExternal:true,...(keyId?{paperKeyId:keyId}:{})});
+      const secondGrade=!!($('#paper-second-grade')&&$('#paper-second-grade').checked);
+      const out=await api('/api/paper-grades',{studentId,title,pages,consentExternal:true,
+        ...(keyId?{paperKeyId:keyId}:{}),...(secondGrade?{secondGrade:true}:{})});
       paperPages=pages;paperGradeId=out.grade.id;
       $('#paper-result').innerHTML=paperResultHtml(out.grade);
       // 同一份功課要逐個學生上傳：功課名稱與班級保留，學號與檔案清空，直接換下一位。
@@ -6878,6 +6963,8 @@ if(b.id==='open-math-editor'){openMathEditor();return;}
         // Cannot set properties of null (setting 'innerHTML')
         const box=$('#pb-viewer')||$('#pb-sheet-viewer')||$('#paper-result');
         if(box)box.innerHTML=paperResultHtml(r.grade);
+        // 列表那一行也要更新：分數、對幾題、還剩幾題待判
+        updatePaperRow(r.grade);
         toast(`已更新：${r.grade.score} / 100`);
       })
       .catch(err=>{b.disabled=false;toast(err.message);});

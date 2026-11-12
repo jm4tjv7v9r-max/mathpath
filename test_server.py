@@ -5203,6 +5203,74 @@ class PaperDraftTests(unittest.TestCase):
         self.call('POST', f'/api/paper-grades/{gid}/judge', {'index': 0, 'credit': 2},
                   expect=400)
 
+    def test_second_grade_is_optional_for_the_teacher(self):
+        """二次 AI 批閱由老師勾選：不勾就不傳、不多花 AI；勾了才往下傳並回傳統計。"""
+        from unittest import mock
+        scan = self.scan()
+        seen = {}
+
+        def fake(app, pages, title, deadline, key=None, second_grade=False):
+            seen['second'] = second_grade
+            return {'questions': [{'number': '1', 'question': 'q', 'studentAnswer': 'a',
+                                   'correct': True, 'level': 'excellent', 'credit': 1.0,
+                                   'points': 10, 'box': None, 'note': ''}],
+                    'totalQuestions': 1, 'correctCount': 1, 'unreadable': 0, 'pending': 0,
+                    'pageWarnings': [], 'failedPages': [], 'earned': 10, 'possible': 10,
+                    'score': 100,
+                    'secondGrade': ({'pages': 1, 'compared': 1, 'changed': 1, 'resolved': 1}
+                                    if second_grade else None)}
+
+        body = {'draftId': scan['draftId'], 'title': 't',
+                'sheets': [{'studentId': self.student['id'], 'pages': [1]}],
+                'consentExternal': True}
+        with mock.patch.object(server, 'pdf_page_images',
+                               lambda data, max_pages=80, only=None, rotation=None,
+                               rotations=None: [b'p1', b'p2']), \
+             mock.patch.object(server, 'validate_image', lambda page: None), \
+             mock.patch.object(server, 'paper_grade_all', fake):
+            out = self.call('POST', '/api/paper-grades/batch', dict(body))
+            self.assertFalse(seen['second'], '沒勾二次批閱就不該往下傳')
+            self.assertIsNone(out['summary']['secondGrade'])
+            out = self.call('POST', '/api/paper-grades/batch', {**body, 'secondGrade': True})
+            self.assertTrue(seen['second'], '老師勾了就要傳給批改流程')
+            self.assertEqual(out['summary']['secondGrade']['changed'], 1)
+            self.call('POST', '/api/paper-grades/batch',
+                      {**body, 'secondGrade': 'yes'}, expect=400)
+
+    def test_second_grade_takes_the_most_likely_answer(self):
+        """二次批閱取最可能：信心夠就採用，信心太低就保留待判但記下猜測。"""
+        class FakeAI:
+            configured = True
+            vision = 'v'
+
+            def call(self, prompt, payload, image=None, model=None, temperature=0):
+                return {'questions': [
+                    {'number': '1', 'studentAnswer': 'x=3', 'correct': True,
+                     'credit': 1.0, 'confidence': 0.9, 'reason': '字跡可辨'},
+                    {'number': '2', 'studentAnswer': 'y', 'correct': False,
+                     'credit': 0.0, 'confidence': 0.2, 'reason': '看不清'},
+                ]}
+
+        class App:
+            pass
+
+        app = App()
+        app.ai = FakeAI()
+        questions = [
+            {'number': '1', 'page': 1, 'studentAnswer': 'x=?', 'correct': None,
+             'credit': None, 'level': 'unreadable', 'note': ''},
+            {'number': '2', 'page': 1, 'studentAnswer': 'y', 'correct': None,
+             'credit': None, 'level': 'unreadable', 'note': ''},
+        ]
+        out, stats = server.paper_second_grade(app, [b'img'], questions, 't')
+        self.assertTrue(out[0]['secondPass'], '信心 0.9 要採用第二次判定')
+        self.assertIs(out[0]['correct'], True)
+        self.assertEqual(out[0]['studentAnswer'], 'x=3')
+        self.assertIsNone(out[1]['correct'], '信心 0.2 仍待教師判定')
+        self.assertEqual(out[1]['secondGuess']['confidence'], 0.2)
+        self.assertIn('最可能', out[1]['reason'])
+        self.assertEqual(stats['changed'], 1)
+
     def test_scan_can_take_a_fixed_rotation(self):
         """掃描前指定角度：跳過 AI 判方向（省一半呼叫），整份照這個角度渲染。"""
         import base64
