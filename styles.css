@@ -1,4 +1,4 @@
-:root{--fs:1;--bg:#f8faf9;--paper:#fff;--ink:#17322c;--muted:#4c6259;--green:#197c68;--green-dark:#125e50;--mint:#ecf5f0;--border:#e9efec;--orange:#cf8a3d;--surface:#f2f8f2;--surface-soft:#fbfdfa;--surface-green:#eef6f0;--line-soft:#dce9d9;--muted-2:#5c736a;--shadow:0 1px 3px rgba(20,58,46,.04),0 8px 24px rgba(20,58,46,.03);font-family:-apple-system,BlinkMacSystemFont,"PingFang TC","Microsoft JhengHei",sans-serif;color:var(--ink);font-size:calc(16px*var(--fs))}
+:root{--fs:1;--bg:#f8faf9;--paper:#fff;--ink:#17322c;--muted:#4c6259;--green:#197c68;--green-dark:#125e50;--mint:#ecf5f0;--border:#e9efec;--orange:#cf8a3d;--surface:#f2f8f2;--surface-soft:#fbfdfa;--surface-green:#eef6f0;--line-soft:#dce9d9;--muted-2:#5c736a;--shadow:0 1px 3px rgba(20,58,46,.04),0 8px 24px rgba(20,58,46,.03);--glow:#197c68;--glow-2:#2fae8c;--orb-1:rgba(25,124,104,.10);--orb-2:rgba(207,138,61,.09);--orb-3:rgba(47,174,140,.08);--panel-glass:rgba(255,255,255,.72);--panel-glass-brd:rgba(25,124,104,.14);font-family:-apple-system,BlinkMacSystemFont,"PingFang TC","Microsoft JhengHei",sans-serif;color:var(--ink);font-size:calc(16px*var(--fs))}
 html[data-fs="large"]{--fs:1.12}html[data-fs="xlarge"]{--fs:1.25}.font-scale-wrap{margin:0 4px 16px}.font-scale{display:flex;align-items:center;gap:6px;font-size:calc(13px*var(--fs));color:#8c9c93}.font-scale>span{margin-right:2px;white-space:nowrap}.font-scale button{flex:1;border:1px solid var(--border);background:#fff;color:#7d8f84;border-radius:7px;padding:8px 0;font-size:calc(13px*var(--fs))}.font-scale button:hover{background:#f2f6f3}.font-scale button.active{background:var(--mint);border-color:#cfe2d0;color:var(--green);font-weight:600}.font-scale-note{font-size:calc(12px*var(--fs));color:var(--muted-2);margin:8px 0 0;line-height:1.7}*{box-sizing:border-box}body{margin:0;background:var(--bg)}button,input,select,textarea{font:inherit}button,a,input,select,textarea{-webkit-tap-highlight-color:transparent}button{cursor:pointer}button:disabled{cursor:not-allowed;opacity:.55}a{color:inherit;text-decoration:none}button{transition:background .18s,box-shadow .18s,transform .18s}button:focus-visible,a:focus-visible{outline:3px solid #91c7b6;outline-offset:3px}input:focus,select:focus,textarea:focus{outline:none;border-color:#68a998;box-shadow:0 0 0 3px #e2f0e9}svg.icon{width:calc(21px*var(--fs));height:calc(21px*var(--fs));stroke:currentColor;fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;flex-shrink:0}h1,h2,h3,p{margin-top:0}h1{font-size:calc(32px*var(--fs));line-height:1.4;letter-spacing:-.8px;margin-bottom:7px}h2{font-size:calc(20px*var(--fs));letter-spacing:-.2px}h3{font-size:calc(18px*var(--fs))}small{display:block}button.primary,.primary{border:1px solid var(--green);background:var(--green);color:#fff;display:inline-flex;gap:8px;align-items:center;justify-content:center;padding:12px 19px;border-radius:8px;font-weight:600;box-shadow:0 3px 7px #1d7c6814}button.primary:hover{background:var(--green-dark)}button.secondary{border:1px solid var(--border);background:#fff;color:var(--ink);display:inline-flex;gap:8px;align-items:center;justify-content:center;padding:11px 16px;border-radius:8px;font-weight:500}button.secondary:hover{background:#f1f6f3}.text-button{background:none;border:0;color:var(--green);font-weight:600;display:inline-flex;gap:6px;align-items:center;padding:5px 0}.icon-btn{background:none;border:0;color:#6e827a;display:grid;place-items:center;width:calc(36px*var(--fs));height:calc(36px*var(--fs));border-radius:7px}.icon-btn:hover{background:var(--mint)}
 .sidebar{position:fixed;left:0;top:0;height:100dvh;width:252px;background:#fff;border-right:1px solid var(--border);display:flex;flex-direction:column;padding:32px 20px 20px;z-index:30;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin}.brand{display:flex;align-items:center;gap:11px;padding:0 8px;margin-bottom:22px;font-size:calc(26px*var(--fs));letter-spacing:-.7px;font-weight:700}.brand small{font-size:calc(14px*var(--fs));letter-spacing:2.5px;color:var(--muted-2);font-weight:400;margin-top:5px}.brand-symbol{width:calc(44px*var(--fs));height:calc(47px*var(--fs));background:var(--green);color:#fff;border-radius:12px 12px 12px 3px;position:relative;font-size:calc(30px*var(--fs));font-family:Georgia,serif;display:flex;align-items:center;padding-left:7px;font-style:italic}.brand-symbol span{font-size:calc(21px*var(--fs));position:absolute;right:4px;top:4px}.workspace{background:#f7f9f8;border:1px solid var(--border);border-radius:9px;padding:12px 10px;margin:32px 0 28px;display:flex;gap:9px;align-items:center;font-size:calc(15px*var(--fs));font-weight:600}.workspace small{font-size:calc(13px*var(--fs));color:#94a29b;margin-top:5px;font-weight:400}.school-icon{background:#fff;border:1px solid var(--border);border-radius:7px;padding:7px;color:#6a8e80}.status-dot{width:6px;height:6px;background:#6aaa88;border-radius:50%;display:inline-block;margin-right:4px}.nav-label{font-size:calc(13px*var(--fs));color:#9ba7a1;letter-spacing:1.6px;margin-left:15px;margin-bottom:12px}.nav-item{width:100%;display:flex;align-items:center;gap:12px;padding:13px 14px;margin-bottom:6px;border:none;background:transparent;color:#6d8077;text-align:left;border-radius:8px;font-size:calc(16px*var(--fs))}.nav-item.active{background:#eaf4ef;color:var(--green);font-weight:600}.nav-item:hover{background:#f2f6f3}.nav-item .count{margin-left:auto;background:#e4ece7;color:#749182;border-radius:5px;padding:2px 6px;font-size:calc(13px*var(--fs))}.nav-item.active .count{background:#d6ebe0;color:#388669}.nav-item .new{font-size:calc(12px*var(--fs));margin-left:auto;color:#ac8b52;background:#faf3e5;padding:2px 5px;border-radius:4px}
 /* 教師側欄：可展開的分組（題庫與入題／批閱）與子項 */
@@ -1632,4 +1632,442 @@ body.cr-live-on{overflow:hidden}
   .modal-backdrop{padding:12px}
   .modal{max-height:calc(100dvh - 24px);overscroll-behavior:contain;padding:22px 18px}
   .app-footer{flex-direction:column;align-items:flex-start;gap:4px}
+}
+
+/* ══════════════════════════════════════════════════════════════
+   動感視覺層（Vivid Layer）
+   ──────────────────────────────────────────────────────────────
+   純疊加：只新增規則與變數，不改動任何既有選擇器，夜間主題走同一組
+   變數自動適配。全部動畫在 prefers-reduced-motion: reduce 時關閉。
+   ══════════════════════════════════════════════════════════════ */
+
+/* ── 1. 環境光：頁面底層三顆緩慢漂移的光斑 ────────────────── */
+body::before{
+  content:'';position:fixed;inset:-20vmax;z-index:-1;pointer-events:none;
+  background:
+    radial-gradient(38vmax 38vmax at 18% 12%,var(--orb-1),transparent 62%),
+    radial-gradient(32vmax 32vmax at 82% 22%,var(--orb-2),transparent 60%),
+    radial-gradient(42vmax 42vmax at 62% 88%,var(--orb-3),transparent 64%);
+  animation:mpOrbit 46s ease-in-out infinite alternate;
+  will-change:transform;
+}
+@keyframes mpOrbit{
+  0%{transform:translate3d(0,0,0) scale(1)}
+  50%{transform:translate3d(2.5%,-1.8%,0) scale(1.06)}
+  100%{transform:translate3d(-2%,2%,0) scale(1.02)}
+}
+
+/* ── 2. 玻璃擬態面板：卡片浮起、邊框帶一點品牌色 ──────────── */
+.panel,.emp,.card{
+  background:var(--panel-glass);
+  backdrop-filter:blur(14px) saturate(1.12);
+  -webkit-backdrop-filter:blur(14px) saturate(1.12);
+  border-color:var(--panel-glass-brd);
+  transition:transform .32s cubic-bezier(.2,.7,.3,1),
+             box-shadow .32s ease,border-color .32s ease;
+}
+.panel:hover,.emp:hover{
+  transform:translateY(-3px);
+  box-shadow:0 2px 6px rgba(20,58,46,.05),0 20px 48px -12px rgba(25,124,104,.22);
+  border-color:rgba(25,124,104,.26);
+}
+
+/* 卡片頂端一條會隨 hover 亮起的品牌色細線 */
+.panel{position:relative;overflow:hidden}
+.panel::after{
+  content:'';position:absolute;left:0;right:0;top:0;height:2px;
+  background:linear-gradient(90deg,transparent,var(--green),var(--glow-2),transparent);
+  opacity:0;transform:scaleX(.4);transform-origin:center;
+  transition:opacity .34s ease,transform .5s cubic-bezier(.2,.7,.3,1);
+}
+.panel:hover::after{opacity:.85;transform:scaleX(1)}
+
+/* ── 3. 主按鈕：流光掃過 + 按壓回饋 ───────────────────────── */
+button.primary,.primary{
+  position:relative;overflow:hidden;isolation:isolate;
+  background-image:linear-gradient(135deg,var(--green),var(--green-dark));
+  border-color:transparent;
+  box-shadow:0 2px 10px -2px rgba(25,124,104,.34);
+  transition:transform .22s cubic-bezier(.2,.7,.3,1),box-shadow .22s ease,filter .22s ease;
+}
+button.primary::before,.primary::before{
+  content:'';position:absolute;inset:0;z-index:-1;
+  background:linear-gradient(115deg,transparent 32%,rgba(255,255,255,.42) 50%,transparent 68%);
+  transform:translateX(-120%);
+  transition:transform .62s cubic-bezier(.2,.7,.3,1);
+}
+button.primary:hover,.primary:hover{
+  transform:translateY(-2px);
+  box-shadow:0 8px 22px -6px rgba(25,124,104,.5);
+  filter:brightness(1.04);
+}
+button.primary:hover::before,.primary:hover::before{transform:translateX(120%)}
+button.primary:active,.primary:active{transform:translateY(0) scale(.985);box-shadow:0 2px 8px -3px rgba(25,124,104,.4)}
+
+/* 次要按鈕：邊框光暈 */
+.secondary{transition:transform .2s ease,border-color .2s ease,box-shadow .2s ease,background .2s ease}
+.secondary:hover{transform:translateY(-1px);border-color:rgba(25,124,104,.4);box-shadow:0 6px 18px -8px rgba(25,124,104,.35)}
+
+/* ── 4. 側欄導覽：作用中項目帶滑動指示條 ─────────────────── */
+.nav-item{position:relative;transition:background .22s ease,color .22s ease,transform .22s ease}
+.nav-item::before{
+  content:'';position:absolute;left:0;top:50%;translate:0 -50%;
+  width:3px;height:0;border-radius:0 3px 3px 0;
+  background:linear-gradient(180deg,var(--green),var(--glow-2));
+  transition:height .3s cubic-bezier(.2,.7,.3,1);
+}
+.nav-item:hover::before{height:38%}
+.nav-item.active::before{height:64%}
+.nav-item:hover{transform:translateX(2px)}
+.nav-item.active{box-shadow:inset 0 0 0 1px rgba(25,124,104,.13)}
+
+/* 側欄品牌符號：緩慢呼吸光暈 */
+.brand-symbol{transition:transform .4s cubic-bezier(.2,.7,.3,1),box-shadow .4s ease}
+.brand:hover .brand-symbol{transform:rotate(-4deg) scale(1.05);box-shadow:0 6px 22px -6px rgba(25,124,104,.55)}
+
+/* ── 5. 頂欄：捲動時浮起（class 由 app.js 加上）──────────── */
+.topbar{transition:box-shadow .3s ease,background .3s ease}
+body.mp-scrolled .topbar{
+  box-shadow:0 6px 24px -14px rgba(20,58,46,.35);
+  backdrop-filter:blur(16px) saturate(1.15);
+  -webkit-backdrop-filter:blur(16px) saturate(1.15);
+}
+
+/* ── 6. 頁面切換：主內容每次導航輕微上浮 ─────────────────── */
+#main>.panel,#main>section.panel,#main>.page-heading{
+  animation:mpRiseSlow .46s cubic-bezier(.22,.7,.3,1) both;
+}
+#main>.panel:nth-child(2){animation-delay:.05s}
+#main>.panel:nth-child(3){animation-delay:.1s}
+#main>.panel:nth-child(4){animation-delay:.15s}
+@keyframes mpRiseSlow{
+  from{opacity:0;transform:translateY(14px) scale(.995)}
+  to{opacity:1;transform:none}
+}
+
+/* ── 7. 表格：橫向掃過的高光、列 hover 浮現 ─────────────── */
+.results-table tbody tr{transition:background .2s ease,transform .2s ease}
+.results-table tbody tr:hover{background:rgba(25,124,104,.055);transform:translateX(2px)}
+.results-table th{position:sticky;top:0;backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px)}
+
+/* ── 8. 徽章與進度條：脈動光暈 ───────────────────────────── */
+.badge{transition:transform .2s ease,box-shadow .2s ease}
+.badge:hover{transform:translateY(-1px)}
+.badge.new-review{animation:mpSoftPulse 3.2s ease-in-out infinite}
+@keyframes mpSoftPulse{
+  0%,100%{box-shadow:0 0 0 0 rgba(25,124,104,0)}
+  50%{box-shadow:0 0 0 4px rgba(25,124,104,.1)}
+}
+
+/* ── 9. 輸入框：聚焦時柔和外擴光圈 ───────────────────────── */
+input:focus,textarea:focus,select:focus{
+  outline:none;
+  border-color:var(--green);
+  box-shadow:0 0 0 4px rgba(25,124,104,.13),0 0 0 1px rgba(25,124,104,.35);
+  transition:box-shadow .24s ease,border-color .24s ease;
+}
+
+/* ── 10. 登入框角色卡：選中時抬升 + 品牌色描邊光 ─────────── */
+.role-card{transition:transform .26s cubic-bezier(.2,.7,.3,1),border-color .26s ease,box-shadow .26s ease,background .26s ease}
+.role-card:hover{transform:translateY(-2px);box-shadow:0 10px 26px -12px rgba(25,124,104,.4)}
+.role-card.active{
+  border-color:var(--green);
+  background:linear-gradient(135deg,var(--mint),rgba(255,255,255,.6));
+  box-shadow:0 0 0 3px rgba(25,124,104,.12),0 12px 30px -14px rgba(25,124,104,.45);
+  transform:translateY(-2px);
+}
+
+/* ── 11. Toast：彈入帶一點回彈 ──────────────────────────── */
+.toast{transition:opacity .3s ease,transform .38s cubic-bezier(.2,1.3,.4,1)}
+.toast.show{transform:translate(-50%,0) scale(1)}
+
+/* ── 12. 彈窗：背景霧化 + 卡片落定 ───────────────────────── */
+.modal-backdrop{background:rgba(20,46,40,.42);backdrop-filter:blur(8px) saturate(1.1);-webkit-backdrop-filter:blur(8px) saturate(1.1)}
+.modal{animation:mpModalIn .34s cubic-bezier(.2,.9,.3,1) both}
+@keyframes mpModalIn{
+  from{opacity:0;transform:translateY(16px) scale(.97)}
+  to{opacity:1;transform:none}
+}
+
+/* ── 13. 題目卡：左側色條滑入 ───────────────────────────── */
+.question-card{transition:background .22s ease}
+.question-card:hover{background:rgba(25,124,104,.03)}
+.question-card::before{
+  content:'';position:absolute;left:-14px;top:18px;bottom:18px;width:3px;border-radius:3px;
+  background:linear-gradient(180deg,var(--green),var(--glow-2));
+  opacity:0;transform:scaleY(.3);transform-origin:top;
+  transition:opacity .26s ease,transform .34s cubic-bezier(.2,.7,.3,1);
+}
+.question-card:hover::before{opacity:.7;transform:scaleY(1)}
+
+/* ── 14. 骨架與載入：統一的流光 ─────────────────────────── */
+.mp-skeleton{
+  background:linear-gradient(100deg,rgba(25,124,104,.06) 20%,rgba(25,124,104,.13) 40%,rgba(25,124,104,.06) 60%);
+  background-size:220% 100%;animation:mpShimmer 1.5s ease-in-out infinite;border-radius:8px;
+}
+@keyframes mpShimmer{from{background-position:140% 0}to{background-position:-40% 0}}
+
+/* ── 15. 夜間主題微調：玻璃層要更暗、光斑要更收斂 ────────── */
+html[data-theme=night]{
+  --panel-glass:rgba(26,33,36,.72);
+  --panel-glass-brd:rgba(94,208,174,.16);
+  --orb-1:rgba(94,208,174,.055);
+  --orb-2:rgba(226,167,93,.045);
+  --orb-3:rgba(94,208,174,.045);
+}
+html[data-theme=night] .panel:hover,
+html[data-theme=night] .question-card:hover{
+  box-shadow:0 2px 8px rgba(0,0,0,.3),0 22px 48px -16px rgba(94,208,174,.22);
+}
+html[data-theme=night] .results-table tbody tr:hover{background:rgba(94,208,174,.07)}
+html[data-theme=night] input:focus,
+html[data-theme=night] textarea:focus,
+html[data-theme=night] select:focus{box-shadow:0 0 0 4px rgba(94,208,174,.14),0 0 0 1px rgba(94,208,174,.4)}
+html[data-theme=night] .role-card.active{
+  background:linear-gradient(135deg,rgba(30,58,48,.85),rgba(26,33,36,.7));
+  box-shadow:0 0 0 3px rgba(94,208,174,.15),0 12px 30px -14px rgba(94,208,174,.35);
+}
+html[data-theme=night] .modal-backdrop{background:rgba(5,10,11,.62)}
+
+/* ── 16. 手機：關掉耗性能的重效果，保留手感 ─────────────── */
+@media (max-width:740px){
+  body::before{animation:none;opacity:.7}
+  .panel:hover,.emp:hover{transform:none}
+  .panel::after{display:none}
+  .question-card::before{display:none}
+  button.primary::before,.primary::before{display:none}
+  .topbar{backdrop-filter:none;-webkit-backdrop-filter:none}
+}
+
+/* ── 17. 尊重减少动态效果 ───────────────────────────────── */
+@media (prefers-reduced-motion:reduce){
+  body::before{animation:none}
+  *,*::before,*::after{
+    animation-duration:.01ms !important;
+    animation-iteration-count:1 !important;
+    transition-duration:.01ms !important;
+    scroll-behavior:auto !important;
+  }
+  .panel:hover,.emp:hover,button.primary:hover,.primary:hover,.secondary:hover,
+  .nav-item:hover,.role-card:hover,.role-card.active,.results-table tbody tr:hover{
+    transform:none !important;
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════
+   動感視覺層 II：焦點區（Hero / 統計卡 / 交錯入場）
+   同樣只新增、不改既有規則。
+   ══════════════════════════════════════════════════════════════ */
+
+/* ── A. Hero：緩慢流動的雙層漸變 + 邊框光 ─────────────────── */
+.hero{
+  background-image:
+    radial-gradient(120% 140% at 88% 10%,rgba(47,174,140,.16),transparent 55%),
+    linear-gradient(105deg,#eef7f1,#f3f9ee 52%,#e9f4ea);
+  background-size:180% 180%,100% 100%;
+  animation:mpHeroFlow 22s ease-in-out infinite alternate;
+  border-color:rgba(25,124,104,.18);
+  box-shadow:0 1px 2px rgba(20,58,46,.03),0 16px 40px -24px rgba(25,124,104,.28);
+}
+@keyframes mpHeroFlow{
+  0%{background-position:0% 0%,0 0}
+  100%{background-position:100% 100%,0 0}
+}
+/* Hero 右上角一道斜向流光，緩慢掃過 */
+.hero::before{
+  content:'';position:absolute;top:-40%;right:-10%;width:46%;height:180%;
+  background:linear-gradient(102deg,transparent,rgba(255,255,255,.55),transparent);
+  transform:rotate(8deg);pointer-events:none;
+  animation:mpHeroSheen 9s ease-in-out infinite;
+}
+@keyframes mpHeroSheen{
+  0%,72%{opacity:0;transform:rotate(8deg) translateX(-30%)}
+  82%{opacity:.9}
+  100%{opacity:0;transform:rotate(8deg) translateX(70%)}
+}
+/* Hero 內文與插圖層次要高於流光 */
+.hero-copy,.hero-visual{position:relative;z-index:2}
+/* Hero 的 CTA 在淺綠底上要有足夠對比，維持深綠實心 */
+.hero .primary{box-shadow:0 4px 16px -6px rgba(25,124,104,.5)}
+
+/* ── B. 統計卡：品牌色頂線 + 數字漸層 + hover 抬升 ────────── */
+.metric{
+  background-image:linear-gradient(168deg,rgba(255,255,255,.9),rgba(247,251,248,.7));
+  border-color:rgba(25,124,104,.13);
+  transition:transform .3s cubic-bezier(.2,.7,.3,1),box-shadow .3s ease,border-color .3s ease;
+  overflow:hidden;
+}
+.metric::before{
+  content:'';position:absolute;left:0;right:0;top:0;height:2px;
+  background:linear-gradient(90deg,var(--green),var(--glow-2),rgba(207,138,61,.75));
+  opacity:.55;transform:scaleX(1);transform-origin:left;
+  transition:opacity .3s ease;
+}
+.metric:hover{
+  transform:translateY(-3px);
+  border-color:rgba(25,124,104,.3);
+  box-shadow:0 3px 8px rgba(20,58,46,.04),0 18px 40px -18px rgba(25,124,104,.32);
+}
+.metric:hover::before{opacity:1}
+.metric-value{
+  background:linear-gradient(135deg,var(--ink),var(--green-dark));
+  -webkit-background-clip:text;background-clip:text;
+  -webkit-text-fill-color:transparent;
+}
+.metric-value small{-webkit-text-fill-color:var(--muted-2)}
+
+/* 統計卡右下角的小柱狀圖：逐條長高 */
+.metric-spark i{
+  background:linear-gradient(180deg,rgba(47,174,140,.55),rgba(25,124,104,.28));
+  transform-origin:bottom;
+  animation:mpSparkGrow .7s cubic-bezier(.2,.9,.3,1) both;
+}
+.metric-spark i:nth-child(2){animation-delay:.06s}
+.metric-spark i:nth-child(3){animation-delay:.12s}
+.metric-spark i:nth-child(4){animation-delay:.18s}
+.metric-spark i:nth-child(5){animation-delay:.24s}
+.metric-spark i:nth-child(6){animation-delay:.3s;background:linear-gradient(180deg,var(--glow-2),var(--green))}
+@keyframes mpSparkGrow{from{transform:scaleY(.15);opacity:.3}to{transform:scaleY(1);opacity:1}}
+
+/* ── C. 卡片交錯入場（限制在 4 個以內，避免長列表拖慢）───── */
+.metric-row>.metric{animation:mpCardIn .5s cubic-bezier(.2,.8,.3,1) both}
+.metric-row>.metric:nth-child(1){animation-delay:.02s}
+.metric-row>.metric:nth-child(2){animation-delay:.07s}
+.metric-row>.metric:nth-child(3){animation-delay:.12s}
+.metric-row>.metric:nth-child(4){animation-delay:.17s}
+@keyframes mpCardIn{
+  from{opacity:0;transform:translateY(12px) scale(.98)}
+  to{opacity:1;transform:none}
+}
+
+/* ── D. 段標題：左側短豎線帶漸層 ──────────────────────────── */
+.section-head h2{position:relative;padding-left:12px}
+.section-head h2::before{
+  content:'';position:absolute;left:0;top:50%;translate:0 -50%;
+  width:3px;height:1.05em;border-radius:2px;
+  background:linear-gradient(180deg,var(--green),var(--glow-2));
+}
+
+/* ── E. 作業卡與班級卡：左側色條，hover 微抬 ─────────────── */
+.assignment-card{transition:transform .3s cubic-bezier(.2,.7,.3,1),box-shadow .3s ease,border-color .3s ease}
+.assignment-card:hover{
+  transform:translateY(-2px);
+  border-color:rgba(25,124,104,.24);
+  box-shadow:0 3px 10px rgba(20,58,46,.05),0 18px 40px -20px rgba(25,124,104,.3);
+}
+.assignment-icon{
+  transition:transform .3s cubic-bezier(.2,.8,.3,1),box-shadow .3s ease;
+}
+.assignment-card:hover .assignment-icon{
+  transform:scale(1.06) rotate(-3deg);
+  box-shadow:0 6px 18px -8px rgba(25,124,104,.5);
+}
+
+/* ── F. 夜間：Hero 與統計卡對應調整 ──────────────────────── */
+html[data-theme=night] .hero{
+  background-image:
+    radial-gradient(120% 140% at 88% 10%,rgba(94,208,174,.10),transparent 55%),
+    linear-gradient(105deg,#16211e,#1a2420 52%,#17231c);
+  border-color:rgba(94,208,174,.2);
+  box-shadow:0 1px 2px rgba(0,0,0,.3),0 18px 44px -26px rgba(94,208,174,.3);
+}
+html[data-theme=night] .hero::before{
+  background:linear-gradient(102deg,transparent,rgba(120,220,190,.10),transparent);
+}
+html[data-theme=night] .metric{
+  background-image:linear-gradient(168deg,rgba(30,38,42,.9),rgba(26,33,36,.7));
+  border-color:rgba(94,208,174,.14);
+}
+html[data-theme=night] .metric:hover{
+  border-color:rgba(94,208,174,.32);
+  box-shadow:0 3px 10px rgba(0,0,0,.3),0 20px 44px -20px rgba(94,208,174,.3);
+}
+html[data-theme=night] .metric-value{
+  background:linear-gradient(135deg,#eaf3f0,#7fd8b8);
+  -webkit-background-clip:text;background-clip:text;
+  -webkit-text-fill-color:transparent;
+}
+html[data-theme=night] .metric-value small{-webkit-text-fill-color:#93a3a5}
+html[data-theme=night] .metric-spark i{
+  background:linear-gradient(180deg,rgba(94,208,174,.5),rgba(94,208,174,.18));
+}
+html[data-theme=night] .metric-spark i:last-child{
+  background:linear-gradient(180deg,#7fd8b8,#5ed0ae);
+}
+
+/* ── G. 手機與減動效：關掉額外動畫 ───────────────────────── */
+@media (max-width:740px){
+  .hero{animation:none;background-size:100% 100%,100% 100%}
+  .hero::before{display:none}
+  .metric-row>.metric{animation:none}
+  .metric-spark i{animation:none}
+}
+@media (prefers-reduced-motion:reduce){
+  .hero{animation:none !important}
+  .hero::before,.metric-spark i{animation:none !important}
+  .metric-row>.metric{animation:none !important}
+  .metric:hover,.assignment-card:hover{transform:none !important}
+  .metric-value,html[data-theme=night] .metric-value{
+    -webkit-text-fill-color:var(--ink);background:none
+  }
+  html[data-theme=night] .metric-value{-webkit-text-fill-color:#e3eaec}
+}
+
+/* ══════════════════════════════════════════════════════════════
+   動感視覺層 III：內容區生命力（題目卡 / 步驟圈 / 公式漂浮）
+   ══════════════════════════════════════════════════════════════ */
+
+/* ── 題目列表：逐條浮現（只對前 8 條做，避免長列表拖慢）──── */
+.question-list .question-card{animation:mpCardIn .44s cubic-bezier(.2,.8,.3,1) both}
+.question-list .question-card:nth-child(2){animation-delay:.04s}
+.question-list .question-card:nth-child(3){animation-delay:.08s}
+.question-list .question-card:nth-child(4){animation-delay:.12s}
+.question-list .question-card:nth-child(5){animation-delay:.16s}
+.question-list .question-card:nth-child(6){animation-delay:.2s}
+.question-list .question-card:nth-child(7){animation-delay:.24s}
+.question-list .question-card:nth-child(8){animation-delay:.28s}
+
+/* ── Hero 公式：緩慢漂浮，像懸在空中 ───────────────────── */
+.hero-visual .formula{animation:mpFloat 6s ease-in-out infinite}
+.hero-visual .formula.f2{animation-duration:7.4s;animation-delay:1.2s}
+@keyframes mpFloat{
+  0%,100%{transform:rotate(-9deg) translateY(0)}
+  50%{transform:rotate(-9deg) translateY(-7px)}
+}
+/* 插圖書本 svg：輕微呼吸 */
+.hero-visual svg{animation:mpFloatSvg 5.6s ease-in-out infinite}
+@keyframes mpFloatSvg{
+  0%,100%{transform:translateY(0)}
+  50%{transform:translateY(-4px)}
+}
+
+/* ── 學習路線步驟圈：依序彈入，作用中脈動 ─────────────── */
+.roadmap-item{animation:mpCircleIn .4s cubic-bezier(.2,.9,.3,1.2) both}
+.roadmap-item:nth-child(2){animation-delay:.12s}
+.roadmap-item:nth-child(3){animation-delay:.24s}
+@keyframes mpCircleIn{
+  from{opacity:0;transform:scale(.6)}
+  to{opacity:1;transform:scale(1)}
+}
+.roadmap-item.active .roadmap-circle{animation:mpPulse 2.6s ease-out infinite}
+
+/* ── 精選/作業清單卡：交錯浮現 ─────────────────────────── */
+.assignment-list .assignment-card{animation:mpCardIn .46s cubic-bezier(.2,.8,.3,1) both}
+.assignment-list .assignment-card:nth-child(2){animation-delay:.06s}
+.assignment-list .assignment-card:nth-child(3){animation-delay:.12s}
+.assignment-list .assignment-card:nth-child(4){animation-delay:.18s}
+.assignment-list .assignment-card:nth-child(5){animation-delay:.24s}
+
+/* ── 夜間：公式漂浮光色調亮 ────────────────────────────── */
+html[data-theme=night] .hero-visual .formula{color:#6fae96}
+
+/* ── 手機／減動效：關閉內容區動畫 ───────────────────────── */
+@media (max-width:740px){
+  .question-list .question-card,.roadmap-item,.assignment-list .assignment-card{animation:none}
+  .hero-visual .formula,.hero-visual svg{animation:none}
+  .roadmap-item.active .roadmap-circle{animation:none}
+}
+@media (prefers-reduced-motion:reduce){
+  .question-list .question-card,.roadmap-item,.assignment-list .assignment-card{animation:none !important}
+  .hero-visual .formula,.hero-visual svg,.roadmap-item.active .roadmap-circle{animation:none !important}
 }

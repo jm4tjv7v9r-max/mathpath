@@ -7792,3 +7792,12 @@ function renderCalculator(){
 }
 async function init(){loadBookmarks();homeworkPage();try{const session=await api('/api/session');serverOnline=true;serverIssue='';if(session.user){await refresh();homeworkPage();}}catch(e){serverIssue=e.message;toast(/初始化/.test(e.message)?e.message:'無法連接網站服務；目前為訪客界面預覽。請確認網站服務狀態。');}}
 init();
+
+/* ── 動感層：捲動時讓頂欄浮起 ─────────────────────────────── */
+(function(){
+  var on=false;
+  window.addEventListener('scroll',function(){
+    var s=window.scrollY>2;
+    if(s!==on){on=s;document.body.classList.toggle('mp-scrolled',s);}
+  },{passive:true});
+})();
