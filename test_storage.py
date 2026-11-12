@@ -165,7 +165,14 @@ class StorageTests(unittest.TestCase):
     def test_r2_upload_keeps_only_key_and_streams_back(self):
         app = self.make_app(self.r2_env())
         self.assertEqual(app.storage.mode, 'r2')
-        self.assertEqual(self.call(app, 'GET', '/api/health', {}, None)['storage']['bucket'], 'mathpath')
+        # 公開健康檢查只回「是否已啟用」，不再吐 bucket／endpoint，
+        # 避免未登入就能做基礎設施偵察；完整資訊留在儲存層與 /api/admin/health。
+        public = self.call(app, 'GET', '/api/health', {}, None)['storage']
+        self.assertEqual(public['mode'], 'r2')
+        self.assertTrue(public['configured'])
+        self.assertNotIn('bucket', public)
+        self.assertNotIn('endpoint', public)
+        self.assertEqual(app.storage.public()['bucket'], 'mathpath')
         student, teacher = self.users(app)
         attempt = self.call(app, 'POST', '/api/attempts',
                             {'questionId': 1, 'answerText': '', 'image': PNG}, student)['attempt']

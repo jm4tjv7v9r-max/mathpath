@@ -6589,9 +6589,24 @@ class Application:
             # 登入頁會依這個旗標決定要不要把演示帳密顯示出來：
             # 已經換過密碼就不該再公開舊的演示密碼（會誤導學生、也是安全問題）。
             demo_left = db.execute('SELECT count(*) FROM users WHERE demo=1').fetchone()[0]
-        return {'status': 'ok', 'storage': self.storage.public(), 'ai': self.ai.public(),
+        # 公開端點只回「服務是否正常」與前端真的會用的旗標：
+        #   demoAccounts → 登入框要不要顯示「已更換演示密碼」
+        #   ai.configured / mode → 前端顯示「AI 未接入」提示
+        # 網盤 bucket／endpoint、模型名稱、上游錯誤細節屬基礎設施資訊，
+        # 未登入不該看到；完整版移到需要管理員權限的 /api/admin/health。
+        return {'status': 'ok',
+                'storage': {'mode': self.storage.mode,
+                            'configured': self.storage.mode == 'r2'},
+                'ai': {'configured': self.ai.configured, 'mode': self.ai.mode},
                 'questions': questions, 'demoAccounts': bool(demo_left),
-                'metrics': self.ai.metrics.snapshot()}, headers
+                'metrics': self._public_metrics()}, headers
+
+    def _public_metrics(self):
+        """AI 計數可以公開（前端管理卡要用），但 lastAiError 可能含上游端點
+        與回應片段，只留在管理員版。"""
+        snapshot = self.ai.metrics.snapshot()
+        return {key: value for key, value in snapshot.items()
+                if key not in ('lastAiError', 'lastAiErrorAt')}
 
     def start_job(self, user, run):
         """把 run() 丟到背景執行緒跑；回 jobId。結果與錯誤都留在 JOBS 裡等前端來拿。"""
@@ -8976,6 +8991,13 @@ class Application:
             self.teacher(user)
             with self.db() as db:
                 return self.dataadmin.purge_student_images(db, int(purge_img[1]), user), headers
+        if path == '/api/admin/health' and method == 'GET':
+            # 完整健康資訊（網盤 bucket／endpoint、模型名稱、AI 錯誤細節）。
+            # 原本掛在公開的 /api/health，等於未登入就能做基礎設施偵察。
+            self.require_owner(user)
+            return {'status': 'ok', 'initialized': self.initialized,
+                    'storage': self.storage.public(), 'ai': self.ai.public(),
+                    'metrics': self.ai.metrics.snapshot()}, headers
         if path == '/api/admin/storage' and method == 'GET':
             self.require_owner(user)
             with self.db() as db:
@@ -10112,18 +10134,92 @@ class Handler(BaseHTTPRequestHandler):
     def send_error(self, code, message=None, explain=None):
         self.respond(code, {'error': 'HTTP 請求格式無效或不支援此方法。'})
 
-    def respond(self, status, payload, headers=None, mime='application/json; charset=utf-8'):
+    # 靜態資源：內容雜湊當 ETag，並在記憶體快取，檔案沒變就不重讀。
+    _asset_cache = {}
+    _asset_lock = threading.Lock()
+
+    # 每個回應都帶的安全標頭。CSP 先用 Report-Only：index.html 目前有一段
+    # 字級防閃爍的 inline script，直接 enforce 會把它擋掉（字級偏好失效）。
+    # 等那段腳本改成外部檔或加 nonce 後，把 Content-Security-Policy-Report-Only
+    # 換成 Content-Security-Policy 即可生效。
+    SECURITY_HEADERS = (
+        ('X-Content-Type-Options', 'nosniff'),
+        ('Referrer-Policy', 'same-origin'),
+        ('X-Frame-Options', 'DENY'),
+        ('Strict-Transport-Security', 'max-age=15552000; includeSubDomains'),
+        ('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=()'),
+        ('Content-Security-Policy-Report-Only',
+         "default-src 'self'; script-src 'self' 'unsafe-inline'; "
+         "style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; "
+         "font-src 'self' data:; media-src 'self' blob:; connect-src 'self'; "
+         "object-src 'none'; base-uri 'none'; form-action 'self'; "
+         "frame-ancestors 'none'"),
+    )
+
+    def _send_security_headers(self):
+        for key, value in self.SECURITY_HEADERS:
+            self.send_header(key, value)
+
+    def respond(self, status, payload, headers=None, mime='application/json; charset=utf-8',
+                cache='no-store'):
         data = json.dumps(payload, ensure_ascii=False, allow_nan=False).encode() if isinstance(payload, (dict, list)) else payload
         self.send_response(status)
         self.send_header('Content-Type', mime)
         self.send_header('Content-Length', str(len(data)))
-        self.send_header('Cache-Control', 'no-store')
-        self.send_header('X-Content-Type-Options', 'nosniff')
-        self.send_header('Referrer-Policy', 'same-origin')
-        self.send_header('X-Frame-Options', 'DENY')
+        self.send_header('Cache-Control', cache)
+        self._send_security_headers()
         self.send_header('Connection', 'close')
         for key, value in (headers or {}).items():
             self.send_header(key, value)
+        self.end_headers()
+        self.close_connection = True
+        if self.command != 'HEAD':
+            self.wfile.write(data)
+
+    def read_asset(self, path):
+        """讀靜態檔並快取在記憶體；mtime 或大小變了才重讀。回 (data, etag)。"""
+        try:
+            st = path.stat()
+        except OSError:
+            fail(404, '找不到此資源。')
+        key = str(path)
+        with Handler._asset_lock:
+            hit = Handler._asset_cache.get(key)
+            if hit and hit[0] == st.st_mtime_ns and hit[1] == st.st_size:
+                return hit[2], hit[3]
+        data = path.read_bytes()
+        etag = '"%s"' % hashlib.sha256(data).hexdigest()[:32]
+        with Handler._asset_lock:
+            Handler._asset_cache[key] = (st.st_mtime_ns, st.st_size, data, etag)
+        return data, etag
+
+    def respond_asset(self, data, mime, etag):
+        """靜態資源：允許瀏覽器快取，但每次用 ETag 驗證，沒變就回 304（無 body）。
+
+        這裡刻意用 no-cache 而不是長效 max-age：檔名沒有內容雜湊，長快取會讓
+        部署後使用者繼續跑舊版前端。304 已足以把 323 KB 的重下載降到幾百 bytes，
+        又保證一部署就生效。等檔名改成 app.<hash>.js 之後再換 immutable。
+        """
+        cache = 'no-cache, must-revalidate'
+        incoming = self.headers.get('If-None-Match') or ''
+        if incoming:
+            tags = [tag.strip() for tag in incoming.split(',')]
+            if etag in tags or '*' in tags:
+                self.send_response(304)
+                self.send_header('ETag', etag)
+                self.send_header('Cache-Control', cache)
+                self._send_security_headers()
+                self.send_header('Connection', 'close')
+                self.end_headers()
+                self.close_connection = True
+                return
+        self.send_response(200)
+        self.send_header('Content-Type', mime)
+        self.send_header('Content-Length', str(len(data)))
+        self.send_header('ETag', etag)
+        self.send_header('Cache-Control', cache)
+        self._send_security_headers()
+        self.send_header('Connection', 'close')
         self.end_headers()
         self.close_connection = True
         if self.command != 'HEAD':
@@ -10192,9 +10288,7 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self.send_header('Content-Length', str(length))
         self.send_header('Cache-Control', 'no-store')
-        self.send_header('X-Content-Type-Options', 'nosniff')
-        self.send_header('Referrer-Policy', 'same-origin')
-        self.send_header('X-Frame-Options', 'DENY')
+        self._send_security_headers()
         self.send_header('Connection', 'close')
         self.end_headers()
         self.close_connection = True
@@ -10404,7 +10498,8 @@ class Handler(BaseHTTPRequestHandler):
                     fail(404, '找不到此資源。')
                 if resolved.stat().st_size > 5 * 1024 * 1024:
                     fail(413, '靜態檔案過大。')
-                self.respond(200, resolved.read_bytes(), mime=vendor_mime[ext])
+                data, etag = self.read_asset(resolved)
+                self.respond_asset(data, vendor_mime[ext], etag)
                 return
             if self.command != 'GET' or path not in static:
                 fail(404, '找不到此資源。')
@@ -10414,7 +10509,8 @@ class Handler(BaseHTTPRequestHandler):
                 fail(404, '前端檔案尚未提供；後端不公開資料目錄或原始碼。')
             if target.stat().st_size > 5 * 1024 * 1024:
                 fail(413, '靜態檔案過大。')
-            self.respond(200, target.read_bytes(), mime=mime)
+            data, etag = self.read_asset(target)
+            self.respond_asset(data, mime, etag)
         except APIError as exc:
             self.respond(exc.status, {'error': exc.message})
         except (ValueError, TypeError, OverflowError, RecursionError):
