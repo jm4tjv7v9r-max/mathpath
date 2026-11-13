@@ -41,6 +41,7 @@ from urllib.error import URLError, HTTPError
 import zlib
 
 from docx import Document
+from omml import omml_latex_of_paragraph
 from dataadmin import MAX_UPLOAD_BYTES, DataAdmin
 from homework import Homework
 from mock import MockExams
@@ -546,9 +547,14 @@ def paper_drafts(app, name, body):
         value = text(body['text'], '試卷文字')
     else:
         mime = body.get('mime')
-        if mime not in ('image/png', 'image/jpeg', 'application/pdf'):
-            fail(400, '僅支援 PNG、JPEG 或 PDF。')
-        if mime == 'application/pdf':
+        if mime not in ('image/png', 'image/jpeg', 'application/pdf', DOCX_MIME):
+            fail(400, '僅支援 PNG、JPEG、PDF 或 Word (.docx)。')
+        if mime == DOCX_MIME:
+            # Word 直接抽文字：方程式（OMML）保留為 LaTeX，其餘照原樣。
+            # 這樣與「貼上文字」共用同一條 AI／規則拆題路徑，不需圖片。
+            data, actual = decode_data_url(body['dataUrl'], (DOCX_MIME,))
+            value = docx_text(data)
+        elif mime == 'application/pdf':
             data, actual = decode_data_url(body['dataUrl'], ('application/pdf',))
             # 文字型 PDF 直接抽文字；掃描版沒有文字層，改由伺服器逐頁渲染成圖片
             # 交給視覺模型——不要叫教師自己轉檔。
@@ -4818,6 +4824,36 @@ def pdf_text(data, empty_ok=False):
             return ''
         fail(422, '此 PDF 沒有可抽取文字，可能是掃描版。請配置視覺識別模型，並轉為逐頁 PNG / JPEG 圖片上傳。')
     return text(extracted, 'PDF 文字')
+
+
+def docx_text(data):
+    """抽取 .docx 的文字層，OMML 方程式轉成 LaTeX（$...$）。
+
+    純文字段落照原樣；方程式保留為行內 LaTeX，與「貼上文字」的格式一致，
+    這樣 AI／規則拆題與 PDF 走的是同一條文字路徑。
+    沒有可抽取文字時回空字串（呼叫端要負責提示改貼題目文字）。
+    """
+    if not data.startswith(b'PK\x03\x04'):
+        fail(400, '這不是 .docx 檔（請用 Word 另存新檔成 .docx）。')
+    try:
+        doc = Document(io.BytesIO(data))
+    except Exception:
+        fail(422, 'Word 檔無法讀取，請複製題目文字後貼上。')
+    parts, length = [], 0
+    for p in doc.paragraphs:
+        # omml_latex_of_paragraph 會把段落內的 OMML 方程式抽成 $...$，
+        # 其餘文字照原樣；沒有方程式時回傳純文字。p.text 只是兜底。
+        segment = omml_latex_of_paragraph(p).strip() or p.text.strip()
+        if not segment:
+            continue
+        length += len(segment)
+        if length > MAX_TEXT:
+            fail(413, 'Word 文字超過 80,000 字，請分批貼上。')
+        parts.append(segment)
+    extracted = '\n'.join(parts).strip()
+    if not extracted:
+        fail(422, '此 Word 檔沒有可抽取文字，請複製題目文字後貼上。')
+    return text(extracted, 'Word 文字')
 
 
 def pdf_embedded_jpeg(data, limit=40, minimum=5_000):
