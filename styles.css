@@ -1942,3 +1942,160 @@ html[data-theme=night] .modal{box-shadow:0 18px 60px rgba(0,0,0,.5)}
   .topbar-links::-webkit-scrollbar{display:none}
   .topbar-link{flex:0 0 auto;white-space:nowrap;padding:6px 11px}
 }
+
+/* ══════════════════════════════════════════════════════════════
+   去 AI 味：教材風（Editorial+）
+   ──────────────────────────────────────────────────────────────
+   在編輯風基礎上，把殘留的「AI 產品頁」痕跡清掉：
+   ① 隱藏英文大寫裝飾標語（QUESTION BANK／PAPER TO PRACTICE…）
+      ——這些是 AI 生成 SaaS 最典型的記號，參考圖完全沒有；
+   ② 收斂 Hero 行銷大色塊 → 白底細邊框、左對齊的內容卡；
+   ③ 統計卡、空狀態、按鈕收斂成克制教材風。
+   只做「追加覆蓋」，不改任何既有選擇器結構。
+   ══════════════════════════════════════════════════════════════ */
+
+/* ── A. 隱藏裝飾性英文標語（保留給螢幕閱讀器）───────────── */
+.page-heading .eyebrow,
+.hero-eyebrow,
+.hero .eyebrow{
+  position:absolute;
+  width:1px;height:1px;
+  padding:0;margin:-1px;
+  overflow:hidden;clip:rect(0 0 0 0);
+  white-space:nowrap;border:0;
+}
+/* 標語隱藏後，標題與內文更貼近，像參考圖的版面 */
+.page-heading{margin-bottom:22px}
+.page-heading h1{margin-bottom:10px}
+
+/* ── B. 收斂 Hero：行銷大色塊 → 白底細邊框的內容卡 ────── */
+/* 參考圖沒有深綠行銷大塊；改成「紙上的一節」：白底、細邊、左對齊、
+   深色字，保留原有主色只用在按鈕與重點，像教材的章節導言。 */
+.hero{
+  background:var(--paper);
+  background-image:none;
+  border:1px solid var(--editorial-rule);
+  border-radius:var(--radius);
+  padding:38px 40px 34px;
+  min-height:0;
+  margin-bottom:24px;
+  color:var(--ink);
+}
+.hero h2{
+  font-size:calc(30px*var(--fs));
+  line-height:1.3;
+  letter-spacing:-.6px;
+  font-weight:700;
+  margin:0 0 10px;
+  max-width:24em;
+  color:var(--ink);
+}
+.hero p{
+  font-size:calc(15.5px*var(--fs));
+  line-height:1.75;
+  color:var(--muted);
+  margin:0 0 24px;
+  max-width:44em;
+}
+/* 按鈕：主鈕深綠實色、次鈕白底描邊——不再用白底反白 */
+.hero .primary{
+  background:var(--green);
+  border:1px solid var(--green-dark);
+  color:#fff;
+  font-weight:600;
+  padding:12px 22px;
+}
+.hero .primary:hover{
+  background:var(--green-dark);
+  border-color:var(--green-dark);
+  color:#fff;
+}
+.hero .secondary{
+  background:var(--paper);
+  border:1px solid var(--editorial-rule);
+  color:var(--ink);
+  padding:11px 20px;
+}
+.hero .secondary:hover{
+  background:#f4f6f2;
+  border-color:#c9d2c7;
+  color:var(--ink);
+}
+/* 夜間：同樣收成深色紙感內容卡，只換色 */
+html[data-theme=night] .hero{
+  background:var(--paper);
+  border-color:var(--editorial-rule);
+  color:var(--ink);
+}
+html[data-theme=night] .hero h2{color:var(--ink)}
+html[data-theme=night] .hero p{color:var(--muted)}
+html[data-theme=night] .hero .primary{
+  background:var(--green);
+  border-color:var(--green-dark);
+  color:#fff;
+}
+html[data-theme=night] .hero .primary:hover{
+  background:#2a8a75;
+  border-color:#2a8a75;
+  color:#fff;
+}
+html[data-theme=night] .hero .secondary{
+  background:transparent;
+  border-color:var(--editorial-rule);
+  color:var(--ink);
+}
+html[data-theme=night] .hero .secondary:hover{
+  background:#232c2f;
+  border-color:#3a4649;
+  color:var(--ink);
+}
+
+/* ── C. 空狀態：收斂成教材的「章節末註」──
+   原本是置中圖示＋大標題＋副標＋按鈕的產品頁空狀態；
+   改成左對齊、細線分隔、小字，像講義裡的「本章尚無內容」註記。 */
+.empty{
+  padding:26px 22px;
+  text-align:left;
+  border:1px dashed var(--editorial-rule);
+  border-radius:var(--radius);
+  background:transparent;
+  line-height:1.7;
+  color:var(--muted);
+}
+.empty .icon{
+  width:22px;height:22px;
+  color:var(--muted-2);
+  margin-bottom:8px;
+}
+.empty h3{
+  font-size:calc(15px*var(--fs));
+  color:var(--ink);
+  font-weight:600;
+  margin-bottom:4px;
+}
+.empty p{
+  font-size:calc(13.5px*var(--fs));
+  color:var(--muted);
+  max-width:40em;
+}
+.empty .primary,.empty .secondary{
+  margin-top:12px;
+  font-size:calc(13.5px*var(--fs));
+}
+
+/* ── D. 右欄提示卡：去「引號式勵志標題」感 ──
+   「分數不是學習的終點」這類標題改成普通段落標，圖示收小、內文收斂。 */
+.tip-panel h2{font-weight:600;font-size:calc(15px*var(--fs));letter-spacing:.2px}
+.tip-panel h2 .icon{width:16px;height:16px;color:var(--green)}
+.tip-panel p{font-size:calc(13.5px*var(--fs));line-height:1.7;color:var(--muted)}
+.right-panel h2{font-weight:600;font-size:calc(15px*var(--fs));letter-spacing:.2px}
+.right-panel h2 .icon{width:16px;height:16px;color:var(--green)}
+.right-panel p{font-size:calc(13.5px*var(--fs));line-height:1.7;color:var(--muted)}
+.feature-list li{font-size:calc(13.5px*var(--fs));line-height:1.65}
+
+/* ── E. 手機：收斂小瑕疵 ──
+   側欄用 transform 移出，但 layout box 仍留在捲動寬度裡，
+   會造成 390px 下多 3px 橫向溢出；裁掉即可。 */
+@media (max-width:740px){
+  html,body{overflow-x:hidden}
+}
