@@ -1633,3 +1633,312 @@ body.cr-live-on{overflow:hidden}
   .modal{max-height:calc(100dvh - 24px);overscroll-behavior:contain;padding:22px 18px}
   .app-footer{flex-direction:column;align-items:flex-start;gap:4px}
 }
+
+/* ══════════════════════════════════════════════════════════════
+   版面重製：編輯風（Editorial）
+   ──────────────────────────────────────────────────────────────
+   設計取向：大字排版、強留白、細邊框、小圓角、純色塊。
+   刻意去掉漸變、玻璃模糊、流光、漂浮、交錯入場等裝飾效果，
+   讓介面像一份排版講究的教材，而不是帶特效的產品頁。
+   主色沿用原本的深綠 #197c68 系。
+   ══════════════════════════════════════════════════════════════ */
+
+/* ── A. 全局：米白底、更實的字色、收緊字距 ─────────────────── */
+:root{
+  --bg:#fbfbf8;            /* 由冷調灰綠改為溫潤米白 */
+  --paper:#ffffff;
+  --editorial-rule:#e4e4dc; /* 分隔線：偏暖的淺灰 */
+  --radius:4px;             /* 全站統一的小圓角 */
+  --sidebar-w:264px;
+}
+body{
+  background:var(--bg);
+  -webkit-font-smoothing:antialiased;
+  text-rendering:optimizeLegibility;
+}
+
+/* ── B. 卡片：細邊框、小圓角、無陰影 ─────────────────────── */
+.panel,.emp,.card{
+  background:var(--paper);
+  border:1px solid var(--editorial-rule);
+  border-radius:var(--radius);
+  box-shadow:none;
+  transition:border-color .18s ease;
+}
+.panel:hover{border-color:#cfd6cb}   /* hover 只讓邊框略深，不位移、不發光 */
+
+/* 面板內的分隔標題：加上一條規整的細線，取代裝飾性色條 */
+.panel-heading{border-bottom:1px solid var(--editorial-rule)}
+
+/* ── C. 按鈕：方角、純色、無陰影無流光 ─────────────────── */
+button.primary,.primary{
+  border:1px solid var(--green-dark);
+  border-radius:var(--radius);
+  background:var(--green);
+  background-image:none;
+  box-shadow:none;
+  font-weight:600;
+  letter-spacing:.2px;
+}
+button.primary:hover,.primary:hover{
+  background:var(--green-dark);
+  background-image:none;
+  transform:none;
+  box-shadow:none;
+  filter:none;
+}
+button.primary:active,.primary:active{transform:translateY(1px)}
+button.secondary,.secondary{
+  border:1px solid var(--editorial-rule);
+  border-radius:var(--radius);
+  background:var(--paper);
+  box-shadow:none;
+}
+button.secondary:hover,.secondary:hover{
+  background:#f4f6f2;
+  border-color:#c9d2c7;
+  transform:none;
+  box-shadow:none;
+}
+.icon-btn{border-radius:var(--radius)}
+
+/* ── D. 主視覺：深綠實色大色塊 + 大字 ───────────────────── */
+.hero{
+  background:var(--green-dark);   /* 實色，不用漸變 */
+  background-image:none;
+  border:0;
+  border-radius:var(--radius);
+  padding:56px 48px;
+  min-height:0;
+  margin-bottom:28px;
+  color:#fff;
+  display:block;                  /* 由左右兩欄改為單欄大字排版 */
+  position:relative;
+  overflow:hidden;
+}
+.hero h2{
+  font-size:calc(38px*var(--fs));
+  line-height:1.28;
+  letter-spacing:-1.1px;
+  font-weight:700;
+  margin:0 0 14px;
+  max-width:22em;
+  color:#fff;
+}
+.hero p{
+  font-size:calc(16px*var(--fs));
+  line-height:1.75;
+  color:rgba(255,255,255,.76);
+  margin:0 0 30px;
+  max-width:42em;
+}
+.hero .eyebrow,.hero .hero-eyebrow{
+  color:rgba(255,255,255,.62);
+  font-size:calc(12px*var(--fs));
+  letter-spacing:2.6px;
+  text-transform:uppercase;
+  margin-bottom:18px;
+}
+/* Hero 內的按鈕：主鈕白底深綠字，次鈕描邊白字（借參考圖的雙鈕結構） */
+.hero .primary{
+  background:#fff;
+  border-color:#fff;
+  color:var(--green-dark);
+  font-weight:700;
+  padding:13px 24px;
+}
+.hero .primary:hover{background:#eff5ef;border-color:#eff5ef;color:var(--green-dark)}
+.hero .secondary{
+  background:transparent;
+  border-color:rgba(255,255,255,.42);
+  color:#fff;
+  padding:12px 22px;
+}
+.hero .secondary:hover{background:rgba(255,255,255,.1);border-color:rgba(255,255,255,.7)}
+/* 舊的插圖與漂浮公式在這個版型裡不需要，收起來 */
+.hero-visual{display:none}
+
+/* ── E. 頁面標題：更大、更緊、齊左 ─────────────────────── */
+.page-heading{margin-bottom:26px;align-items:flex-end}
+.page-heading h1{
+  font-size:calc(34px*var(--fs));
+  line-height:1.24;
+  letter-spacing:-1px;
+  font-weight:700;
+  margin:0 0 6px;
+}
+.eyebrow{
+  font-size:calc(11.5px*var(--fs));
+  letter-spacing:2.6px;
+  text-transform:uppercase;
+  color:var(--muted-2);
+  font-weight:600;
+  margin-bottom:10px;
+}
+.subtitle{
+  font-size:calc(15.5px*var(--fs));
+  color:var(--muted);
+  line-height:1.7;
+  max-width:52em;
+}
+
+/* ── F. 統計卡：細邊框、實色數字，不做漸變填充 ──────────── */
+.metric{
+  background:var(--paper);
+  border:1px solid var(--editorial-rule);
+  border-radius:var(--radius);
+  box-shadow:none;
+  transition:border-color .18s ease;
+}
+.metric:hover{border-color:#cfd6cb;transform:none;box-shadow:none}
+.metric-value{
+  background:none;
+  -webkit-text-fill-color:currentColor;
+  color:var(--ink);
+  font-size:calc(34px*var(--fs));
+  font-weight:700;
+  letter-spacing:-1.2px;
+}
+.metric-label{
+  color:var(--muted-2);
+  font-size:calc(12.5px*var(--fs));
+  letter-spacing:.4px;
+  text-transform:uppercase;
+}
+.metric-foot{color:var(--muted-2)}
+/* 統計卡右下的裝飾小柱狀圖在這個版型裡也不需要 */
+.metric-spark{display:none}
+
+/* ── G. 側欄與頂欄：收斂成紙張感 ────────────────────────── */
+.sidebar{
+  background:var(--paper);
+  border-right:1px solid var(--editorial-rule);
+  padding:30px 18px 18px;
+}
+.nav-item{
+  border-radius:var(--radius);
+  color:var(--muted);
+  font-size:calc(15px*var(--fs));
+  padding:11px 13px;
+  margin-bottom:2px;
+}
+.nav-item:hover{background:#f5f7f3;transform:none}
+.nav-item.active{
+  background:var(--mint);
+  color:var(--green-dark);
+  font-weight:600;
+  box-shadow:none;
+}
+/* 去掉滑動指示條（裝飾性） */
+.nav-item::before{display:none}
+
+.topbar{
+  background:rgba(251,251,248,.92);
+  border-bottom:1px solid var(--editorial-rule);
+  height:64px;
+  padding:0 32px;
+}
+body.mp-scrolled .topbar{box-shadow:none;backdrop-filter:none;-webkit-backdrop-filter:none}
+.topbar-link{
+  border-radius:var(--radius);
+  font-size:calc(14px*var(--fs));
+  color:var(--muted);
+}
+
+/* ── H. 清單與表格：靠線條分隔，不靠卡片堆疊 ────────────── */
+.results-table th{
+  background:#f7f8f4;
+  border-bottom:1px solid var(--editorial-rule);
+  color:var(--muted-2);
+  font-weight:600;
+  font-size:calc(13px*var(--fs));
+  letter-spacing:.3px;
+  position:static;
+  backdrop-filter:none;
+  -webkit-backdrop-filter:none;
+}
+.results-table td{border-bottom:1px solid #f0f1ea;color:var(--ink)}
+.results-table tbody tr:hover{background:#f9faf6;transform:none}
+.question-card{border-bottom:1px solid var(--editorial-rule)}
+.question-card:hover{background:transparent}
+.question-card::before{display:none}   /* 去掉左側色條 */
+
+/* ── I. 徽章與表單控制項：統一成小方角 ──────────────────── */
+.badge{border-radius:2px;font-weight:600;letter-spacing:.2px}
+input,select,textarea{
+  border-radius:var(--radius);
+  border:1px solid var(--editorial-rule);
+  background:var(--paper);
+}
+input:focus,select:focus,textarea:focus{
+  border-color:var(--green);
+  box-shadow:0 0 0 3px rgba(25,124,104,.1);
+}
+.role-card{border-radius:var(--radius);border-width:1px}
+.role-card:hover{background:#f6f8f4;transform:none;box-shadow:none}
+.role-card.active{
+  border-color:var(--green);
+  background:var(--mint);
+  box-shadow:none;
+  transform:none;
+}
+.modal{border-radius:var(--radius);box-shadow:0 18px 60px rgba(20,40,30,.14)}
+.modal-backdrop{background:rgba(18,40,32,.4);backdrop-filter:none;-webkit-backdrop-filter:none}
+.toast{border-radius:var(--radius)}
+
+/* ── J. 夜間：同一套編輯風，只換色 ─────────────────────── */
+html[data-theme=night]{--editorial-rule:#2b3336;--bg:#141a1c;--paper:#1b2225}
+html[data-theme=night] body{background:var(--bg)}
+html[data-theme=night] .hero{background:#123a30;background-image:none}
+html[data-theme=night] .hero .primary{background:#eaf3ef;border-color:#eaf3ef;color:#0f3a30}
+html[data-theme=night] .hero .primary:hover{background:#d8e9e2;border-color:#d8e9e2}
+html[data-theme=night] .hero .secondary{color:#fff;border-color:rgba(255,255,255,.38)}
+html[data-theme=night] .nav-item:hover{background:#222b2e}
+html[data-theme=night] .nav-item.active{background:#1e3a30;color:#7fd8b8}
+html[data-theme=night] .topbar{background:rgba(20,26,28,.94)}
+html[data-theme=night] .results-table th{background:#1f272a;color:#9dadaf}
+html[data-theme=night] .results-table td{border-bottom-color:#262f32}
+html[data-theme=night] .results-table tbody tr:hover{background:#1f272a}
+html[data-theme=night] .metric:hover{border-color:#3a4649}
+html[data-theme=night] input,html[data-theme=night] select,html[data-theme=night] textarea{background:#1f272a;border-color:#2f3a3d}
+html[data-theme=night] button.secondary:hover{background:#232c2f;border-color:#3a4649}
+html[data-theme=night] .role-card.active{background:#1e3a30;border-color:var(--green)}
+html[data-theme=night] .modal{box-shadow:0 18px 60px rgba(0,0,0,.5)}
+
+/* ── K. 手機：留白收窄，字級略降，維持同一個調性 ────────── */
+@media (max-width:740px){
+  .hero{padding:34px 22px}
+  .hero h2{font-size:calc(27px*var(--fs));letter-spacing:-.5px}
+  .hero p{font-size:calc(14.5px*var(--fs));margin-bottom:22px}
+  .page-heading h1{font-size:calc(25px*var(--fs))}
+  .page-heading{align-items:flex-start}
+  .topbar{height:auto;min-height:56px;padding:6px 16px}
+  .metric-value{font-size:calc(27px*var(--fs))}
+}
+
+/* ── L. Hero 按鈕組：參考圖的雙鈕並排結構 ──────────────── */
+.hero-actions{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+@media (max-width:560px){
+  .hero-actions{flex-direction:column;align-items:stretch;gap:10px}
+  .hero-actions .primary,.hero-actions .secondary{width:100%;justify-content:center}
+}
+
+/* ── M. 手機頂欄：兩行結構（麵包屑＋工具 / 可橫向滑動的導覽）──
+   原本 740px 斷點讓三組內容各自換行，實測會撐到 133px 高，
+   在小螢幕上吃掉太多空間。這裡改成「左側縱向兩段 + 右側工具固定」，
+   導覽連結改成單行橫向滑動，不再換行。 */
+@media (max-width:740px){
+  .topbar{
+    height:auto;min-height:56px;padding:8px 14px;
+    flex-wrap:nowrap;align-items:flex-start;
+  }
+  .topbar-left{flex:1;min-width:0;display:flex;flex-direction:column;gap:7px}
+  .top-tools{flex:0 0 auto;gap:8px;padding-top:1px}
+  .topbar-links{
+    width:100%;flex-wrap:nowrap;overflow-x:auto;gap:6px;
+    padding-left:0;border-left:0;
+    scrollbar-width:none;-ms-overflow-style:none;
+  }
+  .topbar-links::-webkit-scrollbar{display:none}
+  .topbar-link{flex:0 0 auto;white-space:nowrap;padding:6px 11px}
+}
