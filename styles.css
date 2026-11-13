@@ -2099,3 +2099,205 @@ html[data-theme=night] .hero .secondary:hover{
 @media (max-width:740px){
   html,body{overflow-x:hidden}
 }
+
+/* ══════════════════════════════════════════════════════════════
+   Wayground 風：參考 wayground.com 的設計語言，保留原本深綠主色
+   ──────────────────────────────────────────────────────────────
+   wayground.com 的視覺語言：暖奶油底、超大粗體標題、大圓角卡片、
+   柔和光暈、高對比實色按鈕、深色 hero 大塊。這裡把它「套」進來，
+   但顏色全部用回原本的深綠 #197c68 系（不引入紫紅／粉）。
+   只做「追加覆蓋」，不改任何既有選擇器結構。
+   ══════════════════════════════════════════════════════════════ */
+
+/* ── 1. 全局：溫潤暖底、更大的圓角、更深的主色 ────────── */
+:root{
+  /* 暖奶油底（wayground 淺色區的柔和版） */
+  --wg-bg:#f7f4ec;
+  /* 卡片白、深綠主色不變 */
+  --paper:#ffffff;
+  --green:#197c68;
+  --green-dark:#0f5b4c;
+  --green-deep:#0a3d33;
+  --mint:#e9f4ee;
+  /* 圓角：wayground 的大圓角 */
+  --radius:14px;
+  --radius-lg:20px;
+  /* 柔和綠光暈 */
+  --wg-shadow:0 2px 6px rgba(15,91,76,.05),0 14px 34px rgba(15,91,76,.07);
+  --wg-glow:0 0 0 1px rgba(25,124,104,.06),0 10px 30px rgba(25,124,104,.10);
+}
+body{
+  background:var(--wg-bg);
+}
+
+/* ── 2. 卡片：白底、大圓角、柔和光暈 ─────────────────── */
+.panel,.emp,.card,.metric{
+  background:var(--paper);
+  border:1px solid rgba(15,91,76,.09);
+  border-radius:var(--radius-lg);
+  box-shadow:var(--wg-shadow);
+  transition:box-shadow .2s ease,transform .2s ease,border-color .2s ease;
+}
+.panel:hover,.card:hover,.metric:hover{
+  border-color:rgba(15,91,76,.16);
+  box-shadow:var(--wg-glow);
+}
+/* 面板內標題：底部細線用暖色 */
+.panel-heading{border-bottom:1px solid rgba(15,91,76,.09)}
+
+/* ── 3. 按鈕：大圓角、主按鈕實色 + 微光暈 ───────────── */
+button.primary,.primary{
+  border:1px solid var(--green);
+  border-radius:calc(var(--radius) - 4px);
+  background:var(--green);
+  color:#fff;
+  box-shadow:0 4px 14px rgba(25,124,104,.22);
+  font-weight:700;
+}
+button.primary:hover,.primary:hover{
+  background:var(--green-dark);
+  border-color:var(--green-dark);
+  color:#fff;
+  box-shadow:0 6px 18px rgba(15,91,76,.28);
+  transform:translateY(-1px);
+}
+button.secondary,.secondary{
+  border:1px solid rgba(15,91,76,.16);
+  border-radius:calc(var(--radius) - 4px);
+  background:var(--paper);
+  color:var(--ink);
+  box-shadow:none;
+}
+button.secondary:hover,.secondary:hover{
+  background:#f2f7f2;
+  border-color:rgba(15,91,76,.28);
+  color:var(--ink);
+  transform:none;
+}
+.icon-btn{border-radius:calc(var(--radius) - 6px)}
+
+/* ── 4. Hero：深綠深色大塊 + 超大粗體白字（wayground 深色 hero）── */
+.hero{
+  background:linear-gradient(120deg,var(--green-deep),var(--green-dark) 55%,var(--green));
+  background-image:linear-gradient(120deg,var(--green-deep),var(--green-dark) 55%,var(--green));
+  border:0;
+  border-radius:var(--radius-lg);
+  color:#fff;
+  padding:52px 48px 46px;
+  box-shadow:0 16px 44px rgba(10,61,51,.22);
+}
+.hero h2{
+  font-size:calc(40px*var(--fs));
+  line-height:1.16;
+  letter-spacing:-1.4px;
+  font-weight:800;
+  color:#fff;
+  max-width:20em;
+}
+.hero p{
+  font-size:calc(16.5px*var(--fs));
+  line-height:1.75;
+  color:rgba(255,255,255,.86);
+  max-width:40em;
+}
+/* hero 主鈕：白底深綠字（在深色塊上最跳） */
+.hero .primary{
+  background:#fff;
+  border-color:#fff;
+  color:var(--green-dark);
+  font-weight:700;
+  box-shadow:0 6px 18px rgba(0,0,0,.18);
+}
+.hero .primary:hover{background:#eef5ef;border-color:#eef5ef;color:var(--green-dark)}
+.hero .secondary{
+  background:transparent;
+  border:1px solid rgba(255,255,255,.5);
+  color:#fff;
+}
+.hero .secondary:hover{background:rgba(255,255,255,.12);border-color:rgba(255,255,255,.8);color:#fff}
+
+/* ── 5. 頁面標題：更粗、更緊 ─────────────────────────── */
+.page-heading h1{
+  font-size:calc(38px*var(--fs));
+  line-height:1.16;
+  letter-spacing:-1.3px;
+  font-weight:800;
+}
+.subtitle{font-size:calc(16px*var(--fs));color:var(--muted);max-width:50em}
+
+/* ── 6. 側欄與頂欄：暖底、圓潤、深綠品牌 ───────────── */
+.sidebar{
+  background:#fbf9f3;
+  border-right:1px solid rgba(15,91,76,.09);
+}
+.nav-item{
+  border-radius:calc(var(--radius) - 6px);
+  color:var(--muted);
+}
+.nav-item:hover{background:#f0f5ee}
+.nav-item.active{
+  background:var(--mint);
+  color:var(--green-dark);
+  font-weight:700;
+}
+.topbar{
+  background:rgba(251,249,243,.9);
+  border-bottom:1px solid rgba(15,91,76,.09);
+}
+.topbar-link{border-radius:calc(var(--radius) - 6px)}
+.topbar-link:hover{background:#f0f5ee}
+
+/* ── 7. 統計卡：大圓角、深綠數字 ─────────────────────── */
+.metric{
+  border-radius:var(--radius-lg);
+  box-shadow:var(--wg-shadow);
+}
+.metric-value{color:var(--green-dark);font-weight:800;letter-spacing:-1.4px}
+.metric-label{color:var(--muted);font-weight:600}
+
+/* ── 8. 表單控制項：圓角加大、焦點光暈 ──────────────── */
+input,select,textarea{
+  border-radius:calc(var(--radius) - 4px);
+  border:1px solid rgba(15,91,76,.14);
+}
+input:focus,select:focus,textarea:focus{
+  border-color:var(--green);
+  box-shadow:0 0 0 4px rgba(25,124,104,.14);
+}
+.badge{border-radius:999px;font-weight:600}
+
+/* ── 9. 夜間：同一套，只換深色 ─────────────────────── */
+html[data-theme=night]{
+  --wg-bg:#10171a;
+  --paper:#172024;
+  --green-deep:#0a2f28;
+}
+html[data-theme=night] body{background:var(--wg-bg)}
+html[data-theme=night] .panel,
+html[data-theme=night] .card,
+html[data-theme=night] .emp,
+html[data-theme=night] .metric{
+  background:var(--paper);
+  border-color:rgba(120,180,160,.12);
+  box-shadow:0 2px 6px rgba(0,0,0,.3),0 14px 34px rgba(0,0,0,.25);
+}
+html[data-theme=night] .hero{
+  background:linear-gradient(120deg,#0a2f28,#0f4438 55%,#14584a);
+  box-shadow:0 16px 44px rgba(0,0,0,.4);
+}
+html[data-theme=night] .hero h2{color:#e8f2ec}
+html[data-theme=night] .hero p{color:rgba(230,240,235,.8)}
+html[data-theme=night] .hero .primary{background:#e9f4ee;border-color:#e9f4ee;color:#0f4438}
+html[data-theme=night] .sidebar{background:#121a1d;border-right-color:rgba(120,180,160,.1)}
+html[data-theme=night] .topbar{background:rgba(16,23,26,.92);border-bottom-color:rgba(120,180,160,.1)}
+html[data-theme=night] .nav-item:hover{background:#1c272b}
+html[data-theme=night] .nav-item.active{background:#17352c;color:#7fd8b8}
+html[data-theme=night] .metric-value{color:#7fd8b8}
+html[data-theme=night] input,html[data-theme=night] select,html[data-theme=night] textarea{background:#1c2529;border-color:rgba(120,180,160,.16)}
+
+/* ── 10. 手機：留白收窄、字級略降，維持同一個調性 ────── */
+@media (max-width:740px){
+  .hero{padding:34px 24px}
+  .hero h2{font-size:calc(29px*var(--fs));letter-spacing:-.6px}
+  .page-heading h1{font-size:calc(28px*var(--fs))}
+}
