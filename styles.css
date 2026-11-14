@@ -2632,3 +2632,209 @@ html[data-theme=night] .hero{
 .recommendation-mini button{font-size:14.5px !important}
 .item-transform-field,.label-name-field,.label-size-value,
 .hand-size-row span,.figure-zoom-hint{font-size:14px !important}
+
+/* ══════════════════════════════════════════════════════════════
+   Landing 版面：參考 typing.mocode.fun 的兩欄結構
+   ──────────────────────────────────────────────────────────────
+   參考站特的排版特徵：淺色底、左欄大標題＋說明、右欄操作卡片、
+   白色大圓角卡片、柔邊框淡陰影、大量留白、圓潤按鈕。
+   主色沿用本網站深綠 #197c68（不改色）。
+   ══════════════════════════════════════════════════════════════ */
+
+.lp-wrap{
+  display:grid;
+  grid-template-columns:minmax(0,1.15fr) minmax(340px,.85fr);
+  gap:52px;
+  align-items:start;
+  padding:14px 4px 40px;
+}
+
+/* -- 左欄：大標題 + 說明 + 三步 -- */
+.lp-left{padding-top:18px}
+.lp-eyebrow{
+  font-size:15px;
+  font-weight:700;
+  letter-spacing:.6px;
+  color:var(--green);
+  margin:0 0 16px;
+}
+.lp-title{
+  font-size:clamp(40px,4.4vw,60px);
+  line-height:1.12;
+  letter-spacing:-1.8px;
+  font-weight:800;
+  color:var(--ink);
+  margin:0 0 22px;
+}
+.lp-lead{
+  font-size:17.5px;
+  line-height:1.85;
+  color:var(--muted);
+  max-width:34em;
+  margin:0 0 32px;
+}
+.lp-steps{display:flex;flex-direction:column;gap:2px;max-width:34em}
+.lp-step{
+  display:flex;
+  gap:14px;
+  align-items:flex-start;
+  padding:14px 0;
+  border-top:1px solid var(--editorial-rule);
+}
+.lp-step:first-child{border-top:0;padding-top:0}
+.lp-step-n{
+  flex:0 0 auto;
+  width:30px;height:30px;
+  border-radius:50%;
+  background:var(--mint);
+  color:var(--green-dark);
+  font-weight:800;
+  font-size:15px;
+  display:flex;align-items:center;justify-content:center;
+}
+.lp-step strong{display:block;font-size:16.5px;font-weight:700;color:var(--ink);margin-bottom:3px}
+.lp-step div>span{display:block;font-size:15px;line-height:1.65;color:var(--muted)}
+
+/* -- 右欄：操作卡片 -- */
+.lp-right{position:sticky;top:24px}
+.lp-card{
+  background:var(--paper);
+  border:1px solid rgba(25,124,104,.14);
+  border-radius:22px;
+  padding:30px 28px 26px;
+  box-shadow:0 3px 10px rgba(15,91,76,.06),0 20px 50px rgba(15,91,76,.10);
+}
+.lp-card-label{
+  font-size:14px;
+  font-weight:700;
+  letter-spacing:.5px;
+  color:var(--green);
+  margin:0 0 10px;
+}
+.lp-card-title{
+  font-size:25px;
+  font-weight:800;
+  letter-spacing:-.5px;
+  color:var(--ink);
+  margin:0 0 8px;
+}
+.lp-card-hint{
+  font-size:15px;
+  line-height:1.7;
+  color:var(--muted);
+  margin:0 0 20px;
+}
+.lp-cta{
+  width:100%;
+  font-size:17.5px !important;
+  font-weight:800 !important;
+  padding:16px 20px !important;
+  border-radius:14px !important;
+  justify-content:center;
+}
+.lp-cta2{
+  width:100%;
+  margin-top:10px;
+  font-size:15.5px !important;
+  padding:13px 20px !important;
+  border-radius:14px !important;
+  justify-content:center;
+}
+
+/* -- 卡片內的小預覽（模擬真站的效果卡）-- */
+.lp-preview{
+  margin-top:22px;
+  background:#f7faf7;
+  border:1px solid var(--editorial-rule);
+  border-radius:14px;
+  padding:14px 16px 13px;
+}
+.lp-preview-head{display:flex;align-items:center;gap:6px;margin-bottom:10px}
+.lp-dot{width:8px;height:8px;border-radius:50%}
+.lp-dot.d1{background:#e5917f}
+.lp-dot.d2{background:#e3c07a}
+.lp-dot.d3{background:#8ec4a6}
+.lp-preview-tag{
+  margin-left:auto;
+  font-size:12.5px;
+  font-weight:600;
+  color:var(--muted);
+}
+.lp-preview-q{font-size:15px;color:var(--ink);margin:0 0 10px;line-height:1.6}
+.lp-preview-q b{color:var(--green-dark)}
+.lp-preview-row{display:flex;gap:18px;font-size:13.5px;color:var(--muted)}
+.lp-preview-row b{color:var(--green-dark);font-weight:700}
+
+/* -- 響應式：平板以下改單欄，卡片移上 -- */
+@media (max-width:1024px){
+  .lp-wrap{grid-template-columns:1fr;gap:32px;padding-top:0}
+  .lp-right{position:static;order:-1}
+  .lp-title{font-size:clamp(34px,6vw,44px)}
+  .lp-card{max-width:560px}
+}
+@media (max-width:740px){
+  .lp-wrap{padding-bottom:28px}
+  .lp-title{font-size:34px;letter-spacing:-.8px}
+  .lp-lead{font-size:16.5px;margin-bottom:24px}
+  .lp-card{padding:24px 20px 22px;border-radius:18px}
+  .lp-card-title{font-size:22px}
+  .lp-cta{font-size:17px !important;padding:15px 18px !important}
+}
+
+/* 夜間 */
+html[data-theme=night] .lp-card{background:var(--paper);border-color:rgba(120,180,160,.16)}
+html[data-theme=night] .lp-preview{background:#1b2426;border-color:rgba(120,180,160,.14)}
+html[data-theme=night] .lp-eyebrow{color:#7fdcbf}
+html[data-theme=night] .lp-step{border-top-color:rgba(120,180,160,.14)}
+html[data-theme=night] .lp-step-n{background:#1e3a30;color:#7fdcbf}
+
+/* ── Landing 修正 ①：移動／平板改「標題在上、操作卡在下」── */
+@media (max-width:1024px){
+  .lp-right{order:0}
+  .lp-left{order:1}
+  /* 訪客狀態下，上方「我的作業」標題與下方大標題重複，收起來 */
+  .page-heading:has(+ .lp-wrap){display:none}
+}
+
+/* ── Landing 修正 ②：平板頂欄導覽不要被壓成豎排 ────────── */
+@media (min-width:741px) and (max-width:1024px){
+  .topbar{flex-wrap:wrap;height:auto;min-height:64px;padding:10px 20px;row-gap:8px}
+  .topbar-links{
+    flex-wrap:nowrap;
+    overflow-x:auto;
+    max-width:100%;
+    padding-left:0;
+    border-left:0;
+    scrollbar-width:none;
+    -ms-overflow-style:none;
+  }
+  .topbar-links::-webkit-scrollbar{display:none}
+  .topbar-link{white-space:nowrap;flex:0 0 auto}
+  .topbar-left{flex:1 1 100%;min-width:0}
+}
+
+/* ── Landing 修正 ③：單欄時「左欄(標題)在上、右欄(卡片)在下」── */
+@media (max-width:1024px){
+  .lp-left{order:1 !important}
+  .lp-right{order:2 !important}
+}
+
+/* ── Landing 修正 ④：手機首屏就能看到主按鈕 ─────────────
+   用 display:contents 讓左欄子元素直接參與外層排序，
+   實現「標題 → 說明 → 操作卡 → 三步」的順序。 */
+@media (max-width:1024px){
+  .lp-wrap{display:flex;flex-direction:column;gap:0}
+  .lp-left{display:contents}
+  .lp-eyebrow{order:1}
+  .lp-title{order:2}
+  .lp-lead{order:3;margin-bottom:20px}
+  .lp-right{order:4;position:static}
+  .lp-steps{order:5;margin-top:24px;margin-bottom:8px}
+  .lp-card{max-width:none}
+}
+
+/* ── 輔助控制項（字體／版面切換）加大到易點尺寸 ────────── */
+.font-scale button{
+  min-height:40px;
+  padding:10px 0;
+}
