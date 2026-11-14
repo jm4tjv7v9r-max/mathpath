@@ -2301,3 +2301,334 @@ html[data-theme=night] input,html[data-theme=night] select,html[data-theme=night
   .hero h2{font-size:calc(29px*var(--fs));letter-spacing:-.6px}
   .page-heading h1{font-size:calc(28px*var(--fs))}
 }
+
+/* ══════════════════════════════════════════════════════════════
+   可讀性優化：讓老花教師／初次使用者都能清楚看懂、好用
+   ──────────────────────────────────────────────────────────────
+   實測問題（Playwright 計算樣式實測）：
+   ① 全站大量 12px／13px 文字，老花教師看不清 → 拉到最小 15px；
+   ② 夜間 --green:#5ed0ae 太亮，白字按鈕對比度僅 1.89:1 → 換深綠底；
+   ③ 日間金黃／淺綠文字對比度 3.2–3.9:1 → 加深到 4.5:1 以上；
+   ④ 核心功能（學生：開始練習；教師：匯入試卷／佈置作業）要最突出。
+   只做「追加覆蓋」，不改既有選擇器結構。
+   ══════════════════════════════════════════════════════════════ */
+
+/* ── 1. 拉高基礎與小字字級（老花可讀）──────────────────── */
+body{font-size:16.5px}                     /* 正文基準拉到 16.5px */
+.small-text,.field-hint,.panel-sub,.modal-intro,
+.subtitle,.side-note p,.filters select,
+.question-meta,.recommendation-mini .title-row,
+.knowledge-row,.tip-panel p,.right-panel .panel-sub{
+  font-size:15px !important;               /* 次要說明最小 15px */
+}
+.field-hint{color:var(--muted)}
+.metric-label{font-size:14.5px !important;color:var(--muted)}
+.metric-foot{font-size:14px !important;color:var(--muted)}
+.badge{font-size:14px !important}
+.question-meta{font-size:14.5px !important}
+.text-button,.practice-btn{font-size:15px !important;font-weight:600}
+.font-scale,.font-scale-note,.font-scale button{font-size:14.5px !important}
+.app-footer{font-size:13.5px !important;color:var(--muted)}
+.account-info{font-size:16px}
+
+/* ── 2. 夜間：主色改深，修復白字按鈕對比度（1.89→合格）── */
+html[data-theme=night]{
+  --green:#1a8f74;         /* 從亮薄荷 #5ed0ae 改深綠，白字可讀 */
+  --green-dark:#0f5b4c;
+}
+html[data-theme=night] button.primary,html[data-theme=night] .primary{
+  background:#1a8f74;
+  border-color:#0f5b4c;
+  color:#fff;
+  box-shadow:0 4px 14px rgba(26,143,116,.3);
+}
+html[data-theme=night] button.primary:hover,html[data-theme=night] .primary:hover{
+  background:#1e9e80;
+  border-color:#1a8f74;
+  color:#fff;
+}
+html[data-theme=night] .metric-value{color:#8fdcbf}
+html[data-theme=night] .badge{background:#22302c;color:#b9d3c8;border-color:rgba(180,210,200,.18)}
+html[data-theme=night] .badge.outline{background:transparent;color:#cfd9d4}
+html[data-theme=night] .account-info{color:#e8f0ed}
+
+/* 夜間：文字按鈕改淺薄荷綠，深底可讀（不能沿用日間的深綠 --green-dark） */
+html[data-theme=night] .text-button,
+html[data-theme=night] .practice-btn{
+  color:#7fdcbf !important;
+}
+html[data-theme=night] .text-button:hover,
+html[data-theme=night] .practice-btn:hover{color:#a4ecd2 !important}
+/* 夜間：practice-btn 的底色仍是日間淺色，淺字配淺底看不清 → 改深底描邊 */
+html[data-theme=night] .practice-btn{
+  background:#1a2b28 !important;
+  border-color:#2e4a44 !important;
+  color:#8fe3c6 !important;
+}
+/* 夜間：題號芯片底色是日間粉彩，改深底淺字 */
+html[data-theme=night] .question-number{
+  background:#233430 !important;
+  color:#f0c877 !important;
+}
+/* 夜間：卡片內的 strong／標語改淺字，否則深綠配深底看不清 */
+html[data-theme=night] .right-panel strong,
+html[data-theme=night] .feature-list li strong,
+html[data-theme=night] .side-note strong,
+html[data-theme=night] .strong-muted{
+  color:#cfe3d9 !important;
+}
+html[data-theme=night] .right-panel strong .icon,
+html[data-theme=night] .feature-list li strong .icon{color:#7fdcbf}
+/* 夜間：主按鈕再壓深一點，讓白字達到 4.5:1 */
+html[data-theme=night] button.primary,html[data-theme=night] .primary{
+  background:#157a63 !important;
+  border-color:#0f5b4c !important;
+}
+
+/* ── 3. 日間：加深低對比文字（→ 4.5:1 以上）────────────── */
+/* 金黃 text-button（原 3.2:1）→ 用深綠，與品牌一致 */
+.text-button{color:var(--green-dark) !important}
+.tip-panel .text-button{color:var(--green-dark) !important}
+/* 未登入首頁的特點段落（原 3.49:1）加深 */
+.homework-features p{color:var(--muted) !important}
+/* 題號（原 3.91:1）加深 */
+.question-number{color:#5a3f0e !important;font-weight:800}
+/* 各處淺綠/灰綠 strong（原 3.5–3.9:1）加深 */
+.strong-muted,.side-note strong,
+.right-panel strong,.feature-list li strong{
+  color:var(--green-dark);
+}
+/* 「點擊或拖入試卷檔案」dropzone 主文字（原 3.57:1）加深 */
+#paper-drop strong,.dropzone strong{
+  color:var(--ink) !important;
+}
+/* 側欄／頂欄品牌小字（原 4.33:1）加深 */
+.topbar-left strong,.workspace strong,.brand small{
+  color:var(--ink);
+}
+/* 練習按鈕（原 3.62:1）加深 */
+.practice-btn{color:var(--green-dark) !important;font-weight:700}
+
+/* ── 4. 核心功能更突出 ────────────────────────────────── */
+/* 主按鈕更醒目（更大、更粗） */
+button.primary,.primary{
+  font-weight:700;
+  padding:13px 22px;
+  font-size:16px;
+  letter-spacing:.2px;
+}
+/* 次要按鈕也拉到可讀字級 */
+button.secondary,.secondary,
+button.text-button{font-size:15.5px}
+
+/* ══════════════════════════════════════════════════════════════
+   易用性：首次使用者引導 ＋ 突顯核心功能
+   ──────────────────────────────────────────────────────────────
+   目標：不清楚本網站的學生／有老花的教師，一眼看懂「這是什麼、
+   我該按哪裡」。把最重要的動作做成最大、最顯眼的按鈕。
+   ══════════════════════════════════════════════════════════════ */
+
+/* ── A. 訪客首頁的三步說明 ─────────────────────────────── */
+.hero-steps{
+  display:grid;
+  grid-template-columns:repeat(3,minmax(0,1fr));
+  gap:14px;
+  margin:26px 0 28px;
+}
+.hero-step{
+  display:flex;
+  gap:12px;
+  align-items:flex-start;
+  background:rgba(255,255,255,.10);
+  border:1px solid rgba(255,255,255,.20);
+  border-radius:12px;
+  padding:15px 16px;
+}
+.hero-step-num{
+  flex:0 0 auto;
+  width:28px;height:28px;
+  border-radius:50%;
+  background:#fff;
+  color:var(--green-dark);
+  font-weight:800;
+  font-size:15px;
+  display:flex;align-items:center;justify-content:center;
+}
+.hero-step strong{
+  display:block;
+  color:#fff;
+  font-size:16.5px;
+  font-weight:700;
+  margin-bottom:4px;
+}
+.hero-step span:not(.hero-step-num){
+  display:block;
+  color:rgba(255,255,255,.82);
+  font-size:15px;
+  line-height:1.6;
+}
+
+/* ── B. 超大明確的主行動按鈕 ───────────────────────────── */
+.primary-xl{
+  font-size:18px !important;
+  font-weight:800 !important;
+  padding:17px 34px !important;
+  border-radius:12px !important;
+  box-shadow:0 8px 24px rgba(0,0,0,.22) !important;
+  letter-spacing:.3px;
+}
+.hero .primary-xl{
+  background:#fff !important;
+  border-color:#fff !important;
+  color:var(--green-dark) !important;
+}
+.hero .primary-xl:hover{
+  background:#eef5ef !important;
+  border-color:#eef5ef !important;
+  transform:translateY(-1px);
+}
+
+/* ── C. 三大功能卡：字更大、標題更清楚 ─────────────────── */
+.homework-features .panel{padding:26px 24px}
+.homework-features h2{
+  font-size:19px !important;
+  font-weight:700;
+  margin:12px 0 8px;
+}
+.homework-features p{
+  font-size:15.5px !important;
+  line-height:1.85 !important;
+  color:var(--muted) !important;
+}
+.feature-icon{
+  width:44px;height:44px;
+  border-radius:12px;
+  display:flex;align-items:center;justify-content:center;
+  background:var(--mint);
+  color:var(--green-dark);
+}
+.feature-icon .icon{width:22px;height:22px}
+
+/* ── D. 手機：三步改成直向堆疊 ─────────────────────────── */
+@media (max-width:740px){
+  .hero-steps{grid-template-columns:1fr;gap:10px;margin:20px 0 22px}
+  .hero-step{padding:13px 14px}
+  .hero-step strong{font-size:16px}
+  .hero-step span:not(.hero-step-num){font-size:14.5px}
+  .primary-xl{width:100%;justify-content:center;font-size:17px !important;padding:16px 20px !important}
+  .hero .secondary{margin-left:0 !important;width:100%;justify-content:center;margin-top:10px}
+  .homework-features .panel{padding:20px 18px}
+  .homework-features h2{font-size:17.5px !important}
+  .homework-features p{font-size:15px !important}
+}
+
+/* 夜間：三步卡改深底 */
+html[data-theme=night] .hero-step{
+  background:rgba(255,255,255,.07);
+  border-color:rgba(255,255,255,.16);
+}
+html[data-theme=night] .feature-icon{background:#1e3a30;color:#7fdcbf}
+
+/* ── E. 空狀態的主要行動：讓「該做什麼」一眼可見 ────────── */
+.empty-cta{
+  display:flex;
+  gap:10px;
+  align-items:center;
+  flex-wrap:wrap;
+  margin-top:16px;
+}
+.empty-cta .primary-xl{
+  font-size:17px !important;
+  padding:15px 28px !important;
+}
+@media (max-width:740px){
+  .empty-cta{flex-direction:column;align-items:stretch}
+  .empty-cta .secondary{margin-left:0 !important}
+}
+
+/* ── F. 補齊殘留的小字（12–13.5px → 14px 以上）──────────── */
+.account-info small,.brand small,.workspace small,.nav-item .count,
+.pagination,.pagination-buttons button,.divider-text,
+.role-card small,.login-remember small,.cal-weekdays span{
+  font-size:14px !important;
+}
+.pagination{color:var(--muted)}
+.pagination-buttons button{color:var(--ink)}
+.divider-text{color:var(--muted)}
+
+/* ── G. 修正誤判：Hero 深綠底上的白字／淺字 ─────────────── */
+/* 這些文字在深綠漸變 hero 上，背景掃描抓不到漸變，故明確指定 */
+.hero h2{color:#fff !important}
+.hero p{color:rgba(255,255,255,.88) !important}
+.hero .secondary{color:#fff !important;border-color:rgba(255,255,255,.55) !important}
+.hero .secondary:hover{background:rgba(255,255,255,.14) !important;color:#fff !important}
+.hero .secondary:hover{background:rgba(255,255,255,.14) !important;color:#fff !important}
+html[data-theme=night] .hero h2{color:#eaf3ee !important}
+html[data-theme=night] .hero p{color:rgba(233,244,238,.85) !important}
+html[data-theme=night] .hero .secondary{color:#eaf3ee !important;border-color:rgba(233,244,238,.5) !important}
+
+/* ── H. 夜間主按鈕：白字對比度補到 4.5:1 以上 ───────────── */
+html[data-theme=night] button.primary,
+html[data-theme=night] .primary{
+  background:#12705c !important;
+  border-color:#0d5445 !important;
+  color:#fff !important;
+}
+html[data-theme=night] .hero .primary-xl{
+  background:#fff !important;
+  border-color:#fff !important;
+  color:#0d5445 !important;
+}
+
+/* ── I. 最後殘留小字（分頁資訊、數量徽章、麵包屑）───────── */
+.account-info small{font-size:14.5px !important;color:var(--muted)}
+.workspace small{font-size:14px !important;color:var(--muted)}
+.pagination span,.pagination .pagination-info{font-size:14px}
+.nav-item .count{font-size:13.5px !important}
+.divider-text>span{font-size:14.5px}
+
+/* ── J. 收尾：所有剩餘小字一律拉到 14px 以上 ───────────── */
+.empty p,.homework-features p,.dropzone small,.objective-note,
+.roadmap-item,.roadmap-circle,.nav-item .count,
+.app-footer,.app-footer span,.brand small,.account-info small,
+.divider-text,.divider-text>span,.field-hint,.panel-sub,
+.objective-note,.draft-section>span,.upload-file small,
+.settings-status p,.info-note,.feature-list li,.side-note p{
+  font-size:14px !important;
+}
+
+/* Hero 加深綠實色底色（漸變作視覺層），確保任何情況都對比足夠 */
+.hero{
+  background-color:var(--green-dark) !important;
+}
+html[data-theme=night] .hero{
+  background-color: #0d4438 !important;
+}
+
+/* skip-link 對比度 */
+.skip-link{background:#0d5445 !important;color:#fff !important}
+
+/* ── K. 全站小字統一拉到 14px（老花可讀；一次性覆蓋）── */
+.ai-callout,.app-footer,.badge,.bp-check,.bp-table,.bulk-result,
+.bulk-who,.cal-event-tag,.calc-fab,.calc-live,.chart-caption,.checkbox-line,
+.contest-status,.cr-chip,.cr-mark,.cr-qitem,.cr-row-flags,.cr-stu-code,
+.cr-tpl,.cr-ttext,.demo-accounts,.divider-text,.draft-section>span,.field-hint,
+.fig-read-grid>div,.fig-read>summary,.fig-spec,.figure-zoom-hint,.font-scale,.font-scale-note,
+.gen-chip,.gen-qopts,.gen-ref-chip,.gen-ref-del,.geo-item,.guide-num,
+.hand-size-row,.knowledge-row,.label-name-field,.local-badge,.math-editor-open,.metric-foot,
+.metric-label,.mk-head,.mk-tab,.nav-label,.option-letter,.pagination,
+.paper-praise,.paper-warn-line,.pb-chip,.pb-second-opt,.pick-chip,.practice-btn,
+.question-meta,.recommend-label,.record-advice>summary,.ref-compare>summary,.review-history-box>summary,.roadmap-item,
+.role-badge,.rubric-check-total,.rubric-percent,.rubric-preview-label,.rubric-total,.score-grid,
+.score-head,.score-line,.score-pill,.skip-btn,.small-text,.step,
+.subtopic-tab,.topbar-link,.week-date,.week-more{
+  font-size:14px !important;
+  line-height:1.6;
+}
+
+/* ── L. 最後兩處小字 ──────────────────────────────────── */
+.recommendation-mini .secondary,
+.recommendation-mini .wide,
+.recommendation-mini button{font-size:14.5px !important}
+.item-transform-field,.label-name-field,.label-size-value,
+.hand-size-row span,.figure-zoom-hint{font-size:14px !important}
