@@ -2838,3 +2838,84 @@ html[data-theme=night] .lp-step-n{background:#1e3a30;color:#7fdcbf}
   min-height:40px;
   padding:10px 0;
 }
+
+/* ══════════════════════════════════════════════════════════════
+   設定頁：顯示設定（字體大小／版面配色）
+   由側欄移入設定頁，讓常用功能集中一處；兩者只影響本機。
+   ══════════════════════════════════════════════════════════════ */
+.display-panel{margin-bottom:20px}
+.display-grid{
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:22px;
+  margin-top:6px;
+}
+.display-item{min-width:0}
+.display-label{
+  font-size:15px;
+  font-weight:700;
+  color:var(--ink);
+  margin-bottom:10px;
+}
+/* 設定頁內的控制項：按鈕加高、文字放大、整組不換行擠壓 */
+.display-item .font-scale{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  font-size:15px;
+  color:var(--muted);
+  flex-wrap:nowrap;
+}
+.display-item .font-scale>span{
+  margin-right:2px;
+  white-space:nowrap;
+  font-weight:600;
+  color:var(--ink);
+}
+.display-item .font-scale .icon{width:20px;height:20px;color:var(--green)}
+.display-item .font-scale button{
+  flex:1;
+  min-height:44px;
+  border:1px solid var(--editorial-rule);
+  background:#fff;
+  color:var(--ink);
+  border-radius:10px;
+  font-size:15.5px;
+  font-weight:600;
+  padding:10px 6px;
+  white-space:nowrap;
+  transition:background .18s,border-color .18s,color .18s;
+}
+.display-item .font-scale button:hover{background:#f4f8f4;border-color:#c9d8cd}
+.display-item .font-scale button.active{
+  background:var(--mint);
+  border-color:var(--green);
+  color:var(--green-dark);
+  font-weight:700;
+  box-shadow:inset 0 0 0 1px var(--green);
+}
+.display-item .font-scale-note{
+  font-size:14px;
+  color:var(--muted);
+  margin:10px 0 0;
+  line-height:1.6;
+}
+
+@media (max-width:740px){
+  .display-grid{grid-template-columns:1fr;gap:20px}
+}
+
+/* 夜間 */
+html[data-theme=night] .display-item .font-scale button{
+  background:#1f2a2d;
+  border-color:#2f3d40;
+  color:#dfe9e6;
+}
+html[data-theme=night] .display-item .font-scale button:hover{background:#243033}
+html[data-theme=night] .display-item .font-scale button.active{
+  background:#17352c;
+  border-color:#2f8a72;
+  color:#9fe8cd;
+  box-shadow:inset 0 0 0 1px #2f8a72;
+}
+html[data-theme=night] .display-item .font-scale .icon{color:#7fdcbf}
