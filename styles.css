@@ -3290,3 +3290,15 @@ html[data-role=teacher][data-theme=night] .guide-tabs button.active{background:#
 html[data-role=teacher][data-theme=night] .guide-tabs button{color:#b3d0f2 !important}
 html[data-role=teacher][data-theme=night] .item-transform-field{color:#b3d0f2 !important}
 html[data-role=teacher][data-theme=night] .feature-list li .icon{color:#b3d0f2 !important}
+
+/* 管理學生：學生一次多個並排顯示（多欄網格），一眼看到整班，不用逐行捲動。
+   只套用在 .student-picks（管理學生）；佈置作業的 .assignment-question-picks 保持單欄。 */
+.modal.class-modal{width:min(680px,100%)}
+.student-picks{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:8px;max-height:360px;padding:10px;align-content:start}
+.student-picks .pick-row{display:flex;gap:10px;align-items:center;padding:12px 12px;border-bottom:0;border:1px solid var(--border);border-left:4px solid var(--q-accent,#2f6d55);border-radius:9px;background:var(--q-tint,#fff)}
+.student-picks .pick-row:hover{background:#f6faf3}
+.student-picks .pick-row input{width:15px;height:15px}
+.student-picks .pick-row>span:nth-child(2){font-size:calc(14px*var(--fs));line-height:1.55}
+.student-picks .pick-row strong{font-size:calc(14px*var(--fs))}
+.student-picks .pick-row small{font-size:calc(12px*var(--fs));margin-top:3px}
+@media(max-width:740px){.modal.class-modal{width:min(480px,100%)}.student-picks{grid-template-columns:1fr;max-height:320px}}

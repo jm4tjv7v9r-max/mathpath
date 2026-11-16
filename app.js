@@ -7437,7 +7437,7 @@ function manageClassModal(id){
     <div class="student-picks" id="class-picks"></div>
     <p class="error-text" id="class-error"></p>
     <button class="primary wide" type="submit">儲存名單 ${icon('check')}</button>
-  </form>`);
+  </form>`, 'class-modal');
 
   renderPicks('');
   $('#class-maker').onchange=e=>renderPicks(e.target.value);
