@@ -6035,9 +6035,9 @@ async function scoreGridPage(){
           <input id="sg-newcol-date" type="date">
           <button class="primary" id="sg-newcol-ok">確定</button>
         </span>
-        <button class="secondary" id="sg-addcol">＋ 新增欄位</button>
-        <button class="secondary" id="sg-bulk">整班匯入</button>
-        <button class="secondary" id="sg-export">下載 Excel</button>
+        <button class="secondary" id="sg-addcol">＋ 新增分數欄位</button>
+        <button class="secondary" id="sg-bulk">首次整班匯入</button>
+        <button class="secondary" id="sg-export">下載整班分紙 Excel</button>
       </div>
       <div class="sg-bulkbox" id="sg-bulkbox" hidden>
         <p class="small-text">一行一個學生，格式「座號 姓名」或只寫姓名；已有的同名學生會自動跳過。</p>
@@ -6090,6 +6090,9 @@ async function scoreGridPage(){
   $('#sg-bulk-ok').onclick=async()=>{
     const lines=($('#sg-bulk-text').value||'').split('\n').map(l=>l.trim()).filter(Boolean);
     if(!lines.length)return toast('請貼上學生名單。');
+    if(!(await askConfirm(
+      `將匯入 ${lines.length} 位學生（姓名會以遮蔽形式存入）。\n\n是否要匯入？`,
+      {title:'匯入整班學生',confirmText:'確定匯入',cancelText:'取消'})))return;
     const students=lines.map(line=>{
       const m=line.match(/^(\d{1,3})[\s,，、.\t]+(.+)$/);
       return m?{seat:Number(m[1]),name:m[2].trim()}:{name:line.replace(/^[\s,，、.]+/,'').trim()};
@@ -6118,6 +6121,9 @@ async function scoreGridPage(){
     if(!cid)return toast('請先選擇一個班別。');
     const file=$('#sg-bulk-file').files[0];
     if(!file)return toast('請先選一個 Excel 檔（.xlsx）。');
+    if(!(await askConfirm(
+      `將匯入「${file.name}」的整班學生名單（姓名會以遮蔽形式存入）。\n\n是否要匯入？`,
+      {title:'匯入整班學生',confirmText:'確定匯入',cancelText:'取消'})))return;
     if(!(await askNameMask()))return;
     const btn=$('#sg-bulk-import');btn.disabled=true;btn.textContent='匯入中…';
     try{
@@ -6129,7 +6135,7 @@ async function scoreGridPage(){
     btn.disabled=false;btn.textContent='匯入 Excel';
   };
   $('#sg-addcol').onclick=()=>{
-    if(!cid)return toast('請先選擇一個班別，再新增欄位。');
+    if(!cid)return toast('請先選擇一個班別，再新增分數欄位。');
     const box=$('#sg-newcol');
     box.hidden=!box.hidden;
     if(!box.hidden)$('#sg-newcol-title').focus();
@@ -6139,7 +6145,7 @@ async function scoreGridPage(){
     if(!title)return toast('請填欄位名稱。');
     try{
       await api('/api/score-grid/column',{classId:cid,title,date:$('#sg-newcol-date').value||''});
-      toast('已新增欄位');await scoreGridPage();
+      toast('已新增分數欄位');await scoreGridPage();
     }catch(e){toast(e.message);}
   };
   $('#sg-export').onclick=async ev=>{
