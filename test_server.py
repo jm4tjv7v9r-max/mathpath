@@ -1110,6 +1110,23 @@ class APITests(unittest.TestCase):
         broken = png_url().replace('data:image/png;', 'data:image/jpeg;')
         self.request('POST', '/api/attempts', {'questionId': 1, 'answerText': '', 'image': broken}, cookie=self.student, expect=400)
 
+    def test_paper_scan_accepts_large_pdf_and_raw_upload(self):
+        """全班紙本批閱：PDF 上限放寬到 60 MB，且 raw 二進位上傳（不經 base64）可正常起始。"""
+        # 超過舊 12 MB、但落在新上限內（13 MB）的 PDF：JSON 路徑不應再被 413 擋下。
+        big = b'%PDF-1.7\n' + b'0' * (13 * 1024 * 1024) + b'\n%%EOF'
+        big_url = 'data:application/pdf;base64,' + base64.b64encode(big).decode()
+        status, result, _ = self.request(
+            'POST', '/api/paper-grades/scan',
+            {'file': big_url, 'classId': None, 'title': 'large', 'async': True,
+             'split': '1', 'rotate': 'auto', 'consentExternal': False},
+            cookie=self.teacher, expect=200)
+        self.assertIn('jobId', result, '13 MB 掃描 PDF 應能起始而非 413。')
+        # raw 二進位路徑：直接把 PDF bytes 當 body，查詢參數放 classId 等。
+        status, result, _ = self.request(
+            'POST', '/api/paper-grades/scan-raw?split=1&rotate=auto',
+            raw=big, cookie=self.teacher, extra={'Content-Type': 'application/pdf'}, expect=200)
+        self.assertIn('jobId', result, 'raw 上傳應回 jobId。')
+
     def test_teacher_moves_and_rewrites_ai_annotation(self):
         """教師可以搬動印章／批語並改寫 AI 的說明；位置以 0 至 1 的相對座標保存，壞座標不寫入。"""
         attempt = self.submit('', image=png_url())

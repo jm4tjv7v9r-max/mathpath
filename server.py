@@ -50,7 +50,9 @@ from storage import Storage
 ROOT = Path(__file__).resolve().parent
 MAX_FILE = 10 * 1024 * 1024
 # 學生作答可上傳 PDF（掃描檔常比單張相片大）；圖片仍維持 10 MB。
-MAX_PDF = 20 * 1024 * 1024
+# 全班紙本批閱一次上傳整疊掃描（最多 80 頁、38 位學生）時，掃描檔常到 30–60 MB，
+# 所以 PDF 上限要放寬；MAX_BODY 依此放大以承載 base64 的 JSON 請求體（約 4/3 倍）。
+MAX_PDF = 60 * 1024 * 1024
 MAX_FIGURE = 2 * 1024 * 1024
 MAX_TEXT = 80_000
 MAX_BODY = 4 * ((MAX_PDF + 2) // 3) + MAX_TEXT * 12 + 10_000
@@ -59,6 +61,7 @@ SESSION_SECONDS_LONG = 30 * 24 * 3600
 # 允許帶查詢參數的路徑（日曆區間、歸檔選項）。
 QUERY_PATHS = ('/api/calendar', '/api/papers',
                '/api/score-grid', '/api/score-grid/export',
+               '/api/paper-grades/scan-raw',
                '/api/admin/archive/students', '/api/admin/archive/questions',
                '/api/admin/restore/questions', '/api/admin/restore/students')
 # 真正支援 DELETE 的路徑。HTTP 層放行 DELETE 之後，若不在此清單就回 405
@@ -3589,7 +3592,6 @@ def decode_docx(value):
 
 
 PDF_MIME = 'application/pdf'
-MAX_PDF = 12 * 1024 * 1024
 
 
 def decode_paper(value):
@@ -10303,6 +10305,55 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             shutil.rmtree(directory, ignore_errors=True)
 
+    def handle_raw_scan(self):
+        """全班紙本批閱：PDF 以原始二進位主體上傳（不經 base64 JSON）。
+
+        前端把整份 PDF 直接放進請求主體，並把 classId／title／split／rotate／consentExternal
+        放在查詢字串，避免 base64 膨脹 4/3 倍讓部署代理層在到達應用前就回 413。
+        讀進記憶體後轉成與 JSON 版相同的 dataURL，再走原有的 dispatch 流程。
+        """
+        app = self.server.app
+        user, token_hash = app.current_user(self.headers.get('Cookie'))
+        if user is None:
+            fail(401, '請先登入。')
+        app.teacher(user)
+        query = dict(parse_qsl(self.path.split('?', 1)[1] if '?' in self.path else ''))
+        raw = self.receive_upload_memory(MAX_PDF)
+        if not raw.startswith(b'%PDF'):
+            fail(400, '請上傳 PDF（一次把所有學生的卷掃成一份 PDF）。')
+        payload = {
+            'file': 'data:application/pdf;base64,' + base64.b64encode(raw).decode(),
+            'classId': query.get('classId') or None,
+            'title': query.get('title') or '',
+            'split': query.get('split') or 'auto',
+            'rotate': query.get('rotate') or 'auto',
+            'consentExternal': query.get('consentExternal') in ('1', 'true'),
+            'async': True,
+        }
+        result, _ = app.dispatch('POST', '/api/paper-grades/scan', payload, user, token_hash,
+                                 self.client_address[0], '')
+        self.respond(200, result)
+
+    def receive_upload_memory(self, max_bytes):
+        """把請求主體讀進記憶體（全班掃描 PDF，最多 MAX_PDF）；逾時依大小放寬。"""
+        if self.headers.get('Transfer-Encoding') or len(self.headers.get_all('Content-Length', [])) != 1:
+            fail(400, '必須提供唯一 Content-Length，不支援分塊上傳。')
+        length = self.headers['Content-Length']
+        if not re.fullmatch(r'\d{1,12}', length):
+            fail(400, 'Content-Length 無效。')
+        length = int(length)
+        if not 0 < length <= max_bytes:
+            fail(413, '檔案大小必須介於 1 位元組與 %d MB 之間。' % (max_bytes // (1024 * 1024)))
+        previous = self.connection.gettimeout()
+        self.connection.settimeout(max(previous, 60 + length // (512 * 1024)))
+        try:
+            raw = self.rfile.read(length)
+        finally:
+            self.connection.settimeout(previous)
+        if len(raw) != length:
+            fail(400, '上傳中斷，內容不完整。')
+        return raw
+
     def file_chunks(self, target, size=512 * 1024):
         with open(target, 'rb') as handle:
             while True:
@@ -10382,7 +10433,14 @@ class Handler(BaseHTTPRequestHandler):
             fail(413, '請求過大或為空；文字最多80,000字，檔案最多10 MB。')
         if self.headers.get_content_type() != 'application/json' or self.headers.get('Content-Encoding'):
             fail(415, '請使用未壓縮的 application/json。')
-        raw = self.rfile.read(length)
+        # 大型上傳（全班紙本掃描 base64 可到 60 MB）讀取可能超過預設 15 秒；
+        # 依 body 大小放寬讀取逾時，避免大檔案傳到一半被中斷。
+        previous = self.connection.gettimeout()
+        self.connection.settimeout(max(previous, 60 + length // (512 * 1024)))
+        try:
+            raw = self.rfile.read(length)
+        finally:
+            self.connection.settimeout(previous)
         if len(raw) != length:
             fail(400, '請求內容不完整。')
         def unique(pairs):
@@ -10431,6 +10489,11 @@ class Handler(BaseHTTPRequestHandler):
                         fail(401, '請先登入。')
                     restore_app.require_owner(restore_user)
                     self.handle_restore(path, parsed.query, restore_user)
+                    return
+                # 全班紙本批閱：PDF 以原始二進位主體上傳（不經 base64 JSON），
+                # 避免 4/3 膨脹導致部署代理層（Render 等）在到達應用前就回 413。
+                if self.command == 'POST' and path == '/api/paper-grades/scan-raw':
+                    self.handle_raw_scan()
                     return
                 # DELETE 沒有 body：read_json() 會因為「沒有 Content-Length」而回 400，
                 # 所以只有 POST 才解析 JSON。

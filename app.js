@@ -807,6 +807,34 @@ async function apiJob(path,body,onTick){
     if(job.status==='error')throw new Error(job.error||'處理失敗，請稍後再試。');
   }
 }
+// 全班紙本批閱：PDF 以「原始二進位」上傳（不經 base64 JSON），
+// 避免 base64 膨脹 4/3 倍讓部署代理層在到達應用前就回 413；其餘與 apiJob 相同。
+async function apiJobRaw(path,fileBytes,params,onTick){
+  const qs=new URLSearchParams();
+  for(const [k,v] of Object.entries(params||{})){if(v!==null&&v!==undefined&&v!=='')qs.set(k,v);}
+  const url=path+'?'+qs.toString();
+  let r;
+  try{
+    r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/pdf'},
+      body:fileBytes,credentials:'same-origin'});
+  }catch{throw new Error('無法連接網站伺服器，請確認服務已啟動。');}
+  let data;
+  try{data=await r.json();}catch{
+    throw new Error(r.status===524?'AI 處理超過兩分鐘，已被網路層中斷。請縮短試卷、分批上傳，或稍後再試。'
+      :`伺服器回應無效（HTTP ${r.status}），請稍後再試；伺服器日誌會有實際原因。`);
+  }
+  if(!r.ok){if(r.status===401){S.user=null;loginModal();}throw new Error(data.error||'操作未完成，請再試。');}
+  const {jobId}=data;
+  const started=Date.now();
+  for(;;){
+    await new Promise(res=>setTimeout(res,1200));
+    if(Date.now()-started>5*60*1000)throw new Error('處理超過 5 分鐘，請縮短試卷再試。');
+    const job=await api('/api/jobs/'+encodeURIComponent(jobId));
+    if(onTick)onTick(job);
+    if(job.status==='done')return job.result;
+    if(job.status==='error')throw new Error(job.error||'處理失敗，請稍後再試。');
+  }
+}
 async function refresh(){S=await api('/api/state');loadBookmarks();shell();}
 function empty(title,desc,button=''){return `<div class="empty">${icon('bank')}<h3>${title}</h3><p>${desc}</p>${button}</div>`;}
 // ── 新手上路：圖文並茂的快速指引 ──────────────────────────────────────
@@ -4539,13 +4567,16 @@ async function paperBatchPage(){
     if(!file)return toast('請先選一份 PDF。');
     const btn=$('#pb-go');btn.disabled=true;$('#pb-status').textContent='掃描中，80 頁大約要 3–8 分鐘…';
     try{
+      // 以原始二進位上傳（不 base64 膨脹），避免大掃描檔在代理層就被 413 擋下。
       const data=await fileToDataUrl(file);
-      const res=await apiJob('/api/paper-grades/scan',
-        {file:data,classId:Number($('#pb-class').value)||null,title:($('#pb-title').value||'').trim(),
+      const res=await apiJobRaw('/api/paper-grades/scan-raw',file,
+        {classId:Number($('#pb-class').value)||null,title:($('#pb-title').value||'').trim(),
          split:$('#pb-split').value,rotate:$('#pb-rotate').value,
          consentExternal:S.ai?.mode==='external'},
         job=>{$('#pb-status').textContent=`掃描中… ${Math.round(job.elapsed||0)} 秒`;});
       renderBatch(res);
+      // lastScan.file 仍存 base64 dataURL：萬一草稿存檔失敗（draftId 為 null），
+      // 之後「確認並開始批改」會用 JSON 帶 file 走 /api/paper-grades/batch。
       lastScan={file:data,res,draftId:res.draftId||null};
       $('#pb-roster-info').textContent=(res.roster||[]).length?`（目前 ${res.roster.length} 人）`:'（還沒有學生）';
       $('#pb-status').textContent=`共 ${res.pages} 頁、切成 ${res.summary.papers} 份卷；認出 ${res.summary.matched} 份。`
