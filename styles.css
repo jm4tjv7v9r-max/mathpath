@@ -1889,8 +1889,8 @@ input:focus,select:focus,textarea:focus{
 /* ── J. 夜間：同一套編輯風，只換色 ─────────────────────── */
 html[data-theme=night]{--editorial-rule:#2b3336;--bg:#141a1c;--paper:#1b2225}
 html[data-theme=night] body{background:var(--bg)}
-html[data-theme=night] .hero{background:#123a30;background-image:none}
-html[data-theme=night] .hero .primary{background:#eaf3ef;border-color:#eaf3ef;color:#0f3a30}
+html[data-theme=night] .hero{background:var(--green-deep);background-image:none}
+html[data-theme=night] .hero .primary{background:#e9f4ee;border-color:#e9f4ee;color:#0f4438}
 html[data-theme=night] .hero .primary:hover{background:#d8e9e2;border-color:#d8e9e2}
 html[data-theme=night] .hero .secondary{color:#fff;border-color:rgba(255,255,255,.38)}
 html[data-theme=night] .nav-item:hover{background:#222b2e}
@@ -2035,8 +2035,8 @@ html[data-theme=night] .hero .primary{
   color:#fff;
 }
 html[data-theme=night] .hero .primary:hover{
-  background:#2a8a75;
-  border-color:#2a8a75;
+  background:var(--green);
+  border-color:var(--green);
   color:#fff;
 }
 html[data-theme=night] .hero .secondary{
@@ -2979,3 +2979,314 @@ html[data-theme=night] .display-item .font-scale .icon{color:#7fdcbf}
     gap:8px;
   }
 }
+
+/* ══════════════════════════════════════════════════════════════
+   角色主題色：未登入＝綠（不變）、學生＝紫、教師＝藍
+   ──────────────────────────────────────────────────────────────
+   只在 <html data-role="..."> 存在時生效；未登入時 app.js 會移除
+   該屬性，因此完全回到原本的綠色，一行都不影響。
+   做法：覆蓋「主色族」變量（--green／--green-dark／--green-deep／
+   --mint／--surface-green／--line-soft），全站 90% 的綠色元素
+   （按鈕、hero、導覽選中、tab、chip、徽章、焦點框）自動跟著換。
+   再針對少數寫死綠色的地方個別覆蓋。
+   對比度：白字在 --green 上均 ≥ 4.5:1。
+   ══════════════════════════════════════════════════════════════ */
+
+/* ── A. 學生：紫色 ─────────────────────────────────────── */
+html[data-role=student]{
+  --green:#7a45c8;          /* 主紫（白字 6.0:1） */
+  --green-dark:#5d2fa3;     /* 深紫（標題、圖示） */
+  --green-deep:#47237d;     /* hero 漸變最深 */
+  --mint:#f3edfb;           /* 淺紫底（選中／標籤） */
+  --surface-green:#f5effc;
+  --line-soft:#e4d9f4;
+  --focus-ring:rgba(122,69,200,.16);
+  --hero-shadow:rgba(58,26,110,.22);
+}
+
+/* ── B. 教師：藍色 ─────────────────────────────────────── */
+html[data-role=teacher]{
+  --green:#2563b8;          /* 主藍（白字 6.4:1） */
+  --green-dark:#1a4a8f;     /* 深藍 */
+  --green-deep:#123469;
+  --mint:#eaf2fd;
+  --surface-green:#edf4fe;
+  --line-soft:#d6e3f6;
+  --focus-ring:rgba(37,99,184,.16);
+  --hero-shadow:rgba(9,36,74,.22);
+}
+
+/* ── C. 夜間：同色系但降低亮度，維持白字可讀 ───────────── */
+html[data-role=student][data-theme=night]{
+  --green:#5b47a0;          /* 白字 6.4:1 */
+  --green-dark:#46357f;
+  --green-deep:#35285f;
+  --mint:#261f38;
+  --surface-green:#2a2340;
+  --line-soft:#3a3054;
+  --focus-ring:rgba(150,120,220,.20);
+  --hero-shadow:rgba(0,0,0,.40);
+}
+html[data-role=teacher][data-theme=night]{
+  --green:#3d6fb8;          /* 白字 5.3:1 */
+  --green-dark:#2c548f;
+  --green-deep:#1e3c68;
+  --mint:#1b2638;
+  --surface-green:#1e2b40;
+  --line-soft:#2c3d55;
+  --focus-ring:rgba(110,160,230,.20);
+  --hero-shadow:rgba(0,0,0,.40);
+}
+
+/* ── D. 寫死綠色的地方：改用主色變量 ───────────────────── */
+/* 側欄選中項的淺綠底 */
+html[data-role=student] .nav-item.active,
+html[data-role=teacher] .nav-item.active{background:var(--mint)}
+/* 拖放區高亮 */
+html[data-role=student] .dropzone.dragover,
+html[data-role=teacher] .dropzone.dragover{background:var(--mint);border-color:var(--green)}
+/* 成功圖示淺綠底 */
+html[data-role=student] .success-icon,
+html[data-role=teacher] .success-icon{background:var(--mint);color:var(--green)}
+/* 字體／篩選按鈕選中邊框 */
+html[data-role=student] .font-scale button.active,
+html[data-role=teacher] .font-scale button.active{border-color:var(--green)}
+html[data-role=student] .history-filters button.active,
+html[data-role=teacher] .history-filters button.active{background:var(--mint);border-color:var(--green)}
+/* 標籤 chip 邊框 */
+html[data-role=student] .pick-chip,
+html[data-role=teacher] .pick-chip{border-color:var(--line-soft)}
+/* 輸入框聚焦光暈 */
+html[data-role=student] input:focus,
+html[data-role=student] select:focus,
+html[data-role=student] textarea:focus,
+html[data-role=teacher] input:focus,
+html[data-role=teacher] select:focus,
+html[data-role=teacher] textarea:focus{box-shadow:0 0 0 4px var(--focus-ring)}
+/* 日曆選中日光暈 */
+html[data-role=student] .cal-cell.selected,
+html[data-role=teacher] .cal-cell.selected{box-shadow:0 0 0 2px var(--focus-ring)}
+/* 主按鈕光暈 */
+html[data-role=student] button.primary,
+html[data-role=student] .primary,
+html[data-role=teacher] button.primary,
+html[data-role=teacher] .primary{box-shadow:0 4px 14px var(--focus-ring)}
+/* hero 陰影 */
+html[data-role=student] .hero,
+html[data-role=teacher] .hero{box-shadow:0 16px 44px var(--hero-shadow)}
+
+/* ── E. 夜間殘留的亮薄荷綠（原深綠主題專用）改為角色色 ──── */
+/* 夜間文字按鈕／練習按鈕 */
+html[data-role=student][data-theme=night] .text-button,
+html[data-role=student][data-theme=night] .practice-btn,
+html[data-role=teacher][data-theme=night] .text-button,
+html[data-role=teacher][data-theme=night] .practice-btn{color:#b9a8e8 !important}
+html[data-role=teacher][data-theme=night] .text-button,
+html[data-role=teacher][data-theme=night] .practice-btn{color:#9dc2ef !important}
+/* 夜間設定頁選中按鈕 */
+html[data-role=student][data-theme=night] .display-item .font-scale button.active{
+  background:#2a2340;border-color:#7c5fc0;color:#c9b6f2;box-shadow:inset 0 0 0 1px #7c5fc0}
+html[data-role=teacher][data-theme=night] .display-item .font-scale button.active{
+  background:#1e2b40;border-color:#4f8fdd;color:#b3d0f2;box-shadow:inset 0 0 0 1px #4f8fdd}
+/* 夜間圖示色 */
+html[data-role=student][data-theme=night] .display-item .font-scale .icon{color:#b9a8e8}
+html[data-role=teacher][data-theme=night] .display-item .font-scale .icon{color:#9dc2ef}
+/* 夜間統計數字 */
+html[data-role=student][data-theme=night] .metric-value{color:#c9b6f2}
+html[data-role=teacher][data-theme=night] .metric-value{color:#b3d0f2}
+/* 夜間 hero 底色：用完整 background 覆蓋寫死的深綠漸變 */
+html[data-role=student][data-theme=night] .hero{
+  background:linear-gradient(120deg,var(--green-deep),var(--green-dark) 55%,var(--green)) !important;
+  background-image:linear-gradient(120deg,var(--green-deep),var(--green-dark) 55%,var(--green)) !important;
+}
+html[data-role=teacher][data-theme=night] .hero{
+  background:linear-gradient(120deg,var(--green-deep),var(--green-dark) 55%,var(--green)) !important;
+  background-image:linear-gradient(120deg,var(--green-deep),var(--green-dark) 55%,var(--green)) !important;
+}
+/* 夜間功能圖示底 */
+html[data-role=student][data-theme=night] .feature-icon{background:#2a2340;color:#b9a8e8}
+html[data-role=teacher][data-theme=night] .feature-icon{background:#1e2b40;color:#9dc2ef}
+html[data-role=student][data-theme=night] .lp-step-n{background:#2a2340;color:#b9a8e8}
+html[data-role=teacher][data-theme=night] .lp-step-n{background:#1e2b40;color:#9dc2ef}
+html[data-role=student][data-theme=night] .lp-eyebrow{color:#b9a8e8}
+html[data-role=teacher][data-theme=night] .lp-eyebrow{color:#9dc2ef}
+/* 夜間角色卡選中 */
+html[data-role=student][data-theme=night] .role-card.active{background:#2a2340;border-color:var(--green)}
+html[data-role=teacher][data-theme=night] .role-card.active{background:#1e2b40;border-color:var(--green)}
+/* 夜間題號金色維持（不改），但綠色 strong 改角色色 */
+html[data-role=student][data-theme=night] .right-panel strong,
+html[data-role=student][data-theme=night] .feature-list li strong,
+html[data-role=student][data-theme=night] .side-note strong,
+html[data-role=student][data-theme=night] .strong-muted{color:#d5c8f2 !important}
+html[data-role=teacher][data-theme=night] .right-panel strong,
+html[data-role=teacher][data-theme=night] .feature-list li strong,
+html[data-role=teacher][data-theme=night] .side-note strong,
+html[data-role=teacher][data-theme=night] .strong-muted{color:#c8dcf5 !important}
+/* 夜間 skip-link */
+html[data-role=student] .skip-link{background:var(--green-dark)}
+html[data-role=teacher] .skip-link{background:var(--green-dark)}
+/* 夜間 mk-tab 選中邊框 */
+html[data-role=student][data-theme=night] .mk-tab.active{border-color:var(--line-soft)}
+html[data-role=teacher][data-theme=night] .mk-tab.active{border-color:var(--line-soft)}
+/* 夜間 badge */
+html[data-role=student][data-theme=night] .badge{background:#2a2340;color:#c9b6f2;border-color:rgba(180,160,220,.18)}
+html[data-role=teacher][data-theme=night] .badge{background:#1e2b40;color:#b3d0f2;border-color:rgba(160,190,230,.18)}
+
+/* ── F. 全局組件的寫死綠色 → 角色色 ─────────────────────── */
+/* skip-link（原本 !important 深綠）*/
+html[data-role=student] .skip-link{background:var(--green-dark) !important;color:#fff !important}
+html[data-role=teacher] .skip-link{background:var(--green-dark) !important;color:#fff !important}
+/* toast（深綠底）*/
+html[data-role=student] .toast{background:var(--green-dark) !important}
+html[data-role=teacher] .toast{background:var(--green-dark) !important}
+/* 頂欄頭像 #avatar（淺綠底灰綠字）→ 角色色。
+   注意：側欄底部的帳號頭像 .account .avatar 是刻意的金色，不動。 */
+html[data-role=student] #avatar{background:var(--mint) !important;color:var(--green-dark) !important}
+html[data-role=teacher] #avatar{background:var(--mint) !important;color:var(--green-dark) !important}
+/* 夜間頂欄頭像 */
+html[data-role=student][data-theme=night] #avatar{background:#2a2340 !important;color:#c9b6f2 !important}
+html[data-role=teacher][data-theme=night] #avatar{background:#1e2b40 !important;color:#b3d0f2 !important}
+
+/* ── G. 角色主題：覆蓋基礎規則中的夜間硬編碼（需 !important 才蓋得過）── */
+/* 主按鈕：日間與夜間都必須是角色色 */
+html[data-role=student] button.primary,
+html[data-role=student] .primary{
+  background:var(--green) !important;
+  border-color:var(--green-dark) !important;
+  color:#fff !important;
+}
+html[data-role=teacher] button.primary,
+html[data-role=teacher] .primary{
+  background:var(--green) !important;
+  border-color:var(--green-dark) !important;
+  color:#fff !important;
+}
+/* hero 大色塊：日間實色、夜間漸變，都用角色變量 */
+html[data-role=student] .hero{
+  background:var(--green-dark) !important;
+  background-image:none !important;
+}
+html[data-role=teacher] .hero{
+  background:var(--green-dark) !important;
+  background-image:none !important;
+}
+html[data-role=student][data-theme=night] .hero{
+  background:linear-gradient(120deg,var(--green-deep),var(--green-dark) 55%,var(--green)) !important;
+  background-image:linear-gradient(120deg,var(--green-deep),var(--green-dark) 55%,var(--green)) !important;
+}
+html[data-role=teacher][data-theme=night] .hero{
+  background:linear-gradient(120deg,var(--green-deep),var(--green-dark) 55%,var(--green)) !important;
+  background-image:linear-gradient(120deg,var(--green-deep),var(--green-dark) 55%,var(--green)) !important;
+}
+/* hero 內主鈕：白底角色深色字 */
+html[data-role=student] .hero .primary,
+html[data-role=teacher] .hero .primary{
+  background:#fff !important;
+  border-color:#fff !important;
+  color:var(--green-dark) !important;
+}
+html[data-role=student] .hero .primary-xl,
+html[data-role=teacher] .hero .primary-xl{
+  background:#fff !important;
+  border-color:#fff !important;
+  color:var(--green-dark) !important;
+}
+/* skip-link 與 toast 再保險一次 */
+html[data-role=student] .skip-link,
+html[data-role=teacher] .skip-link{background:var(--green-dark) !important}
+html[data-role=student] .toast,
+html[data-role=teacher] .toast{background:var(--green-dark) !important}
+
+/* ── H. 角色主題：把殘留的寫死綠色元素改為角色色 ────────── */
+/* 學生（紫） */
+html[data-role=student] .tool-group button.active{color:#5d2fa3 !important}
+html[data-role=student] .label-name-field input[type=range],
+html[data-role=student] .item-transform-field input[type=range]{accent-color:#7a45c8 !important}
+html[data-role=student] .quiz-score{color:#5d2fa3 !important}
+html[data-role=student] .quiz-banner.done{background:#f3edfb !important;border-color:#7a45c8 !important}
+html[data-role=student] .draft-analysis strong{color:#5d2fa3 !important}
+html[data-role=student] .badge.new-review{background:#47237d !important;color:#fff !important}
+html[data-role=student] .badge.paper-done{background:#47237d !important;color:#fff !important}
+html[data-role=student] .roadmap-item.active .roadmap-circle{background:#f3edfb !important;color:#5d2fa3 !important;border-color:#7a45c8 !important}
+html[data-role=student] .segmented button.active{background:#7a45c8 !important;color:#fff !important}
+html[data-role=student] .dropzone .icon{color:#5d2fa3 !important}
+html[data-role=student] .cal-day{color:#5d2fa3 !important}
+html[data-role=student] .cal-event-tag{background:#f3edfb !important;color:#5d2fa3 !important;border-color:#7a45c8 !important}
+html[data-role=student] .seat-badge{background:#f3edfb !important;color:#5d2fa3 !important;border-color:#c8b5e6 !important}
+html[data-role=student] .form-field input,html[data-role=student] .form-field select{color:#5d2fa3 !important}
+html[data-role=student] .bulk-input{color:#5d2fa3 !important}
+html[data-role=student] .segmented.text button{color:#5d2fa3 !important}
+html[data-role=student] .fig-read>summary{color:#5d2fa3 !important}
+html[data-role=student] .label-name-field{color:#5d2fa3 !important}
+html[data-role=student] .settings-status strong{color:#5d2fa3 !important}
+html[data-role=student] .guide-num{color:#5d2fa3 !important}
+html[data-role=student] .status-dot{background:#7a45c8 !important}
+/* 夜間學生 */
+html[data-role=student][data-theme=night] .tool-group button.active{color:#c9b6f2 !important}
+html[data-role=student][data-theme=night] .quiz-score{color:#c9b6f2 !important}
+html[data-role=student][data-theme=night] .draft-analysis strong{color:#c9b6f2 !important}
+html[data-role=student][data-theme=night] .roadmap-item.active .roadmap-circle{background:#2a2340 !important;color:#c9b6f2 !important;border-color:#7c5fc0 !important}
+html[data-role=student][data-theme=night] .cal-day{color:#c9b6f2 !important}
+html[data-role=student][data-theme=night] .cal-event-tag{background:#2a2340 !important;color:#c9b6f2 !important;border-color:#7c5fc0 !important}
+html[data-role=student][data-theme=night] .seat-badge{background:#2a2340 !important;color:#c9b6f2 !important;border-color:#7c5fc0 !important}
+html[data-role=student][data-theme=night] .form-field input,html[data-role=student][data-theme=night] .form-field select{color:#c9b6f2 !important}
+html[data-role=student][data-theme=night] .segmented.text button{color:#c9b6f2 !important}
+html[data-role=student][data-theme=night] .settings-status strong{color:#c9b6f2 !important}
+html[data-role=student][data-theme=night] .guide-num{color:#c9b6f2 !important}
+
+/* 教師（藍） */
+html[data-role=teacher] .tool-group button.active{color:#1a4a8f !important}
+html[data-role=teacher] .label-name-field input[type=range],
+html[data-role=teacher] .item-transform-field input[type=range]{accent-color:#2563b8 !important}
+html[data-role=teacher] .quiz-score{color:#1a4a8f !important}
+html[data-role=teacher] .quiz-banner.done{background:#eaf2fd !important;border-color:#2563b8 !important}
+html[data-role=teacher] .draft-analysis strong{color:#1a4a8f !important}
+html[data-role=teacher] .badge.new-review{background:#123469 !important;color:#fff !important}
+html[data-role=teacher] .badge.paper-done{background:#123469 !important;color:#fff !important}
+html[data-role=teacher] .roadmap-item.active .roadmap-circle{background:#eaf2fd !important;color:#1a4a8f !important;border-color:#2563b8 !important}
+html[data-role=teacher] .segmented button.active{background:#2563b8 !important;color:#fff !important}
+html[data-role=teacher] .dropzone .icon{color:#1a4a8f !important}
+html[data-role=teacher] .cal-day{color:#1a4a8f !important}
+html[data-role=teacher] .cal-event-tag{background:#eaf2fd !important;color:#1a4a8f !important;border-color:#2563b8 !important}
+html[data-role=teacher] .seat-badge{background:#eaf2fd !important;color:#1a4a8f !important;border-color:#a9c3e6 !important}
+html[data-role=teacher] .form-field input,html[data-role=teacher] .form-field select{color:#1a4a8f !important}
+html[data-role=teacher] .bulk-input{color:#1a4a8f !important}
+html[data-role=teacher] .segmented.text button{color:#1a4a8f !important}
+html[data-role=teacher] .fig-read>summary{color:#1a4a8f !important}
+html[data-role=teacher] .label-name-field{color:#1a4a8f !important}
+html[data-role=teacher] .settings-status strong{color:#1a4a8f !important}
+html[data-role=teacher] .guide-num{color:#1a4a8f !important}
+html[data-role=teacher] .status-dot{background:#2563b8 !important}
+/* 夜間教師 */
+html[data-role=teacher][data-theme=night] .tool-group button.active{color:#b3d0f2 !important}
+html[data-role=teacher][data-theme=night] .quiz-score{color:#b3d0f2 !important}
+html[data-role=teacher][data-theme=night] .draft-analysis strong{color:#b3d0f2 !important}
+html[data-role=teacher][data-theme=night] .roadmap-item.active .roadmap-circle{background:#1e2b40 !important;color:#b3d0f2 !important;border-color:#4f8fdd !important}
+html[data-role=teacher][data-theme=night] .cal-day{color:#b3d0f2 !important}
+html[data-role=teacher][data-theme=night] .cal-event-tag{background:#1e2b40 !important;color:#b3d0f2 !important;border-color:#4f8fdd !important}
+html[data-role=teacher][data-theme=night] .seat-badge{background:#1e2b40 !important;color:#b3d0f2 !important;border-color:#4f8fdd !important}
+html[data-role=teacher][data-theme=night] .form-field input,html[data-role=teacher][data-theme=night] .form-field select{color:#b3d0f2 !important}
+html[data-role=teacher][data-theme=night] .segmented.text button{color:#b3d0f2 !important}
+html[data-role=teacher][data-theme=night] .settings-status strong{color:#b3d0f2 !important}
+html[data-role=teacher][data-theme=night] .guide-num{color:#b3d0f2 !important}
+
+/* ── I. 新手上路／試卷拆題殘留綠色 ───────────────────── */
+html[data-role=student] .guide-tabs button.active{background:#7a45c8 !important;color:#fff !important;border-color:#7a45c8 !important}
+html[data-role=student] .guide-tabs button{color:#5d2fa3 !important}
+html[data-role=student] .guide-tip .icon{color:#5d2fa3 !important}
+html[data-role=student] .item-transform-field{color:#5d2fa3 !important}
+html[data-role=student] .feature-list li .icon{color:#5d2fa3 !important}
+html[data-role=student][data-theme=night] .guide-tabs button.active{background:#5b47a0 !important;color:#fff !important;border-color:#5b47a0 !important}
+html[data-role=student][data-theme=night] .guide-tabs button{color:#c9b6f2 !important}
+html[data-role=student][data-theme=night] .item-transform-field{color:#c9b6f2 !important}
+html[data-role=student][data-theme=night] .feature-list li .icon{color:#c9b6f2 !important}
+
+html[data-role=teacher] .guide-tabs button.active{background:#2563b8 !important;color:#fff !important;border-color:#2563b8 !important}
+html[data-role=teacher] .guide-tabs button{color:#1a4a8f !important}
+html[data-role=teacher] .guide-tip .icon{color:#1a4a8f !important}
+html[data-role=teacher] .item-transform-field{color:#1a4a8f !important}
+html[data-role=teacher] .feature-list li .icon{color:#1a4a8f !important}
+html[data-role=teacher][data-theme=night] .guide-tabs button.active{background:#3d6fb8 !important;color:#fff !important;border-color:#3d6fb8 !important}
+html[data-role=teacher][data-theme=night] .guide-tabs button{color:#b3d0f2 !important}
+html[data-role=teacher][data-theme=night] .item-transform-field{color:#b3d0f2 !important}
+html[data-role=teacher][data-theme=night] .feature-list li .icon{color:#b3d0f2 !important}

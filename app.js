@@ -912,6 +912,9 @@ function shell(){// 「新手上路」放最後——那是第一次來看的，
     if(S.user?.role!=='student')nav=nav.filter(([id])=>id!=='mock');
     navHtml=nav.map(([id,label])=>navRow(id,label,page===id,false)).join('');
   }
+  // 依登入角色設定主題色：未登入=綠，學生=紫，教師=藍
+  if(S.user?.role==='teacher'||S.user?.role==='student'){document.documentElement.dataset.role=S.user.role;}
+  else{delete document.documentElement.dataset.role;}
   $('#nav').innerHTML=navHtml;$('#settings-nav').innerHTML=icon('settings')+'<span>設定與隱私</span>';$('#settings-nav').classList.toggle('active',page==='settings');$('#account').innerHTML=`<span class="avatar">${S.user?(S.user.role==='teacher'?'師':'學'):'M'}</span><span class="account-info">${S.user?esc(S.user.name):'訪客預覽'}<small>${S.user?(S.user.role==='teacher'?'教師工作空間':'中三數學學習者'):'登入後開始學習'}</small></span>${icon(S.user?'chevron':'logout')}`;$('#avatar').textContent=S.user?(S.user.role==='teacher'?'師':'學'):'M';const labels={contests:'數學比賽',guide:'新手上路',homework:S.user?.role==='teacher'?'作業成績':'我的作業',calendar:'日曆',board:'排行榜',mock:'模擬測驗',ai:'模型端點',bank:'數學題庫',practice:'自主練習',import:'試卷拆題入庫',mistakes:S.user?.role==='teacher'?'作業批閱':'我的錯題本',paper:'紙本批閱',paperbatch:'全班紙本批閱',classroom:(S.user?.role==='teacher'?'課堂應用':'課堂'),classroomRecords:'課堂紀錄',layout:'試卷修正排版',papers:'我的試卷',growth:'學習足跡',newq:'新增題目',settings:'設定與隱私'};$('#crumb').textContent=labels[page] || '數學題庫';renderCalculator();}
 
 let calCursor=null,calSelected=null;
