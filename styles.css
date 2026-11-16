@@ -1932,7 +1932,7 @@ html[data-theme=night] .modal{box-shadow:0 18px 60px rgba(0,0,0,.5)}
     height:auto;min-height:56px;padding:8px 14px;
     flex-wrap:nowrap;align-items:flex-start;
   }
-  .topbar-left{flex:1;min-width:0;display:flex;flex-direction:column;gap:7px}
+  .topbar-left{flex:1 1 auto;min-width:0;display:flex;flex-direction:row;align-items:center;gap:8px}
   .top-tools{flex:0 0 auto;gap:8px;padding-top:1px}
   .topbar-links{
     width:100%;flex-wrap:nowrap;overflow-x:auto;gap:6px;
@@ -2798,7 +2798,7 @@ html[data-theme=night] .lp-step-n{background:#1e3a30;color:#7fdcbf}
 
 /* ── Landing 修正 ②：平板頂欄導覽不要被壓成豎排 ────────── */
 @media (min-width:741px) and (max-width:1024px){
-  .topbar{flex-wrap:wrap;height:auto;min-height:64px;padding:10px 20px;row-gap:8px}
+  .topbar{flex-wrap:nowrap;height:auto;min-height:64px;padding:10px 20px;row-gap:8px}
   .topbar-links{
     flex-wrap:nowrap;
     overflow-x:auto;
@@ -2810,7 +2810,7 @@ html[data-theme=night] .lp-step-n{background:#1e3a30;color:#7fdcbf}
   }
   .topbar-links::-webkit-scrollbar{display:none}
   .topbar-link{white-space:nowrap;flex:0 0 auto}
-  .topbar-left{flex:1 1 100%;min-width:0}
+  .topbar-left{flex:1 1 auto;min-width:0;flex-wrap:nowrap}
 }
 
 /* ── Landing 修正 ③：單欄時「左欄(標題)在上、右欄(卡片)在下」── */
@@ -2919,3 +2919,63 @@ html[data-theme=night] .display-item .font-scale button.active{
   box-shadow:inset 0 0 0 1px #2f8a72;
 }
 html[data-theme=night] .display-item .font-scale .icon{color:#7fdcbf}
+
+
+/* ══════════════════════════════════════════════════════════════
+   手機頂欄排版修正（正確版）：麵包屑與快速連結同排單行
+   ──────────────────────────────────────────────────────────────
+   問題：`.topbar-left` 的 flex-direction:column 讓「麵包屑」與
+   「日曆/排行榜/比賽/新手上路」垂直排列成兩行，頂欄高 96px，
+   視覺鬆散。修正為單行 row，快速連結橫向滾動保留全部功能。
+   ══════════════════════════════════════════════════════════════ */
+@media (max-width:740px){
+  .topbar{
+    height:auto;
+    min-height:56px;
+    padding:8px 14px;
+    gap:8px;
+    align-items:center;
+    flex-wrap:nowrap;
+  }
+  /* 頂欄左側：麵包屑與快速連結同排、不換行 */
+  .topbar-left{
+    flex:1 1 auto;
+    min-width:0;
+    display:flex;
+    flex-direction:row;
+    align-items:center;
+    gap:8px;
+    flex-wrap:nowrap;
+  }
+  /* 麵包屑：可收縮、省略號，不換行 */
+  .breadcrumbs{
+    flex:0 1 auto;
+    min-width:0;
+    flex-wrap:nowrap;
+    white-space:nowrap;
+    overflow:hidden;
+    text-overflow:ellipsis;
+  }
+  /* 快速連結：佔剩餘寬度、橫向滾動，不換行 */
+  .topbar-links{
+    flex:1 1 auto;
+    min-width:0;
+    flex-wrap:nowrap;
+    overflow-x:auto;
+    gap:6px;
+    padding-left:0;
+    border-left:0;
+    scrollbar-width:none;
+    -ms-overflow-style:none;
+    -webkit-overflow-scrolling:touch;
+  }
+  .topbar-links::-webkit-scrollbar{display:none}
+  .topbar-link{
+    flex:0 0 auto;
+    white-space:nowrap;
+  }
+  .top-tools{
+    flex:0 0 auto;
+    gap:8px;
+  }
+}
