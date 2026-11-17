@@ -7019,6 +7019,13 @@ class Application:
                            (json.dumps(questions, ensure_ascii=False), summary['score'],
                             len([q for q in questions if q['correct'] is not None]),
                             sum(1 for q in questions if q['correct'] is True), grade_id))
+                # 已匯入總表的卷，改判後分數要跟著更新，否則老師會看到兩個不同的分數。
+                synced_aid = None
+                if row['confirmed_at'] or row['assignment_id']:
+                    try:
+                        synced_aid = paper_to_grade_grid(db, grade_id)
+                    except (sqlite3.Error, APIError, ValueError):
+                        synced_aid = None
             # 回傳完整的一份，前端重繪卷面時才不會少了學生名／頁數／頁面警告
             with self.db() as db:
                 student = db.execute('SELECT name FROM users WHERE id=?',
@@ -7029,6 +7036,7 @@ class Application:
                               'title': row['title'], 'pages': row['pages'],
                               'score': summary['score'],
                               'confirmed': bool(row['confirmed_at']),
+                              'assignmentId': synced_aid or row['assignment_id'],
                               'earned': summary['earned'], 'possible': summary['possible'],
                               'pending': summary['pending'],
                               'pageWarnings': [], 'failedPages': [],
@@ -8390,6 +8398,36 @@ class Application:
                     done.append({'studentId': student_id, 'grade': g})
                 except APIError as exc:
                     failed.append({'studentId': student_id, 'reason': exc.message})
+            # ── 批完即時匯入成績總表 ────────────────────────────────────
+            # 這條流程的前提是「老師在 AI 批改前已逐份確認學生配對」，所以配對
+            # 確認就等於對分數的確認：批完直接寫進成績總表並標記 confirmed，
+            # 老師不必再逐份按一次「確認」。之後改判（judge）會同步更新總表分數。
+            imported, no_class = 0, []
+            if done:
+                with self.db() as db:
+                    now_iso = datetime.now(timezone.utc).isoformat()
+                    for item in done:
+                        g = item.get('grade') or {}
+                        gid = g.get('id')
+                        if not gid:
+                            continue
+                        try:
+                            aid = paper_to_grade_grid(db, gid)
+                        except (sqlite3.Error, APIError, ValueError):
+                            aid = None
+                        if aid:
+                            imported += 1
+                            item['assignmentId'] = aid
+                            g['assignmentId'] = aid
+                            g['syncedToGrid'] = True
+                        else:
+                            # 學生沒有班級就進不了總表：要告訴老師，不要靜靜吞掉
+                            no_class.append({'studentId': item.get('studentId'),
+                                             'studentName': g.get('studentName') or ''})
+                        # 分數已定案（AI 判完且老師事前確認過配對）；已確認過的不覆寫時間
+                        db.execute('UPDATE paper_grades SET confirmed_at=? '
+                                   'WHERE id=? AND confirmed_at IS NULL', (now_iso, gid))
+                        g['confirmed'] = True
             # 批完不刪草稿：原卷留著讓老師點開核對，清單只列還沒批完的（status=pending）
             if draft_id is not None and not failed:
                 with self.db() as db:
@@ -8397,6 +8435,8 @@ class Application:
                                (time.time(), draft_id))
             return {'graded': done, 'failed': failed,
                     'summary': {'graded': len(done), 'failed': len(failed),
+                                'imported': imported,
+                                'notImported': no_class,
                                 'secondGrade': second_total if second_grade else None}}, headers
         if method == 'POST' and path == '/api/paper-grades/scan':
             self.teacher(user)

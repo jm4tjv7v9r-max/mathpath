@@ -4815,7 +4815,10 @@ async function paperBatchPage(){
       if(secondGrade)payload.secondGrade=true;
       const out=await apiJob('/api/paper-grades/batch',payload,
         job=>{btn.textContent=`批改中… ${Math.round(job.elapsed||0)} 秒`;});
-      toast(`已批改 ${out.summary.graded} 份${out.summary.failed?`，${out.summary.failed} 份失敗`:''}`);
+      const imported=(out.summary&&out.summary.imported)||0;
+      const notImported=(out.summary&&out.summary.notImported)||[];
+      toast(`已批改 ${out.summary.graded} 份${out.summary.failed?`，${out.summary.failed} 份失敗`:''}`
+        +(imported?`，${imported} 份已匯入成績總表`:''));
       // 失敗原因要看得見，不然只會看到「0 份成功」卻不知道為什麼
       const reasons=[...new Set((out.failed||[]).map(f=>f.reason).filter(Boolean))];
       // 二次批閱的成效也要講清楚：補判了幾題、還有幾題要老師自己看
@@ -4824,14 +4827,25 @@ async function paperBatchPage(){
         ? `<br><span class="small-text">二次批閱：補判 ${sg.changed} 題`
           +`${sg.compared>sg.changed?`，仍有 ${sg.compared-sg.changed} 題看不清（已記下最可能的猜測）`:''}。</span>`
         : (secondGrade?'<br><span class="small-text">二次批閱：沒有需要補判的題目。</span>':'');
+      // 匯入結果：成功就講明「已進成績總表」；沒班級的學生要點名，否則老師以為漏了
+      const importText = imported
+        ? `<br><span class="small-text">✓ ${imported} 份分數已即時寫入「成績總表」（同名功課共用一欄，可再手改）。</span>`
+        : '';
+      const noClassText = notImported.length
+        ? `<br><span class="small-text" style="color:#b8453b">⚠️ ${notImported.length} 位學生未匯入（沒有班級）：`
+          +`${esc(notImported.slice(0,6).map(x=>x.studentName||('#'+x.studentId)).join('、'))}`
+          +`${notImported.length>6?'…':''}　請先把學生加入班級，再按「查看卷面」逐份確認匯入。</span>`
+        : '';
       $('#pb-status').innerHTML=`批改完成：${out.summary.graded} 份成功、${out.summary.failed} 份失敗。`
         +(reasons.length?`<br><span class="small-text">失敗原因：${esc(reasons.slice(0,3).join('；'))}</span>`:'')
-        +secondText;
+        +importText+noClassText+secondText;
       // 把本次批改併進 res.graded：之後再按批改會跳過這些學生，
       // 結果列表也才看得到「先前批過的」而不會消失。
+      // 批完即視為已確認（配對在批改前已由老師確認、分數同步進了成績總表），
+      // 續批的清單才不會把它們當成「還沒確認」而重複批一次。
       res.graded=(res.graded||[]).concat((out.graded||[]).map(x=>({
         gradeId:x.grade&&x.grade.id, studentId:x.studentId,
-        score:x.grade&&x.grade.score, confirmed:false})));
+        score:x.grade&&x.grade.score, confirmed:true})));
       renderBatchResults(out);
       // 不把 lastScan 清空：還有未確認的卷可以接著批
       await loadDrafts();
@@ -4855,10 +4869,14 @@ async function paperBatchPage(){
     const rows=graded.map(x=>{
       const g=x.grade||{};
       const pending=g.pending?` · <span class="paper-pending">${g.pending} 題待判</span>`:'';
+      // 批完即時匯入總表：成功的標「已匯入」，沒班級的明講原因，不要讓老師猜
+      const sync=g.syncedToGrid?`<span class="pb-badge done">已匯入總表</span>`
+        :`<span class="pb-badge" title="這位學生沒有班級，分數無法寫進成績總表">未匯入（無班級）</span>`;
       return `<tr data-grade-row="${g.id||''}">
         <td>${esc(g.studentName||nameOf(x.studentId))}</td>
         <td><strong>${g.score==null?'—':fmtScore(g.score)}</strong> <span class="small-text">/ 100</span></td>
         <td class="small-text">${g.totalQuestions==null?'—':g.totalQuestions} 題 · 對 ${g.correctCount==null?'—':g.correctCount}${pending}</td>
+        <td>${sync}</td>
         <td>${g.id?`<button class="secondary" data-view-grade="${g.id}">查看卷面</button>`:''}</td></tr>`;
     }).join('');
     // 先前批過的（續批）：只有分數，按「查看」再去拉完整紀錄
@@ -4866,14 +4884,15 @@ async function paperBatchPage(){
       <td>${esc(nameOf(g.studentId))}</td>
       <td><strong>${g.score==null?'—':fmtScore(g.score)}</strong> <span class="small-text">/ 100</span></td>
       <td class="small-text">先前批改${g.confirmed?' · 已確認':''}</td>
+      <td class="small-text">${g.confirmed?'<span class="pb-badge done">已匯入總表</span>':'—'}</td>
       <td><button class="secondary" data-view-grade="${g.gradeId}">查看卷面</button></td></tr>`).join('');
     const failRows=failed.map(x=>`<tr><td>${esc(nameOf(x.studentId))}</td>
-      <td colspan="2" class="small-text" style="color:#b8453b">${esc(x.reason||'批改失敗')}</td><td></td></tr>`).join('');
+      <td colspan="3" class="small-text" style="color:#b8453b">${esc(x.reason||'批改失敗')}</td><td></td></tr>`).join('');
     $('#pb-result').innerHTML=`<section class="panel panel-pad" style="margin-top:12px">
       <h2 style="margin-bottom:8px">批改結果（${graded.length+prev.length} 份）</h2>
-      <table class="board-table"><thead><tr><th>學生</th><th>分數</th><th>判定</th><th></th></tr></thead>
+      <table class="board-table"><thead><tr><th>學生</th><th>分數</th><th>判定</th><th>成績總表</th><th></th></tr></thead>
         <tbody>${rows}${prevRows}${failRows}</tbody></table>
-      <p class="field-hint">按「查看卷面」打開該學生的原卷，可逐題核對 AI 的判斷；批註可拖動。</p>
+      <p class="field-hint">配對在你按下「確認」時就已定案，所以批完的分數會自動寫進「成績總表」（同名功課共用一欄，可再手改）。按「查看卷面」可逐題核對 AI 的判斷，改判後總表分數會同步更新。</p>
       <div id="pb-viewer"></div></section>`;
     $$('[data-view-grade]').forEach(b=>b.onclick=()=>{
       const hit=graded.find(x=>String((x.grade||{}).id)===b.dataset.viewGrade);

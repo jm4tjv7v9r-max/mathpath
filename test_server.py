@@ -4039,6 +4039,68 @@ class DataAdminTests(unittest.TestCase):
         self.request('POST', f"/api/paper-grades/{g['id']}/judge",
                      {'index': 99, 'correct': True}, cookie=self.teacher, expect=400)
 
+    def test_paper_batch_grading_imports_scores_to_grid_immediately(self):
+        """全班紙本批閱：老師確認配對後 AI 批改，分數要即時匯入成績總表（不必再逐份確認）。"""
+        _, out, _ = self.request('POST', '/api/users',
+                                 {'username': 'pb1', 'name': '批次學生', 'password': 'PaperPass12'},
+                                 cookie=self.teacher, expect=200)
+        sid = out['user']['id']
+        _, room, _ = self.request('POST', '/api/classes',
+                                  {'name': '批次班', 'studentIds': [sid]},
+                                  cookie=self.teacher, expect=200)
+        cid = room['class']['id']
+
+        class StubAI:
+            mode = 'external'; vision = 'vision-model'; draw = None; configured = True
+            def __init__(self, replies): self.replies = list(replies); self.calls = 0
+            def consent(self, value): return True
+            def call(self, instruction, payload, **kw):
+                self.calls += 1
+                return self.replies.pop(0)
+
+        # 一份卷（一頁）：兩題，一對一錯 → 50 分
+        reply = {'questions': [
+            {'number': '1', 'question': 'A', 'studentAnswer': 'x', 'correct': True, 'reason': ''},
+            {'number': '2', 'question': 'B', 'studentAnswer': 'y', 'correct': False, 'reason': '錯'}]}
+        stub = StubAI([dict(reply)])
+        original = self.app.ai
+        self.app.ai = stub
+        try:
+            _, res, _ = self.request('POST', '/api/paper-grades/batch', {
+                'file': scanned_pdf_url(1), 'title': '批次功課', 'consentExternal': True,
+                'sheets': [{'studentId': sid, 'pages': [1]}]},
+                cookie=self.teacher, expect=200)
+        finally:
+            self.app.ai = original
+
+        self.assertEqual(res['summary']['graded'], 1)
+        self.assertEqual(res['summary']['failed'], 0)
+        # 批完即匯入：summary.imported 與每份卷的 syncedToGrid / assignmentId
+        self.assertEqual(res['summary']['imported'], 1, '批完應即時匯入成績總表')
+        self.assertEqual(res['graded'][0]['grade']['score'], 50)
+        self.assertTrue(res['graded'][0]['grade']['syncedToGrid'])
+        aid = res['graded'][0]['assignmentId']
+        self.assertIsNotNone(aid)
+
+        # 成績總表要看得到這一欄與這個分數
+        _, grid, _ = self.request('GET', f'/api/score-grid?classId={cid}',
+                                  cookie=self.teacher, expect=200)
+        self.assertEqual(len(grid['columns']), 1)
+        self.assertEqual(grid['columns'][0]['title'], '批次功課')
+        self.assertAlmostEqual(grid['students'][0]['cells'][0]['score'], 50)
+        self.assertTrue(grid['students'][0]['cells'][0]['overridden'], '紙本分數以教師覆核值寫入')
+
+        # 老師改判第 2 題為對 → 總表分數要同步變成 100
+        gid = res['graded'][0]['grade']['id']
+        _, judged, _ = self.request('POST', f'/api/paper-grades/{gid}/judge',
+                                    {'index': 1, 'correct': True},
+                                    cookie=self.teacher, expect=200)
+        self.assertEqual(judged['grade']['score'], 100)
+        _, grid2, _ = self.request('GET', f'/api/score-grid?classId={cid}',
+                                   cookie=self.teacher, expect=200)
+        self.assertAlmostEqual(grid2['students'][0]['cells'][0]['score'], 100,
+                              msg='改判後成績總表要跟著更新，不能留舊分數')
+
     def test_paper_grade_partial_credit_and_note(self):
         """部分正確：credit 0.5 得一半分數；批註文字與位置要回傳。"""
         _, out, _ = self.request('POST', '/api/users',
