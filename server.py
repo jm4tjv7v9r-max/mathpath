@@ -50,9 +50,10 @@ from storage import Storage
 ROOT = Path(__file__).resolve().parent
 MAX_FILE = 10 * 1024 * 1024
 # 學生作答可上傳 PDF（掃描檔常比單張相片大）；圖片仍維持 10 MB。
-# 全班紙本批閱一次上傳整疊掃描（最多 80 頁、38 位學生）時，掃描檔常到 30–60 MB，
-# 所以 PDF 上限要放寬；MAX_BODY 依此放大以承載 base64 的 JSON 請求體（約 4/3 倍）。
-MAX_PDF = 60 * 1024 * 1024
+# 全班紙本批閱一次上傳整疊掃描（最多 80 頁、38 位學生）時，掃描檔常到 100 MB 以上
+# （例如 36 頁高解析掃描就 109 MB），所以 PDF 上限要放寬；MAX_BODY 依此放大以承載
+# base64 的 JSON 請求體（約 4/3 倍）。
+MAX_PDF = 150 * 1024 * 1024
 MAX_FIGURE = 2 * 1024 * 1024
 MAX_TEXT = 80_000
 MAX_BODY = 4 * ((MAX_PDF + 2) // 3) + MAX_TEXT * 12 + 10_000

@@ -3775,6 +3775,79 @@ function fileToDataUrl(file){
   });
 }
 
+// ── 大檔前端壓縮 ────────────────────────────────────────────────────
+// 掃描版 PDF 常是「一頁一張高解析圖」（36 頁／109 MB 很常見），遠超部署代理
+// （Cloudflare／Render）約 100 MB 的請求上限，上傳時會拿到非 JSON 的 HTTP 413。
+// 超過門檻就在瀏覽器用 pdf.js 逐頁重畫成 JPEG（長邊 1600px），再用 pdf-lib
+// 組成新 PDF；字跡仍清楚，但檔案通常只剩原來的 1/10。
+const PDF_COMPRESS_THRESHOLD = 60 * 1024 * 1024;
+const PDF_TARGET_LONG_SIDE = 1600;
+const PDF_JPEG_QUALITY = 0.75;
+let pdfLibsPromise = null;
+function loadScriptOnce(src){
+  return new Promise((resolve,reject)=>{
+    if([...document.scripts].some(s=>(s.getAttribute('src')||'')===src))return resolve();
+    const el=document.createElement('script');
+    el.src=src;el.async=false;
+    el.onload=()=>resolve();
+    el.onerror=()=>reject(new Error('無法載入 PDF 處理元件。'));
+    document.head.appendChild(el);
+  });
+}
+async function ensurePdfLibs(onStatus){
+  if(window.pdfjsLib&&window.PDFLib)return;
+  if(!pdfLibsPromise){
+    pdfLibsPromise=(async()=>{
+      if(onStatus)onStatus('載入 PDF 處理元件…');
+      await loadScriptOnce('/vendor/pdfjs/pdf.min.js');
+      await loadScriptOnce('/vendor/pdfjs/pdf-lib.min.js');
+      if(!window.pdfjsLib||!window.PDFLib)throw new Error('PDF 處理元件未能載入。');
+      window.pdfjsLib.GlobalWorkerOptions.workerSrc='/vendor/pdfjs/pdf.worker.min.js';
+    })();
+  }
+  try{await pdfLibsPromise;}catch(e){pdfLibsPromise=null;throw e;}
+}
+// 把掃描版 PDF 壓成較小的 PDF（維持頁面尺寸與順序）
+async function compressScannedPdf(file,onStatus){
+  await ensurePdfLibs(onStatus);
+  const src=await file.arrayBuffer();
+  const doc=await window.pdfjsLib.getDocument({data:new Uint8Array(src)}).promise;
+  const out=await window.PDFLib.PDFDocument.create();
+  for(let i=1;i<=doc.numPages;i++){
+    if(onStatus)onStatus(`壓縮中… 第 ${i} / ${doc.numPages} 頁`);
+    const page=await doc.getPage(i);
+    const base=page.getViewport({scale:1});               // 原始頁面尺寸（pt）
+    const scale=Math.min(2,PDF_TARGET_LONG_SIDE/Math.max(base.width,base.height));
+    const vp=page.getViewport({scale});
+    const canvas=document.createElement('canvas');
+    canvas.width=Math.max(1,Math.round(vp.width));
+    canvas.height=Math.max(1,Math.round(vp.height));
+    const ctx=canvas.getContext('2d');
+    ctx.fillStyle='#ffffff';ctx.fillRect(0,0,canvas.width,canvas.height);
+    await page.render({canvasContext:ctx,viewport:vp}).promise;
+    const jpg=canvas.toDataURL('image/jpeg',PDF_JPEG_QUALITY);
+    const img=await out.embedJpg(jpg);
+    const added=out.addPage([base.width,base.height]);
+    added.drawImage(img,{x:0,y:0,width:base.width,height:base.height});
+    page.cleanup();
+    canvas.width=0;canvas.height=0;                        // 立刻釋放畫布記憶體
+  }
+  const bytes=await out.save();
+  if(onStatus)onStatus(`已壓縮 ${(file.size/1024/1024).toFixed(0)} MB → ${(bytes.length/1024/1024).toFixed(1)} MB`);
+  return new File([bytes],file.name.replace(/\.pdf$/i,'')+'-壓縮.pdf',{type:'application/pdf'});
+}
+// 只在檔案過大時才壓縮；壓縮失敗就回原檔，由上傳端顯示真正原因。
+async function maybeCompressPdf(file,onStatus){
+  if(!file||file.size<=PDF_COMPRESS_THRESHOLD)return file;
+  try{
+    return await compressScannedPdf(file,onStatus);
+  }catch(e){
+    if(onStatus)onStatus('');
+    toast(`本機壓縮未完成（${e.message}），改用原檔上傳。`);
+    return file;
+  }
+}
+
 // 全班紙本批閱：一次上傳整疊 PDF（≤80 頁），自動切卷、自動認人，
 // 認不出來的由老師在下拉裡指派（座號優先、姓名相似度輔助）。
 // ── 課堂應用（分組教學）────────────────────────────────────────────
@@ -4563,10 +4636,13 @@ async function paperBatchPage(){
       <div id="pb-result"></div>
     </section></div>`;
   $('#pb-go').onclick=async()=>{
-    const file=$('#pb-file').files[0];
-    if(!file)return toast('請先選一份 PDF。');
-    const btn=$('#pb-go');btn.disabled=true;$('#pb-status').textContent='掃描中，80 頁大約要 3–8 分鐘…';
+    const picked=$('#pb-file').files[0];
+    if(!picked)return toast('請先選一份 PDF。');
+    const btn=$('#pb-go');btn.disabled=true;$('#pb-status').textContent='準備中…';
     try{
+      // 大檔先在瀏覽器壓縮（掃描檔一頁一張高解析圖，常超過代理層的請求上限）。
+      const file=await maybeCompressPdf(picked,msg=>{$('#pb-status').textContent=msg;});
+      $('#pb-status').textContent='掃描中，80 頁大約要 3–8 分鐘…';
       // 以原始二進位上傳（不 base64 膨脹），避免大掃描檔在代理層就被 413 擋下。
       const data=await fileToDataUrl(file);
       const res=await apiJobRaw('/api/paper-grades/scan-raw',file,
