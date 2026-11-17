@@ -114,6 +114,42 @@ html[data-role="teacher"]{
   --accent-300:   #7ab3e0;
 }
 
+/* 角色主題 × 白天：把「暖奶油底（--wg-bg #f7f4ec）＋ 深綠字（--ink/--muted）」
+   改成與角色主色協調的中性色，消除 藍／紫 品牌色 與 暖綠背景 的冷暖衝突。
+   限定 :not([data-theme="night"])，night 深色模式沿用原有規則，不受影響。 */
+html[data-role="student"]:not([data-theme="night"]){
+  --bg:#f3eefb; --wg-bg:#f3eefb;
+  --ink:#241a33; --muted:#57496a; --muted-2:#625876;
+  --border:#ded4f2; --surface:#f1eafa; --surface-soft:#f8f4fd;
+  --surface-green:#f1eafa; --line-soft:#cfc2ec;
+  /* 文字令牌也跟著角色走，避免被 :root 的深綠鎖死 */
+  --text-primary:#241a33; --text-secondary:#4a3f5e; --text-tertiary:#5a4f6a;
+}
+html[data-role="teacher"]:not([data-theme="night"]){
+  --bg:#edf3fa; --wg-bg:#edf3fa;
+  --ink:#182436; --muted:#4a5868; --muted-2:#566476;
+  --border:#d3e0f0; --surface:#eaf1fa; --surface-soft:#f6f9fd;
+  --surface-green:#eaf1fa; --line-soft:#c9d8ec;
+  /* 文字令牌也跟著角色走，避免被 :root 的深綠鎖死 */
+  --text-primary:#182436; --text-secondary:#3a4658; --text-tertiary:#48556a;
+}
+
+/* 角色白天：中性的側欄背景與卡片陰影（wayground 層的 #fbf9f3 暖側欄、
+   綠色 --wg-shadow 光暈 與冷色品牌衝突），改用中性陰影讓角色色主導。 */
+html[data-role]:not([data-theme="night"]) .sidebar{
+  background: var(--bg-surface, #fff);
+}
+html[data-role]:not([data-theme="night"]) .panel,
+html[data-role]:not([data-theme="night"]) .card,
+html[data-role]:not([data-theme="night"]) .metric{
+  box-shadow: 0 1px 3px rgba(30,35,50,.05), 0 8px 24px rgba(30,35,50,.05);
+}
+html[data-role]:not([data-theme="night"]) .panel:hover,
+html[data-role]:not([data-theme="night"]) .card:hover,
+html[data-role]:not([data-theme="night"]) .metric:hover{
+  box-shadow: 0 0 0 1px rgba(120,130,150,.08), 0 10px 30px rgba(30,35,50,.10);
+}
+
 /* ── 2. 響應式修補：white-space:nowrap 溢出防護 ────────────────
    既有 47 處 nowrap 在窄屏會撐破容器，統一加 min-width:0 + overflow */
 @media (max-width: 767px){
@@ -412,9 +448,8 @@ button.secondary:hover,
 .step.active span{
   background: var(--accent);
 }
-.metric-value{
-  color: var(--text-primary);
-}
+/* 指標數值的顏色交還給原角色系統（styles.css 的 .metric-value{color:var(--green-dark)}
+   已依 訪客綠／學生紫／教師藍 自動切換）；這裡只收編文字令牌，不強壓成固定深綠。 */
 .hero h2{
   color: var(--text-primary);
 }
