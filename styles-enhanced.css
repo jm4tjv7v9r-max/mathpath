@@ -1,0 +1,470 @@
+/* ═══════════════════════════════════════════════════════════════
+   MathPath 設計令牌 + 響應式增強層
+   在 styles.css 之後載入，追加不改寫既有規則
+   ═══════════════════════════════════════════════════════════════ */
+
+/* ── 1. 語義化色彩令牌 ──────────────────────────────────────────
+   把高頻硬編碼顏色收編為語義變數，新增頁面一律用這些變數。
+   角色主題透過 html[data-role] 切換 --accent 族。 */
+:root{
+  /* 品牌主色（未登入 = 綠） */
+  --accent:        #197c68;
+  --accent-dark:   #125e50;
+  --accent-light:  #ecf5f0;
+  --accent-100:    #eaf4ef;
+  --accent-200:    #cfe2d0;
+  --accent-300:    #91c7b6;
+
+  /* 學生角色（紫） */
+  --student:       #5d2fa3;
+  --student-dark:  #4a1f85;
+  --student-light: #f0edfa;
+  --student-100:   #e8e0f5;
+  --student-200:   #c9b6f2;
+
+  /* 教師角色（藍） */
+  --teacher:       #1a4a8f;
+  --teacher-dark:  #0f3570;
+  --teacher-light: #eef4fb;
+  --teacher-100:   #e0edf8;
+  --teacher-200:   #b3d0f2;
+
+  /* 功能色 */
+  --success:       #2f6d55;
+  --success-light: #eaf7f0;
+  --warning:       #cf8a3d;
+  --warning-light: #fdf3e3;
+  --danger:        #c0392b;
+  --danger-light:  #fcebeb;
+  --danger-dark:   #a32d2d;
+  --info:          #2f5d86;
+  --info-light:    #eef4fb;
+
+  /* 文字層級 */
+  --text-primary:   #17322c;
+  --text-secondary: #4c6259;
+  --text-tertiary:  #5c736a;
+  --text-muted:     #8ba59a;
+  --text-disabled:  #a7b2ac;
+  --text-inverse:   #ffffff;
+
+  /* 背景層級 */
+  --bg-page:    #f8faf9;
+  --bg-surface: #ffffff;
+  --bg-subtle:  #f2f8f2;
+  --bg-raised:  #fbfdfa;
+  --bg-sunken:  #eef6f0;
+
+  /* 邊框層級 */
+  --border-default: #e9efec;
+  --border-soft:    #dce9d9;
+  --border-strong:  #c8d9c7;
+  --border-focus:   #91c7b6;
+
+  /* 圓角 */
+  --radius-sm:   6px;
+  --radius-md:   8px;
+  --radius-lg:   12px;
+  --radius-xl:   16px;
+  --radius-2xl:  20px;
+  --radius-full: 9999px;
+
+  /* 間距（4px 網格） */
+  --space-1:  4px;
+  --space-2:  8px;
+  --space-3:  12px;
+  --space-4:  16px;
+  --space-5:  20px;
+  --space-6:  24px;
+  --space-8:  32px;
+  --space-10: 40px;
+  --space-12: 48px;
+
+  /* 觸控目標最小尺寸（Apple HIG / WCAG 2.5.5） */
+  --touch-min: 44px;
+
+  /* 過渡 */
+  --transition-fast:   150ms cubic-bezier(.4,0,.2,1);
+  --transition-normal: 250ms cubic-bezier(.4,0,.2,1);
+  --transition-slow:   400ms cubic-bezier(.4,0,.2,1);
+
+  /* 斷點（供 JS 讀取） */
+  --bp-sm:  640px;
+  --bp-md:  768px;
+  --bp-lg:  1024px;
+  --bp-xl:  1280px;
+  --bp-2xl: 1536px;
+}
+
+/* 角色主題覆寫 */
+html[data-role="student"]{
+  --accent:       var(--student);
+  --accent-dark:  var(--student-dark);
+  --accent-light: var(--student-light);
+  --accent-100:   var(--student-100);
+  --accent-200:   var(--student-200);
+  --accent-300:   #a88fd9;
+}
+html[data-role="teacher"]{
+  --accent:       var(--teacher);
+  --accent-dark:  var(--teacher-dark);
+  --accent-light: var(--teacher-light);
+  --accent-100:   var(--teacher-100);
+  --accent-200:   var(--teacher-200);
+  --accent-300:   #7ab3e0;
+}
+
+/* ── 2. 響應式修補：white-space:nowrap 溢出防護 ────────────────
+   既有 47 處 nowrap 在窄屏會撐破容器，統一加 min-width:0 + overflow */
+@media (max-width: 767px){
+  .topic-tab,
+  .segmented.text button,
+  .nav-item>span,
+  .assignment-meta span,
+  .question-meta span{
+    white-space: normal;
+    overflow-wrap: break-word;
+    min-width: 0;
+  }
+  .filters select{
+    width: auto;
+    min-width: 0;
+    flex: 1 1 0;
+  }
+}
+
+/* ── 3. 觸控目標強化 ───────────────────────────────────────────
+   小按鈕、圖示鈕在觸控裝置上放大到 44px 最小點擊區 */
+@media (pointer: coarse){
+  .icon-btn,
+  .segmented button,
+  .pagination-buttons button,
+  .nav-item,
+  .practice-tabs button{
+    min-width: var(--touch-min);
+    min-height: var(--touch-min);
+    padding: calc(var(--space-2) + 2px) calc(var(--space-3) + 2px);
+  }
+  .pen-color{
+    min-width: 28px;
+    min-height: 28px;
+  }
+  .choice-option{
+    min-height: var(--touch-min);
+    padding: var(--space-3) var(--space-4);
+  }
+}
+
+/* ── 4. 現代響應式：Container Queries ─────────────────────────
+   卡片級響應式——卡片根據自身寬度而非視口決定佈局 */
+.question-card,
+.panel,
+.assignment-card{
+  container-type: inline-size;
+  container-name: card;
+}
+@container card (max-width: 400px){
+  .question-card .question-controls{
+    flex-wrap: wrap;
+    gap: var(--space-2);
+  }
+  .question-card .question-meta{
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--space-1);
+  }
+  .assignment-card .assignment-card-head{
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}
+
+/* ── 5. 流式排版：clamp() 取代固定 px ──────────────────────────
+   在最小與最大之間平滑縮放，減少斷點跳躍 */
+h1{ font-size: clamp(26px, 4vw, 36px); }
+.hero h2{ font-size: clamp(19px, 2.5vw, 26px); }
+.metric-value{ font-size: clamp(24px, 3vw, 32px); }
+.page-heading h1{ font-size: clamp(24px, 3.5vw, 34px); }
+
+/* ── 6. 視覺打磨：微互動 ──────────────────────────────────────── */
+
+/* 按鈕按壓回饋 */
+button:active:not(:disabled){
+  transform: scale(.97);
+  transition-duration: 80ms;
+}
+
+/* 卡片 hover 提升 */
+.question-card{
+  transition: background var(--transition-fast);
+}
+.question-card:hover{
+  background: var(--bg-raised);
+}
+
+/* 面板進場動畫 */
+@media (prefers-reduced-motion: no-preference){
+  .fade-in{
+    animation: mpFadeIn var(--transition-normal) both;
+  }
+  @keyframes mpFadeIn{
+    from{ opacity: 0; transform: translateY(6px); }
+    to{   opacity: 1; transform: translateY(0); }
+  }
+}
+
+/* 載入骨架屏 */
+.skeleton{
+  background: linear-gradient(90deg,
+    var(--bg-subtle) 25%,
+    var(--bg-sunken) 50%,
+    var(--bg-subtle) 75%);
+  background-size: 200% 100%;
+  animation: mpShimmer 1.5s infinite;
+  border-radius: var(--radius-sm);
+}
+@keyframes mpShimmer{
+  0%{   background-position: 200% 0; }
+  100%{ background-position: -200% 0; }
+}
+
+/* ── 7. 深色模式預備（未啟用，僅定義變數） ──────────────────────
+   未來加 html[data-theme=dark] 即可啟用 */
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg-page:         #0f1a17;
+    --bg-surface:      #1a2b26;
+    --bg-subtle:       #152220;
+    --bg-raised:       #1e302b;
+    --bg-sunken:       #0d1614;
+    --text-primary:    #e8f0ec;
+    --text-secondary:  #b0c4bb;
+    --text-tertiary:   #8aa39a;
+    --text-muted:      #6a847a;
+    --text-disabled:   #4a5e56;
+    --border-default:  #2a3d36;
+    --border-soft:     #1e2e29;
+    --border-strong:   #3a5049;
+    --shadow: 0 1px 3px rgba(0,0,0,.2), 0 8px 24px rgba(0,0,0,.15);
+  }
+}
+
+/* ── 8. 列印樣式 ──────────────────────────────────────────────── */
+@media print{
+  .sidebar,
+  .topbar,
+  .topbar-links,
+  .app-footer,
+  .mobile-menu,
+  .nav-scrim,
+  .toast,
+  .modal-backdrop,
+  .hero-visual,
+  .metric-spark{
+    display: none !important;
+  }
+  .app-shell{
+    margin-left: 0;
+  }
+  main{
+    padding: 0;
+    max-width: 100%;
+  }
+  .panel{
+    border: 1px solid #ccc;
+    box-shadow: none;
+    break-inside: avoid;
+  }
+  .question-card{
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+  body{
+    background: #fff;
+    color: #000;
+    font-size: 12pt;
+  }
+}
+
+/* ── 9. 頂欄響應式修復 ─────────────────────────────────────────
+   窄屏下頂欄快速連結（日曆/排行榜/比賽/新手上路）與麵包屑會被擠成
+   兩行或被截斷（如「比賽」→「比?」、「新手上」）。以下讓它們：
+   - 在平板以下隱藏快速連結的次要項，保留最常用
+   - 麵包屑保持單行、不換行、可截斷 */
+@media (max-width: 900px){
+  .topbar{
+    padding: 0 20px;
+    gap: 8px;
+  }
+  .topbar-left{
+    gap: 10px;
+    flex-wrap: nowrap;
+    min-width: 0;
+  }
+  .breadcrumbs{
+    gap: 8px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
+    flex: 0 1 auto;
+  }
+  .breadcrumbs strong{
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .crumb-slash{
+    flex-shrink: 0;
+  }
+  .topbar-links{
+    gap: 4px;
+    padding-left: 12px;
+    border-left: 1px solid var(--border);
+    flex-wrap: nowrap;
+    min-width: 0;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .topbar-links::-webkit-scrollbar{ display: none; }
+  .topbar-link{
+    white-space: nowrap;
+    padding: 6px 8px;
+    font-size: calc(13px*var(--fs));
+  }
+  .top-tools{
+    gap: 8px;
+    flex-shrink: 0;
+  }
+}
+
+/* 更窄：隱藏「比賽」「新手上路」，只留日曆與排行榜 */
+@media (max-width: 640px){
+  .topbar-link[data-page="contests"],
+  .topbar-link[data-page="guide"]{
+    display: none;
+  }
+  .breadcrumbs > span:first-child{
+    display: none;
+  }
+  .topbar{
+    padding: 0 14px;
+  }
+  .crumb-slash{
+    display: none;
+  }
+  .breadcrumbs strong{
+    font-size: calc(14px*var(--fs));
+  }
+}
+
+/* 超窄手機：只留日曆，其餘收進漢堡選單（由 app.js 的側欄提供） */
+@media (max-width: 480px){
+  .topbar-link[data-page="board"]{
+    display: none;
+  }
+  .topbar-links{
+    border-left: none;
+    padding-left: 0;
+  }
+}
+
+/* ── 10. 顏色收編：把高頻硬編碼品牌色接上角色主題 ──────────────
+   舊 CSS 大量使用 #197c68（綠）、#5d2fa3（紫）、#1a4a8f（藍）等
+   硬編碼。這裡用變數覆寫，讓「學生=紫、教師=藍、訪客=綠」的
+   角色主題真正套用到既有元件，而非只有新頁面。 */
+button.primary, .primary{
+  background: var(--accent);
+  border-color: var(--accent);
+}
+button.primary:hover, .primary:hover{
+  background: var(--accent-dark);
+  border-color: var(--accent-dark);
+}
+.nav-item.active{
+  background: var(--accent-100);
+  color: var(--accent-dark);
+}
+.brand-symbol{
+  background: var(--accent);
+}
+button.secondary:hover,
+.practice-tabs button.active,
+.segmented button.active{
+  color: var(--accent-dark);
+}
+.practice-tabs button.active{
+  background: var(--accent-light);
+  border-color: var(--accent-200);
+}
+.segmented button.active{
+  box-shadow: 0 1px 4px var(--accent-100);
+}
+.topic-tab.active{
+  color: var(--accent-dark);
+}
+.topic-tab.active:after{
+  background: var(--accent);
+}
+.step.active{
+  color: var(--accent-dark);
+}
+.step.active span{
+  background: var(--accent);
+}
+.metric-value{
+  color: var(--text-primary);
+}
+.hero h2{
+  color: var(--text-primary);
+}
+/* 教師/學生角色下的強調色（舊規則用 #1a4a8f / #5d2fa3 直接寫死） */
+html[data-role="student"] .nav-item.active{
+  color: var(--student-dark);
+  background: var(--student-100);
+}
+html[data-role="teacher"] .nav-item.active{
+  color: var(--teacher-dark);
+  background: var(--teacher-100);
+}
+html[data-role="student"] button.primary,
+html[data-role="student"] .primary{
+  background: var(--student);
+  border-color: var(--student);
+}
+html[data-role="student"] button.primary:hover,
+html[data-role="student"] .primary:hover{
+  background: var(--student-dark);
+}
+html[data-role="teacher"] button.primary,
+html[data-role="teacher"] .primary{
+  background: var(--teacher);
+  border-color: var(--teacher);
+}
+html[data-role="teacher"] button.primary:hover,
+html[data-role="teacher"] .primary:hover{
+  background: var(--teacher-dark);
+}
+
+/* ── 11. 深色模式對齊：把新變數接上現有 night 主題 ──────────────
+   現有 html[data-theme=night] 已定義 --bg/--paper/--ink 等舊變數。
+   這裡把新的語義變數對齊到 night 值，讓新元件在深色下也正確。 */
+html[data-theme="night"]{
+  --accent:        #4db6a0;
+  --accent-dark:   #2f8f7c;
+  --accent-light:  #1e3a30;
+  --accent-100:    #1e3a30;
+  --accent-200:    #2a4a3f;
+  --bg-page:       #141a1c;
+  --bg-surface:    #161c1e;
+  --bg-subtle:     #1c2528;
+  --bg-raised:     #1a2124;
+  --bg-sunken:     #111618;
+  --text-primary:  #e8f0ed;
+  --text-secondary:#b0c4bb;
+  --text-tertiary: #8aa39a;
+  --text-muted:    #93a3a5;
+  --border-default:#2a3437;
+  --border-soft:   #1e2e29;
+  --border-strong: #3a5049;
+}
