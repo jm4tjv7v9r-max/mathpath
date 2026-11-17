@@ -795,12 +795,14 @@ applyTheme(theme());
 function toast(msg){const t=$('#toast');t.textContent=msg;t.classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>t.classList.remove('show'),4200);}
 async function api(path,body,method){let r;try{r=await fetch(path,{method:method||(body===undefined?'GET':'POST'),headers:body===undefined?{}:{'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body),credentials:'same-origin'});}catch{throw new Error('無法連接網站伺服器，請確認服務已啟動。');}let data;try{data=await r.json();}catch{throw new Error(r.status===524?'AI 處理超過兩分鐘，已被網路層中斷。請縮短試卷、分批上傳，或稍後再試。':`伺服器回應無效（HTTP ${r.status}），請稍後再試；伺服器日誌會有實際原因。`);}if(!r.ok){if(r.status===401 && !path.includes('login') && !path.includes('change-password')){S.user=null;loginModal();}throw new Error(data.error || '操作未完成，請再試。');}serverIssue='';return data;}
 // 長 AI 工作（PDF 轉寫會超過 30 秒）：先拿 jobId，再輪詢 /api/jobs/{id}。
-async function apiJob(path,body,onTick){
+// timeoutMs 可調：整班批改一份一份送，每份都短；但單份 10 頁仍可能很久。
+async function apiJob(path,body,onTick,timeoutMs){
   const {jobId}=await api(path,{...body,async:true});
   const started=Date.now();
+  const limit=Number(timeoutMs)>0?Number(timeoutMs):5*60*1000;
   for(;;){
     await new Promise(r=>setTimeout(r,1200));
-    if(Date.now()-started>5*60*1000)throw new Error('處理超過 5 分鐘，請縮短試卷再試。');
+    if(Date.now()-started>limit)throw new Error(`處理超過 ${Math.round(limit/60000)} 分鐘仍未完成；伺服器可能仍在處理，請稍後按「重新取得結果」查看，或縮短試卷再試。`);
     const job=await api('/api/jobs/'+encodeURIComponent(jobId));
     if(onTick)onTick(job);
     if(job.status==='done')return job.result;
@@ -4813,8 +4815,17 @@ async function paperBatchPage(){
         ? {draftId:lastScan.draftId,title,sheets,consentExternal:S.ai?.mode==='external'}
         : {file:lastScan.file,title,sheets,consentExternal:S.ai?.mode==='external'};
       if(secondGrade)payload.secondGrade=true;
+      // 整班批改要「一份一份」跑 AI，36 份可能要二十分鐘以上；
+      // 以前上限 5 分鐘，時間一到只閃一個 toast、版面完全沒變，看起來像當機。
+      // 現在放寬到 30 分鐘，並把「已批 x / n 份」的進度直接寫在按鈕與狀態列。
       const out=await apiJob('/api/paper-grades/batch',payload,
-        job=>{btn.textContent=`批改中… ${Math.round(job.elapsed||0)} 秒`;});
+        job=>{
+          const p=job&&job.progress;
+          const txt=p?`批改中… ${p.done} / ${p.total} 份（${Math.round(job.elapsed||0)} 秒）`
+                     :`批改中… ${Math.round((job&&job.elapsed)||0)} 秒`;
+          btn.textContent=txt;
+          $('#pb-status').textContent=txt;
+        }, 30*60*1000);
       const imported=(out.summary&&out.summary.imported)||0;
       const notImported=(out.summary&&out.summary.notImported)||[];
       toast(`已批改 ${out.summary.graded} 份${out.summary.failed?`，${out.summary.failed} 份失敗`:''}`
@@ -4849,7 +4860,43 @@ async function paperBatchPage(){
       renderBatchResults(out);
       // 不把 lastScan 清空：還有未確認的卷可以接著批
       await loadDrafts();
-    }catch(e){toast(e.message);}
+      $('#pb-result').scrollIntoView({block:'nearest'});
+    }catch(e){
+      // 失敗（逾時／AI 未配置／伺服器重啟弄丟工作）不能只閃一個 toast：
+      // 老師會以為「什麼都沒發生、版面怎麼沒變」。把原因寫在狀態列常駐，
+      // 並講明哪些卷已經批、哪些要重批，讓版面跟現實一致。
+      const msg=e.message||'批改未完成。';
+      const timedOut=/超過|逾時|timeout/i.test(msg)||/處理超過/.test(msg);
+      $('#pb-status').innerHTML=`<span style="color:#b8453b">⚠️ 批改未完成：${esc(msg)}</span>`
+        +`<br><span class="small-text">${timedOut
+          ?'時間超過上限，但伺服器可能仍在跑。可以稍後按「繼續」載入草稿看已批完的卷，或再按一次「確認並開始批改」重批未完成的。'
+          :'可先檢查 AI 服務是否已配置、再按一次「確認並開始批改」。已確認的配對不會消失。'}</span>`;
+      // 把已批過的（續批清單有）與尚未批的分開講清楚
+      const already=(res.graded||[]).length;
+      if(already)$('#pb-status').innerHTML+=`<br><span class="small-text">（此前已成功批改 ${already} 份；本次未完成的請稍後重批）</span>`;
+      // 逾時時伺服器往往已經批好幾份（分數都存好了）。給一個按鈕直接把
+      // 已完成的結果拉回來顯示，不必重花 AI 費用。
+      if(timedOut&&lastScan&&lastScan.draftId){
+        $('#pb-status').innerHTML+=`<br><button class="secondary" id="pb-recover" style="margin-top:8px">重新取得已完成的分數</button>`;
+        const rec=$('#pb-recover');
+        if(rec)rec.onclick=async()=>{
+          rec.disabled=true;rec.textContent='讀取中…';
+          try{
+            const {draft}=await api('/api/paper-grades/drafts/'+lastScan.draftId);
+            const doneList=(draft.graded||[]).filter(g=>g.gradeId);
+            if(!doneList.length){toast('伺服器還沒有任何完成的分數，請稍後再試。');rec.disabled=false;rec.textContent='重新取得已完成的分數';return;}
+            res.graded=(res.graded||[]).concat(doneList.map(g=>({
+              gradeId:g.gradeId,studentId:g.studentId,score:g.score,confirmed:!!g.confirmed})));
+            renderBatchResults({graded:doneList.map(g=>({studentId:g.studentId,
+              grade:{id:g.gradeId,studentId:g.studentId,score:g.score,confirmed:true,syncedToGrid:!!g.confirmed}})),failed:[]});
+            $('#pb-status').innerHTML=`已取回 ${doneList.length} 份已完成的分數（已寫入成績總表）。`;
+            toast(`已取回 ${doneList.length} 份結果`);
+          }catch(e){toast(e.message);rec.disabled=false;rec.textContent='重新取得已完成的分數';}
+        };
+      }
+      $('#pb-status').scrollIntoView({block:'nearest'});
+      toast(msg);
+    }
     btn.disabled=false;btn.textContent='確認並開始批改';
   }
   // 批改結果：每份一行，可打開該學生的原卷逐題核對（原卷由掃描草稿重新渲染）。

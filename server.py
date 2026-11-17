@@ -86,15 +86,34 @@ SEAT_ORDER_BARE = "CASE WHEN COALESCE(seat,'')='' THEN 9999 ELSE CAST(seat AS IN
 JOBS: dict[str, dict] = {}
 JOB_TTL_SECONDS = 30 * 60
 JOB_MAX = 40
+# 背景工作目前跑在哪個 job 上：讓深層迴圈（例如全班批改）能回報
+# 「已批 12 / 36 份」，前端就不會長時間只有一條「處理中」看不出進度。
+_JOB_CTX = threading.local()
+
+
+def job_progress(done, total, label=''):
+    """在背景工作裡回報進度（不在背景工作裡呼叫時安靜略過）。"""
+    job = getattr(_JOB_CTX, 'job', None)
+    if not isinstance(job, dict):
+        return
+    job['progress'] = {'done': int(done), 'total': int(total), 'label': label}
+    job['at'] = time.time()      # 有進度就代表還活著，不要被逾時清掉
 
 
 def _prune_jobs():
     now = time.time()
     for job_id, job in list(JOBS.items()):
+        # 還在跑的工作不能清：整班 AI 批改可能跑超過 30 分鐘，
+        # 清掉前端就只會拿到 404「這個工作已經結束」，明明還在批。
+        if job.get('status') == 'running':
+            continue
         if now - job.get('at', now) > JOB_TTL_SECONDS:
             JOBS.pop(job_id, None)
     while len(JOBS) > JOB_MAX:
-        oldest = min(JOBS, key=lambda k: JOBS[k].get('at', 0))
+        # 超過上限時先丟已完成最久的工作，不要丟掉正在跑的。
+        finished = [k for k, v in JOBS.items() if v.get('status') != 'running']
+        pool = finished or list(JOBS)
+        oldest = min(pool, key=lambda k: JOBS[k].get('at', 0))
         JOBS.pop(oldest, None)
 
 
@@ -6656,6 +6675,7 @@ class Application:
         JOBS[job_id] = job
 
         def worker():
+            _JOB_CTX.job = job
             try:
                 job['result'] = run()
                 job['status'] = 'done'
@@ -6667,6 +6687,7 @@ class Application:
                 job['error'] = '處理失敗，請縮短試卷或稍後再試。'
                 job['status'] = 'error'
             finally:
+                _JOB_CTX.job = None
                 job['at'] = time.time()
 
         threading.Thread(target=worker, daemon=True).start()
@@ -6687,6 +6708,8 @@ class Application:
                 fail(403, '只能查看自己的工作。')
             payload = {'status': job['status'], 'error': job['error'],
                        'elapsed': round(time.time() - job['started'], 1)}
+            if job.get('progress'):
+                payload['progress'] = job['progress']
             if job['status'] == 'done':
                 payload['result'] = job['result']
             return payload, headers
@@ -8361,7 +8384,10 @@ class Application:
                 fail(422, 'PDF 沒有可讀的頁面。')
             done, failed = [], []
             second_total = {'pages': 0, 'compared': 0, 'changed': 0, 'resolved': 0}
-            for sheet in sheets:
+            # 逐份回報進度：整班 36 份可能要批十幾分鐘，前端至少看得到「批到第幾份」。
+            job_total = max(1, len(sheets))
+            for index, sheet in enumerate(sheets):
+                job_progress(index, job_total, '正在批改')
                 if not isinstance(sheet, dict):
                     continue
                 try:
@@ -8399,6 +8425,7 @@ class Application:
                 except APIError as exc:
                     failed.append({'studentId': student_id, 'reason': exc.message})
             # ── 批完即時匯入成績總表 ────────────────────────────────────
+            job_progress(job_total, job_total, '正在匯入成績總表')
             # 這條流程的前提是「老師在 AI 批改前已逐份確認學生配對」，所以配對
             # 確認就等於對分數的確認：批完直接寫進成績總表並標記 confirmed，
             # 老師不必再逐份按一次「確認」。之後改判（judge）會同步更新總表分數。
