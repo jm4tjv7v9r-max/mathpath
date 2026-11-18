@@ -1420,67 +1420,6 @@ function aiGradingHtml(){
 }
 // 提交按鈕文字：自主練習是「評分」，教師佈置的作業才是「批閱」。
 function submitLabel(){ return aiGradedNow() ? (assignmentContext ? '提交與批閱' : '提交並評分') : '提交作答'; }
-// 數學鍵盤（MathType 式輸入）：點按按鈕即插入 LaTeX，輸入框下方即時顯示排版結果。
-const MATH_KEYBOARD = [
-  ['basic','常用',[
-    ['+','＋'],['-','－'],['\\times','×'],['\\div','÷'],['\\pm','±'],['\\cdot','·'],
-    ['=','＝'],['\\ne','≠'],['\\approx','≈'],['\\equiv','≡'],['\\le','≤'],['\\ge','≥'],
-    ['\\ll','≪'],['\\gg','≫'],['\\propto','∝'],['\\%','%'],['\\infty','∞'],['\\sqrt{}','√'],
-  ]],
-  ['frac','分數 · 根號 · 上下標',[
-    ['\\frac{}{}','分數'],['\\dfrac{}{}','大分數'],['\\tfrac{}{}','小分數'],['\\frac{1}{2}','½'],
-    ['\\sqrt{}','根號'],['\\sqrt[n]{}','n 次根'],['\\sqrt[3]{}','立方根'],
-    ['^{}','上標'],['_{}','下標'],['\\left(\\right)','圓括號'],['\\left[\\right]','方括號'],
-    ['\\left\\{\\right\\}','大括號'],['\\left|\\right|','絕對值'],['\\overline{}','上橫線'],
-    ['\\vec{}','向量'],['\\hat{}','帽號'],
-  ]],
-  ['greek','希臘字母',[
-    ['\\alpha','α'],['\\beta','β'],['\\gamma','γ'],['\\delta','δ'],['\\epsilon','ε'],['\\varepsilon','ε'],
-    ['\\zeta','ζ'],['\\eta','η'],['\\theta','θ'],['\\vartheta','ϑ'],['\\iota','ι'],['\\kappa','κ'],
-    ['\\lambda','λ'],['\\mu','μ'],['\\nu','ν'],['\\xi','ξ'],['\\pi','π'],['\\rho','ρ'],
-    ['\\sigma','σ'],['\\tau','τ'],['\\upsilon','υ'],['\\phi','φ'],['\\varphi','φ'],['\\chi','χ'],
-    ['\\psi','ψ'],['\\omega','ω'],['\\Gamma','Γ'],['\\Delta','Δ'],['\\Theta','Θ'],['\\Lambda','Λ'],
-    ['\\Xi','Ξ'],['\\Pi','Π'],['\\Sigma','Σ'],['\\Phi','Φ'],['\\Psi','Ψ'],['\\Omega','Ω'],
-  ]],
-  ['algebra','代數 · 函數',[
-    ['x','x'],['y','y'],['z','z'],['n','n'],['e^{}','e^'],['a^{}','a^'],
-    ['\\log_{}','log'],['\\ln','ln'],['\\lg','lg'],['\\lim_{x\\to 0}','lim'],
-    ['\\frac{d}{dx}','d/dx'],['\\frac{\\partial}{\\partial x}','∂/∂x'],['\\partial','∂'],['\\Delta','Δ'],
-    ['\\to','→'],['\\mapsto','↦'],['\\forall','∀'],['\\exists','∃'],
-  ]],
-  ['trig','三角',[
-    ['\\sin','sin'],['\\cos','cos'],['\\tan','tan'],['\\cot','cot'],['\\sec','sec'],['\\csc','csc'],
-    ['\\arcsin','arcsin'],['\\sin^{-1}','sin⁻¹'],['\\cos^{-1}','cos⁻¹'],['\\tan^{-1}','tan⁻¹'],
-    ['^{\\circ}','°'],['\\pi','π'],['\\theta','θ'],['\\varphi','φ'],
-  ]],
-  ['calc','微積分 · 數列',[
-    ['\\int_{}^{}','積分'],['\\int','∫'],['\\oint','∮'],['\\iint','∬'],
-    ['\\sum_{i=1}^{n}','Σ 求和'],['\\prod_{}^{}','Π 連乘'],
-    ['\\lim_{n\\to\\infty}','lim'],['\\frac{d}{dx}','導數'],['\\frac{\\partial}{\\partial x}','偏導'],
-    ['\\nabla','∇'],['\\infty','∞'],['\\ldots','…'],
-  ]],
-  ['set','集合 · 邏輯',[
-    ['\\in','∈'],['\\notin','∉'],['\\subset','⊂'],['\\subseteq','⊆'],['\\supset','⊃'],['\\supseteq','⊇'],
-    ['\\cup','∪'],['\\cap','∩'],['\\varnothing','∅'],['\\setminus','＼'],
-    ['\\mathbb{N}','ℕ'],['\\mathbb{Z}','ℤ'],['\\mathbb{Q}','ℚ'],['\\mathbb{R}','ℝ'],['\\mathbb{C}','ℂ'],
-    ['\\Rightarrow','⇒'],['\\Leftrightarrow','⇔'],['\\neg','¬'],['\\land','∧'],['\\lor','∨'],
-    ['\\therefore','∴'],['\\because','∵'],
-  ]],
-  ['geo','幾何 · 向量',[
-    ['\\angle','∠'],['\\parallel','∥'],['\\perp','⊥'],['\\sim','∼'],['\\cong','≅'],['\\triangle','△'],
-    ['\\square','□'],['\\bigcirc','○'],['\\degree','°'],['\\vec{}','向量'],['\\overline{}','線段'],
-    ['\\overrightarrow{}','有向線段'],['\\widehat{}','弧'],
-  ]],
-];
-function mathKeyboardHtml(suffix, hidden=true){
-  const kid = suffix ? `math-keyboard-${suffix}` : 'math-keyboard';
-  const tabs = MATH_KEYBOARD.map(([id,label],i)=>
-    `<button type="button" class="mk-tab ${i===0?'active':''}" data-mk-tab="${id}">${esc(label)}</button>`).join('');
-  const panels = MATH_KEYBOARD.map(([id,label,keys],i)=>
-    `<div class="mk-panel" data-mk-panel="${id}"${i===0?'':' hidden'}>${keys.map(([tex,text])=>
-      `<button type="button" class="mk-key" data-mk-insert="${esc(tex)}" title="${esc(tex)}">${esc(text)}</button>`).join('')}</div>`).join('');
-  return `<div class="math-keyboard" id="${kid}"${hidden?' hidden':''}><div class="mk-head">${icon('practice')}<span class="mk-title">數學鍵盤</span><span class="small-text">點按插入符號，可在輸入框直接修改</span></div><div class="mk-tabs">${tabs}</div>${panels}</div>`;
-}
 function insertMathSnippet(snippet){
   const input=$('#final-answer');
   if(!input) return;
@@ -2646,7 +2585,6 @@ function wireFigureTools(scope,canvas,state,onChange){
   return tools2;
 }
 
-function drawFigure(){paintFigureCanvas($('#figure-canvas'),figSketch?figSketch.strokes:[],figSketch?figSketch.selected:null);}
 function initFigureCanvas(){
   const c=$('#figure-canvas');if(!c)return;
   figSketch=newSketch();
@@ -7364,46 +7302,6 @@ function studentGradesModal(cid,st){
     </table></div>
     <button class="secondary" id="back-grades" style="margin-top:14px">← 回班級總表</button>`,true);
   $('#back-grades').onclick=()=>classGradesModal(cid);
-}
-// 教師首頁的「近七日事項」：只列今天起七天內的，今天那筆加大加粗換色
-async function renderWeekAhead(){
-  const box=$('#week-ahead');if(!box)return;
-  const pad=n=>String(n).padStart(2,'0');
-  const iso=d=>`${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
-  const today=new Date();today.setHours(0,0,0,0);
-  const from=iso(today),to=iso(new Date(today.getTime()+6*86400000));
-  try{
-    const data=await api(`/api/calendar?from=${from}&to=${to}`);
-    const notes=data.notes||[];
-    const head=`<div class="panel-heading"><h2>${icon('clock')}近七日事項 <span class="small-text">${notes.length} 項</span></h2><button class="text-button" data-page="calendar">打開日曆 ${icon('arrow')}</button></div>`;
-    if(!notes.length){box.innerHTML=head+'<p class="field-hint" style="padding:0 22px 18px">未來七天沒有安排。</p>';return;}
-    // 同一天可能有好幾項：列表按「日」合併，只寫重點，細節留給點開之後的視窗。
-    const groups=[];const index=new Map();
-    notes.forEach(n=>{
-      if(!index.has(n.date)){const g={date:n.date,items:[]};index.set(n.date,g);groups.push(g);}
-      index.get(n.date).items.push(n);
-    });
-    groups.sort((a,b)=>a.date.localeCompare(b.date));
-    box.innerHTML=head+`<div class="week-list">${groups.map(g=>{
-      const isToday=g.date===from;
-      const times=g.items.map(n=>n.startTime).filter(Boolean).sort();
-      const places=[...new Set(g.items.map(n=>n.location).filter(Boolean))];
-      const meta=g.items.length>1
-        ? `共 ${g.items.length} 項${times.length?` · ${times[0].split(/[–—-]/)[0]} 起`:''}${places.length?` · ${places[0]}`:''}`
-        : ([g.items[0].startTime,g.items[0].location].filter(Boolean).join(' · ')||'全天');
-      const first=(g.items[0].title||'').trim();
-      const brief=first.length>16?first.slice(0,16)+'…':first;
-      return `<button type="button" class="week-item${isToday?' today':''}" data-week-date="${g.date}">
-        <span class="week-date">${esc(g.date.slice(5))}</span>
-        <div class="week-body"><strong>${esc(brief)}${g.items.length>1?`<span class="week-more">等 ${g.items.length} 項</span>`:''}</strong>
-          <small>${esc(meta)}</small></div>
-        ${isToday?'<span class="week-today">今天</span>':''}
-      </button>`;}).join('')}</div>`;
-    $$('[data-week-date]',box).forEach(btn=>{
-      btn.onclick=()=>dayDetailModal(btn.dataset.weekDate,
-        notes.filter(n=>n.date===btn.dataset.weekDate));
-    });
-  }catch(e){box.innerHTML='';}
 }
 // 提醒事項的「時間 · 地點 · 出處」，日曆與彈出視窗共用同一組欄位。
 function noteMeta(n){
