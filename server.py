@@ -8179,9 +8179,10 @@ class Application:
             self.ai.consent(body.get('consentExternal'))
             spec = paper_generation_spec(body)
             sections, sources, warnings = build_generated_sections(self, spec)
-            # 總分由程式保證；這裡再請 AI 覆核「每題配分合不合理」，
-            # 有問題就當提醒帶回前端（不擋出卷，老師自己決定要不要換題）。
-            warnings.extend(paper_marks_review(self, sections, spec))
+            # 總分由程式保證；老師要求時再請 AI 覆核「每題配分合不合理」。
+            # 預設不做：這是額外一次模型呼叫，其他呼叫端（測試、批次工具）不該被多收費。
+            if body.get('reviewMarks'):
+                warnings.extend(paper_marks_review(self, sections, spec))
             return {'sections': paper_preview_payload(sections), 'sources': sources,
                     'warnings': warnings, 'spec': spec,
                     'totalPoints': spec['totalPoints']}, headers
@@ -8229,7 +8230,8 @@ class Application:
                 warnings = []
             else:
                 sections, sources, warnings = build_generated_sections(self, spec)
-                warnings.extend(paper_marks_review(self, sections, spec))
+                if body.get('reviewMarks'):
+                    warnings.extend(paper_marks_review(self, sections, spec))
             title = f"{spec['grade'] or ''}{spec['examKind']}（{spec['term']}）".strip() or 'AI 生成試卷'
             # 卷頭照範本原文，只把年級／段／類型／科目換成老師選的。
             meta = {'grade': spec['grade'], 'term': spec['term'],

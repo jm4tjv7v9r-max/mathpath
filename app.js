@@ -5891,6 +5891,8 @@ async function generatePaperModal(){
             subject:$('#gen-subject').value,region:$('#gen-region').value,
             reference:refs.map(r=>`【${r.name}】\n${r.text}`).join('\n\n').slice(0,6000),
             qtypes,totalPoints:total,difficulty,source,
+            // 請伺服器多跑一次「配分覆核」：總分由程式保證，這裡檢查單題配分合不合理
+            reviewMarks:true,
             consentExternal:S.ai.mode==='external'};
   };
 
