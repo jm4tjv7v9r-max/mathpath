@@ -258,6 +258,10 @@ class Question:
     options: list[str] = field(default_factory=list)
     lines: list[str] = field(default_factory=list)      # 小題或續行
     figures: list[dict] = field(default_factory=list)   # 題目裡的圖（blob + 原始尺寸）
+    # AI 出題時會一併給最終答案與關鍵步驟。卷面不印，但要留著：
+    # 之後「一鍵匯入題庫」才有答案可用，老師不必再自己解一次。
+    answer: str = ''
+    steps: list[str] = field(default_factory=list)
 
     def __post_init__(self):
         # 所有建立題目的路徑（Word 解析、PDF 轉寫、題庫組卷、讀回存檔）都會經過這裡，
@@ -930,7 +934,8 @@ def sections_to_dict(sections: list[Section]) -> list[dict]:
     """
     return [{'title': s.title,
              'questions': [{'stem': q.stem, 'marks': q.marks,
-                            'options': list(q.options), 'lines': list(q.lines)}
+                            'options': list(q.options), 'lines': list(q.lines),
+                            'answer': q.answer, 'steps': list(q.steps)}
                            for q in s.questions]}
             for s in sections]
 
@@ -941,7 +946,9 @@ def sections_from_dict(data) -> list[Section]:
     for section in data or []:
         questions = [Question(stem=q.get('stem') or '', marks=q.get('marks'),
                               options=list(q.get('options') or []),
-                              lines=list(q.get('lines') or []))
+                              lines=list(q.get('lines') or []),
+                              answer=str(q.get('answer') or ''),
+                              steps=[str(x) for x in (q.get('steps') or [])])
                      for q in section.get('questions') or []
                      if (q.get('stem') or '').strip()]
         if questions:

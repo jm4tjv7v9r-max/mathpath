@@ -502,3 +502,27 @@ html[data-theme="night"]{
   --border-soft:   #1e2e29;
   --border-strong: #3a5049;
 }
+
+/* ── 12. 一鍵生成試卷：預覽時的「答案」提示 ────────────────────
+   AI 出題時會一併給答案與步驟，預覽要看得到，老師才知道這題值不值得留。
+   顏色跟著角色主題走（--green-dark），夜間由墨夜主題自動接手。 */
+.gen-qans{
+  margin: 6px 0 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  font-size: calc(12.5px * var(--fs));
+  line-height: 1.6;
+  color: var(--green-dark);
+  word-break: break-word;
+}
+.gen-qans .icon{
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  margin-top: 2px;
+  opacity: .85;
+}
+html[data-theme="night"] .gen-qans{
+  color: #7fd8b8;
+}

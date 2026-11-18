@@ -2655,6 +2655,10 @@ def ai_generate_paper(app, spec, target, types=None, fix=None, note=None):
             except (TypeError, ValueError):
                 marks = 0
             row = paper_format.Question(stem=stem, marks=marks or None, options=options)
+            # 提示詞第 ⑧ 條要求 AI 一併給答案與步驟：卷面不印，但要存下來，
+            # 「一鍵匯入題庫」才不必讓老師重新解一次。
+            row.answer = str(q.get('answer') or '').strip()[:2000]
+            row.steps = [str(x).strip()[:600] for x in (q.get('steps') or []) if str(x).strip()][:6]
             level = str(q.get('difficulty') or '').strip()
             row.difficulty = level if level in PAPER_DIFFICULTY else '中'
             row.topic = str(q.get('topic') or '').strip()[:40]
@@ -2781,7 +2785,10 @@ def paper_preview_payload(sections):
             rows.append({'stem': q.stem, 'options': list(q.options or []), 'lines': list(q.lines or []),
                          'marks': q.marks, 'difficulty': getattr(q, 'difficulty', '') or '',
                          'topic': getattr(q, 'topic', '') or '',
-                         'bankId': getattr(q, 'bank_id', None)})
+                         'bankId': getattr(q, 'bank_id', None),
+                         # 一併帶回前端：老師按「確定」時原樣送回，答案才不會在存檔時掉掉。
+                         'answer': getattr(q, 'answer', '') or '',
+                         'steps': list(getattr(q, 'steps', []) or [])})
         qtype = next((k for k in PAPER_QTYPES if k in (sec.title or '')), '解答題')
         out.append({'title': sec.title, 'qtype': qtype, 'questions': rows})
     return out
@@ -2834,7 +2841,9 @@ def confirmed_sections(raw, spec):
     for sec in data:
         rows = [paper_format.Question(stem=q['stem'], marks=q.get('marks'),
                                       options=q.get('options') or [],
-                                      lines=q.get('lines') or [])
+                                      lines=q.get('lines') or [],
+                                      answer=q.get('answer') or '',
+                                      steps=list(q.get('steps') or []))
                 for q in sec['questions']]
         if rows:
             sections.append(paper_format.Section(title=sec.get('title'), questions=rows))
@@ -3462,7 +3471,13 @@ def paper_sections_valid(raw):
                 marks = number(marks, '配分', 0, 1000, True)
             options = [text(o, '選項', 600, empty=True) for o in (item.get('options') or [])][:10]
             lines = [text(l, '續行', 600, empty=True) for l in (item.get('lines') or [])][:10]
-            items.append({'stem': stem, 'marks': marks, 'options': options, 'lines': lines})
+            # 答案／步驟是「AI 出題時附帶的內容」，卷面不印；留著供匯入題庫用。
+            # 舊資料沒有這兩個欄位 → 空字串，行為與以前一樣（進題庫後標待核驗）。
+            answer = text(item.get('answer') or '', '答案', 2000, empty=True)
+            steps = [text(x, '解題步驟', 600, empty=True)
+                     for x in (item.get('steps') or [])][:6]
+            items.append({'stem': stem, 'marks': marks, 'options': options, 'lines': lines,
+                          'answer': answer, 'steps': [x for x in steps if x]})
         if items:
             sections.append({'title': title or None, 'questions': items})
     if not sections:
@@ -3585,7 +3600,11 @@ def paper_question_type(stem: str, options: list[str]) -> str:
 
 
 def paper_bank_payload(item: dict, meta: dict) -> dict:
-    """一題試卷題目 → 題庫題目。答案留空，等老師在題庫補。"""
+    """一題試卷題目 → 題庫題目。
+
+    AI 出的題目會自帶答案與步驟（提示詞第 ⑧ 條），直接沿用；
+    掃描舊卷拆出來的題目沒有答案，維持留空、標「待核驗」讓老師補。
+    """
     # 公式先正規化再進題庫：`\left（`、`\degree` 這些在 KaTeX 會直接渲染失敗
     stem = mathnorm.normalize_text((item.get('stem') or '').strip())
     options = []
@@ -3599,18 +3618,24 @@ def paper_bank_payload(item: dict, meta: dict) -> dict:
         options = []
     marks = item.get('marks')
     points = max(1, min(100, round(float(marks)))) if marks else 1
-    return {'title': paper_title_of(stem),
-            'content': stem,
-            'topic': meta['topic'],
-            'level': meta['level'],
-            'points': points,
-            'answer': '',
-            'qtype': qtype,
-            'options': options,
-            'grade': meta['grade'],
-            'source': meta['source'],
-            # 答案還空著，跟「全自動拆題」一樣標成待核驗，老師在題庫一眼找得到
-            'tags': ['試卷匯入', '待核驗']}
+    answer = mathnorm.normalize_text(str(item.get('answer') or '').strip())
+    steps = [mathnorm.normalize_text(str(x).strip())
+             for x in (item.get('steps') or []) if str(x).strip()][:6]
+    payload = {'title': paper_title_of(stem),
+               'content': stem,
+               'topic': meta['topic'],
+               'level': meta['level'],
+               'points': points,
+               'answer': answer,
+               'qtype': qtype,
+               'options': options,
+               'grade': meta['grade'],
+               'source': meta['source'],
+               # 有答案的題目匯入後就能直接佈置作業；沒答案的仍標待核驗。
+               'tags': ['試卷匯入'] + ([] if answer else ['待核驗'])}
+    if steps:
+        payload['steps'] = steps
+    return payload
 
 
 def decode_docx(value):
@@ -6760,7 +6785,7 @@ class Application:
                 cur = db.execute('INSERT INTO paper_keys(teacher_id,title,questions,confirmed,created_at) '
                                  'VALUES(?,?,?,?,?)',
                                  (user['id'], title, json.dumps(questions, ensure_ascii=False), 0,
-                                  datetime.now(timezone.utc).isoformat()))
+                                  utc_now()))
                 key_id = cur.lastrowid
             return {'key': {'id': key_id, 'title': title, 'pages': len(pages),
                             'questions': questions, 'confirmed': False}}, headers
@@ -6849,7 +6874,7 @@ class Application:
                     fail(403, '只能修改自己建立的答案卷。')
                 db.execute('UPDATE paper_keys SET questions=?, confirmed=?, confirmed_at=? WHERE id=?',
                            (json.dumps(clean, ensure_ascii=False), 1 if confirm else 0,
-                            datetime.now(timezone.utc).isoformat() if confirm else None, key_id))
+                            utc_now() if confirm else None, key_id))
             return {'key': {'id': key_id, 'title': row['title'], 'questions': clean,
                             'confirmed': confirm}}, headers
         if method == 'POST' and path == '/api/paper-grades':
@@ -6918,7 +6943,7 @@ class Application:
                     'VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',
                     (paper_key_id, user['id'], student_id, title, len(pages),
                      result['totalQuestions'], result['correctCount'], result['score'], detail,
-                     datetime.now(timezone.utc).isoformat(), draft_ref,
+                     utc_now(), draft_ref,
                      json.dumps(page_nums)))
                 grade_id = cur.lastrowid
             return {'grade': {'id': grade_id, 'studentId': student_id, 'studentName': student['name'],
@@ -7094,7 +7119,7 @@ class Application:
                 if row['teacher_id'] != user['id'] and not self.is_owner(user, db):
                     fail(403, '只能確認自己建立的批改紀錄。')
                 db.execute('UPDATE paper_grades SET confirmed_at=? WHERE id=?',
-                           (datetime.now(timezone.utc).isoformat() if val else None, grade_id))
+                           (utc_now() if val else None, grade_id))
                 # 確認即代表定案：同步寫進成績總表（同名功課共用一個欄位）
                 if val:
                     aid = paper_to_grade_grid(db, grade_id)
@@ -8398,11 +8423,17 @@ class Application:
             job_total = max(1, len(sheets))
             for index, sheet in enumerate(sheets):
                 job_progress(index, job_total, '正在批改')
+                # 這裡不能靜靜 continue：summary.graded + summary.failed 會少於老師送出的份數，
+                # 老師只看到「批改 N 份」卻不知道有幾份被丟掉、為什麼被丟掉。
                 if not isinstance(sheet, dict):
+                    failed.append({'studentId': None,
+                                   'reason': '第 %d 份的資料格式不正確' % (index + 1)})
                     continue
                 try:
                     student_id = number(sheet.get('studentId'), '學生', 1, 10 ** 18, True)
                 except APIError:
+                    failed.append({'studentId': None,
+                                   'reason': '第 %d 份沒有指定學生（配對未完成）' % (index + 1)})
                     continue
                 nums = sheet.get('pages') or []
                 imgs = [pages[n - 1] for n in nums
@@ -8442,7 +8473,7 @@ class Application:
             imported, no_class = 0, []
             if done:
                 with self.db() as db:
-                    now_iso = datetime.now(timezone.utc).isoformat()
+                    now_iso = utc_now()
                     for item in done:
                         g = item.get('grade') or {}
                         gid = g.get('id')

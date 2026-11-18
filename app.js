@@ -4584,16 +4584,16 @@ async function paperBatchPage(){
       const file=await maybeCompressPdf(picked,msg=>{$('#pb-status').textContent=msg;});
       $('#pb-status').textContent='掃描中，80 頁大約要 3–8 分鐘…';
       // 以原始二進位上傳（不 base64 膨脹），避免大掃描檔在代理層就被 413 擋下。
-      const data=await fileToDataUrl(file);
       const res=await apiJobRaw('/api/paper-grades/scan-raw',file,
         {classId:Number($('#pb-class').value)||null,title:($('#pb-title').value||'').trim(),
          split:$('#pb-split').value,rotate:$('#pb-rotate').value,
          consentExternal:S.ai?.mode==='external'},
         job=>{$('#pb-status').textContent=`掃描中… ${Math.round(job.elapsed||0)} 秒`;});
       renderBatch(res);
-      // lastScan.file 仍存 base64 dataURL：萬一草稿存檔失敗（draftId 為 null），
-      // 之後「確認並開始批改」會用 JSON 帶 file 走 /api/paper-grades/batch。
-      lastScan={file:data,res,draftId:res.draftId||null};
+      // 只留 File 物件，不預先轉 base64：60 MB 的掃描檔轉成 dataURL 是 80 MB 字串，
+      // 每次掃描都佔著不放會讓低配裝置／手機瀏覽器直接崩頁。真的有需要
+      // （草稿沒存成功、要用 JSON 走 /api/paper-grades/batch）時才在批改前轉。
+      lastScan={file,res,draftId:res.draftId||null};
       $('#pb-roster-info').textContent=(res.roster||[]).length?`（目前 ${res.roster.length} 人）`:'（還沒有學生）';
       $('#pb-status').textContent=`共 ${res.pages} 頁、切成 ${res.summary.papers} 份卷；認出 ${res.summary.matched} 份。`
         +(res.draftId?'（已存成草稿，可離開頁面稍後再批）':'')
@@ -4749,9 +4749,10 @@ async function paperBatchPage(){
     const secondGrade=!!($('#pb-second-grade')&&$('#pb-second-grade').checked);
     try{localStorage.setItem('paperSecondGrade',secondGrade?'1':'0');}catch(_){}
     try{
+      // 沒有草稿才需要把 PDF 塞進 JSON 走 batch：只有這條路徑才轉 base64。
       const payload=lastScan.draftId
         ? {draftId:lastScan.draftId,title,sheets,consentExternal:S.ai?.mode==='external'}
-        : {file:lastScan.file,title,sheets,consentExternal:S.ai?.mode==='external'};
+        : {file:await fileToDataUrl(lastScan.file),title,sheets,consentExternal:S.ai?.mode==='external'};
       if(secondGrade)payload.secondGrade=true;
       // 整班批改要「一份一份」跑 AI，36 份可能要二十分鐘以上；
       // 以前上限 5 分鐘，時間一到只閃一個 toast、版面完全沒變，看起來像當機。
@@ -5033,8 +5034,16 @@ async function paperBatchPage(){
     };
     $$('[data-confirm]').forEach(btn=>btn.onclick=async()=>{
       const i=Number(btn.dataset.confirm),sh=(res.sheets||[])[i];
-      if(!sh||!viewId)return toast('這份卷沒有存草稿，無法確認。');
+      if(!sh)return;
       const next=!sh.confirmed;
+      // 草稿沒存成功（磁碟滿、DB 鎖住…）時仍要能確認：批改端只讀前端送出的配對，
+      // 不依賴草稿裡的確認狀態。以前這裡直接擋住，整批就永遠批不了。
+      if(!viewId){
+        sh.confirmed=next;
+        applyLock(i);
+        toast(next?`第 ${i+1} 份已確認（此份未存草稿，離開頁面後要重新掃描）`:`第 ${i+1} 份已解鎖，可再更改`);
+        return;
+      }
       try{
         await api(`/api/paper-grades/drafts/${viewId}/confirm`,{index:i,confirmed:next});
         sh.confirmed=next;
@@ -5043,7 +5052,11 @@ async function paperBatchPage(){
       }catch(e){toast(e.message);}
     });
     $('#pb-confirm-all').onclick=async()=>{
-      if(!viewId)return toast('這份卷沒有存草稿，無法確認。');
+      if(!viewId){
+        (res.sheets||[]).forEach((sh,i)=>{sh.confirmed=true;applyLock(i);});
+        toast('已全部確認（未存草稿，離開頁面後要重新掃描）');
+        return;
+      }
       try{
         const out=await api(`/api/paper-grades/drafts/${viewId}/confirm`,{all:true,confirmed:true});
         res.sheets=out.sheets||res.sheets;
@@ -5438,7 +5451,7 @@ function paperCardHtml(p){
         <label class="small-text">難度<select data-paper-level="${p.id}">${[['1','易'],['2','中'],['3','難']].map(([v,t])=>`<option value="${v}" ${v===pickLevel?'selected':''}>${t}</option>`).join('')}</select></label>
         <button class="primary" data-paper-import="${p.id}">確認匯入</button>
       </div>
-      <p class="field-hint">答案留空，匯入後在題庫補（會標成「待核驗」）；題型按有無選項自動判斷。</p>
+      <p class="field-hint">AI 生成的題目會一併帶入答案與步驟；掃描舊卷拆出來的題目沒有答案，匯入後標成「待核驗」等你在題庫補。題型按有無選項自動判斷。</p>
     </details>
   </section>`;
 }
@@ -5937,6 +5950,7 @@ async function generatePaperModal(){
               <p class="gen-qmeta">第 ${n} 題 · ${q.marks} 分${q.difficulty?` · ${q.difficulty}`:''}${q.bankId?' · 題庫':''}</p>
               <p class="gen-qstem">${mathText(q.stem)}</p>
               ${(q.options||[]).length?`<p class="gen-qopts">${q.options.map(o=>mathText(o)).join('　')}</p>`:''}
+              ${q.answer?`<p class="gen-qans">${icon('check')}<span>答案：${mathText(q.answer)}</span></p>`:''}
             </div>
             <button type="button" class="text-button gen-qreplace" data-replace="${si}-${qi}">更換</button>
           </div>`;}).join('')}
@@ -5987,7 +6001,8 @@ async function generatePaperModal(){
   const confirmGenerate=async ()=>{
     const btn=$('#gen-confirm');
     const chosen=plan.map(s=>({title:s.title,questions:s.questions.filter(q=>q.on)
-        .map(q=>({stem:q.stem,marks:q.marks,options:q.options||[],lines:q.lines||[]}))}))
+        .map(q=>({stem:q.stem,marks:q.marks,options:q.options||[],lines:q.lines||[],
+                  answer:q.answer||'',steps:q.steps||[]}))}))
       .filter(s=>s.questions.length);
     if(!chosen.length)return toast('請至少保留一題。');
     const old=btn.textContent;btn.disabled=true;btn.textContent='排版中…';
