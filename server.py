@@ -8233,9 +8233,12 @@ class Application:
                 if body.get('reviewMarks'):
                     warnings.extend(paper_marks_review(self, sections, spec))
             title = f"{spec['grade'] or ''}{spec['examKind']}（{spec['term']}）".strip() or 'AI 生成試卷'
-            # 卷頭照範本原文，只把年級／段／類型／科目換成老師選的。
+            # 卷頭照範本原文，只把年級／段／類型／科目／限時換成老師選的。
+            # 不含 duration 時，卷頭「限時 40 分鐘」會沿用範本舊值，
+            # 跟 STEP1 填的「時間（分鐘）」對不上。
             meta = {'grade': spec['grade'], 'term': spec['term'],
-                    'kind': spec['examKind'], 'subject': spec['subject']}
+                    'kind': spec['examKind'], 'subject': spec['subject'],
+                    'duration': spec['duration']}
             try:
                 output, report = paper_format.render_with_sections(
                     tpl['data'], sections, title, meta=meta)

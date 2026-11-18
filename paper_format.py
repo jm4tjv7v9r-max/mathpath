@@ -594,6 +594,21 @@ TITLE_GRADE_RE = re.compile(r'[高初中][一二三]')
 TITLE_CLASS_RE = re.compile(r'(級?)\s*([（(])([^）)]*)([）)])')
 TITLE_KIND_RE = re.compile(r'(小測|大測|考試|練習)')
 TITLE_SUBJECT_RE = re.compile(r'(數學|幾何)')
+# 卷頭「（限時 40 分鐘，本題目卷共兩版…）」：只換「限時 X 分鐘」的數字。
+# 老師在一鍵生成 STEP1 填的「時間（分鐘）」要反映在卷面上，不能沿用範本的舊值。
+LIMIT_MINUTES_RE = re.compile(r'(限時\s*)[\d.]+\s*(分鐘|min)')
+
+
+def _set_limit_minutes(text: str, minutes) -> str:
+    """把「限時 40 分鐘」的數字換成生成設定值；沒有限時字樣就原樣回傳。"""
+    if not text:
+        return text
+    try:
+        value = int(round(float(minutes)))
+    except (TypeError, ValueError):
+        return text
+    new, n = LIMIT_MINUTES_RE.subn(lambda m: f'{m.group(1)}{value} {m.group(2)}', text)
+    return new if n else text
 
 
 def _fill_title(template_text: str, meta: dict | None, fallback: str) -> str:
@@ -646,29 +661,73 @@ def _fill_title(template_text: str, meta: dict | None, fallback: str) -> str:
     return out.strip() or fallback
 
 
-def _sync_head(head, target: int, title_text: str):
-    """卷頭其他行也跟著換學段／年級。
+def _replace_runs(p, fn):
+    """把 fn 套到每個 run 的文字，逐 run 替換，回傳是否有任何 run 被改。
+
+    卷頭資料行（「高三＿班 姓名：…」）常用 tab 分欄＋底線，直接 _fill 重寫整行
+    可能動到 tab 對齊或底線格式。逐 run 只改文字，其餘格式原樣保留。
+    若字眼跨多個 run（例如「高」「三」分屬兩個 run），逐 run 找不到就回 False，
+    呼叫端再退而求其次用 _fill。
+    """
+    changed = False
+    for r in p._p.findall(qn('w:r')):
+        text = ''.join(t.text or '' for t in r.findall(qn('w:t')))
+        if not text:
+            continue
+        new = fn(text)
+        if new != text:
+            for t in r.findall(qn('w:t')):
+                t.text = ''
+            if r.findall(qn('w:t')):
+                r.findall(qn('w:t'))[0].text = new
+            else:
+                from docx.oxml import OxmlElement
+                t_el = OxmlElement('w:t')
+                t_el.text = new
+                r.append(t_el)
+            changed = True
+    return changed
+
+
+def _head_substitutes(text: str, term, grade, duration) -> str:
+    """把卷頭單一 run 文字裡的學段／年級／限時換掉（供 _replace_runs 逐 run 用）。"""
+    new = text
+    if term:
+        new = TITLE_TERM_RE.sub(term.group(0), new, count=1)
+    if grade:
+        new = TITLE_GRADE_RE.sub(grade.group(0), new, count=1)
+    if duration is not None:
+        new = _set_limit_minutes(new, duration)
+    return new
+
+
+def _sync_head(head, target: int, title_text: str, duration=None):
+    """卷頭其他行也跟著換學段／年級／限時。
 
     範本第一行常常是「培華中學 2025/2026 學年 第一段測驗」，卷名那行換成第二段之後，
     第一行還寫著「第一段」——一份卷兩個學段，是最容易被投訴的那種錯。
+
+    卷頭「高三＿＿班 姓名：…」這行也要換年級：以前因為含「姓名／學號」被整行跳過，
+    結果大標題寫「高二級」、資料行還留著「高三」，一份卷兩個年級。
+    現在改成只換「高／中／初 ＋ 一／二／三」與「限時 X 分鐘」這些欄位，
+    姓名／學號／日期／成績等其餘內容與底線格式原樣保留（_fill 會重畫底線）。
     """
     term = TITLE_TERM_RE.search(title_text or '')
     grade = TITLE_GRADE_RE.search(title_text or '')
-    if not term and not grade:
+    if not term and not grade and duration is None:
         return
     for i, p in enumerate(head):
         if i == target:
             continue
         old = p.text or ''
-        if not old.strip() or '姓名' in old or '學號' in old:
+        if not old.strip():
             continue
-        new = old
-        if term:
-            new = TITLE_TERM_RE.sub(term.group(0), new, count=1)
-        if grade:
-            new = TITLE_GRADE_RE.sub(grade.group(0), new, count=1)
+        new = _head_substitutes(old, term, grade, duration)
         if new != old:
-            _fill(p, [new])
+            # 先逐 run 只改文字（保留底線與 tab 分欄）；跨 run 的字眼改不到，
+            # 才退而求其次整行重寫。
+            if not _replace_runs(p, lambda t: _head_substitutes(t, term, grade, duration)):
+                _fill(p, [new])
 
 
 def _title_has_fields(text: str) -> bool:
@@ -869,6 +928,13 @@ def _heading_text(template_title: str, new_title: str, questions) -> str:
     out = inner
     if len(set(marks)) == 1:
         out = _set_each_marks(out, marks[0])
+    else:
+        # 每題分數不一樣（例如 AI 配分後某題多 2 分），就不能再寫「每題 4 分」，
+        # 否則卷面變成「每題 4 分，共 38 分」這種自相矛盾的配分。
+        # 一律只留總分；若範本只寫「每題 4 分」（沒有「共」），補一個總分。
+        out = re.sub(r'每[題小]\s*[\d.]+\s*分\s*[，,、]?\s*', '', inner).strip()
+        if '共' not in out:
+            out = f'{out}共 {sum(marks):g} 分' if out else f'共 {sum(marks):g} 分'
     out = _set_total_marks(out, sum(marks))
     if not OBJECTIVE_RE.search(new):
         # 解答／證明／附加題：只留總分
@@ -1094,7 +1160,8 @@ def _render_into(tpl, sections: list[Section], title: str | None = None,
             else:
                 line = _fill_title(tpl_line, use_meta, title)
             _fill(cloned_head[target], [line], math_as_text)
-            _sync_head(cloned_head, target, line)
+            _sync_head(cloned_head, target, line,
+                       duration=(use_meta or {}).get('duration'))
 
     # 選項欄數全卷只用一個：每題各自算的話，長選項那題會變成 2 欄，
     # 選項字母就跟第一題對不齊（老師一眼就看到）。
@@ -1259,17 +1326,22 @@ def layout_plan(tpl, sections: list[Section], title: str | None = None,
             else:
                 line = _fill_title(tpl_line, use_meta, title)
             head[target] = line
-            # 其他行的學段／年級跟著換（跟 Word 的 _sync_head 同一條規則）
+            # 其他行的學段／年級／限時跟著換（跟 Word 的 _sync_head 同一條規則）。
+            # 卷頭「高三＿＿班 姓名：…」含「姓名／學號」以前被跳過，年級沒換；
+            # 現在一樣換年級與限時，姓名／學號等其餘內容保留。
             term = TITLE_TERM_RE.search(line)
             grade = TITLE_GRADE_RE.search(line)
+            duration = (use_meta or {}).get('duration')
             for i, text in enumerate(head):
-                if i == target or not text.strip() or '姓名' in text or '學號' in text:
+                if i == target or not text.strip():
                     continue
                 new = text
                 if term:
                     new = TITLE_TERM_RE.sub(term.group(0), new, count=1)
                 if grade:
                     new = TITLE_GRADE_RE.sub(grade.group(0), new, count=1)
+                if duration is not None:
+                    new = _set_limit_minutes(new, duration)
                 head[i] = new
 
     template_headings = [b.text for b in blocks if b.role == 'section']
