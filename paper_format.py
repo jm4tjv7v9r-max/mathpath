@@ -541,6 +541,40 @@ def _column_stops(p, doc, columns: int):
             Emu(int(indent + available * i / columns)), WD_TAB_ALIGNMENT.LEFT)
 
 
+def _question_indent(q_proto) -> int | None:
+    """估算題號區塊（「1.　」）的寬度（EMU），讓選項縮排對齊題幹文字。
+
+    選項若從行首開始，會跟題幹的「1.　拋物線…」錯位；縮排到題號之後，
+    看起來才像「選項跟在題目後面」。用題幹字級估算：數字＋句點＋分隔空白。
+    """
+    size_pt = 11.0
+    for r in q_proto.runs:
+        if r.text.strip() and r.font.size:
+            size_pt = r.font.size.pt
+            break
+    # 數字（約 0.55em）＋句點（約 0.28em）＋全角空格（1em）
+    em = size_pt * 12700  # 1pt = 12700 EMU
+    return int(em * 1.83)
+
+
+def _set_option_indent(op, q_proto, columns: int, doc):
+    """把選項段落縮排到題號之後，並重設定位點。
+
+    題幹從「1.」開始，選項也要從題號之後開始，B、C… 再用我們算的欄寬分欄。
+    """
+    indent = _question_indent(q_proto)
+    if indent is None:
+        return
+    op.paragraph_format.left_indent = Emu(indent)
+    # 定位點從縮排之後起算，每欄等寬
+    sec = doc.sections[0]
+    full = sec.page_width - sec.left_margin - sec.right_margin
+    available = full - indent
+    for i in range(1, columns):
+        op.paragraph_format.tab_stops.add_tab_stop(
+            Emu(int(indent + available * i / columns)), WD_TAB_ALIGNMENT.LEFT)
+
+
 def _clone(doc, prototype_el, before):
     el = copy.deepcopy(prototype_el)
     before.addprevious(el)
@@ -592,7 +626,7 @@ def _title_index(head) -> int | None:
 TITLE_TERM_RE = re.compile(r'第[一二三四]段')
 TITLE_GRADE_RE = re.compile(r'[高初中][一二三]')
 TITLE_CLASS_RE = re.compile(r'(級?)\s*([（(])([^）)]*)([）)])')
-TITLE_KIND_RE = re.compile(r'(小測|大測|考試|練習)')
+TITLE_KIND_RE = re.compile(r'(大測[一二三四]?|小測|考試|練習)')
 TITLE_SUBJECT_RE = re.compile(r'(數學|幾何)')
 # 卷頭「（限時 40 分鐘，本題目卷共兩版…）」：只換「限時 X 分鐘」的數字。
 # 老師在一鍵生成 STEP1 填的「時間（分鐘）」要反映在卷面上，不能沿用範本的舊值。
@@ -652,7 +686,18 @@ def _fill_title(template_text: str, meta: dict | None, fallback: str) -> str:
 
     kind = str(meta.get('kind') or '').strip()
     if kind and TITLE_KIND_RE.search(out):
-        out = TITLE_KIND_RE.sub(kind, out, count=1)
+        # 保留卷別序號：範本「…大測三」+ 選「大測」→「大測三」（不變成大測）；
+        # 選「大測二」→「大測二」；選「練習」→「練習三」。
+        # 一律「基底＋序號」，序號預設沿用範本，kind 自己帶序號就用 kind 的。
+        def _kind_repl(m):
+            matched = m.group(0)
+            mb = re.match(r'(大測|小測|考試|練習)([一二三四]?)$', matched)
+            old_suffix = mb.group(2) if mb else ''
+            kb = re.match(r'(大測|小測|考試|練習)([一二三四]?)$', kind)
+            kbase = kb.group(1) if kb else kind
+            ksuffix = kb.group(2) if kb else ''
+            return kbase + (ksuffix or old_suffix)
+        out = TITLE_KIND_RE.sub(_kind_repl, out, count=1)
 
     subject = str(meta.get('subject') or '').strip()
     if subject and TITLE_SUBJECT_RE.search(out):
@@ -1255,11 +1300,10 @@ def _render_into(tpl, sections: list[Section], title: str | None = None,
                 for row in pack_options(opts, columns):
                     op = _clone(tpl, proto['option']._p, sectpr)
                     _fill(op, row, math_as_text)
-                    # 一律用我們自己算的定位點：範本帶過來的定位點常常是「手動拉的」，
-                    # 欄寬不均，B、C 兩個選項就會黏在一起。自己算 = 每行每一欄都對齊。
+                    # 縮排到題號之後，讓「選項跟在題目後面」對齊題幹文字；
+                    # 定位點改用自己算的欄寬（範本帶過來的常常手動拉、欄寬不均）。
                     op.paragraph_format.tab_stops.clear_all()
-                    if columns > 1:
-                        _column_stops(op, tpl, columns)
+                    _set_option_indent(op, q_proto, columns, tpl)
 
             if 'answer_line' in proto and lines and not q.options:
                 for _ in range(lines):

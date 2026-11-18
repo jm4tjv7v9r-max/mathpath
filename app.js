@@ -5739,7 +5739,7 @@ async function generatePaperModal(){
     <div class="gen-grid">
       <div class="form-field"><label class="field-label" for="gen-duration">時間（分鐘）</label><input id="gen-duration" type="number" min="10" max="300" value="60"></div>
       <div class="form-field"><label class="field-label" for="gen-grade">年級</label><select id="gen-grade">${GEN_GRADES.map(g=>`<option>${g}</option>`).join('')}</select></div>
-      <div class="form-field"><label class="field-label" for="gen-kind">類型</label><select id="gen-kind">${['練習','小測','大測','考試'].map(k=>`<option ${k==='大測'?'selected':''}>${k}</option>`).join('')}</select></div>
+      <div class="form-field"><label class="field-label" for="gen-kind">類型</label><select id="gen-kind">${['練習','小測','大測','大測一','大測二','大測三','大測四','考試'].map(k=>`<option ${k==='大測'?'selected':''}>${k}</option>`).join('')}</select></div>
       <div class="form-field"><label class="field-label" for="gen-term">段</label><select id="gen-term"><option>第一段</option><option>第二段</option><option>第三段</option></select></div>
       <div class="form-field"><label class="field-label" for="gen-subject">科目</label><select id="gen-subject"><option>數學</option><option>幾何</option></select></div>
       <div class="form-field"><label class="field-label" for="gen-region">參考方向</label><select id="gen-region">${PAPER_REGIONS.map(r=>`<option ${r==='澳門'?'selected':''}>${r}</option>`).join('')}</select></div>

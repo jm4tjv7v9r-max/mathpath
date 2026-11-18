@@ -2368,8 +2368,8 @@ def paper_generation_spec(body):
             'source': source, 'difficulty': difficulty, 'extraMarks': extra_marks,
             'region': text(body.get('region') or '澳門', '參考方向', 20),
             'reference': text(body.get('reference') or '', '參考資料', 6000, empty=True)}
-    if spec['examKind'] not in ('練習', '小測', '大測', '考試'):
-        fail(400, '類型只能是練習、小測、大測或考試。')
+    if not re.fullmatch(r'(練習|小測|大測[一二三四]?|考試)', spec['examKind']):
+        fail(400, '類型只能是練習、小測、大測、大測一至四或考試。')
     if spec['term'] not in ('第一段', '第二段', '第三段'):
         fail(400, '段只能是第一段、第二段或第三段。')
     if spec['subject'] not in ('數學', '幾何'):
