@@ -137,7 +137,14 @@ html[data-role="teacher"]:not([data-theme="night"]){
 /* 角色白天：中性的側欄背景與卡片陰影（wayground 層的 #fbf9f3 暖側欄、
    綠色 --wg-shadow 光暈 與冷色品牌衝突），改用中性陰影讓角色色主導。 */
 html[data-role]:not([data-theme="night"]) .sidebar{
-  background: var(--bg-surface, #fff);
+  background: #fff;
+  border-right-color: var(--border);
+}
+/* 頂欄原本是暖奶油 rgba(251,249,243,.9)，在冷色角色底上偏黃；
+   改成中性半透明白，讓角色色主導。 */
+html[data-role]:not([data-theme="night"]) .topbar{
+  background: rgba(255,255,255,.9);
+  border-bottom-color: var(--border);
 }
 html[data-role]:not([data-theme="night"]) .panel,
 html[data-role]:not([data-theme="night"]) .card,
@@ -264,25 +271,17 @@ button:active:not(:disabled){
   100%{ background-position: -200% 0; }
 }
 
-/* ── 7. 深色模式預備（未啟用，僅定義變數） ──────────────────────
-   未來加 html[data-theme=dark] 即可啟用 */
-@media (prefers-color-scheme: dark){
-  :root:not([data-theme="light"]){
-    --bg-page:         #0f1a17;
-    --bg-surface:      #1a2b26;
-    --bg-subtle:       #152220;
-    --bg-raised:       #1e302b;
-    --bg-sunken:       #0d1614;
-    --text-primary:    #e8f0ec;
-    --text-secondary:  #b0c4bb;
-    --text-tertiary:   #8aa39a;
-    --text-muted:      #6a847a;
-    --text-disabled:   #4a5e56;
-    --border-default:  #2a3d36;
-    --border-soft:     #1e2e29;
-    --border-strong:   #3a5049;
-    --shadow: 0 1px 3px rgba(0,0,0,.2), 0 8px 24px rgba(0,0,0,.15);
-  }
+/* ── 7. 深色模式：一律跟隨站內「晨光／墨夜」開關，不跟隨系統外觀 ──
+   ⚠ 這裡原本有一段 @media (prefers-color-scheme: dark) 只把新增的
+   語義變數（--bg-surface 等）翻成深色，但站內既有主題是由
+   html[data-theme] 驅動的。結果系統一開深色外觀，就只有側欄
+   （用 var(--bg-surface)）變深綠、主體仍是晨光淺色，變成
+   「深色側欄 + 淺色內容」的破版。故移除該段，深色只由墨夜開關決定。 */
+html{
+  color-scheme: light;
+}
+html[data-theme="night"]{
+  color-scheme: dark;
 }
 
 /* ── 8. 列印樣式 ──────────────────────────────────────────────── */
