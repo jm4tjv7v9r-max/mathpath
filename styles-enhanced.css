@@ -527,24 +527,57 @@ html[data-theme="night"] .gen-qans{
   color: #7fd8b8;
 }
 
-/* ── 13. 一鍵生成試卷：預覽頁尾不再蓋住最後一題 ────────────────
-   .modal 本身是 overflow:auto 的捲動容器，頁尾用 position:sticky;bottom:0
-   會被釘在可視範圍底部，題目往下捲時就從它下面穿過去，
-   老師看到的現象是「最後一題只剩標題、內容不見」。改回一般流向即可。 */
-.modal.gen-modal .gen-preview-foot{
-  position: static;
-  background: transparent;
-  margin-top: 12px;
-  padding-top: 12px;
+/* ── 13. 一鍵生成試卷：modal 不再長滾動、頁尾固定、單一捲動容器 ──
+   兩個問題一起解：
+   1) 舊版 .modal 是 overflow:auto，STEP 2 內容（警告＋雙向細目表＋逐題清單＋頁尾）
+      超過視窗高度，導致 modal 外層出現一條很長的捲動條。
+   2) 頁尾若用 position:sticky;bottom:0 在 .modal 這個捲動容器裡，
+      會被釘在可視底部，題目往下捲時從它下面穿過去，老師看到
+      「最後一題只剩標題、內容不見」。
+
+   解法：.modal.gen-modal 改 flex 欄且 overflow:hidden（外層永不捲動）。
+   STEP 2 (#gen-preview-step) 是「唯一」內部捲動容器（overflow:auto），
+   頂部與逐題清單一起捲動，頁尾 (.gen-preview-foot) 用 position:sticky
+   釘在該捲動容器底部，永遠看得到，不會蓋住最後一題。
+   這樣整個視窗只有一條短捲動條，且頁尾按鈕永遠可見。 */
+.modal.gen-modal{
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
-.modal.gen-modal .gen-preview{
-  max-height: 46dvh;
+.modal.gen-modal > #gen-form-step{
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+.modal.gen-modal > #gen-preview-step{
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  -webkit-overflow-scrolling: touch;
+}
+/* 雙向細目表較寬，窄視窗時讓表格自己橫向捲動，避免撐破 modal */
+.modal.gen-modal #gen-preview-step > .gen-blueprint{
+  overflow-x: auto;
+  min-width: 0;
+}
+/* 逐題清單不再獨立捲動：跟頂部一起在 STEP 2 容器內捲動 */
+.modal.gen-modal #gen-preview-step .gen-preview{
+  max-height: none;
+  overflow: visible;
   padding-bottom: 4px;
 }
-@media (max-width: 767px){
-  .modal.gen-modal .gen-preview{
-    max-height: 40dvh;
-  }
+/* 頁尾：sticky 釘在 STEP 2 捲動容器底部，永遠看得到，不蓋住最後一題 */
+.modal.gen-modal .gen-preview-foot{
+  position: sticky;
+  bottom: 0;
+  background: #fff;
+  margin-top: 10px;
+  padding-top: 12px;
+  z-index: 2;
+}
+html[data-theme=night] .modal.gen-modal .gen-preview-foot{
+  background: #161c1e;
 }
 
 /* ── 14. 我的試卷：卡片底色統一 ────────────────────────────────
