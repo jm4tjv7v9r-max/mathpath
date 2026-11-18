@@ -956,6 +956,60 @@ def sections_from_dict(data) -> list[Section]:
     return out
 
 
+CLOSING_HINTS = ('完', '結束', '試卷終', '全卷終', 'END', 'End')
+
+# 分部標題的題型關鍵字（用來把新卷的分部對到範本的分部）
+QTYPE_SLOT_KEYS = ('選擇', '填空', '解答', '證明', '附加')
+
+
+def _match_heading_slots(headings, sections):
+    """新卷的每個分部 → 範本的分部索引（對不到回 None）。
+
+    先比題型關鍵字，比不到才照順序取還沒用過的；這樣新卷少一個分部時，
+    「附加題」不會被硬套上範本「解答題」的標題與配分寫法。
+    """
+    out, used = [], set()
+    for s in sections:
+        title = s.title or ''
+        want = next((k for k in QTYPE_SLOT_KEYS if k in title), '')
+        found = None
+        if want:
+            for i, h in enumerate(headings):
+                if i not in used and want in (h or ''):
+                    found = i
+                    break
+        if found is None:
+            for i in range(len(headings)):
+                if i not in used:
+                    found = i
+                    break
+        if found is None:
+            out.append(None)
+        else:
+            used.add(found)
+            out.append(found)
+    return out
+
+
+def _is_closing_marker(text: str) -> bool:
+    """卷尾只複製「— 試卷完 —」這類短標記。
+
+    為什麼要這麼嚴：範本裡「附加題：設 x 為…」這種沒有題號的段落會被歸類成 other，
+    以前一律當成卷尾原樣複製，結果新卷最後就冒出範本原本的附加題（老師回報過）。
+    寧可漏掉一句結語，也不要印出別人的題目。
+    """
+    t = (text or '').strip()
+    if not t:
+        return False
+    # 明顯屬於「題目內容」的字眼：含這些就當內容，不當卷尾
+    if any(k in t for k in ('附加', '加分', '求', '計算', '證明', '已知', '設', '？', '?')):
+        return False
+    if any(k in t for k in CLOSING_HINTS):
+        return True
+    # 沒有關鍵字時，只接受極短的裝飾行（例如「————」「※」）
+    return len(t) <= 12
+
+
 def _render_into(tpl, sections: list[Section], title: str | None = None,
                  closing: str | None = None,
                  options_per_line: int = DEFAULT_OPTIONS_PER_LINE,
@@ -995,7 +1049,8 @@ def _render_into(tpl, sections: list[Section], title: str | None = None,
     last_body = max((i for i, b in enumerate(blocks) if b.role in ('question', 'answer_line')),
                     default=-1)
     tail_idx = [i for i in range(last_body + 1, len(blocks))
-                if blocks[i].role in ('other', 'rule')]
+                if blocks[i].role == 'rule' or (blocks[i].role == 'other'
+                                                and _is_closing_marker(blocks[i].text))]
 
     lines_by_index: list[int | None] = []
     for b in blocks:
@@ -1054,18 +1109,24 @@ def _render_into(tpl, sections: list[Section], title: str | None = None,
     number = 1
     restart = numbering == 'section' or (numbering == 'auto' and restarts_numbering(blocks))
     template_headings = [b.text for b in blocks if b.role == 'section']
+    # 分部標題按「題型」對應，不是按順序：
+    # 新卷少了某個分部（例如沒出填空題）時，按順序會把「附加題」套上範本「解答題」
+    # 的標題與配分寫法，印出來就變成「三、附加題」卻用解答題的格式。
+    slots = _match_heading_slots(template_headings, sections)
     for index, s in enumerate(sections):
+        slot = slots[index] if index < len(slots) else None
         if restart:
             # 老師選了「每分部重編」：每個分部都由 1 開始
             number = 1
         if s.title and 'section' in proto:
             np = _clone(tpl, proto['section']._p, sectpr)
-            tpl_title = template_headings[index] if index < len(template_headings) else ''
+            tpl_title = (template_headings[slot]
+                         if slot is not None and slot < len(template_headings) else '')
             _fill(np, [_heading_text(tpl_title, s.title, s.questions)], math_as_text)
-        lines = lines_by_index[index] if index < len(lines_by_index) else default_lines
+        lines = lines_by_index[slot] if slot is not None and slot < len(lines_by_index) else default_lines
         # 配分寫法照這個分部在範本裡的樣子：
         # 選擇題／填空題寫在標題（「每題 4 分」），解答題才逐題標「（12 分）」。
-        sec = sec_marks[index] if index < len(sec_marks) else None
+        sec = sec_marks[slot] if slot is not None and slot < len(sec_marks) else None
         objective = any(k in (s.title or '') for k in ('選擇', '填空'))
         sec_heading_marks = '分' in ((sec or {}).get('heading') or '') or '分' in (s.title or '')
         if sec is None:

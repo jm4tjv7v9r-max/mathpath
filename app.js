@@ -5405,6 +5405,9 @@ function layoutTemplateHtml(list,current){
 }
 // 我的試卷：存好的卷可以搜尋、按年份／級別／學段篩選，一鍵把題目匯入題庫。
 let paperFilter={q:'',year:'',grade:'',term:''};
+// 我的試卷一頁最多 5 份：清單太長時要一直捲，找一份卷很花時間。
+let paperPage=1;
+const PAPER_PER_PAGE=5;
 const PAPER_GRADES=['中一','中二','中三','中四','中五','中六'];
 const PAPER_GRADE_ALIAS={初一:'中一',初二:'中二',初三:'中三',高一:'中四',高二:'中五',高三:'中六'};
 // 出卷的年級選項：高中分普通班／職業班，兩者課程不同，出卷要分開。
@@ -5468,6 +5471,16 @@ async function papersPage(){
     $('#main').innerHTML=`<div class="fade-in">${head}<section class="panel"><div class="inline-error">${esc(e.message)}</div></section></div>`;return;}
   if(!viewMatches(target))return;
   const f=data.facets||{};
+  // 一頁最多 5 份，其餘分頁（清單一長，找卷就要一直捲）
+  const totalPages=Math.max(1,Math.ceil(data.papers.length/PAPER_PER_PAGE));
+  if(paperPage>totalPages)paperPage=totalPages;
+  if(paperPage<1)paperPage=1;
+  const shown=data.papers.slice((paperPage-1)*PAPER_PER_PAGE, paperPage*PAPER_PER_PAGE);
+  const pagerHtml=totalPages>1?`<div class="paper-pager">
+      <button class="secondary" id="paper-prev"${paperPage<=1?' disabled':''}>← 上一頁</button>
+      <span class="small-text">第 ${paperPage} / ${totalPages} 頁</span>
+      <button class="secondary" id="paper-next"${paperPage>=totalPages?' disabled':''}>下一頁 →</button>
+    </div>`:'';
   const pick=(list,cur,label)=>`<option value="">${label}</option>`+
     (list||[]).map(v=>`<option ${v===cur?'selected':''}>${esc(v)}</option>`).join('');
   $('#main').innerHTML=`<div class="fade-in">${head}
@@ -5480,12 +5493,15 @@ async function papersPage(){
         <button class="primary" id="paper-q-go">搜尋</button>
         <button class="secondary" id="paper-q-clear">清除</button>
       </div>
-      <p class="field-hint" style="margin-top:8px">共 ${data.papers.length} 份試卷</p>
+      <p class="field-hint" style="margin-top:8px">共 ${data.papers.length} 份試卷${data.papers.length>PAPER_PER_PAGE?`（每頁 ${PAPER_PER_PAGE} 份）`:''}</p>
     </section>
-    ${data.papers.length?data.papers.map(paperCardHtml).join('')
+    ${data.papers.length?shown.map(paperCardHtml).join('')+pagerHtml
       :empty('還沒有試卷','在「卷面排版」排好一份卷之後，按「保存到我的試卷」就會出現在這裡。')}
   </div>`;
-  const applyFilter=()=>{papersPage();};
+  const applyFilter=()=>{paperPage=1;papersPage();};
+  const pv=$('#paper-prev'), nx=$('#paper-next');
+  if(pv)pv.onclick=()=>{if(paperPage>1){paperPage--;papersPage();}};
+  if(nx)nx.onclick=()=>{if(paperPage<totalPages){paperPage++;papersPage();}};
   const go=$('#paper-q-go');
   if(go)go.onclick=()=>{paperFilter.q=($('#paper-q').value||'').trim();applyFilter();};
   const box=$('#paper-q');
@@ -5701,6 +5717,8 @@ async function aiQualityModal(){
 // 一鍵生成試卷：選範本 → 填範圍與配分 → AI 出題（伺服器會逐項核對）→ 排版存檔
 async function generatePaperModal(){
   let tpls=[];
+  // 配分覆核等提醒（來自 /api/papers/preview），要在預覽頁看得到
+  let genWarnings=[];
   try{tpls=(await api('/api/paper-templates')).templates||[];}catch(e){return toast(e.message);}
   const rangeRow=(v='')=>`<div class="range-row"><input class="range-input" value="${esc(v)}" maxlength="120" placeholder="例如：直線的傾斜角與斜率"><button type="button" class="text-button range-del" aria-label="刪除這個範圍">✕</button></div>`;
   const chip=(t)=>`<label class="gen-chip${['選擇題','填空題','解答題'].includes(t)?' on':''}"><input type="checkbox" class="gen-qtype" value="${t}" ${['選擇題','填空題','解答題'].includes(t)?'checked':''}>${t}</label>`;
@@ -5957,6 +5975,7 @@ async function generatePaperModal(){
       </div>`;}).join('');
     box.innerHTML=`<p class="eyebrow">STEP 2 / 2</p><h2>確認題目</h2>
       <p class="modal-intro">共 ${n} 題。可以取消勾選不要的題目，或按「更換」請 AI 重出那一題；按「確定」才排版存檔。</p>
+      ${genWarnings.length?`<div class="gen-warn">${genWarnings.map(w=>`<p>${esc(w)}</p>`).join('')}</div>`:''}
       <div id="gen-blueprint" class="gen-blueprint"></div>
       <div class="gen-preview">${rows}</div>
       <div class="gen-preview-foot">
@@ -6008,11 +6027,42 @@ async function generatePaperModal(){
     const old=btn.textContent;btn.disabled=true;btn.textContent='排版中…';
     try{
       const res=await api('/api/papers/generate',{...base,sections:chosen});
-      const a=document.createElement('a');a.href=res.docx;a.download=res.filename;a.click();
-      closeModal();
-      toast(`已生成「${res.paper.title}」（${res.paper.questionCount} 題），已存進我的試卷`);
-      if((res.warnings||[]).length)setTimeout(()=>toast(res.warnings[0]),2600);
-      papersPage();
+      // 不再自動下載：先給一張「已完成」的結果頁，老師要 Word 再按。
+      // 以前按「確定」就跳下載，檔案去哪了、存到哪裡都看不清楚。
+      const p=res.paper||{};
+      const warn=(res.warnings||[]).slice(0,3);
+      const box=$('#gen-preview-step');
+      box.innerHTML=`<p class="eyebrow">DONE</p><h2>試卷已生成</h2>
+        <p class="modal-intro">「${esc(p.title||'')}」共 ${p.questionCount||0} 題，已存進「我的試卷」。
+        需要檔案再按下面的按鈕下載。</p>
+        ${warn.length?`<div class="inline-error">${esc(warn.join('；'))}</div>`:''}
+        <div class="gen-done-actions">
+          <button class="primary" id="gen-dl-docx">${icon('file')}下載 Word</button>
+          <button class="secondary" id="gen-dl-tex">下載 LaTeX（.tex）</button>
+          <button class="text-button" id="gen-done-close">關閉</button>
+        </div>
+        <p class="field-hint">之後也可以在「我的試卷」重新下載、出作業或一鍵匯入題庫。</p>`;
+      const docx=res.docx, fname=res.filename, pid=p.id;
+      // 換掉內容後，原本的 h2 id 不見了；把 aria-labelledby 接回新的標題，
+      // 讀屏才不會念出一個不存在的標題。
+      const lbl=$('.modal')&&$('.modal').getAttribute('aria-labelledby');
+      const h2=box.querySelector('h2');
+      if(lbl&&h2)h2.id=lbl;
+      $('#gen-dl-docx').onclick=()=>{
+        const a=document.createElement('a');a.href=docx;a.download=fname;a.click();
+      };
+      $('#gen-dl-tex').onclick=async ev=>{
+        const b=ev.currentTarget, old2=b.textContent;
+        b.disabled=true;b.textContent='產生中…';
+        try{
+          const r=await api('/api/papers/'+pid+'/to-tex',{});
+          const blob=new Blob([r.tex],{type:'text/x-tex;charset=utf-8'});
+          const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=r.filename;a.click();
+        }catch(err){toast(err.message);}
+        b.disabled=false;b.textContent=old2;
+      };
+      $('#gen-done-close').onclick=()=>{closeModal();papersPage();};
+      toast('試卷已生成並存進「我的試卷」');
     }catch(e){toast(e.message);btn.disabled=false;btn.textContent=old;}
   };
 
@@ -6027,7 +6077,8 @@ async function generatePaperModal(){
       base=payload;
       plan=(res.sections||[]).map(s=>({...s,questions:(s.questions||[]).map(q=>({...q,on:true}))}));
       if(!plan.length)throw new Error('沒有產生任何題目，請調整範圍或改用「全部由 AI 出題」。');
-      if((res.warnings||[]).length)toast(res.warnings[0]);
+      genWarnings=res.warnings||[];
+      if(genWarnings.length)toast(genWarnings[0]);
       $('#gen-form-step').hidden=true;
       $('#gen-preview-step').hidden=false;
       renderPlan();

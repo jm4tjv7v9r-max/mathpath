@@ -2616,6 +2616,71 @@ def paper_generation_check(spec, sections, target=None, types=None, tolerance=0.
     return problems, warnings
 
 
+PAPER_MARKS_PROMPT = (
+    '你是資深數學科科主任，正在審核一份試卷的配分是否合理。只回 JSON：'
+    '{issues:[{number:number,reason:str,suggested:number}]}。'
+    '規則：'
+    '①看每題的「題型、題幹、配分」，判斷配分是否與解題所需步驟相稱；'
+    '②同一份卷裡，明顯更難／步驟更多的題目配分不應低於簡單題；'
+    '③配分要是常見的整數（1、2、3、4、5、6、8、10、12、15、20 分等），'
+    '不要出現 3.7 這種；'
+    '④沒有問題就回 {"issues":[]}，不要為了湊數而挑毛病；'
+    '⑤issues 最多 6 項，只列真的會讓老師扣分的問題。'
+)
+
+
+def paper_marks_review(app, sections, spec, limit=40):
+    """請 AI 覆核配分是否合理；回一段段給老師看的提醒（沒有問題就回空清單）。
+
+    總分由程式保證（paper_marks_normalize 一定湊到剛好），這裡檢查的是
+    「這一題值不值這個分數」——AI 出題常見 5 分的長證明、20 分的單選。
+    AI 沒設定或呼叫失敗時安靜跳過：這是加值檢查，不該讓出卷失敗。
+    """
+    rows = [(i + 1, q, sec.title or '')
+            for sec in sections for i, q in enumerate(sec.questions)]
+    if not rows:
+        return []
+    payload = {
+        '總分': spec.get('totalPoints'),
+        '年級': spec.get('grade') or '',
+        '題目': [{'題號': n,
+                  '題型': next((k for k in PAPER_QTYPES if k in title), '解答題'),
+                  '配分': q.marks,
+                  '題幹': (q.stem or '')[:110]}
+                 for n, q, title in rows[:limit]],
+    }
+    try:
+        result = app.ai.call(PAPER_MARKS_PROMPT, payload)
+    except Exception as exc:          # 包含 APIError：加值檢查失敗不影響出卷
+        ai_log(f'配分覆核略過：{exc}')
+        return []
+    if not isinstance(result, dict):
+        return []
+    issues = result.get('issues')
+    if not isinstance(issues, list):
+        return []
+    out = []
+    for item in issues[:6]:
+        if not isinstance(item, dict):
+            continue
+        try:
+            number = int(str(item.get('number')).strip())
+        except (TypeError, ValueError):
+            continue
+        reason = str(item.get('reason') or '').strip()[:80]
+        if not reason:
+            continue
+        text_out = f'配分覆核：第 {number} 題（{reason}'
+        try:
+            suggested = float(item.get('suggested'))
+        except (TypeError, ValueError):
+            suggested = None
+        if suggested and math.isfinite(suggested) and 0 < suggested <= 100:
+            text_out += f'，建議 {suggested:g} 分'
+        out.append(text_out + '）')
+    return out
+
+
 def ai_generate_paper(app, spec, target, types=None, fix=None, note=None):
     """請 AI 出卷；回（分部清單, 問題清單, 提醒清單）。"""
     chosen = types if types is not None else spec['qtypes']
@@ -8114,6 +8179,9 @@ class Application:
             self.ai.consent(body.get('consentExternal'))
             spec = paper_generation_spec(body)
             sections, sources, warnings = build_generated_sections(self, spec)
+            # 總分由程式保證；這裡再請 AI 覆核「每題配分合不合理」，
+            # 有問題就當提醒帶回前端（不擋出卷，老師自己決定要不要換題）。
+            warnings.extend(paper_marks_review(self, sections, spec))
             return {'sections': paper_preview_payload(sections), 'sources': sources,
                     'warnings': warnings, 'spec': spec,
                     'totalPoints': spec['totalPoints']}, headers
@@ -8161,6 +8229,7 @@ class Application:
                 warnings = []
             else:
                 sections, sources, warnings = build_generated_sections(self, spec)
+                warnings.extend(paper_marks_review(self, sections, spec))
             title = f"{spec['grade'] or ''}{spec['examKind']}（{spec['term']}）".strip() or 'AI 生成試卷'
             # 卷頭照範本原文，只把年級／段／類型／科目換成老師選的。
             meta = {'grade': spec['grade'], 'term': spec['term'],

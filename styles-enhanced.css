@@ -526,3 +526,76 @@ html[data-theme="night"]{
 html[data-theme="night"] .gen-qans{
   color: #7fd8b8;
 }
+
+/* ── 13. 一鍵生成試卷：預覽頁尾不再蓋住最後一題 ────────────────
+   .modal 本身是 overflow:auto 的捲動容器，頁尾用 position:sticky;bottom:0
+   會被釘在可視範圍底部，題目往下捲時就從它下面穿過去，
+   老師看到的現象是「最後一題只剩標題、內容不見」。改回一般流向即可。 */
+.modal.gen-modal .gen-preview-foot{
+  position: static;
+  background: transparent;
+  margin-top: 12px;
+  padding-top: 12px;
+}
+.modal.gen-modal .gen-preview{
+  max-height: 46dvh;
+  padding-bottom: 4px;
+}
+@media (max-width: 767px){
+  .modal.gen-modal .gen-preview{
+    max-height: 40dvh;
+  }
+}
+
+/* ── 14. 我的試卷：卡片底色統一 ────────────────────────────────
+   原本內層 .layout-result 用 var(--surface)（教師淺藍／學生淡紫），
+   看起來像「不同年級用不同顏色」。這裡改成透明，只留邊框，全站一致。 */
+.panel[data-paper-card] .layout-result{
+  background: transparent;
+}
+
+/* ── 15. 一鍵生成試卷：完成頁的下載按鈕 ──────────────────────── */
+.gen-done-actions{
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 16px 0 6px;
+}
+
+/* ── 16. 我的試卷：分頁列 ────────────────────────────────────── */
+.paper-pager{
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  margin: 6px 0 2px;
+}
+.paper-pager .small-text{
+  min-width: 96px;
+  text-align: center;
+}
+
+/* ── 17. 一鍵生成試卷：預覽頁的提醒（配分覆核、難度比例…）──────── */
+.gen-warn{
+  margin: 10px 0 0;
+  padding: 10px 12px;
+  border: 1px solid rgba(207, 138, 61, .35);
+  border-left: 3px solid var(--warning);
+  border-radius: 8px;
+  background: var(--warning-light);
+  font-size: calc(12.5px * var(--fs));
+  line-height: 1.65;
+  color: var(--text-secondary);
+}
+.gen-warn p{
+  margin: 0;
+}
+.gen-warn p + p{
+  margin-top: 4px;
+}
+html[data-theme="night"] .gen-warn{
+  border-color: rgba(207, 138, 61, .4);
+  background: #2c2418;
+  color: #e8dcc4;
+}
