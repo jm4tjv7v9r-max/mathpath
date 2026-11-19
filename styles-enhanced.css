@@ -676,6 +676,16 @@ html[data-theme=night] .modal.gen-modal .gen-preview-foot{
   padding-top: 10px;
   border-top: 1px dashed hsl(var(--tone) 30% 88%);
 }
+/* 卡片比整頁窄，按鈕要收細一點，四個才排得進一行 */
+.paper-actions .primary,
+.paper-actions .secondary{
+  padding: 8px 12px;
+  font-size: calc(13px * var(--fs));
+}
+.paper-actions .text-button{
+  margin-left: auto;
+  font-size: calc(13px * var(--fs));
+}
 .paper-card details{
   font-size: calc(13px * var(--fs));
 }

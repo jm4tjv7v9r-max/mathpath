@@ -1279,7 +1279,9 @@ function modal(html,large=false,dismiss=true){
 let reviewReturn=null,reviewDirty=false;
 // 關閉批閱視窗：如果剛剛存過分數，順便把上一層（成績表／批閱清單）重抓一次。
 function closeReviewAware(){const go=reviewDirty?reviewReturn:null;reviewDirty=false;reviewReturn=null;closeModal();if(go)go();}
-function closeModal(){const prev=modalReturnFocus;modalReturnFocus=null;figStudio=null;$('#modal-root').innerHTML='';$('#modal-root').onkeydown=null;if(prev?.isConnected)prev.focus();else $('#main').focus();}
+function closeModal(){const prev=modalReturnFocus;modalReturnFocus=null;figStudio=null;$('#modal-root').innerHTML='';$('#modal-root').onkeydown=null;if(prev?.isConnected)prev.focus();else $('#main').focus();
+  // 生成完的卷已經存進資料庫；離開視窗就重讀列表，不要讓老師看到舊清單。
+  if(papersStale){papersStale=false;if(page==='papers'){paperPage=1;paperFilter={q:'',year:'',grade:'',term:''};papersPage();window.scrollTo({top:0,behavior:'smooth'});}}}
 function demoAccountsHtml(){
   if(serverDemo===true)return `<div class="demo-accounts" id="login-demo-note">本地演示帳戶<br>學生：student / Math1234!<br>教師：teacher / Teach1234!<br>校內正式使用前，請先更換演示密碼。</div>`;
   if(serverDemo===false)return `<div class="demo-accounts" id="login-demo-note">此站已更換演示密碼。<br>帳戶與密碼由學校提供，忘記密碼請聯絡老師。</div>`;
@@ -5405,8 +5407,10 @@ function layoutTemplateHtml(list,current){
 }
 // 我的試卷：存好的卷可以搜尋、按年份／級別／學段篩選，一鍵把題目匯入題庫。
 let paperFilter={q:'',year:'',grade:'',term:''};
-// 我的試卷一頁最多 5 份：清單太長時要一直捲，找一份卷很花時間。
+// 我的試卷一頁 8 份：清單太長時要一直捲，找一份卷很花時間。
 let paperPage=1;
+// 剛剛生成過試卷：不論老師用「關閉」、✕ 還是 ESC 離開，回到列表都要立刻看到新卷。
+let papersStale=false;
 const PAPER_PER_PAGE=8;
 const PAPER_GRADES=['中一','中二','中三','中四','中五','中六'];
 const PAPER_GRADE_ALIAS={初一:'中一',初二:'中二',初三:'中三',高一:'中四',高二:'中五',高三:'中六'};
@@ -5486,8 +5490,8 @@ function paperCardHtml(p,newId){
     <p class="paper-meta">${esc(meta||'未填年份／學段')}</p>
     <div class="paper-actions">
       <button class="primary" data-paper-assign="${p.id}">出作業</button>
-      ${p.templateId?`<button class="secondary" data-paper-docx="${p.id}">下載 Word</button>`:''}
-      <button class="secondary" data-paper-tex="${p.id}">下載 .tex</button>
+      ${p.templateId?`<button class="secondary" data-paper-docx="${p.id}" title="用原範本重新下載 Word">Word</button>`:''}
+      <button class="secondary" data-paper-tex="${p.id}" title="下載 LaTeX（.tex）">.tex</button>
       <button class="text-button" data-paper-del="${p.id}" style="color:#b8453b">刪除</button>
     </div>
     ${p.blueprint?`<details class="paper-blueprint">
@@ -6099,11 +6103,13 @@ async function generatePaperModal(){
         <p class="field-hint">之後也可以在「我的試卷」重新下載、出作業或一鍵匯入題庫。</p>`;
       const docx=res.docx, fname=res.filename, pid=p.id;
       markNewPaper(pid);
+      papersStale=true;
       // 換掉內容後，原本的 h2 id 不見了；把 aria-labelledby 接回新的標題，
       // 讀屏才不會念出一個不存在的標題。
       const lbl=$('.modal')&&$('.modal').getAttribute('aria-labelledby');
       const h2=box.querySelector('h2');
       if(lbl&&h2)h2.id=lbl;
+      if(h2){h2.tabIndex=-1;h2.focus();}   // 內容換過後焦點會掉到 body，ESC 就關不掉視窗
       $('#gen-dl-docx').onclick=()=>{
         const a=document.createElement('a');a.href=docx;a.download=fname;a.click();
       };
@@ -6117,7 +6123,7 @@ async function generatePaperModal(){
         }catch(err){toast(err.message);}
         b.disabled=false;b.textContent=old2;
       };
-      $('#gen-done-close').onclick=()=>{closeModal();papersPage();};
+      $('#gen-done-close').onclick=closeModal;
       toast('試卷已生成並存進「我的試卷」');
     }catch(e){toast(e.message);btn.disabled=false;btn.textContent=old;}
   };
