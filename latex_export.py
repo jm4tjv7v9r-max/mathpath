@@ -137,21 +137,23 @@ def _units(text: str) -> float:
 
 # 一行 \linewidth 大約放得下多少「半角單位」（11pt、A4、1.27cm 邊界，留一點餘裕）
 LINE_UNITS = 76
+OPTION_GAP = 1.06   # 選項之間留一點空隙，不然兩個選項會黏在一起
 
 
 def fit_columns(options: list[str], per_line: int = 4) -> int:
-    """一行放幾個：先試「全部塞一行」（5 個選項就 5 個一行），真的不夠寬才降成 2 個一行。
+    """一行放幾個：能全部打橫就全部，不夠寬才把最後的選項放到下一行。
 
-    5 個選項用「4 + 1」排會有一行只剩一個，看起來很怪；2、2、1 才是老師要的樣子。
+    跟 Word 那一份用同一條規則：4 個長選項排成「3＋1」，不是「2＋2」；
+    5 個塞得下就是 5 個一行，塞不下就由前往後填滿（4＋1、3＋2）。
     """
-    widest = max((_units(o) for o in options), default=1)
     count = len(options)
-    if count and widest * count <= LINE_UNITS:
+    if count <= 1:
+        return 1
+    widest = max((_units(o) for o in options), default=1)
+    if widest <= 0:
         return count
-    for n in (per_line, 3, 2):
-        if widest <= LINE_UNITS / n:
-            return n
-    return 1
+    fits = int(LINE_UNITS / (widest * OPTION_GAP))
+    return max(1, min(count, fits))
 
 
 def option_lines(options: list[str], per_line: int = 4) -> list[str]:

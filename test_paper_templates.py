@@ -557,8 +557,17 @@ class LatexExportTests(unittest.TestCase):
         line = next(l for l in tex.splitlines() if 'A. ' in l)
         self.assertNotIn('B. ', line, '太長就不要硬塞同一行')
 
+    def test_four_medium_options_fill_the_line_first(self):
+        """跟 Word 那一份同一條規則：先填滿一行，最後一個才換行（3＋1，不是 2＋2）。"""
+        long = '甲乙丙丁戊己庚辛壬'
+        tex = self.build(['A. ' + long, 'B. ' + long, 'C. ' + long, 'D. 甲乙丙丁戊'])
+        rows = [l for l in tex.splitlines() if r'\makebox' in l]
+        self.assertEqual(len(rows), 2)
+        self.assertIn('C.', rows[0])
+        self.assertIn('D.', rows[1])
+
     def test_five_options_keep_their_letters_once(self):
-        """五個選項要排成一行（或 2、2、1），而且不可以出現「E. E. 5」。"""
+        """五個選項要打橫排（塞不下才由前往後填滿），而且不可以出現「E. E. 5」。"""
         tex = self.build(['A. 1', 'B. 2', 'C. 3', 'D. 4', 'E. 5'])
         rows = [l for l in tex.splitlines() if r'\makebox' in l]
         self.assertEqual(len(rows), 1, '五個短選項要打橫一行')
@@ -988,7 +997,7 @@ class PunctuationTests(unittest.TestCase):
 
 
 class PaperLayoutTests(unittest.TestCase):
-    """選項排法與卷頭標題：選項先打橫，不夠寬就 2、2、1；標題只換老師選的欄位。"""
+    """選項排法與卷頭標題：選項先打橫，真的不夠寬才把最後的選項放下一行。"""
 
     def build(self, options):
         doc = Document()
@@ -1012,11 +1021,22 @@ class PaperLayoutTests(unittest.TestCase):
         self.assertEqual(len(rows), 1, '五個短選項要打橫排在同一行')
         self.assertIn('E.', rows[0])
 
+    def test_four_options_fill_the_line_then_push_the_last_down(self):
+        """4 個中等長度選項：前 3 個打橫，最後一個才放到下一行（不是 2＋2）。"""
+        lines = self.build(['A. 甲乙丙丁戊己庚', 'B. 甲乙丙丁戊己庚',
+                            'C. 甲乙丙丁戊己庚', 'D. 甲乙丙丁戊'])
+        rows = self.option_rows(lines)
+        self.assertEqual(len(rows), 2, '一行放得下 3 個，就不要拆成 2＋2')
+        self.assertEqual(rows[0].count('\t'), 2, '第一行放 3 個選項')
+        self.assertIn('C.', rows[0])
+        self.assertIn('D.', rows[1])
+        self.assertNotIn('\t', rows[1], '最後一行只剩一個選項')
+
     def test_five_options_split_two_two_one(self):
         lines = self.build(['A. 半徑與面積成正比', 'B. 面積與半徑平方成正比',
                             'C. 周長與半徑平方成正比', 'D. 以上皆非', 'E. 無法判斷'])
         rows = self.option_rows(lines)
-        self.assertEqual(len(rows), 3, '放不下就分成 2、2、1 三行')
+        self.assertEqual(len(rows), 3, '這幾個選項一行只放得下 2 個，就 2、2、1')
         self.assertEqual(rows[0].count('\t'), 1)
         self.assertEqual(rows[1].count('\t'), 1)
         self.assertNotIn('\t', rows[2], '最後一行只剩一個選項')

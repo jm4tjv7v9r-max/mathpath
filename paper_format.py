@@ -499,6 +499,7 @@ def _text_width(doc, p):
 # ── 選項打橫（一行 2～4 個）───────────────────────────────────────────
 DEFAULT_OPTIONS_PER_LINE = 4
 UNIT_CM = 0.23          # 12pt 半角字大約 0.21cm，留一點餘裕；全角算 2 個單位
+OPTION_GAP = 1.06       # 選項之間留一點空隙，不然兩個選項會黏在一起
 
 
 def _units(text: str) -> float:
@@ -517,19 +518,20 @@ def fit_columns(options: list[str], per_line: int, width_cm: float) -> int:
 
 
 def option_layout(options: list[str], width_cm: float) -> int:
-    """選擇題的選項一律先打橫排；真的放不下才退成每行 2 個。
+    """一行放幾個：能全部打橫就全部，真的不夠寬才把最後的選項擠到下一行。
 
-    5 個選項就是「一行 5 個」；不夠寬時變 2、2、1（不會出現 4、1 這種尾巴孤零零的排法）。
+    以前放不下就一律退成每行 2 個（5 個長選項變 2、2、1，尾巴孤零零一行）；
+    現在改成「一行塞得下幾個就塞幾個」：4 個長選項是 3＋1，5 個是 3＋2，
+    短選項仍然全部排在同一行。
     """
     count = len(options)
     if count <= 1:
         return 1
-    widest = max((_units(o) for o in options), default=1)
-    if widest <= (width_cm / count) / UNIT_CM:
+    if width_cm <= 0:
         return count
-    if widest <= (width_cm / 2) / UNIT_CM:
-        return 2
-    return 1
+    widest = max((_units(o) for o in options), default=1)
+    fits = int(width_cm / (widest * UNIT_CM * OPTION_GAP))
+    return max(1, min(count, fits))
 
 
 def pack_options(options: list[str], columns: int) -> list[list[str]]:
@@ -1284,8 +1286,14 @@ def _render_into(tpl, sections: list[Section], title: str | None = None,
 
     # 選項欄數全卷只用一個：每題各自算的話，長選項那題會變成 2 欄，
     # 選項字母就跟第一題對不齊（老師一眼就看到）。
-    opt_width_cm = (_text_width(tpl, proto['option']) / 360000
-                    if 'option' in proto else 0)
+    # 寬度要用「縮排到題號之後」剩下的那一段，跟 _set_option_indent 的定位點一致，
+    # 不然估得比實際寬，選項會擠到下一欄去。
+    opt_width_cm = 0
+    if 'option' in proto:
+        _sec = tpl.sections[0]
+        _full = _sec.page_width - _sec.left_margin - _sec.right_margin
+        _indent = _question_indent(q_proto) or 0
+        opt_width_cm = max(1.0, (_full - _indent) / 360000)
     opt_columns = None
     if 'option' in proto:
         widths = [option_layout(label_options(q.options), opt_width_cm)
@@ -1367,10 +1375,9 @@ def _render_into(tpl, sections: list[Section], title: str | None = None,
                     pass
 
             if q.options and 'option' in proto:
-                # 選項一律打橫排：先試「全部塞一行」（5 個選項就 5 個一行），
-                # 真的不夠寬才退成每行 2 個 —— 5 個選項就變成 2、2、1。
+                # 選項一律打橫排：能全部塞一行就全部（5 個就 5 個一行），
+                # 真的不夠寬才把最後的選項放到下一行（4 個長選項變 3＋1）。
                 opts = label_options(q.options)
-                tpl_columns = option_columns(proto['option'])
                 columns = opt_columns or option_layout(opts, opt_width_cm)
                 for row in pack_options(opts, columns):
                     op = _clone(tpl, proto['option']._p, sectpr)
