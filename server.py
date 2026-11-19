@@ -2289,6 +2289,9 @@ PAPER_QTYPES = ('選擇題', '填空題', '解答題', '證明題', '附加題')
 # 各題型在總分裡的預設比重：只用來把總分切給各分部，實際配分仍以挑到的題目為準。
 PAPER_QTYPE_WEIGHT = {'選擇題': 30, '填空題': 20, '解答題': 35, '證明題': 15, '附加題': 10}
 PAPER_DIFFICULTY = ('易', '中', '難')
+# 題型多樣化：同一題型可以有不同「呈現方式」。只用來要求 AI 變換寫法、在預覽標示，
+# 卷面不印、評分不受影響。
+PAPER_STYLES = ('直接計算', '情境應用', '圖表資訊', '逆向求證', '開放探究', '易錯辨析')
 # 出卷的參考方向：題目用語、題型比例與難度參照哪一套課程。
 PAPER_REGIONS = ('全國', '北京', '澳門')
 PAPER_REGION_HINT = {
@@ -2300,7 +2303,7 @@ PAPER_LEVEL_NAME = {1: '易', 2: '中', 3: '難'}
 PAPER_GEN_PROMPT = (
     '你是資深中學數學科老師，要為指定範圍出試卷題目。只回 JSON：'
     '{sections:[{title:str,qtype:str,questions:[{stem:str,options:[str],marks:number,'
-    'difficulty:"易"|"中"|"難",topic:str,source:str,answer:str,steps:[str]}]}],totalPoints:number}。'
+    'difficulty:"易"|"中"|"難",topic:str,source:str,style:str,answer:str,steps:[str]}]}],totalPoints:number}。'
     '規則：①每個分部只放一種題型，title 用「一、選擇題」這種格式；'
     '②所有題目 marks 加總必須剛好等於指定總分（先把配分算好再寫題目，不要最後才湊）；'
     '③選擇題 options 數量必須跟指定的一致（不要加 A. 前綴）；'
@@ -2309,6 +2312,12 @@ PAPER_GEN_PROMPT = (
     '⑥每題都要標 difficulty（只能是「易」「中」「難」）與 topic（該題考的中文知識點，例如「一元二次方程」「矩陣的乘法」）；'
     '⑥b每題都要標 source（出處／來源，30 字內，例如「校本題庫」「網路·2024高考真題」「AI 生成」，沒有就留空字串，'
     '不要憑空捏造來源）；'
+    '⑥c題型多樣化：同一個分部裡不要每題都用同一種寫法。每題用 style 標出呈現方式，'
+    '只能是這六種之一：「直接計算」「情境應用」「圖表資訊」「逆向求證」「開放探究」「易錯辨析」；'
+    '相鄰兩題不要用同一種 style，同一分部裡每種 style 最多用兩次；'
+    '情境應用要貼近學生生活或幾何情境，圖表資訊要真的給出可讀的數據或圖形描述，'
+    '逆向求證要由答案反推條件，開放探究可以有多個合理解，易錯辨析要針對常見錯誤設陷阱；'
+    'style 只影響寫法，該題型（選擇題／填空題／解答題…）的格式與配分規則不變；'
     '⑦數學式一律 LaTeX，行內用 $...$；填空題的空白一律寫成 ______（六條底線），'
     '不要用 \\underline{\\hspace{2cm}} 這類排版指令；'
     '⑧answer 寫最終答案，steps 寫 2 至 4 步關鍵過程；'
@@ -2616,6 +2625,13 @@ def paper_generation_check(spec, sections, target=None, types=None, tolerance=0.
         warnings.append(
             '難度比例：要求易 {易}：中 {中}：難 {難}，實際是易 {a}：中 {b}：難 {c} 題。'.format(
                 **spec['difficulty'], a=counts['易'], b=counts['中'], c=counts['難']))
+    # 題型多樣化：分部題目不少、卻每題都用同一種寫法時提醒老師（不退回重做）。
+    # 題庫題目沒有 style，混著題庫的卷不判斷，免得誤報。
+    for sec in sections:
+        styles = [getattr(q, 'style', '') or '' for q in sec.questions]
+        if len(sec.questions) >= 4 and all(styles) and len(set(styles)) == 1:
+            warnings.append(f'「{sec.title}」的 {len(sec.questions)} 題都是同一種寫法'
+                            f'（{styles[0]}）；可按「更換」或再生成一次，讓題目多樣一些。')
     return problems, warnings
 
 
@@ -2732,6 +2748,9 @@ def ai_generate_paper(app, spec, target, types=None, fix=None, note=None):
             row.topic = str(q.get('topic') or '').strip()[:40]
             # 出處：AI 出的題標「AI 生成」；若 AI 自己標了來源就照實存，不憑空捏造。
             row.source = str(q.get('source') or 'AI 生成').strip()[:60] or 'AI 生成'
+            # 呈現方式：只認清單裡的六種，AI 自己亂創的標籤一律丟掉（不要顯示假的多樣性）。
+            style = str(q.get('style') or '').strip()[:12]
+            row.style = style if style in PAPER_STYLES else ''
             rows.append(row)
         if rows:
             sections.append(paper_format.Section(title=str(sec.get('title') or '') or None, questions=rows))
@@ -2857,6 +2876,7 @@ def paper_preview_payload(sections):
                          'topic': getattr(q, 'topic', '') or '',
                          # 出處要一起帶回前端：老師確認時原樣送回，卷面才印得出「（來源：…）」。
                          'source': getattr(q, 'source', '') or '',
+                         'style': getattr(q, 'style', '') or '',
                          'bankId': getattr(q, 'bank_id', None),
                          # 一併帶回前端：老師按「確定」時原樣送回，答案才不會在存檔時掉掉。
                          'answer': getattr(q, 'answer', '') or '',
@@ -2874,15 +2894,17 @@ REF_INSTRUCTION = (
 
 PAPER_ONE_PROMPT = (
     '你是資深中學數學科老師。只出一題，只回 JSON：'
-    '{stem:str,options:[str],marks:number,difficulty:"易"|"中"|"難",answer:str,steps:[str]}。'
+    '{stem:str,options:[str],marks:number,difficulty:"易"|"中"|"難",style:str,answer:str,steps:[str]}。'
     '規則：①配分必須剛好等於指定分數；'
     '②選擇題 options 數量必須跟指定的一致（不要加 A. 前綴），其他題型 options 留空陣列；'
     '③數學式一律 LaTeX，行內用 $...$；④填空題的空白寫成 ______（六條底線）；'
-    '⑤不要跟「已有題目」重複或只是換數字。'
+    '⑤不要跟「已有題目」重複或只是換數字；'
+    '⑥style 標出呈現方式，只能是「直接計算」「情境應用」「圖表資訊」「逆向求證」「開放探究」「易錯辨析」之一；'
+    '若指定了「避免重複的呈現方式」，就不要再用那一種。'
 )
 
 
-def ai_generate_one(app, kind, marks, option_count, ranges, difficulty, avoid):
+def ai_generate_one(app, kind, marks, option_count, ranges, difficulty, avoid, avoid_styles=None):
     """更換某一題：只請 AI 出這一題。"""
     payload = {'題型': kind, '配分': marks, '難度': difficulty,
                '測考範圍': ranges or ['（未指定）']}
@@ -2890,6 +2912,8 @@ def ai_generate_one(app, kind, marks, option_count, ranges, difficulty, avoid):
         payload['選項數量'] = option_count
     if avoid:
         payload['已有題目'] = avoid
+    if avoid_styles:
+        payload['避免重複的呈現方式'] = list(avoid_styles)
     result = app.ai.call(PAPER_ONE_PROMPT, payload)
     stem = str(result.get('stem') or '').strip() if isinstance(result, dict) else ''
     if not stem:
@@ -2901,9 +2925,11 @@ def ai_generate_one(app, kind, marks, option_count, ranges, difficulty, avoid):
     else:
         options = []
     level = str(result.get('difficulty') or '').strip()
+    style = str(result.get('style') or '').strip()[:12]
     return {'stem': stem, 'options': options, 'lines': [], 'marks': marks,
             'difficulty': level if level in PAPER_DIFFICULTY else difficulty,
             'source': 'AI 生成',
+            'style': style if style in PAPER_STYLES else '',
             'answer': str(result.get('answer') or '')}
 
 
@@ -2919,7 +2945,8 @@ def confirmed_sections(raw, spec):
                                       steps=list(q.get('steps') or []),
                                       difficulty=str(q.get('difficulty') or ''),
                                       topic=str(q.get('topic') or ''),
-                                      source=str(q.get('source') or ''))
+                                      source=str(q.get('source') or ''),
+                                      style=str(q.get('style') or ''))
                 for q in sec['questions']]
         if rows:
             sections.append(paper_format.Section(title=sec.get('title'), questions=rows))
@@ -3558,7 +3585,8 @@ def paper_sections_valid(raw):
                           'answer': answer, 'steps': [x for x in steps if x],
                           'difficulty': text(item.get('difficulty') or '', '難度', 4, empty=True),
                           'topic': text(item.get('topic') or '', '知識點', 100, empty=True),
-                          'source': text(item.get('source') or '', '出處', 200, empty=True)})
+                          'source': text(item.get('source') or '', '出處', 200, empty=True),
+                          'style': text(item.get('style') or '', '呈現方式', 20, empty=True)})
         if items:
             sections.append({'title': title or None, 'questions': items})
     if not sections:
@@ -8226,8 +8254,10 @@ class Application:
             if level not in PAPER_DIFFICULTY:
                 level = '中'
             avoid = [str(s)[:120] for s in (body.get('avoid') or [])][:12]
+            # 同一份卷已有的呈現方式：換題時盡量別重複，換完才會多樣。
+            avoid_styles = [s for s in (body.get('avoidStyles') or []) if s in PAPER_STYLES]
             return {'question': ai_generate_one(self, kind, marks, option_count,
-                                                ranges, level, avoid)}, headers
+                                                ranges, level, avoid, avoid_styles)}, headers
 
         if method == 'POST' and path == '/api/papers/generate':
             # 一鍵生成試卷：範本 + 範圍 + 題型配分 → AI 出題 → 逐項核對 → 用範本排版存檔

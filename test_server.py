@@ -2911,6 +2911,56 @@ class PaperGenerateTests(unittest.TestCase):
         self.assertEqual(bp['totals']['易']['count'], 7)
         self.assertTrue(bp['ok'], '7:2:1 的難度分佈要標成符合')
 
+    def test_generation_prompt_asks_for_varied_presentation(self):
+        """題型多樣化靠提示詞：六種呈現方式都要寫進去，AI 才知道要變換寫法。"""
+        self.assertIn('⑥c題型多樣化', server.PAPER_GEN_PROMPT)
+        for style in server.PAPER_STYLES:
+            self.assertIn(style, server.PAPER_GEN_PROMPT)
+
+    def test_ai_styles_are_validated_and_shown_in_the_preview(self):
+        """AI 標的呈現方式要在預覽看得到；亂創的標籤一律丟掉，不能顯示假的多樣性。"""
+        styles = ['直接計算', '情境應用', '圖表資訊', '逆向求證', '開放探究',
+                  '易錯辨析', '直接計算', '情境應用', '圖表資訊', '自己編的']
+        self.app.ai.call = lambda *a, **k: {'sections': [
+            {'title': '一、解答題', 'qtype': '解答題', 'questions': [
+                {'stem': f'題{i}', 'options': [], 'marks': 10, 'difficulty': '易',
+                 'topic': '一元二次方程', 'style': styles[i], 'answer': 'x', 'steps': []}
+                for i in range(10)]}]}
+        out = self.call('POST', '/api/papers/preview', self.payload(
+            source='ai', difficulty={'易': 10, '中': 0, '難': 0},
+            qtypes=[{'type': '解答題'}]))
+        rows = out['sections'][0]['questions']
+        self.assertEqual([r['style'] for r in rows][:6], styles[:6])
+        self.assertEqual(rows[9]['style'], '', '不在清單裡的標籤要丟掉')
+
+    def test_single_style_section_only_gets_a_nudge(self):
+        """整段都用同一種寫法時只提醒、不退回重做：卷還是要出得來。"""
+        self.app.ai.call = lambda *a, **k: {'sections': [
+            {'title': '一、解答題', 'qtype': '解答題', 'questions': [
+                {'stem': f'題{i}', 'options': [], 'marks': 10, 'difficulty': '易',
+                 'topic': '一元二次方程', 'style': '直接計算', 'answer': 'x', 'steps': []}
+                for i in range(10)]}]}
+        out = self.call('POST', '/api/papers/preview', self.payload(
+            source='ai', difficulty={'易': 10, '中': 0, '難': 0},
+            qtypes=[{'type': '解答題'}]))
+        self.assertEqual(len(out['sections'][0]['questions']), 10)
+        self.assertTrue(any('同一種寫法' in w for w in out['warnings']), out['warnings'])
+
+    def test_replace_asks_ai_to_avoid_repeating_the_style(self):
+        seen = {}
+
+        def fake(prompt, payload, **kw):
+            seen.update(payload)
+            return {'stem': '新題（　　）', 'options': ['A', 'B', 'C', 'D'], 'marks': 5,
+                    'difficulty': '中', 'style': '開放探究', 'answer': 'A', 'steps': []}
+
+        self.app.ai.call = fake
+        out = self.call('POST', '/api/papers/replace', {
+            'qtype': '選擇題', 'marks': 5, 'optionCount': 4, 'ranges': ['一元二次方程'],
+            'difficulty': '中', 'avoid': [], 'avoidStyles': ['直接計算', '情境應用']})
+        self.assertEqual(seen.get('避免重複的呈現方式'), ['直接計算', '情境應用'])
+        self.assertEqual(out['question']['style'], '開放探究')
+
     def test_replace_marks_the_new_question_as_ai_made(self):
         """「更換」換來的是 AI 出的題：出處標 AI 生成，不要留空或沿用舊題來源。"""
         self.app.ai.call = lambda *a, **k: {

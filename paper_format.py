@@ -266,6 +266,8 @@ class Question:
     difficulty: str = ''
     topic: str = ''
     source: str = ''
+    # 呈現方式（情境應用／圖表資訊／逆向求證…）：只在預覽與細目表顯示，卷面不印。
+    style: str = ''
     bank_id: int | None = None
 
     def __post_init__(self):
@@ -1053,7 +1055,7 @@ def sections_to_dict(sections: list[Section]) -> list[dict]:
                             'options': list(q.options), 'lines': list(q.lines),
                             'answer': q.answer, 'steps': list(q.steps),
                             'difficulty': q.difficulty, 'topic': q.topic,
-                            'source': q.source, 'bankId': q.bank_id}
+                            'source': q.source, 'style': q.style, 'bankId': q.bank_id}
                            for q in s.questions]}
             for s in sections]
 
@@ -1070,6 +1072,7 @@ def sections_from_dict(data) -> list[Section]:
                               difficulty=str(q.get('difficulty') or ''),
                               topic=str(q.get('topic') or ''),
                               source=str(q.get('source') or ''),
+                              style=str(q.get('style') or ''),
                               bank_id=q.get('bankId'))
                      for q in section.get('questions') or []
                      if (q.get('stem') or '').strip()]

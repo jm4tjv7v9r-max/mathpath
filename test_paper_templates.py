@@ -1392,14 +1392,20 @@ class SourceAndBlueprintTests(unittest.TestCase):
         self.assertEqual(bp['rows'][0]['topic'], '（未標知識點）')
         self.assertEqual(bp['rows'][0]['cells']['中']['count'], 1)
 
+    def test_style_is_metadata_and_never_printed(self):
+        """呈現方式只給老師看（預覽、細目表），卷面不印，免得學生看到這種標籤。"""
+        texts = self.render([paper_format.Question(stem='求 $x$。', marks=5, style='情境應用')])
+        self.assertFalse(any('情境應用' in t for t in texts))
+
     def test_source_survives_save_and_reload(self):
-        """存進「我的試卷」再讀回來，出處與難度／知識點都不能掉。"""
+        """存進「我的試卷」再讀回來，出處與難度／知識點／呈現方式都不能掉。"""
         sections = [paper_format.Section(title='一、解答題', questions=[
             paper_format.Question(stem='a', marks=5, difficulty='易', topic='方程',
-                                  source='2023 校際賽')])]
+                                  source='2023 校際賽', style='逆向求證')])]
         back = paper_format.sections_from_dict(paper_format.sections_to_dict(sections))
         q = back[0].questions[0]
-        self.assertEqual((q.difficulty, q.topic, q.source), ('易', '方程', '2023 校際賽'))
+        self.assertEqual((q.difficulty, q.topic, q.source, q.style),
+                         ('易', '方程', '2023 校際賽', '逆向求證'))
 
 
 class QueryPathTests(unittest.TestCase):

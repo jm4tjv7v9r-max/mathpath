@@ -5782,6 +5782,7 @@ async function generatePaperModal(){
           <label><input type="radio" name="gen-opt" value="5">5 個</label></div>
       </div>
       <div class="gen-chips">${['選擇題','填空題','解答題','證明題','附加題'].map(chip).join('')}</div>
+      <p class="field-hint" style="margin:6px 0 0">同一個題型會混用不同寫法：直接計算、情境應用、圖表資訊、逆向求證、開放探究、易錯辨析；預覽時每題都會標出來，不滿意的可以單題「更換」。</p>
     </div>
     <div class="gen-block" style="margin-top:12px">
       <div class="gen-block-head">
@@ -5996,7 +5997,7 @@ async function generatePaperModal(){
           return `<div class="gen-qrow${q.on?'':' off'}" data-row="${si}-${qi}">
             <label class="gen-qcheck"><input type="checkbox" data-check="${si}-${qi}" ${q.on?'checked':''} aria-label="選用第 ${n} 題"></label>
             <div class="gen-qbody">
-              <p class="gen-qmeta">第 ${n} 題 · ${q.marks} 分${q.difficulty?` · ${q.difficulty}`:''}${q.bankId?' · 題庫':''}${q.source&&!/^(校本題庫|AI 生成|自編)$/.test(q.source)?` · 來源：${esc(q.source)}`:''}</p>
+              <p class="gen-qmeta">第 ${n} 題 · ${q.marks} 分${q.difficulty?` · ${q.difficulty}`:''}${q.style?` · ${esc(q.style)}`:''}${q.bankId?' · 題庫':''}${q.source&&!/^(校本題庫|AI 生成|自編)$/.test(q.source)?` · 來源：${esc(q.source)}`:''}</p>
               <p class="gen-qstem">${mathText(q.stem)}</p>
               ${(q.options||[]).length?`<p class="gen-qopts">${q.options.map(o=>mathText(o)).join('　')}</p>`:''}
               ${q.answer?`<p class="gen-qans">${icon('check')}<span>答案：${mathText(q.answer)}</span></p>`:''}
@@ -6041,6 +6042,7 @@ async function generatePaperModal(){
         optionCount:(base.qtypes.find(t=>t.type==='選擇題')||{}).optionCount||4,
         ranges:base.ranges,difficulty:q.difficulty||'中',
         avoid:plan.flatMap(s=>s.questions.map(x=>x.stem)).slice(0,12),
+        avoidStyles:[...new Set(plan[si].questions.filter((_,i)=>i!==qi).map(x=>x.style).filter(Boolean))],
         consentExternal:S.ai.mode==='external'});
       plan[si].questions[qi]={...res.question,on:q.on};
       renderPlan();
@@ -6053,7 +6055,8 @@ async function generatePaperModal(){
     const chosen=plan.map(s=>({title:s.title,questions:s.questions.filter(q=>q.on)
         .map(q=>({stem:q.stem,marks:q.marks,options:q.options||[],lines:q.lines||[],
                   answer:q.answer||'',steps:q.steps||[],
-                  difficulty:q.difficulty||'',topic:q.topic||'',source:q.source||''}))}))
+                  difficulty:q.difficulty||'',topic:q.topic||'',source:q.source||'',
+                  style:q.style||''}))}))
       .filter(s=>s.questions.length);
     if(!chosen.length)return toast('請至少保留一題。');
     const old=btn.textContent;btn.disabled=true;btn.textContent='排版中…';
