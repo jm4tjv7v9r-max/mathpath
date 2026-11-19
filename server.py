@@ -8439,12 +8439,28 @@ class Application:
                     fail(404, '找不到這份試卷。')
                 if row['owner_id'] != user['id'] and not self.is_owner(user, db):
                     fail(403, '只有建立者或管理員可以匯出這份試卷。')
+                # 跟「下載 Word」一樣用存檔時記住的範本：卷頭、大題標題、配分、卷尾
+                # 全部照範本走，兩份檔案才會是同一份卷（不是另做一份長得像的）。
+                template_id = row['template_id'] if 'template_id' in row.keys() else None
+                tpl = None
+                if template_id:
+                    tpl = db.execute('SELECT * FROM paper_templates WHERE id=?',
+                                     (template_id,)).fetchone()
             sections = paper_format.sections_from_dict(json.loads(row['sections'] or '[]'))
             if not sections:
                 fail(422, '這份試卷沒有題目。')
-            tex = latex_export.to_tex(row['title'], sections, 'trailing')
+            plan = None
+            if tpl is not None:
+                try:
+                    plan = paper_format.layout_plan(
+                        Document(io.BytesIO(tpl['data'])), sections, row['title'])
+                except SystemExit:
+                    plan = None      # 範本壞了／找不到題目段落：退回通用版面，不要整份匯不出
+            tex = (latex_export.to_tex_plan(plan) if plan is not None
+                   else latex_export.to_tex(row['title'], sections, 'trailing'))
             filename = (row['title'] or '試卷').replace('/', '／')[:60] + '.tex'
-            return {'tex': tex, 'filename': filename}, headers
+            return {'tex': tex, 'filename': filename,
+                    'usesTemplate': plan is not None}, headers
 
         match = re.fullmatch(r'/api/papers/([1-9]\d{0,17})/to-bank', path)
         if match and method == 'POST':

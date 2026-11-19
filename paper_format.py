@@ -1409,6 +1409,30 @@ def _render_into(tpl, sections: list[Section], title: str | None = None,
             'tables': len(tpl.tables)}
 
 
+def _p_size(p) -> float | None:
+    """段落字級（pt）：先看第一個有文字的 run，其次看段落樣式。"""
+    for r in p.runs:
+        if (r.text or '').strip() and r.font.size:
+            return r.font.size.pt
+    try:
+        size = p.style.font.size
+        if size:
+            return size.pt
+    except (AttributeError, KeyError):
+        pass
+    return None
+
+
+def _p_bold(p) -> bool:
+    for r in p.runs:
+        if (r.text or '').strip() and r.font.bold is not None:
+            return bool(r.font.bold)
+    try:
+        return bool(p.style.font.bold)
+    except (AttributeError, KeyError):
+        return False
+
+
 def layout_plan(tpl, sections: list[Section], title: str | None = None,
                 meta: dict | None = None, numbering: str = 'continuous') -> dict:
     """把「這份卷排出來會長怎樣」抽成純資料：Word 與 LaTeX 都吃同一份。
@@ -1471,6 +1495,17 @@ def layout_plan(tpl, sections: list[Section], title: str | None = None,
                 head[i] = new
 
     template_headings = [b.text for b in blocks if b.role == 'section']
+    heading_paras = [paragraphs[i] for i, b in enumerate(blocks) if b.role == 'section']
+    # 解答題後面留幾行作答空間（照範本）：Word 會複製 answer_line 段落，
+    # LaTeX 也要留一樣的高度，兩份卷看起來才一致。
+    lines_by_index: list[int | None] = []
+    for b in blocks:
+        if b.role == 'section':
+            lines_by_index.append(None)
+        elif b.role == 'question' and lines_by_index and lines_by_index[-1] is None:
+            lines_by_index[-1] = b.lines_after
+    default_lines = next((n for n in lines_by_index if n), 0)
+    answer_rule = bool('answer_line' in proto and has_bottom_border(proto['answer_line']))
     restart = numbering == 'section' or (numbering == 'auto' and restarts_numbering(blocks))
     number = 1
     out_sections = []
@@ -1478,9 +1513,13 @@ def layout_plan(tpl, sections: list[Section], title: str | None = None,
         if restart:
             number = 1
         heading = None
+        heading_size = heading_bold = None
         if s.title:
             tpl_title = template_headings[index] if index < len(template_headings) else ''
             heading = _heading_text(tpl_title, s.title, s.questions)
+            if index < len(heading_paras):
+                heading_size = _p_size(heading_paras[index])
+                heading_bold = _p_bold(heading_paras[index])
         sec = sec_marks[index] if index < len(sec_marks) else None
         objective = any(k in (s.title or '') for k in ('選擇', '填空'))
         sec_heading_marks = '分' in ((sec or {}).get('heading') or '') or '分' in (s.title or '')
@@ -1490,14 +1529,18 @@ def layout_plan(tpl, sections: list[Section], title: str | None = None,
         elif sec_pos == 'none' and not sec_heading_marks:
             sec_pos = 'leading'       # 標題沒寫分，至少逐題標出來
         questions = []
+        slot_lines = (lines_by_index[index] if index < len(lines_by_index)
+                      and lines_by_index[index] is not None else default_lines)
         for q in s.questions:
             questions.append({
                 'number': number, 'stem': q.stem, 'marks': q.marks,
                 'options': label_options(q.options), 'lines': list(q.lines),
                 'figures': len(q.figures),
+                'answerLines': 0 if q.options else slot_lines,
             })
             number += 1
-        out_sections.append({'heading': heading, 'marksPos': sec_pos, 'questions': questions})
+        out_sections.append({'heading': heading, 'marksPos': sec_pos, 'questions': questions,
+                             'headingSize': heading_size, 'headingBold': heading_bold})
 
     # 卷頭逐段保留（含「資料行下面那條橫線」），LaTeX 才畫得出一樣的線
     head_items = []
@@ -1505,9 +1548,27 @@ def layout_plan(tpl, sections: list[Section], title: str | None = None,
         text = head[i]
         is_rule = blocks[head_idx[i]].role == 'rule' or has_bottom_border(p)
         if text.strip() or is_rule:
-            head_items.append({'text': text, 'rule': is_rule})
+            item = {'text': text, 'rule': is_rule}
+            if text.strip():
+                # 字級／粗體／對齊都照範本帶過去：LaTeX 那一份才不會自己用 \Large、\small。
+                item['size'] = _p_size(p)
+                item['bold'] = _p_bold(p)
+                item['align'] = ('left' if any(k in text for k in ('姓名', '學號', '班別', '班　'))
+                                 else 'center')
+            head_items.append(item)
+
+    sec = tpl.sections[0] if tpl.sections else None
+    page = None
+    if sec is not None:
+        page = {k: (v / 360000 if v else 0) for k, v in {
+            'w': sec.page_width, 'h': sec.page_height,
+            'left': sec.left_margin, 'right': sec.right_margin,
+            'top': sec.top_margin, 'bottom': sec.bottom_margin}.items()}
 
     return {'head': head_items,
+            'page': page,
+            'bodySize': _p_size(proto['question']) if 'question' in proto else None,
+            'answerRule': answer_rule,
             'sections': out_sections,
             'score': paper_score_summary(sections),
             'closing': [paragraphs[i].text for i in tail_idx

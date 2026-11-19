@@ -2961,6 +2961,23 @@ class PaperGenerateTests(unittest.TestCase):
         self.assertEqual(seen.get('避免重複的呈現方式'), ['直接計算', '情境應用'])
         self.assertEqual(out['question']['style'], '開放探究')
 
+    def test_saved_paper_tex_uses_the_same_template_as_word(self):
+        """「下載 LaTeX」跟「下載 Word」要是同一份卷：卷頭、大題標題都照範本，不是另做一份。"""
+        self.app.ai.call = lambda *a, **k: {'sections': [
+            {'title': '一、選擇題', 'qtype': '選擇題', 'questions': [
+                {'stem': f'題{i}', 'options': ['A', 'B', 'C', 'D'], 'marks': 10,
+                 'difficulty': '易', 'topic': '一元二次方程', 'answer': 'A', 'steps': []}
+                for i in range(10)]}]}
+        out = self.call('POST', '/api/papers/generate', self.payload(
+            source='ai', difficulty={'易': 10, '中': 0, '難': 0},
+            qtypes=[{'type': '選擇題', 'optionCount': 4}]))
+        tex = self.call('POST', f"/api/papers/{out['paper']['id']}/to-tex", {})
+        self.assertTrue(tex.get('usesTemplate'), '存檔時有記住範本，就要用範本排')
+        body = tex['tex']
+        self.assertIn(r'\section*{一、', body, '大題標題要照範本的措辭')
+        self.assertIn('paperwidth=', body, '紙張大小要照範本')
+        self.assertNotIn('{\\Large\\bfseries', body, '不可以自己用 \\Large 猜字級')
+
     def test_replace_marks_the_new_question_as_ai_made(self):
         """「更換」換來的是 AI 出的題：出處標 AI 生成，不要留空或沿用舊題來源。"""
         self.app.ai.call = lambda *a, **k: {

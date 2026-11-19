@@ -37,7 +37,40 @@ from mathnorm import MATH_SPAN_RE, normalize_math, normalize_text  # noqa: E402
 
 
 def escape_text(text: str) -> str:
-    return ''.join(ESCAPES.get(ch, ch) for ch in text)
+    """文字轉義；`\\$`、`\\%` 這種「已經寫好的轉義」原樣保留。
+
+    卷面很常出現「每本 $\\$ 12」這種金額寫法：這裡若把反斜線也轉義，
+    整行就會變成「\\textbackslash{}\\$ 12」，XeLaTeX 直接報 Missing $。
+    """
+    out, i = [], 0
+    while i < len(text):
+        ch = text[i]
+        if ch == '\\' and i + 1 < len(text) and text[i + 1] in '&%$#_{}':
+            out.append(text[i:i + 2])
+            i += 2
+            continue
+        out.append(ESCAPES.get(ch, ch))
+        i += 1
+    return ''.join(out)
+
+
+def _math_spans(text: str) -> list[tuple[int, int, str]]:
+    """找出真正的 $...$（被反斜線跳過的 \\$ 不算），回（起點、終點、內容）。
+
+    用 regex 抓會把「$\\$ 12」的半個金額符號當成公式開頭，整行就編不過。
+    """
+    spans, i, n = [], 0, len(text)
+    while i < n:
+        if text[i] == '$' and (i == 0 or text[i - 1] != '\\'):
+            j = i + 1
+            while j < n and not (text[j] == '$' and text[j - 1] != '\\'):
+                j += 1
+            if j < n:
+                spans.append((i, j, text[i + 1:j]))
+                i = j + 1
+                continue
+        i += 1
+    return spans
 
 
 # 填空的底線：`\_\_\_\_` 連著寫，LaTeX 會在每個底線之間留空隙，看起來像斷掉的虛線。
@@ -90,11 +123,11 @@ def _inline(text: str, min_em: float = BLANK_EM_QUESTION) -> str:
 
 def _pieces(text: str) -> list[list[str]]:
     out, pos = [], 0
-    for m in MATH_RE.finditer(text):
-        if m.start() > pos:
-            out.append(['text', text[pos:m.start()]])
-        out.append(['math', m.group(1)])
-        pos = m.end()
+    for start, end, body in _math_spans(text):
+        if start > pos:
+            out.append(['text', text[pos:start]])
+        out.append(['math', body])
+        pos = end + 1          # end 是收尾的 $，要跳過它
     if pos < len(text):
         out.append(['text', text[pos:]])
     return out
@@ -115,14 +148,58 @@ def _merge_degree(pieces: list[list[str]]) -> list[list[str]]:
     return merged
 
 
+def _brace_delta(body: str) -> int:
+    """公式裡沒轉義的大括號差額（`\\{`、`\\}` 不算）。"""
+    delta, i = 0, 0
+    while i < len(body):
+        ch = body[i]
+        if ch == '\\':
+            i += 2
+            continue
+        if ch == '{':
+            delta += 1
+        elif ch == '}':
+            delta -= 1
+        i += 1
+    return delta
+
+
+def _safe_math(body: str) -> str | None:
+    """把 AI 寫壞的公式收成編得過的版本；收不了就回 None（呼叫端改印原文）。
+
+    只修「一定會讓 XeLaTeX 報錯」的寫法：
+    - 公式裡的 % # &（會變成註解／巨集參數／對齊字符）
+    - \\left( 沒有對應的 \\right
+    - 大括號數量不對
+    """
+    body = body.strip()
+    if not body:
+        return ''
+    body = re.sub(r'(?<!\\)([%#&])', r'\\\1', body)
+    lefts = len(re.findall(r'\\left(?![a-zA-Z])', body))
+    rights = len(re.findall(r'\\right(?![a-zA-Z])', body))
+    if lefts > rights:
+        body += r' \right.' * (lefts - rights)
+    delta = _brace_delta(body)
+    if delta > 0:
+        body += '}' * delta
+    elif delta < 0:
+        return None       # 多出來的 } 不知道該刪哪一個，退回原文比較安全
+    return body
+
+
 def tex_of(text: str, min_em: float = BLANK_EM_QUESTION,
            space_factor: float = 0.5) -> str:
     """文字與 $公式$ 混排：公式修正後原樣，其餘轉義。"""
     out = []
     for kind, value in _merge_degree(_pieces(text)):
         if kind == 'math':
-            body = normalize_math(value).strip()
-            out.append(f'${body}$' if body else '')
+            body = _safe_math(normalize_math(value))
+            if body is None:
+                # 修不好的公式當普通文字印（含 $），至少整份卷編得出來
+                out.append(text_of('$' + value + '$', min_em, space_factor))
+            else:
+                out.append(f'${body}$' if body else '')
         else:
             out.append(text_of(value, min_em, space_factor))
     return ''.join(out)
@@ -174,27 +251,100 @@ def option_lines(options: list[str], per_line: int = 4) -> list[str]:
     return lines
 
 
+def _pt(value, fallback=None):
+    """把 plan 帶過來的字級收斂成合理 pt（8–36）；不合理就當沒有。"""
+    try:
+        size = float(value)
+    except (TypeError, ValueError):
+        return fallback
+    return size if 8 <= size <= 36 else fallback
+
+
+def _styled(text: str, size, bold=True) -> str:
+    """照範本的字級／粗細包一層（LaTeX 才不會自己用 \\Large、\\small 猜）。"""
+    size = _pt(size)
+    if not size:
+        return r'{\bfseries ' + text + '}' if bold else text
+    return r'{\fontsize{%g}{%g}\selectfont%s %s}' % (
+        size, round(size * 1.2, 1), r'\bfseries' if bold else '', text)
+
+
+def preamble_from_plan(plan: dict) -> str:
+    """用範本的紙張、邊界、字級組 preamble：.tex 跟 Word 排出來才是同一份卷。
+
+    plan 沒有版面資料（舊存檔）時退回原本的 A4 + 1.27cm。
+    """
+    page = plan.get('page') or {}
+    body = _pt(plan.get('bodySize'), 12) or 12
+    base = int(round(body))
+    if base not in (10, 11, 12):
+        base = 12
+    if page.get('w') and page.get('h'):
+        geometry = ('[paperwidth=%.2fcm,paperheight=%.2fcm,left=%.2fcm,right=%.2fcm,'
+                    'top=%.2fcm,bottom=%.2fcm]'
+                    % (page['w'], page['h'], page.get('left') or 0, page.get('right') or 0,
+                       page.get('top') or 0, page.get('bottom') or 0))
+    else:
+        geometry = '[margin=1.27cm]'
+    heading_size = None
+    for section in plan.get('sections') or []:
+        heading_size = _pt(section.get('headingSize'))
+        if heading_size:
+            break
+    if heading_size:
+        fmt = r'\fontsize{%g}{%g}\selectfont\bfseries\raggedright' % (
+            heading_size, round(heading_size * 1.2, 1))
+    else:
+        fmt = r'\normalsize\bfseries\raggedright'
+    return (
+        '% !TEX program = xelatex\n'
+        '\\documentclass[' + str(base) + 'pt]{ctexart}\n'
+        '\\usepackage' + geometry + '{geometry}\n'
+        '\\usepackage{amsmath,amssymb}\n'
+        '\\usepackage{enumitem}\n'
+        '\\usepackage{needspace}\n'
+        '\\setlength{\\parindent}{0pt}\n'
+        '\\pagestyle{plain}\n'
+        '% 大題標題的字級、粗細、靠左都照範本（ctex 預設置中）\n'
+        '\\ctexset{section/format={' + fmt + '},section/aftertitle=\\smallskip,'
+        'section/beforeskip=14pt}\n')
+
+
 def to_tex_plan(plan: dict, preamble: str | None = None,
                 options_per_line: int = 4) -> str:
     """用 paper_format.layout_plan() 的結果出 .tex。
 
     卷頭、分部標題、逐題配分、卷尾全部照 plan（也就是照 Word 檔那一份判斷），
-    這樣「下載 Word」和「下載 .tex」排出來才會是同一份卷。
+    紙張、邊界、字級也照範本，這樣「下載 Word」和「下載 .tex」才是同一份卷。
     """
-    lines = [(preamble or DEFAULT_PREAMBLE).rstrip(), '', r'\begin{document}', '']
-    block = []
+    lines = [(preamble or preamble_from_plan(plan)).rstrip(), '', r'\begin{document}', '']
+    centered: list[str] = []
+    head_lines: list[str] = []
+
+    def flush_center():
+        if centered:
+            head_lines.extend([r'\begin{center}', ' \\\\ '.join(centered), r'\end{center}'])
+            centered.clear()
+
     for item in plan.get('head') or []:
         text = (item.get('text') if isinstance(item, dict) else str(item)) or ''
         if text.strip():
-            if not block:
-                block.append(r'{\Large\bfseries ' + tex_of(text) + '}')
+            size = item.get('size') if isinstance(item, dict) else None
+            bold = item.get('bold') if isinstance(item, dict) else True
+            align = (item.get('align') if isinstance(item, dict) else None) or 'center'
+            piece = _styled(tex_of(text, 0, 0.3), size, bold)
+            if align == 'left':
+                # 「姓名：＿ 學號：＿」那一行在 Word 是靠左的，不要跟著卷名置中
+                flush_center()
+                head_lines.append(r'\noindent ' + piece + r'\par')
             else:
-                block.append(r'{\small\bfseries ' + tex_of(text, 0, 0.3) + '}')
+                centered.append(piece)
         if isinstance(item, dict) and item.get('rule'):
-            # 範本在「姓名／學號」那一行下面有一條橫線，LaTeX 也要畫
-            block.append(r'\rule{\linewidth}{0.4pt}')
-    if block:
-        lines += [r'\begin{center}', ' \\\\ '.join(block), r'\end{center}', '']
+            flush_center()
+            head_lines.append(r'\noindent\rule{\linewidth}{0.4pt}\par')
+    flush_center()
+    if head_lines:
+        lines += head_lines + ['']
 
     for section in plan.get('sections') or []:
         heading = section.get('heading')
@@ -223,6 +373,13 @@ def to_tex_plan(plan: dict, preamble: str | None = None,
                 lines += ['', tex_of(extra)]
             if q.get('options'):
                 lines.append(r'\par ' + '\\\\\n'.join(option_lines(q['options'], options_per_line)))
+            elif q.get('answerLines'):
+                # 解答題的作答空間：Word 會複製 answer_line 段落，這裡留一樣的高度
+                # （範本那一行有底線的就畫線），兩份卷看起來才一致。
+                space = r'\par\vspace{2.2\baselineskip}'
+                if plan.get('answerRule'):
+                    space += r'\noindent\rule{\linewidth}{0.4pt}'
+                lines.append(space * int(q['answerLines']))
         lines.append(r'\end{enumerate}')
 
     for extra in plan.get('closing') or []:

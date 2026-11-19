@@ -6,7 +6,10 @@
 import base64
 import io
 import json
+import os
 import re
+import shutil
+import subprocess
 import tempfile
 import time
 import unittest
@@ -1426,6 +1429,120 @@ class SourceAndBlueprintTests(unittest.TestCase):
         q = back[0].questions[0]
         self.assertEqual((q.difficulty, q.topic, q.source, q.style),
                          ('易', '方程', '2023 校際賽', '逆向求證'))
+
+
+class TexMatchesTheTemplateTests(unittest.TestCase):
+    """下載的 .tex 要跟範本（也就是 Word 那一份）一致，不能自己另做一份。"""
+
+    def template(self):
+        d = Document()
+        for text, size, bold in [
+            ('培華中學 2025/2026 年度', 12, False),
+            ('第一段 初三級 數學科 大測', 16, True),
+            ('姓名：＿＿＿＿　學號：＿＿＿＿', 11, False),
+            ('一、選擇題（每題 4 分，共 4 分）', 12, True),
+            ('1.\t下列何者正確？（　　）', 12, False),
+            ('A. 甲\tB. 乙\tC. 丙\tD. 丁', 12, False),
+        ]:
+            p = d.add_paragraph()
+            r = p.add_run(text)
+            r.font.size = Pt(size)
+            r.font.bold = bold
+        return d
+
+    def plan(self):
+        sections = [paper_format.Section(title='一、選擇題', questions=[
+            paper_format.Question(stem='下列何者正確？（　　）', marks=4,
+                                  options=['A. 甲', 'B. 乙', 'C. 丙', 'D. 丁'])])]
+        return paper_format.layout_plan(self.template(), sections,
+                                        '第一段 初三級 數學科 大測')
+
+    def test_head_keeps_the_template_lines_and_sizes(self):
+        tex = latex_export.to_tex_plan(self.plan())
+        self.assertIn('培華中學 2025/2026 年度', tex, '範本的校名／年度那一行不能不見')
+        self.assertIn(r'\fontsize{16}{19.2}', tex, '卷名要照範本的 16pt')
+        self.assertIn(r'\fontsize{11}{13.2}', tex, '姓名行要照範本的 11pt')
+        self.assertNotIn(r'\Large', tex, '不要再自己猜字級')
+
+    def test_name_line_stays_left_aligned(self):
+        tex = latex_export.to_tex_plan(self.plan())
+        head = tex.split(r'\begin{document}')[1].split(r'\Needspace')[0]
+        center = head.split(r'\end{center}')[0]
+        self.assertNotIn('姓名', center, '姓名行在 Word 是靠左的，不可以被置中')
+        self.assertIn(r'\noindent', head)
+
+    def test_page_and_body_size_follow_the_template(self):
+        plan = self.plan()
+        tex = latex_export.to_tex_plan(plan)
+        self.assertIn('paperwidth=%.2fcm' % plan['page']['w'], tex)
+        self.assertIn('left=%.2fcm' % plan['page']['left'], tex)
+        self.assertIn(r'\documentclass[12pt]{ctexart}', tex)
+
+    def test_heading_uses_the_template_size_and_wording(self):
+        tex = latex_export.to_tex_plan(self.plan())
+        self.assertIn(r'\ctexset{section/format={\fontsize{12}{14.4}', tex)
+        self.assertIn(r'\section*{一、選擇題（每題 4 分', tex)
+
+    def test_answer_space_matches_the_template(self):
+        """範本在解答題後面留了有底線的作答行，.tex 也要留一樣的空間。"""
+        from docx.oxml.ns import qn
+        d = Document()
+        d.add_paragraph('測試卷')
+        d.add_paragraph('一、解答題（每題 10 分）')
+        d.add_paragraph('1.\t解方程')
+        p = d.add_paragraph('')
+        pPr = p._p.get_or_add_pPr()
+        pBdr = OxmlElement('w:pBdr')
+        bottom = OxmlElement('w:bottom')
+        bottom.set(qn('w:val'), 'single')
+        bottom.set(qn('w:sz'), '6')
+        pBdr.append(bottom)
+        pPr.append(pBdr)
+
+        sections = [paper_format.Section(title='一、解答題', questions=[
+            paper_format.Question(stem='解方程 $x=1$。', marks=10)])]
+        plan = paper_format.layout_plan(d, sections, '測試卷')
+        self.assertGreaterEqual(plan['sections'][0]['questions'][0]['answerLines'], 1)
+        tex = latex_export.to_tex_plan(plan)
+        self.assertIn(r'\vspace{2.2\baselineskip}', tex)
+        self.assertIn(r'\rule{\linewidth}{0.4pt}', tex)
+
+
+@unittest.skipUnless(shutil.which('xelatex'), '本機沒有 XeLaTeX，跳過編譯測試')
+class TexCompilesTests(unittest.TestCase):
+    """真的用 xelatex 編一次：AI 寫壞的公式也不可以讓整份卷編不過。"""
+
+    CASES = [
+        '已知 $\\angle ABC = 90^{\\circ}$，求 $AC$。',
+        '若 $x^{2}+2x+1=0$，則 $x=$ ______。',
+        '每本 $\\$ 12，共 $\\$ 60。',
+        '成功率 $50% $ 的實驗。',
+        '解 $x & y$。',
+        '求 $#1$ 的值。',
+        '求 $\\left( x+1$ 的值。',
+        '求 $x+1}$ 的值。',
+        '設 $A=\\begin{pmatrix} 1 & 2 \\\\ 3 & 4 \\end{pmatrix}$，求 $|A|$。',
+        '集合 {1,2,3} 的子集數，約 3~5 個。',
+    ]
+
+    def test_messy_ai_content_still_compiles(self):
+        sections = [{'title': f'第{i}題', 'questions': [
+            {'number': i + 1, 'stem': stem, 'marks': 4, 'lines': [],
+             'options': ['A. $1$', 'B. $2$', 'C. 無法確定', 'D. 以上皆非']}]}
+            for i, stem in enumerate(self.CASES)]
+        plan = {'head': [{'text': '壓測卷', 'size': 16, 'bold': True, 'align': 'center'}],
+                'page': {'w': 21.0, 'h': 29.7, 'left': 2.0, 'right': 2.0,
+                         'top': 2.0, 'bottom': 2.0},
+                'bodySize': 12, 'sections': sections, 'closing': ['— 試卷完 —']}
+        tex = latex_export.to_tex_plan(plan)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, 'check.tex')
+            with open(path, 'w', encoding='utf-8') as f:
+                f.write(tex)
+            proc = subprocess.run([shutil.which('xelatex'), '-interaction=nonstopmode',
+                                   'check.tex'], cwd=tmp, capture_output=True, text=True)
+            errors = [l for l in proc.stdout.splitlines() if l.startswith('!')]
+        self.assertEqual(proc.returncode, 0, 'xelatex 編不過：' + '；'.join(errors[:3]))
 
 
 class QueryPathTests(unittest.TestCase):
