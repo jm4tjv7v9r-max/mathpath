@@ -580,11 +580,122 @@ html[data-theme=night] .modal.gen-modal .gen-preview-foot{
   background: #161c1e;
 }
 
-/* ── 14. 我的試卷：卡片底色統一 ────────────────────────────────
-   原本內層 .layout-result 用 var(--surface)（教師淺藍／學生淡紫），
-   看起來像「不同年級用不同顏色」。這裡改成透明，只留邊框，全站一致。 */
-.panel[data-paper-card] .layout-result{
-  background: transparent;
+/* ── 14. 我的試卷：一頁多張卡片，按年級上色 ─────────────────────
+   以前為了「全站一致」把卡片壓成同一個顏色（舊註解見 git 歷史），
+   但老師要一眼分辨年級，所以改成「同頁多張卡片 + 年級色」：
+   顏色只用在左側色條與年級標籤，內文維持原本的閱讀對比。 */
+.paper-grid{
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(330px, 1fr));
+  gap: 14px;
+  align-items: start;
+}
+.paper-card{
+  --tone: 210;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 14px 16px 12px;
+  border: 1px solid hsl(var(--tone) 32% 87%);
+  border-left: 4px solid hsl(var(--tone) 52% 60%);
+  border-radius: 12px;
+  background: hsl(var(--tone) 62% 96.5%);
+}
+.paper-card.tone-0{ --tone: 210 }   /* 藍：中一／初一 */
+.paper-card.tone-1{ --tone: 152 }   /* 綠：中二／初二 */
+.paper-card.tone-2{ --tone: 32 }    /* 橙：中三／初三 */
+.paper-card.tone-3{ --tone: 272 }   /* 紫：中四／高一 */
+.paper-card.tone-4{ --tone: 187 }   /* 青：中五／高二 */
+.paper-card.tone-5{ --tone: 340 }   /* 桃紅：中六／高三 */
+.paper-card.is-new{
+  box-shadow: 0 0 0 2px rgba(192, 57, 43, .28);
+}
+.paper-card-head{
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.paper-grade{
+  padding: 2px 9px;
+  border-radius: 999px;
+  background: hsl(var(--tone) 66% 90%);
+  color: hsl(var(--tone) 55% 30%);
+  font-size: calc(12px * var(--fs));
+  font-weight: 600;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.paper-count{
+  margin-left: auto;
+  color: var(--muted-2);
+  font-size: calc(12px * var(--fs));
+}
+/* 剛生成的那一份：紅底白字，明顯到不用找 */
+.paper-new{
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 10px 2px 8px;
+  border-radius: 999px;
+  background: #c0392b;
+  color: #fff;
+  font-size: calc(11.5px * var(--fs));
+  font-weight: 700;
+  letter-spacing: 1px;
+  box-shadow: 0 2px 7px rgba(192, 57, 43, .35);
+}
+.paper-new::before{
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #ffd7d1;
+}
+.paper-title{
+  margin: 0;
+  font-size: calc(15px * var(--fs));
+  line-height: 1.5;
+  color: var(--ink);
+  word-break: break-word;
+}
+.paper-meta{
+  margin: 0;
+  color: var(--muted-2);
+  font-size: calc(12.5px * var(--fs));
+  line-height: 1.6;
+}
+.paper-actions{
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 2px;
+  padding-top: 10px;
+  border-top: 1px dashed hsl(var(--tone) 30% 88%);
+}
+.paper-card details{
+  font-size: calc(13px * var(--fs));
+}
+.paper-card .layout-row{
+  flex-wrap: wrap;
+}
+html[data-theme="night"] .paper-card{
+  border-color: hsl(var(--tone) 20% 27%);
+  border-left-color: hsl(var(--tone) 48% 58%);
+  background: hsl(var(--tone) 16% 15%);
+}
+html[data-theme="night"] .paper-grade{
+  background: hsl(var(--tone) 30% 24%);
+  color: hsl(var(--tone) 70% 80%);
+}
+html[data-theme="night"] .paper-actions{
+  border-top-color: hsl(var(--tone) 20% 27%);
+}
+html[data-theme="night"] .paper-card.is-new{
+  box-shadow: 0 0 0 2px rgba(224, 108, 90, .45);
 }
 
 /* ── 15. 一鍵生成試卷：完成頁的下載按鈕 ──────────────────────── */

@@ -5407,7 +5407,7 @@ function layoutTemplateHtml(list,current){
 let paperFilter={q:'',year:'',grade:'',term:''};
 // 我的試卷一頁最多 5 份：清單太長時要一直捲，找一份卷很花時間。
 let paperPage=1;
-const PAPER_PER_PAGE=5;
+const PAPER_PER_PAGE=9;
 const PAPER_GRADES=['中一','中二','中三','中四','中五','中六'];
 const PAPER_GRADE_ALIAS={初一:'中一',初二:'中二',初三:'中三',高一:'中四',高二:'中五',高三:'中六'};
 // 出卷的年級選項：高中分普通班／職業班，兩者課程不同，出卷要分開。
@@ -5453,29 +5453,48 @@ function blueprintTableHtml(b){
   </table>
   <p class="bp-check ${b.ok?'ok':'bad'}">${esc(check)}</p>`;
 }
-function paperCardHtml(p){
+// 我的試卷：同一頁放多張卡片，顏色按年級分。中一／初一同一色，中四／高一同一色…
+const GRADE_TONES=[['中一',0],['初一',0],['中二',1],['初二',1],['中三',2],['初三',2],
+  ['中四',3],['高一',3],['中五',4],['高二',4],['中六',5],['高三',5]];
+function gradeTone(grade){
+  const g=String(grade||'').trim();
+  const hit=GRADE_TONES.find(([k])=>g.startsWith(k));
+  if(hit)return hit[1];
+  let h=0;for(const ch of g)h=(h*31+ch.codePointAt(0))%6;   // 其他寫法（例如「中七」）給個穩定色
+  return h;
+}
+// 「新」只屬於剛剛生成的那一份：再生成一份，前一份的「新」就自動消失。
+function markNewPaper(id){try{if(id)localStorage.setItem('mathpath.newPaperId',String(id));}catch(e){}}
+function newPaperId(){try{return Number(localStorage.getItem('mathpath.newPaperId')||0)||0;}catch(e){return 0;}}
+
+function paperCardHtml(p,newId){
   const prefs=paperImportPrefs();
   const pickTopic=prefs.topic&&topics.includes(prefs.topic)?prefs.topic:topics[0];
   const pickGrade=prefs.grade&&PAPER_GRADES.includes(prefs.grade)?prefs.grade:bankGrade(p.grade);
   const pickLevel=String(prefs.level||2);
-  const meta=[p.year,p.grade,p.term].filter(Boolean).join(' · ');
-  const imported=p.importedCount?` · 已匯入 ${p.importedCount} 題`:'';
-  return `<section class="panel panel-pad" style="margin-bottom:12px" data-paper-card="${p.id}">
-    <div class="layout-result" style="margin:0">
-      <div><strong>${esc(p.title)}</strong>
-        <span class="small-text">${esc(meta)}${meta?' · ':''}${p.questionCount} 題${esc(imported)}</span></div>
-      <div class="paper-card-actions">
-        <button class="primary" data-paper-assign="${p.id}">出作業</button>
-        ${p.templateId?`<button class="secondary" data-paper-docx="${p.id}">下載 Word</button>`:''}
-        <button class="secondary" data-paper-tex="${p.id}">下載 .tex</button>
-        <button class="text-button" data-paper-del="${p.id}" style="color:#b8453b">刪除</button>
-      </div>
+  // 年級已經在左上角的標籤，這裡只留年份與學段，卡片才不會重複同一件事
+  const meta=[p.year,p.term].filter(Boolean).join(' · ');
+  const tone=gradeTone(p.grade);
+  const isNew=Number(newId)===Number(p.id);
+  return `<article class="paper-card tone-${tone}${isNew?' is-new':''}" data-paper-card="${p.id}">
+    <div class="paper-card-head">
+      <span class="paper-grade" title="${esc(p.grade||'未分級')}">${esc(p.grade||'未分級')}</span>
+      ${isNew?'<span class="paper-new" title="剛剛生成的試卷">新</span>':''}
+      <span class="paper-count">${p.questionCount} 題${p.importedCount?` · 已匯入 ${p.importedCount}`:''}</span>
     </div>
-    ${p.blueprint?`<details class="paper-blueprint" style="margin-top:10px">
+    <h3 class="paper-title">${esc(p.title)}</h3>
+    <p class="paper-meta">${esc(meta||'未填年份／學段')}</p>
+    <div class="paper-actions">
+      <button class="primary" data-paper-assign="${p.id}">出作業</button>
+      ${p.templateId?`<button class="secondary" data-paper-docx="${p.id}">下載 Word</button>`:''}
+      <button class="secondary" data-paper-tex="${p.id}">下載 .tex</button>
+      <button class="text-button" data-paper-del="${p.id}" style="color:#b8453b">刪除</button>
+    </div>
+    ${p.blueprint?`<details class="paper-blueprint">
       <summary class="text-button">雙向細目表（知識點 × 難度）</summary>
       <div class="gen-blueprint" style="margin-top:8px">${blueprintTableHtml(p.blueprint)}</div>
     </details>`:''}
-    <details class="paper-import" style="margin-top:10px">
+    <details class="paper-import">
       <summary class="text-button">一鍵匯入題庫（${p.questionCount} 題）</summary>
       <div class="layout-row" style="margin-top:8px">
         <label class="small-text">分類<select data-paper-topic="${p.id}">${topics.map(t=>`<option ${t===pickTopic?'selected':''}>${esc(t)}</option>`).join('')}</select></label>
@@ -5485,7 +5504,7 @@ function paperCardHtml(p){
       </div>
       <p class="field-hint">AI 生成的題目會一併帶入答案與步驟；掃描舊卷拆出來的題目沒有答案，匯入後標成「待核驗」等你在題庫補。題型按有無選項自動判斷。</p>
     </details>
-  </section>`;
+  </article>`;
 }
 async function papersPage(){
   if(S.user?.role!=='teacher')return bank();
@@ -5505,6 +5524,7 @@ async function papersPage(){
   if(paperPage>totalPages)paperPage=totalPages;
   if(paperPage<1)paperPage=1;
   const shown=data.papers.slice((paperPage-1)*PAPER_PER_PAGE, paperPage*PAPER_PER_PAGE);
+  const newest=newPaperId();
   const pagerHtml=totalPages>1?`<div class="paper-pager">
       <button class="secondary" id="paper-prev"${paperPage<=1?' disabled':''}>← 上一頁</button>
       <span class="small-text">第 ${paperPage} / ${totalPages} 頁</span>
@@ -5524,7 +5544,7 @@ async function papersPage(){
       </div>
       <p class="field-hint" style="margin-top:8px">共 ${data.papers.length} 份試卷${data.papers.length>PAPER_PER_PAGE?`（每頁 ${PAPER_PER_PAGE} 份）`:''}</p>
     </section>
-    ${data.papers.length?shown.map(paperCardHtml).join('')+pagerHtml
+    ${data.papers.length?`<div class="paper-grid">${shown.map(p=>paperCardHtml(p,newest)).join('')}</div>`+pagerHtml
       :empty('還沒有試卷','在「卷面排版」排好一份卷之後，按「保存到我的試卷」就會出現在這裡。')}
   </div>`;
   const applyFilter=()=>{paperPage=1;papersPage();};
@@ -6078,6 +6098,7 @@ async function generatePaperModal(){
         </div>
         <p class="field-hint">之後也可以在「我的試卷」重新下載、出作業或一鍵匯入題庫。</p>`;
       const docx=res.docx, fname=res.filename, pid=p.id;
+      markNewPaper(pid);
       // 換掉內容後，原本的 h2 id 不見了；把 aria-labelledby 接回新的標題，
       // 讀屏才不會念出一個不存在的標題。
       const lbl=$('.modal')&&$('.modal').getAttribute('aria-labelledby');
@@ -6726,6 +6747,7 @@ async function paperLayoutPage(){
             term:($('#save-paper-term').value||'').trim(),
             templateId:tid,
             sections:res.content?.sections||[]});
+          markNewPaper(out.paper&&out.paper.id);
           btn.textContent='已保存';btn.disabled=true;
           $('#save-paper-result').innerHTML=`已存進「我的試卷」：<button class="text-button" data-page="papers">去看看</button>`;
           const go=$('#save-paper-result [data-page=papers]');
