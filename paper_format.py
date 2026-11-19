@@ -1128,7 +1128,8 @@ def sections_to_dict(sections: list[Section]) -> list[dict]:
             for s in sections]
 
 
-def _figures_from_dict(raw) -> list[dict]:
+def figures_from_dict(raw) -> list[dict]:
+    """存檔裡的 figures（data URL）→ 排版用的 blob 清單。"""
     out = []
     for fig in raw or []:
         if not isinstance(fig, dict):
@@ -1147,7 +1148,7 @@ def sections_from_dict(data) -> list[Section]:
     for section in data or []:
         questions = []
         for q in section.get('questions') or []:
-            figures = _figures_from_dict(q.get('figures'))
+            figures = figures_from_dict(q.get('figures'))
             if not (q.get('stem') or '').strip() and not figures:
                 continue
             questions.append(Question(stem=q.get('stem') or '', marks=q.get('marks'),
@@ -1764,6 +1765,26 @@ GEOMETRY_HINTS = ('如圖', '圖中', '圖所示', '三角形', '四邊形', '�
 def looks_geometry(text: str) -> bool:
     t = text or ''
     return any(h in t for h in GEOMETRY_HINTS)
+
+
+# 出卷時「這一題要不要附圖」的判斷：比 looks_geometry 嚴格一點。
+# 題幹直接叫學生「如圖」的一定要圖；其餘只看知識點是不是幾何題材，
+# 免得一道提到「面積」的代數題也被畫一張不相關的圖。
+FIGURE_STRONG_HINTS = ('如圖', '圖中', '圖所示', '下圖', '上圖', '附圖', '右圖', '左圖',
+                       '圖一', '圖二', '圖三')
+FIGURE_TOPIC_HINTS = ('幾何', '三角形', '四邊形', '多邊形', '圓', '角', '平行', '垂直',
+                      '坐標', '向量', '軌跡', '立體', '相似', '全等', '對稱')
+
+
+def needs_figure(q) -> bool:
+    """這道題要不要請 AI 畫圖：已經有圖的不算。"""
+    if getattr(q, 'figures', None):
+        return False
+    stem = q.stem or ''
+    if any(h in stem for h in FIGURE_STRONG_HINTS):
+        return True
+    topic = q.topic or ''
+    return any(h in topic for h in FIGURE_TOPIC_HINTS)
 
 
 def geometry_candidates(sections: list[Section]) -> list[dict]:

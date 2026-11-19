@@ -2961,6 +2961,47 @@ class PaperGenerateTests(unittest.TestCase):
         self.assertEqual(seen.get('避免重複的呈現方式'), ['直接計算', '情境應用'])
         self.assertEqual(out['question']['style'], '開放探究')
 
+    def test_preview_flags_plane_geometry_questions_for_a_figure(self):
+        """平面幾何題要在預覽時就標出來，前端才知道要請 AI 先畫圖。"""
+        def fake(*a, **k):
+            questions = []
+            for i in range(10):
+                geo = i < 2
+                questions.append({
+                    'stem': ('如圖，三角形 $ABC$ 中 $\\angle B=90^{\\circ}$，求 $AC$。' if geo
+                             else f'解方程 $x^{{2}}-{i}=0$。'),
+                    'options': [], 'marks': 10, 'difficulty': '易',
+                    'topic': '三角形的性質' if geo else '一元二次方程',
+                    'answer': 'x', 'steps': []})
+            return {'sections': [{'title': '一、解答題', 'qtype': '解答題',
+                                  'questions': questions}]}
+        self.app.ai.call = fake
+        out = self.call('POST', '/api/papers/preview', self.payload(
+            source='ai', difficulty={'易': 10, '中': 0, '難': 0},
+            qtypes=[{'type': '解答題'}]))
+        rows = out['sections'][0]['questions']
+        self.assertEqual([r['needsFigure'] for r in rows], [True, True] + [False] * 8,
+                         '幾何題要標示需要附圖，代數題不要')
+
+    def test_confirmed_sections_keep_the_ai_figures(self):
+        """老師確認時把 AI 畫好的圖一起送回：存檔要留得住，Word 也要畫得出來。"""
+        import base64 as _b64
+        import io as _io
+        from docx import Document
+        png = _b64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8'
+                             'z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==')
+        url = 'data:image/png;base64,' + _b64.b64encode(png).decode()
+        confirmed = [{'title': '一、解答題', 'questions': [
+            {'stem': f'第 {i} 題', 'marks': 10, 'options': [], 'lines': [],
+             'figures': [{'data': url, 'cx': 2880000, 'cy': 0}] if i == 0 else []}
+            for i in range(10)]}]
+        out = self.call('POST', '/api/papers/generate',
+                        self.payload(source='ai', sections=confirmed))
+        kept = self.sections_of(out)[0]['questions']
+        self.assertEqual(len(kept[0]['figures']), 1, '確認時送的圖要存進我的試卷')
+        raw = _b64.b64decode(out['docx'].split(',', 1)[1])
+        self.assertEqual(len(Document(_io.BytesIO(raw)).inline_shapes), 1, 'Word 要把圖畫出來')
+
     def test_saved_paper_tex_uses_the_same_template_as_word(self):
         """「下載 LaTeX」跟「下載 Word」要是同一份卷：卷頭、大題標題都照範本，不是另做一份。"""
         self.app.ai.call = lambda *a, **k: {'sections': [

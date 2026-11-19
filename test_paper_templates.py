@@ -1067,6 +1067,19 @@ class PaperFigureTests(unittest.TestCase):
             json.loads(json.dumps(paper_format.sections_to_dict(sections))))
         self.assertEqual(len(back[0].questions), 1)
 
+    def test_needs_figure_only_for_plane_geometry(self):
+        """「如圖」一定要畫；知識點是幾何題材才畫；代數題就算提到面積也不畫。"""
+        def q(stem, topic=''):
+            return paper_format.Question(stem=stem, marks=5, topic=topic)
+        self.assertTrue(paper_format.needs_figure(q('如圖，求 $x$。', '一元二次方程')))
+        self.assertTrue(paper_format.needs_figure(q('已知三角形 $ABC$。', '三角形的性質')))
+        self.assertFalse(paper_format.needs_figure(q('解方程 $x^{2}-1=0$。', '一元二次方程')))
+        self.assertFalse(paper_format.needs_figure(q('長方形的面積是 12，求長。', '一元二次方程')),
+                         '只是提到面積，不該被當成幾何題畫圖')
+        with_fig = paper_format.Question(stem='如圖，求 $x$。', marks=5, topic='圓',
+                                         figures=[{'blob': PaperFigureTests.PNG}])
+        self.assertFalse(paper_format.needs_figure(with_fig), '已經有圖就不用再畫')
+
     def test_unsupported_image_format_is_dropped(self):
         """EMF／WMF 這種 python-docx 畫不出來的格式，存檔時直接略過。"""
         emf = b'\x01\x00\x00\x00' + b'x' * 40

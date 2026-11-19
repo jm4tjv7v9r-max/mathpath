@@ -1258,15 +1258,30 @@ async function askNameMask() {
   return ok;
 }
 
-function modal(html,large=false,dismiss=true){
+// 視窗可以疊：一鍵生成的「確認題目」上面要能再開「題目圖形」工作室。
+// 每一層用自己的容器，關掉上層就回到下層，不會把整份卷的預覽弄丟。
+let modalStack=['#modal-root'];
+function modalRootEl(sel){
+  let host=$(sel);
+  if(!host){
+    host=document.createElement('div');
+    host.id=sel.slice(1);
+    host.className='modal-layer';
+    document.body.appendChild(host);
+  }
+  return host;
+}
+function modal(html,large=false,dismiss=true,rootSel='#modal-root'){
   // large 可以是 true（一般大視窗）或直接給 class 字串（例如 'large gen-modal'）。
   const size=typeof large==='string'?large:(large?'large':'');
   if(!$('.modal'))modalReturnFocus=document.activeElement;
   const titleId=`modal-title-${++modalSeq}`;
-  $('#modal-root').innerHTML=`<div class="modal-backdrop"><section class="modal ${size}" role="dialog" aria-modal="true" aria-labelledby="${titleId}" tabindex="-1">${dismiss?`<button class="icon-btn modal-close" data-action="close-modal" aria-label="關閉">×</button>`:''}${html}</section></div>`;
-  const dialog=$('.modal'),title=$('h2',dialog);
+  const host=modalRootEl(rootSel);
+  if(!modalStack.includes(rootSel))modalStack.push(rootSel);
+  host.innerHTML=`<div class="modal-backdrop"><section class="modal ${size}" role="dialog" aria-modal="true" aria-labelledby="${titleId}" tabindex="-1">${dismiss?`<button class="icon-btn modal-close" data-action="close-modal" aria-label="關閉">×</button>`:''}${html}</section></div>`;
+  const dialog=$('.modal',host),title=$('h2',dialog);
   if(title){title.id=titleId;title.tabIndex=-1;title.focus();}else{dialog.removeAttribute('aria-labelledby');dialog.setAttribute('aria-label','操作視窗');dialog.focus();}
-  $('#modal-root').onkeydown=e=>{
+  host.onkeydown=e=>{
     if(e.key==='Escape'&&dismiss){e.preventDefault();closeReviewAware();return;}
     if(e.key!=='Tab')return;
     const focusable=$$('button:not(:disabled),input:not(:disabled),textarea:not(:disabled),select:not(:disabled),a[href],summary,[tabindex]:not([tabindex="-1"])',dialog).filter(el=>!el.hidden&&el.getClientRects().length&&el.tabIndex>=0);
@@ -1279,7 +1294,13 @@ function modal(html,large=false,dismiss=true){
 let reviewReturn=null,reviewDirty=false;
 // 關閉批閱視窗：如果剛剛存過分數，順便把上一層（成績表／批閱清單）重抓一次。
 function closeReviewAware(){const go=reviewDirty?reviewReturn:null;reviewDirty=false;reviewReturn=null;closeModal();if(go)go();}
-function closeModal(){const prev=modalReturnFocus;modalReturnFocus=null;figStudio=null;$('#modal-root').innerHTML='';$('#modal-root').onkeydown=null;if(prev?.isConnected)prev.focus();else $('#main').focus();
+function closeModal(){const prev=modalReturnFocus;modalReturnFocus=null;figStudio=null;
+  // 只關最上面那一層；下面那層（例如確認題目）原樣留著。
+  const sel=modalStack.length?modalStack.pop():'#modal-root';
+  const host=$(sel);
+  if(host){host.innerHTML='';host.onkeydown=null;if(sel!=='#modal-root')host.remove();}
+  if(!modalStack.length)modalStack=['#modal-root'];
+  if(prev?.isConnected)prev.focus();else $('#main').focus();
   // 生成完的卷已經存進資料庫；離開視窗就重讀列表，不要讓老師看到舊清單。
   if(papersStale){papersStale=false;if(page==='papers'){paperPage=1;paperFilter={q:'',year:'',grade:'',term:''};papersPage();window.scrollTo({top:0,behavior:'smooth'});}}}
 function demoAccountsHtml(){
@@ -1647,7 +1668,9 @@ async function aiExternalOk(what){
 function openFigureStudio(ctx){
   figStudio={ctx,figure:ctx.figure||'',original:ctx.figure||'',check:null,busy:'',manual:false,
              spec:null,issues:[],specIssues:[],rounds:0,history:[],
-             drawing:false,sketch:newSketch(),sketchTools:null};
+             drawing:false,sketch:newSketch(),sketchTools:null,
+             // 從「確認題目」打開時疊在第二層，關掉圖形視窗要回到卷的預覽
+             root:ctx.root||'#modal-root'};
   renderFigureStudio();
 }
 
@@ -1716,7 +1739,7 @@ function renderFigureStudio(){
   ${canDraw?'':'<p class="field-hint">這道題的分類「'+esc(ctx.topic||'未分類')+'」不是幾何或向量題材，AI 不會為它畫圖（避免畫出與題目無關的圖）；如仍需要附圖，請用「手動插入圖片」。</p>'}
   ${S.ai.configured?(S.ai.vision?'':'<p class="field-hint">尚未設定視覺模型，暫時不能自動核對圖形；仍可自行核對後使用。</p>'):'<p class="field-hint">尚未接入 AI，只能手動插入圖片。</p>'}
   <p class="field-hint">手動插入：按「手動插入圖片」選檔，或直接在本視窗貼上截圖（Ctrl／⌘ + V）。</p>
-  <div class="submit-row"><span class="small-text">按「${willRemove?'移除這張圖形':'使用這張圖形'}」才會寫回題目</span><div class="row-actions"><button class="primary" id="fig-apply" ${figure||willRemove?'':'disabled'}>${icon('check')}${willRemove?'移除這張圖形':'使用這張圖形'}</button><button class="secondary" id="fig-close">關閉</button></div></div>`,true);
+  <div class="submit-row"><span class="small-text">按「${willRemove?'移除這張圖形':'使用這張圖形'}」才會寫回題目</span><div class="row-actions"><button class="primary" id="fig-apply" ${figure||willRemove?'':'disabled'}>${icon('check')}${willRemove?'移除這張圖形':'使用這張圖形'}</button><button class="secondary" id="fig-close">關閉</button></div></div>`,true,true,figStudio.root||'#modal-root');
   $('#fig-draw').onclick=()=>drawFigureInStudio(false);
   $('#fig-check').onclick=checkFigureInStudio;
   const fix=$('#fig-fix');if(fix)fix.onclick=()=>drawFigureInStudio(true);
@@ -6024,6 +6047,12 @@ async function generatePaperModal(){
               <p class="gen-qmeta">第 ${n} 題 · ${q.marks} 分${q.difficulty?` · ${q.difficulty}`:''}${q.style?` · ${esc(q.style)}`:''}${q.bankId?' · 題庫':''}${q.source&&!/^(校本題庫|AI 生成|自編)$/.test(q.source)?` · 來源：${esc(q.source)}`:''}</p>
               <p class="gen-qstem">${mathText(q.stem)}</p>
               ${(q.options||[]).length?`<p class="gen-qopts">${q.options.map(o=>mathText(o)).join('　')}</p>`:''}
+              ${q.figure
+                ? `<div class="gen-qfig"><img src="${q.figure}" alt="第 ${n} 題圖形"><button type="button" class="text-button" data-figure="${si}-${qi}">${icon('practice')}改圖</button></div>`
+                : (q.needsFigure?`<div class="gen-qfig empty">
+                    <span class="small-text">${q.figBusy?'AI 正在依題目畫圖…':'這題是平面幾何，還沒有圖'}</span>
+                    <button type="button" class="secondary" data-figure="${si}-${qi}" ${q.figBusy?'disabled':''}>${icon('spark')}${q.figBusy?'畫圖中…':'AI 畫圖'}</button>
+                  </div>`:'')}
               ${q.answer?`<p class="gen-qans">${icon('check')}<span>答案：${mathText(q.answer)}</span></p>`:''}
             </div>
             <button type="button" class="text-button gen-qreplace" data-replace="${si}-${qi}">更換</button>
@@ -6051,9 +6080,59 @@ async function generatePaperModal(){
       syncTotals();
     });
     $$('[data-replace]',box).forEach(el=>el.onclick=()=>replaceQuestion(el.dataset.replace,el));
+    $$('[data-figure]',box).forEach(el=>el.onclick=()=>openFigureForQuestion(el.dataset.figure));
     $('#gen-back').onclick=()=>{$('#gen-preview-step').hidden=true;$('#gen-form-step').hidden=false;};
     $('#gen-confirm').onclick=confirmGenerate;
     syncTotals();
+  };
+
+  // 題目圖形：AI 只算座標、由程式畫成 SVG 再轉 PNG（網站內同一套畫圖工具），
+  // 8cm 寬剛好半頁，Word 與 .tex 都不會爆版。
+  const FIGURE_CX=8*360000;
+  let figAutoDone=false;
+  const drawFigureFor=async (si,qi)=>{
+    const q=plan[si].questions[qi];
+    if(!q||q.figBusy)return;
+    q.figBusy=true;renderPlan();
+    try{
+      const r=await api('/api/questions/ai-figure',{content:q.stem,topic:'幾何',
+        qtype:plan[si].qtype||'解答題',consentExternal:S.ai?.mode==='external'});
+      const png=await svgToPng(r.svg,700);
+      q.figure=png.data;
+      q.figureCx=Math.round((png.widthCm||8)*360000);
+      if((r.issues||[]).length)toast('圖形仍有疑慮：'+r.issues[0]);
+    }catch(e){toast(e.message);}
+    q.figBusy=false;renderPlan();
+  };
+  // 老師按「改圖」：開同一套圖形工作室（疊在確認頁上面），改完寫回這一題
+  const openFigureForQuestion=key=>{
+    const [si,qi]=String(key).split('-').map(Number);
+    const q=plan[si]&&plan[si].questions[qi];
+    if(!q)return;
+    openFigureStudio({
+      title:(plan[si].title||'')+' · 第 '+(qi+1)+' 題',
+      content:q.stem,topic:'幾何',subtopic:'',qtype:plan[si].qtype||'解答題',
+      figure:q.figure||'',
+      root:'#modal-root-2',
+      apply:async figure=>{
+        q.figure=figure||'';
+        if(figure)q.figureCx=q.figureCx||FIGURE_CX;
+        closeModal();
+        renderPlan();
+        toast(figure?'已更新這題的圖形':'已移除這題的圖形');
+      }});
+  };
+  // 確認頁一出來就自動為平面幾何題畫圖；一次最多 4 張（每張都是一次模型呼叫）
+  const autoDrawGeometry=async ()=>{
+    if(figAutoDone)return;
+    figAutoDone=true;
+    const queue=[];
+    plan.forEach((sec,si)=>sec.questions.forEach((q,qi)=>{
+      if(q.on&&q.needsFigure&&!q.figure&&!q.figTried)queue.push([si,qi]);}));
+    for(const [si,qi] of queue.slice(0,4)){
+      plan[si].questions[qi].figTried=true;
+      await drawFigureFor(si,qi);
+    }
   };
 
   const replaceQuestion=async (key,btn)=>{
@@ -6080,7 +6159,8 @@ async function generatePaperModal(){
         .map(q=>({stem:q.stem,marks:q.marks,options:q.options||[],lines:q.lines||[],
                   answer:q.answer||'',steps:q.steps||[],
                   difficulty:q.difficulty||'',topic:q.topic||'',source:q.source||'',
-                  style:q.style||''}))}))
+                  style:q.style||'',
+                  figures:q.figure?[{data:q.figure,cx:q.figureCx||FIGURE_CX,cy:0}]:[]}))}))
       .filter(s=>s.questions.length);
     if(!chosen.length)return toast('請至少保留一題。');
     const old=btn.textContent;btn.disabled=true;btn.textContent='排版中…';
@@ -6143,7 +6223,9 @@ async function generatePaperModal(){
       if(genWarnings.length)toast(genWarnings[0]);
       $('#gen-form-step').hidden=true;
       $('#gen-preview-step').hidden=false;
+      figAutoDone=false;
       renderPlan();
+      autoDrawGeometry();
     }catch(e){toast(e.message);}
     btn.disabled=false;btn.innerHTML=old;
   };

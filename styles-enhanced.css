@@ -753,3 +753,44 @@ html[data-theme="night"] .gen-warn{
   background: #2c2418;
   color: #e8dcc4;
 }
+
+/* ── 17. 一鍵生成：確認頁的題目圖形 ───────────────────────────────
+   平面幾何題在確認頁就由 AI 畫好圖（網站內同一套畫圖工具：先算座標、
+   再由程式畫成 SVG→PNG），老師可以逐題「改圖」。 */
+.modal-layer{
+  position: relative;
+  z-index: 120;
+}
+.gen-qfig{
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 8px 0 4px;
+}
+.gen-qfig img{
+  max-width: min(100%, 320px);
+  height: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+  padding: 4px;
+}
+.gen-qfig.empty{
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  background: var(--surface-soft);
+}
+.gen-qfig.empty .secondary{
+  padding: 7px 12px;
+  font-size: calc(13px * var(--fs));
+}
+.gen-qfig .text-button{
+  font-size: calc(13px * var(--fs));
+  align-self: center;
+}
+html[data-theme="night"] .gen-qfig img{
+  background: #fff;
+}

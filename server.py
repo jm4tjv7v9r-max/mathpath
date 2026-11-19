@@ -2877,6 +2877,8 @@ def paper_preview_payload(sections):
                          # 出處要一起帶回前端：老師確認時原樣送回，卷面才印得出「（來源：…）」。
                          'source': getattr(q, 'source', '') or '',
                          'style': getattr(q, 'style', '') or '',
+                         # 平面幾何題：預覽時就讓 AI 先把圖畫好，老師確認時可以直接改圖。
+                         'needsFigure': paper_format.needs_figure(q),
                          'bankId': getattr(q, 'bank_id', None),
                          # 一併帶回前端：老師按「確定」時原樣送回，答案才不會在存檔時掉掉。
                          'answer': getattr(q, 'answer', '') or '',
@@ -2941,6 +2943,8 @@ def confirmed_sections(raw, spec):
         rows = [paper_format.Question(stem=q['stem'], marks=q.get('marks'),
                                       options=q.get('options') or [],
                                       lines=q.get('lines') or [],
+                                      # 老師確認時連同 AI 畫好的圖一起帶回來
+                                      figures=paper_format.figures_from_dict(q.get('figures')),
                                       answer=q.get('answer') or '',
                                       steps=list(q.get('steps') or []),
                                       difficulty=str(q.get('difficulty') or ''),
