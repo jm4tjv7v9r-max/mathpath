@@ -5407,7 +5407,7 @@ function layoutTemplateHtml(list,current){
 let paperFilter={q:'',year:'',grade:'',term:''};
 // 我的試卷一頁最多 5 份：清單太長時要一直捲，找一份卷很花時間。
 let paperPage=1;
-const PAPER_PER_PAGE=9;
+const PAPER_PER_PAGE=8;
 const PAPER_GRADES=['中一','中二','中三','中四','中五','中六'];
 const PAPER_GRADE_ALIAS={初一:'中一',初二:'中二',初三:'中三',高一:'中四',高二:'中五',高三:'中六'};
 // 出卷的年級選項：高中分普通班／職業班，兩者課程不同，出卷要分開。
@@ -5519,7 +5519,7 @@ async function papersPage(){
     $('#main').innerHTML=`<div class="fade-in">${head}<section class="panel"><div class="inline-error">${esc(e.message)}</div></section></div>`;return;}
   if(!viewMatches(target))return;
   const f=data.facets||{};
-  // 一頁最多 5 份，其餘分頁（清單一長，找卷就要一直捲）
+  // 一頁 8 份（3 欄 × 3 排剛好一屏），其餘分頁
   const totalPages=Math.max(1,Math.ceil(data.papers.length/PAPER_PER_PAGE));
   if(paperPage>totalPages)paperPage=totalPages;
   if(paperPage<1)paperPage=1;

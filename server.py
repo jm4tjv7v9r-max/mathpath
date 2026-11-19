@@ -3547,6 +3547,34 @@ def paper_public(row, detail: bool = False) -> dict:
     return data
 
 
+def paper_figures_valid(raw):
+    """題目附圖（data URL）：最多 3 張、每張 2 MB，只收 python-docx 畫得出來的格式。
+
+    格式不支援或內容壞掉就略過：存的是「卷」，不該為了一張 EMF 讓整份卷存不進去。
+    """
+    out = []
+    if not isinstance(raw, list):
+        return out
+    for fig in raw[:3]:
+        if not isinstance(fig, dict):
+            continue
+        data = fig.get('data')
+        if not isinstance(data, str) or not data.startswith('data:'):
+            continue
+        try:
+            blob, _mime = decode_data_url(data, paper_format.FIGURE_MIMES, MAX_FIGURE)
+        except APIError:
+            continue
+        if not blob:
+            continue
+        try:
+            cx, cy = int(fig.get('cx') or 0), int(fig.get('cy') or 0)
+        except (TypeError, ValueError):
+            cx = cy = 0
+        out.append({'data': data, 'cx': cx, 'cy': cy})
+    return out
+
+
 def paper_sections_valid(raw):
     """存起來的卷只留「分部標題＋題幹／選項／配分」，不存任何可執行內容。"""
     if not isinstance(raw, list) or not 1 <= len(raw) <= 30:
@@ -3563,10 +3591,15 @@ def paper_sections_valid(raw):
         for item in questions:
             if not isinstance(item, dict):
                 fail(400, '題目必須是物件。')
-            # 題號後面沒有文字（整題是圖、題號自己一行）就跳過，不要整份存不進去
+            figures = paper_figures_valid(item.get('figures'))
+            # 題號後面沒有文字（整題是圖、題號自己一行）就跳過，不要整份存不進去；
+            # 但整題只有一張圖（幾何題）要留下來，否則存檔後圖就沒了。
             if not isinstance(item.get('stem'), str) or not item['stem'].strip():
-                continue
-            stem = text(item['stem'], '題幹', MAX_TEXT)
+                if not figures:
+                    continue
+                stem = ''
+            else:
+                stem = text(item['stem'], '題幹', MAX_TEXT)
             marks = item.get('marks')
             if marks is not None:
                 try:
@@ -3586,7 +3619,8 @@ def paper_sections_valid(raw):
                           'difficulty': text(item.get('difficulty') or '', '難度', 4, empty=True),
                           'topic': text(item.get('topic') or '', '知識點', 100, empty=True),
                           'source': text(item.get('source') or '', '出處', 200, empty=True),
-                          'style': text(item.get('style') or '', '呈現方式', 20, empty=True)})
+                          'style': text(item.get('style') or '', '呈現方式', 20, empty=True),
+                          'figures': figures})
         if items:
             sections.append({'title': title or None, 'questions': items})
     if not sections:

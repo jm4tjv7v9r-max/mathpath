@@ -11,6 +11,8 @@
 """
 from __future__ import annotations
 
+import base64
+import binascii
 import copy
 import io
 import json
@@ -1047,37 +1049,118 @@ def count_formulas(sections: list[Section]) -> int:
     return total
 
 
+# 題目圖片：存檔要能帶得走。Word 解析出來的圖是 bytes，JSON 只放得下字串，
+# 所以存檔時轉成 data URL、讀回來再解回 bytes（重新下載 Word 才畫得出圖）。
+FIGURE_MIMES = ('image/png', 'image/jpeg', 'image/gif', 'image/bmp', 'image/webp')
+
+
+def _sniff_image(blob: bytes) -> str | None:
+    """看檔頭認圖片格式；認不得（例如 Word 的 EMF／WMF）回 None。"""
+    if blob[:8] == b'\x89PNG\r\n\x1a\n':
+        return 'image/png'
+    if blob[:3] == b'\xff\xd8\xff':
+        return 'image/jpeg'
+    if blob[:6] in (b'GIF87a', b'GIF89a'):
+        return 'image/gif'
+    if blob[:2] == b'BM':
+        return 'image/bmp'
+    if blob[:4] == b'RIFF' and blob[8:12] == b'WEBP':
+        return 'image/webp'
+    return None
+
+
+def figure_data_url(fig) -> str | None:
+    """題目圖 → data URL（存檔用）；python-docx 畫不出來的格式回 None。"""
+    if not isinstance(fig, dict):
+        return None
+    data = fig.get('data')
+    if isinstance(data, str) and data.startswith('data:'):
+        return data
+    blob = fig.get('blob')
+    if not isinstance(blob, (bytes, bytearray)) or not blob:
+        return None
+    raw = bytes(blob)
+    mime = fig.get('mime') or _sniff_image(raw)
+    if mime not in FIGURE_MIMES:
+        return None
+    return 'data:%s;base64,%s' % (mime, base64.b64encode(raw).decode())
+
+
+def figure_bytes(fig) -> bytes | None:
+    """題目圖 → bytes（排版用）：不管是 blob 還是 data URL 都吃。"""
+    if not isinstance(fig, dict):
+        return None
+    blob = fig.get('blob')
+    if isinstance(blob, (bytes, bytearray)):
+        return bytes(blob)
+    data = fig.get('data')
+    if isinstance(data, str) and data.startswith('data:') and ',' in data:
+        try:
+            return base64.b64decode(data.split(',', 1)[1], validate=True)
+        except (ValueError, binascii.Error):
+            return None
+    return None
+
+
 def sections_to_dict(sections: list[Section]) -> list[dict]:
     """存檔用：Section/Question 轉成純 dict（我的試卷、匯入題庫都吃這個）。
 
-    圖片的二進位內容不進 JSON（存檔只存文字），所以這裡逐欄挑，不用 asdict。
+    題目圖片轉成 data URL 一起存：以前「存檔只存文字」，重新下載的 Word 就
+    只剩題號沒有圖，老師還得自己把圖貼回去。
     """
+    def figures_of(q):
+        out = []
+        for fig in q.figures or []:
+            data = figure_data_url(fig)
+            if data:
+                out.append({'data': data, 'cx': int(fig.get('cx') or 0),
+                            'cy': int(fig.get('cy') or 0)})
+        return out
+
     return [{'title': s.title,
              'questions': [{'stem': q.stem, 'marks': q.marks,
                             'options': list(q.options), 'lines': list(q.lines),
                             'answer': q.answer, 'steps': list(q.steps),
                             'difficulty': q.difficulty, 'topic': q.topic,
-                            'source': q.source, 'style': q.style, 'bankId': q.bank_id}
+                            'source': q.source, 'style': q.style, 'bankId': q.bank_id,
+                            'figures': figures_of(q)}
                            for q in s.questions]}
             for s in sections]
 
 
+def _figures_from_dict(raw) -> list[dict]:
+    out = []
+    for fig in raw or []:
+        if not isinstance(fig, dict):
+            continue
+        blob = figure_bytes(fig)
+        if not blob:
+            continue
+        out.append({'blob': blob, 'cx': int(fig.get('cx') or 0),
+                    'cy': int(fig.get('cy') or 0)})
+    return out
+
+
 def sections_from_dict(data) -> list[Section]:
-    """存檔讀回來：純 dict → Section/Question（匯出 .tex 時用）。"""
+    """存檔讀回來：純 dict → Section/Question（重新排版、匯出 .tex 時用）。"""
     out = []
     for section in data or []:
-        questions = [Question(stem=q.get('stem') or '', marks=q.get('marks'),
-                              options=list(q.get('options') or []),
-                              lines=list(q.get('lines') or []),
-                              answer=str(q.get('answer') or ''),
-                              steps=[str(x) for x in (q.get('steps') or [])],
-                              difficulty=str(q.get('difficulty') or ''),
-                              topic=str(q.get('topic') or ''),
-                              source=str(q.get('source') or ''),
-                              style=str(q.get('style') or ''),
-                              bank_id=q.get('bankId'))
-                     for q in section.get('questions') or []
-                     if (q.get('stem') or '').strip()]
+        questions = []
+        for q in section.get('questions') or []:
+            figures = _figures_from_dict(q.get('figures'))
+            if not (q.get('stem') or '').strip() and not figures:
+                continue
+            questions.append(Question(stem=q.get('stem') or '', marks=q.get('marks'),
+                                      options=list(q.get('options') or []),
+                                      lines=list(q.get('lines') or []),
+                                      figures=figures,
+                                      answer=str(q.get('answer') or ''),
+                                      steps=[str(x) for x in (q.get('steps') or [])],
+                                      difficulty=str(q.get('difficulty') or ''),
+                                      topic=str(q.get('topic') or ''),
+                                      source=str(q.get('source') or ''),
+                                      style=str(q.get('style') or ''),
+                                      bank_id=q.get('bankId')))
         if questions:
             out.append(Section(title=section.get('title'), questions=questions))
     return out
@@ -1359,17 +1442,20 @@ def _render_into(tpl, sections: list[Section], title: str | None = None,
 
             # 題目裡的圖：沿用範本題目段落的格式，原尺寸放回題幹下面
             for fig in q.figures:
+                blob = figure_bytes(fig)
+                if not blob:
+                    continue          # 讀不到圖就不要留一個空白段落
                 fp = _clone(tpl, q_proto._p, sectpr)
                 _wipe(fp)
                 run = fp.add_run()
                 try:
-                    blob = io.BytesIO(fig['blob'])
+                    stream = io.BytesIO(blob)
                     if fig.get('cx') and fig.get('cy'):
-                        run.add_picture(blob, width=Emu(fig['cx']), height=Emu(fig['cy']))
+                        run.add_picture(stream, width=Emu(fig['cx']), height=Emu(fig['cy']))
                     elif fig.get('cx'):
-                        run.add_picture(blob, width=Emu(fig['cx']))   # 只給寬度就按比例縮放
+                        run.add_picture(stream, width=Emu(fig['cx']))   # 只給寬度就按比例縮放
                     else:
-                        run.add_picture(blob)
+                        run.add_picture(stream)
                 except Exception:
                     # 個別圖片壞掉（例如 EMF/WMF 不支援）不要讓整份卷失敗
                     pass

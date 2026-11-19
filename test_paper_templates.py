@@ -689,6 +689,33 @@ class PaperLibraryTests(unittest.TestCase):
         self.call('DELETE', f"/api/papers/{paper['id']}")
         self.assertEqual(self.call('GET', '/api/papers')['papers'], [])
 
+    def test_saved_paper_keeps_its_figures(self):
+        """附圖要跟著卷存下來：以前存檔只留文字，重新下載的 Word 就只剩題號。"""
+        url = 'data:image/png;base64,' + base64.b64encode(PaperFigureTests.PNG).decode()
+        paper = self.save(sections=[{'title': '一、解答題', 'questions': [
+            {'stem': '求圖中的 $x$。', 'marks': 5, 'options': [], 'lines': [],
+             'figures': [{'data': url, 'cx': 914400, 'cy': 457200}]}]}])
+        detail = self.call('GET', f"/api/papers/{paper['id']}")['paper']
+        fig = detail['sections'][0]['questions'][0]['figures'][0]
+        self.assertEqual(fig['data'], url)
+        self.assertEqual((fig['cx'], fig['cy']), (914400, 457200))
+
+    def test_broken_figure_is_skipped_instead_of_failing_the_save(self):
+        """圖壞掉／格式不支援時，寧可少一張圖，也不要整份卷存不進去。"""
+        paper = self.save(sections=[{'title': '一、解答題', 'questions': [
+            {'stem': '求圖中的 $x$。', 'marks': 5, 'options': [], 'lines': [],
+             'figures': [{'data': 'data:image/x-emf;base64,AAAA'}]}]}])
+        detail = self.call('GET', f"/api/papers/{paper['id']}")['paper']
+        self.assertEqual(detail['sections'][0]['questions'][0]['figures'], [])
+
+    def test_figure_only_question_can_be_saved(self):
+        """整題只有圖的幾何題也要存得進去（以前會因為「沒有文字」被整題丟掉）。"""
+        url = 'data:image/png;base64,' + base64.b64encode(PaperFigureTests.PNG).decode()
+        paper = self.save(sections=[{'title': '一、解答題', 'questions': [
+            {'stem': '', 'marks': 5, 'options': [], 'lines': [],
+             'figures': [{'data': url}]}]}])
+        self.assertEqual(paper['questionCount'], 1)
+
     def test_students_cannot_use_the_library(self):
         if not self.student:
             self.skipTest('沒有學生帳號')
@@ -997,6 +1024,56 @@ class PunctuationTests(unittest.TestCase):
         tex = latex_export.to_tex('卷', [section])
         self.assertIn('解方程 $x^{2}=1$.', tex)
         self.assertNotIn('。', tex)
+
+
+class PaperFigureTests(unittest.TestCase):
+    """題目附圖：存進「我的試卷」之後，重新排版也要畫得出同一張圖。"""
+
+    PNG = base64.b64decode(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==')
+
+    def template(self):
+        doc = Document()
+        doc.add_paragraph('測試卷')
+        doc.add_paragraph('一、解答題（每題 5 分）')
+        doc.add_paragraph('1.\t題目')
+        buf = io.BytesIO()
+        doc.save(buf)
+        return buf.getvalue()
+
+    def render(self, sections):
+        raw, _ = paper_format.render_with_sections(self.template(), sections, '測試卷')
+        return Document(io.BytesIO(raw))
+
+    def test_figure_survives_save_and_reload(self):
+        sections = [paper_format.Section(title='一、解答題', questions=[
+            paper_format.Question(stem='求圖中的 $x$。', marks=5,
+                                  figures=[{'blob': self.PNG, 'cx': 914400, 'cy': 457200}])])]
+        data = json.loads(json.dumps(paper_format.sections_to_dict(sections)))
+        url = data[0]['questions'][0]['figures'][0]['data']
+        self.assertTrue(url.startswith('data:image/png;base64,'), '存檔要留得住圖')
+        back = paper_format.sections_from_dict(data)
+        fig = back[0].questions[0].figures[0]
+        self.assertEqual(fig['blob'], self.PNG)
+        self.assertEqual(fig['cx'], 914400)
+        self.assertEqual(len(self.render(back).inline_shapes), 1, '讀回來再排也要畫得出圖')
+
+    def test_figure_only_question_is_not_dropped(self):
+        """整題只有一張圖（幾何題）也要留著，不然存檔後題目就不見了。"""
+        sections = [paper_format.Section(title='一、解答題', questions=[
+            paper_format.Question(stem='', marks=5,
+                                  figures=[{'blob': self.PNG, 'cx': 0, 'cy': 0}])])]
+        back = paper_format.sections_from_dict(
+            json.loads(json.dumps(paper_format.sections_to_dict(sections))))
+        self.assertEqual(len(back[0].questions), 1)
+
+    def test_unsupported_image_format_is_dropped(self):
+        """EMF／WMF 這種 python-docx 畫不出來的格式，存檔時直接略過。"""
+        emf = b'\x01\x00\x00\x00' + b'x' * 40
+        sections = [paper_format.Section(title='一、解答題', questions=[
+            paper_format.Question(stem='有圖', marks=5, figures=[{'blob': emf}])])]
+        data = paper_format.sections_to_dict(sections)
+        self.assertEqual(data[0]['questions'][0]['figures'], [])
 
 
 class PaperLayoutTests(unittest.TestCase):
