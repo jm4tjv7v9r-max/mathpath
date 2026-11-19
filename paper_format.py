@@ -262,6 +262,11 @@ class Question:
     # 之後「一鍵匯入題庫」才有答案可用，老師不必再自己解一次。
     answer: str = ''
     steps: list[str] = field(default_factory=list)
+    # 題庫題目附帶的屬性：難度、知識點、出處（來源）。出處要印在卷面上、存進我的試卷。
+    difficulty: str = ''
+    topic: str = ''
+    source: str = ''
+    bank_id: int | None = None
 
     def __post_init__(self):
         # 所有建立題目的路徑（Word 解析、PDF 轉寫、題庫組卷、讀回存檔）都會經過這裡，
@@ -1046,7 +1051,9 @@ def sections_to_dict(sections: list[Section]) -> list[dict]:
     return [{'title': s.title,
              'questions': [{'stem': q.stem, 'marks': q.marks,
                             'options': list(q.options), 'lines': list(q.lines),
-                            'answer': q.answer, 'steps': list(q.steps)}
+                            'answer': q.answer, 'steps': list(q.steps),
+                            'difficulty': q.difficulty, 'topic': q.topic,
+                            'source': q.source, 'bankId': q.bank_id}
                            for q in s.questions]}
             for s in sections]
 
@@ -1059,12 +1066,65 @@ def sections_from_dict(data) -> list[Section]:
                               options=list(q.get('options') or []),
                               lines=list(q.get('lines') or []),
                               answer=str(q.get('answer') or ''),
-                              steps=[str(x) for x in (q.get('steps') or [])])
+                              steps=[str(x) for x in (q.get('steps') or [])],
+                              difficulty=str(q.get('difficulty') or ''),
+                              topic=str(q.get('topic') or ''),
+                              source=str(q.get('source') or ''),
+                              bank_id=q.get('bankId'))
                      for q in section.get('questions') or []
                      if (q.get('stem') or '').strip()]
         if questions:
             out.append(Section(title=section.get('title'), questions=questions))
     return out
+
+
+BLUEPRINT_LEVELS = ('易', '中', '難')
+
+
+def blueprint_data(sections: list[Section], ratio=None) -> dict:
+    """生成雙向細目表結構化資料（知識點 × 難度 的題數／分數 + 難度比例核對）。
+
+    前端「確認題目」預覽、生成後「我的試卷」詳情都用這份資料渲染，長得一樣。
+    ratio 例 {易:7,中:2,難:1}；缺省用 7:2:1。
+    """
+    levels = BLUEPRINT_LEVELS
+    chosen = [q for sec in sections for q in sec.questions if q.marks is not None]
+    rows = {}
+    for q in chosen:
+        topic = (q.topic or '').strip() or '（未標知識點）'
+        cell = rows.setdefault(topic, {l: [0, 0] for l in levels})
+        key = q.difficulty if q.difficulty in levels else '中'
+        cell[key][0] += 1
+        cell[key][1] += float(q.marks or 0)
+    totals = {l: [0, 0] for l in levels}
+    body = []
+    for topic, cells in rows.items():
+        for l in levels:
+            totals[l][0] += cells[l][0]
+            totals[l][1] += cells[l][1]
+        n = sum(cells[l][0] for l in levels)
+        m = sum(cells[l][1] for l in levels)
+        body.append({'topic': topic,
+                     'cells': {l: {'count': cells[l][0], 'marks': cells[l][1]} for l in levels},
+                     'count': n, 'marks': m})
+    tn = sum(totals[l][0] for l in levels)
+    tm = sum(totals[l][1] for l in levels)
+    r = ratio or {'易': 7, '中': 2, '難': 1}
+    rsum = (float(r.get('易') or 0) + float(r.get('中') or 0) + float(r.get('難') or 0)) or 10
+    exact = [tn * float(r.get(l) or 0) / rsum for l in levels]
+    expect = [int(v) for v in exact]
+    rest = tn - sum(expect)
+    for v, i in sorted(((v - int(v), i) for i, v in enumerate(exact)), reverse=True):
+        if rest > 0:
+            expect[i] += 1
+            rest -= 1
+    ok = all(totals[l][0] == expect[i] for i, l in enumerate(levels))
+    diff = sum(abs(totals[l][0] - expect[i]) for i, l in enumerate(levels))
+    return {'levels': list(levels), 'rows': body,
+            'totals': {l: {'count': totals[l][0], 'marks': totals[l][1]} for l in levels},
+            'totalCount': tn, 'totalMarks': tm,
+            'expected': {l: expect[i] for i, l in enumerate(levels)},
+            'ok': ok, 'diff': diff}
 
 
 CLOSING_HINTS = ('完', '結束', '試卷終', '全卷終', 'END', 'End')
@@ -1119,6 +1179,17 @@ def _is_closing_marker(text: str) -> bool:
         return True
     # 沒有關鍵字時，只接受極短的裝飾行（例如「————」「※」）
     return len(t) <= 12
+
+
+def _stem_with_source(stem: str, source: str) -> str:
+    """題幹尾端標出處：題目來自某來源（如網路／教科書）時，卷面要標明出處。
+
+    出處不長才印（避免一整行都是出處）；沒有出處或太長就不印，卷面乾淨。
+    """
+    src = (source or '').strip()
+    if not src or len(src) > 60 or src in ('校本題庫', 'AI 生成', '自編'):
+        return stem
+    return f'{stem}（來源：{src}）'
 
 
 def _render_into(tpl, sections: list[Section], title: str | None = None,
@@ -1258,16 +1329,17 @@ def _render_into(tpl, sections: list[Section], title: str | None = None,
 
         for q in s.questions:
             np = _clone(tpl, q_proto._p, sectpr)
+            stem_txt = _stem_with_source(q.stem, getattr(q, 'source', ''))
             if sec_pos == 'trailing':
                 marks_txt = _marks_text((sec or {}).get('proto') or marks_proto, q.marks)
-                cells = [f'{number}{punct}{sep}{q.stem}'] + ([marks_txt] if marks_txt else [])
+                cells = [f'{number}{punct}{sep}{stem_txt}'] + ([marks_txt] if marks_txt else [])
                 _fill(np, cells, math_as_text)
                 if marks_txt and sec_marks_tab is not None:
                     np.paragraph_format.tab_stops.add_tab_stop(sec_marks_tab, WD_TAB_ALIGNMENT.RIGHT)
             elif sec_pos == 'leading' and q.marks is not None:
-                _fill(np, [f'{number}{punct}{_marks_text("（0 分）", q.marks)}{sep}{q.stem}'], math_as_text)
+                _fill(np, [f'{number}{punct}{_marks_text("（0 分）", q.marks)}{sep}{stem_txt}'], math_as_text)
             else:
-                _fill(np, [f'{number}{punct}{sep}{q.stem}'], math_as_text)
+                _fill(np, [f'{number}{punct}{sep}{stem_txt}'], math_as_text)
             number += 1
 
             for extra in q.lines:

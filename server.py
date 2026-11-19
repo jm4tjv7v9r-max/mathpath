@@ -2300,13 +2300,15 @@ PAPER_LEVEL_NAME = {1: '易', 2: '中', 3: '難'}
 PAPER_GEN_PROMPT = (
     '你是資深中學數學科老師，要為指定範圍出試卷題目。只回 JSON：'
     '{sections:[{title:str,qtype:str,questions:[{stem:str,options:[str],marks:number,'
-    'difficulty:"易"|"中"|"難",topic:str,answer:str,steps:[str]}]}],totalPoints:number}。'
+    'difficulty:"易"|"中"|"難",topic:str,source:str,answer:str,steps:[str]}]}],totalPoints:number}。'
     '規則：①每個分部只放一種題型，title 用「一、選擇題」這種格式；'
     '②所有題目 marks 加總必須剛好等於指定總分（先把配分算好再寫題目，不要最後才湊）；'
     '③選擇題 options 數量必須跟指定的一致（不要加 A. 前綴）；'
     '④若總分是 110 分，必須有「附加題」分部且剛好 10 分；'
     '⑤題目要覆蓋指定測考範圍，難度按指定比例（易：中：難）分配，用語與命題風格依「參考方向」；'
     '⑥每題都要標 difficulty（只能是「易」「中」「難」）與 topic（該題考的中文知識點，例如「一元二次方程」「矩陣的乘法」）；'
+    '⑥b每題都要標 source（出處／來源，30 字內，例如「校本題庫」「網路·2024高考真題」「AI 生成」，沒有就留空字串，'
+    '不要憑空捏造來源）；'
     '⑦數學式一律 LaTeX，行內用 $...$；填空題的空白一律寫成 ______（六條底線），'
     '不要用 \\underline{\\hspace{2cm}} 這類排版指令；'
     '⑧answer 寫最終答案，steps 寫 2 至 4 步關鍵過程；'
@@ -2446,10 +2448,11 @@ def label_options(options):
 def paper_question_from_bank(q):
     options = label_options(q.get('options'))
     row = paper_format.Question(stem=(q.get('content') or q.get('title') or '').strip(),
-                                marks=float(q.get('points') or 0) or None, options=options)
-    row.difficulty = PAPER_LEVEL_NAME.get(q.get('level'), '中')
-    row.topic = (q.get('topic') or q.get('subtopic') or '').strip()
-    row.bank_id = q.get('id')
+                                marks=float(q.get('points') or 0) or None, options=options,
+                                difficulty=PAPER_LEVEL_NAME.get(q.get('level'), '中'),
+                                topic=(q.get('topic') or q.get('subtopic') or '').strip(),
+                                source=str(q.get('source') or '').strip(),
+                                bank_id=q.get('id'))
     return row
 
 
@@ -2727,6 +2730,8 @@ def ai_generate_paper(app, spec, target, types=None, fix=None, note=None):
             level = str(q.get('difficulty') or '').strip()
             row.difficulty = level if level in PAPER_DIFFICULTY else '中'
             row.topic = str(q.get('topic') or '').strip()[:40]
+            # 出處：AI 出的題標「AI 生成」；若 AI 自己標了來源就照實存，不憑空捏造。
+            row.source = str(q.get('source') or 'AI 生成').strip()[:60] or 'AI 生成'
             rows.append(row)
         if rows:
             sections.append(paper_format.Section(title=str(sec.get('title') or '') or None, questions=rows))
@@ -2908,7 +2913,10 @@ def confirmed_sections(raw, spec):
                                       options=q.get('options') or [],
                                       lines=q.get('lines') or [],
                                       answer=q.get('answer') or '',
-                                      steps=list(q.get('steps') or []))
+                                      steps=list(q.get('steps') or []),
+                                      difficulty=str(q.get('difficulty') or ''),
+                                      topic=str(q.get('topic') or ''),
+                                      source=str(q.get('source') or ''))
                 for q in sec['questions']]
         if rows:
             sections.append(paper_format.Section(title=sec.get('title'), questions=rows))
@@ -3498,6 +3506,8 @@ def paper_public(row, detail: bool = False) -> dict:
     data = {'id': row['id'], 'title': row['title'], 'year': row['year'],
             'grade': row['grade'], 'term': row['term'],
             'templateId': row['template_id'] if 'template_id' in row.keys() else None,
+            'blueprint': (json.loads(row['blueprint']) if 'blueprint' in row.keys()
+                          and row['blueprint'] else None),
             'questionCount': row['question_count'],
             'importedAt': row['imported_at'] if 'imported_at' in row.keys() else None,
             'importedCount': row['imported_count'] if 'imported_count' in row.keys() else 0,
@@ -3542,7 +3552,10 @@ def paper_sections_valid(raw):
             steps = [text(x, '解題步驟', 600, empty=True)
                      for x in (item.get('steps') or [])][:6]
             items.append({'stem': stem, 'marks': marks, 'options': options, 'lines': lines,
-                          'answer': answer, 'steps': [x for x in steps if x]})
+                          'answer': answer, 'steps': [x for x in steps if x],
+                          'difficulty': text(item.get('difficulty') or '', '難度', 4, empty=True),
+                          'topic': text(item.get('topic') or '', '知識點', 100, empty=True),
+                          'source': text(item.get('source') or '', '出處', 200, empty=True)})
         if items:
             sections.append({'title': title or None, 'questions': items})
     if not sections:
@@ -5865,6 +5878,7 @@ class Application:
                     term TEXT NOT NULL DEFAULT '',
                     sections TEXT NOT NULL DEFAULT '[]',
                     template_id INTEGER,
+                    blueprint TEXT,
                     question_count INTEGER NOT NULL DEFAULT 0,
                     imported_at TEXT,
                     imported_count INTEGER NOT NULL DEFAULT 0,
@@ -5920,6 +5934,9 @@ class Application:
             paper_columns = {r['name'] for r in db.execute('PRAGMA table_info(papers)')}
             if paper_columns and 'template_id' not in paper_columns:
                 db.execute('ALTER TABLE papers ADD COLUMN template_id INTEGER')
+            # 我的試卷存雙向細目表（知識點×難度），生成後可重複查閱；舊資料沒存就是 null。
+            if paper_columns and 'blueprint' not in paper_columns:
+                db.execute('ALTER TABLE papers ADD COLUMN blueprint TEXT')
             # 作答「學生標示不會」：增量加欄，舊資料一律視為 0（照舊運作）。
             attempt_columns = {r['name'] for r in db.execute('PRAGMA table_info(attempts)')}
             if 'skipped' not in attempt_columns:
@@ -8248,12 +8265,16 @@ class Application:
                 ai_log(f'生成試卷排版失敗：{exc}')
                 fail(422, '用這個範本排不起來，請換一個範本。')
             with self.db() as db:
+                # 雙向細目表（知識點 × 難度）：生成時存起來，之後「我的試卷」可重複查閱。
+                blueprint = paper_format.blueprint_data(sections, spec.get('difficulty'))
                 cur = db.execute(
                     'INSERT INTO papers(owner_id,title,year,grade,term,sections,'
-                    'template_id,question_count,created_at) VALUES(?,?,?,?,?,?,?,?,?)',
+                    'template_id,blueprint,question_count,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)',
                     (user['id'], title, '', spec['grade'], spec['term'],
                      json.dumps(paper_format.sections_to_dict(sections), ensure_ascii=False),
-                     template_id, sum(len(x.questions) for x in sections), utc_now()))
+                     template_id,
+                     json.dumps(blueprint, ensure_ascii=False),
+                     sum(len(x.questions) for x in sections), utc_now()))
                 row = db.execute('SELECT * FROM papers WHERE id=?', (cur.lastrowid,)).fetchone()
             return {'paper': paper_public(row),
                     'docx': 'data:' + DOCX_MIME + ';base64,' + base64.b64encode(output).decode(),

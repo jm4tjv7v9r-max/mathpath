@@ -5428,6 +5428,31 @@ function guessPaperMeta(title){
 }
 const PAPER_IMPORT_KEY='mathpath_paper_import';
 const paperImportPrefs=()=>{try{return JSON.parse(localStorage.getItem(PAPER_IMPORT_KEY)||'{}');}catch(_){return {};}};
+// 雙向細目表（生成時存進 papers.blueprint）：知識點 × 難度的題數與分數。
+// 「我的試卷」裡隨時可展開重看，不必再回生成流程。
+function blueprintTableHtml(b){
+  if(!b||!Array.isArray(b.rows)||!b.rows.length)return '';
+  const lv=b.levels||['易','中','難'];
+  const cell=(topic,level)=>{const c=(topic.cells||{})[level];return c&&c.count
+    ?`${c.count} 題<span class="bp-mark">${c.marks} 分</span>`:'<span class="bp-zero">—</span>';};
+  const rows=b.rows.map(r=>`<tr><th scope="row">${esc(r.topic)}</th>`
+    +lv.map(l=>`<td>${cell(r,l)}</td>`).join('')
+    +`<td><strong>${r.count} 題</strong><span class="bp-mark">${r.marks} 分</span></td></tr>`).join('');
+  const tot=(b.totals||{});
+  const foot=lv.map(l=>{const t=tot[l]||{count:0,marks:0};
+    return `<td>${t.count} 題<span class="bp-mark">${t.marks} 分</span></td>`;}).join('');
+  const want=lv.map(l=>`${l} ${(b.expected||{})[l]||0}`).join('：');
+  const actual=lv.map(l=>`${l} ${(tot[l]||{count:0}).count}`).join('：');
+  const check=b.ok?`難度分佈：要求 ${want}；實際 ${actual}，符合 ✓`
+    :`難度分佈：要求 ${want}；實際 ${actual}，相差 ${b.diff} 題`;
+  return `<table class="bp-table">
+    <caption>雙向細目表（知識點 × 難度）</caption>
+    <thead><tr><th scope="col">知識點</th>${lv.map(l=>`<th scope="col">${esc(l)}</th>`).join('')}<th scope="col">小計</th></tr></thead>
+    <tbody>${rows}<tr class="bp-total"><th scope="row">合計</th>${foot}
+      <td><strong>${b.totalCount} 題</strong><span class="bp-mark">${b.totalMarks} 分</span></td></tr></tbody>
+  </table>
+  <p class="bp-check ${b.ok?'ok':'bad'}">${esc(check)}</p>`;
+}
 function paperCardHtml(p){
   const prefs=paperImportPrefs();
   const pickTopic=prefs.topic&&topics.includes(prefs.topic)?prefs.topic:topics[0];
@@ -5446,6 +5471,10 @@ function paperCardHtml(p){
         <button class="text-button" data-paper-del="${p.id}" style="color:#b8453b">刪除</button>
       </div>
     </div>
+    ${p.blueprint?`<details class="paper-blueprint" style="margin-top:10px">
+      <summary class="text-button">雙向細目表（知識點 × 難度）</summary>
+      <div class="gen-blueprint" style="margin-top:8px">${blueprintTableHtml(p.blueprint)}</div>
+    </details>`:''}
     <details class="paper-import" style="margin-top:10px">
       <summary class="text-button">一鍵匯入題庫（${p.questionCount} 題）</summary>
       <div class="layout-row" style="margin-top:8px">
@@ -6023,7 +6052,8 @@ async function generatePaperModal(){
     const btn=$('#gen-confirm');
     const chosen=plan.map(s=>({title:s.title,questions:s.questions.filter(q=>q.on)
         .map(q=>({stem:q.stem,marks:q.marks,options:q.options||[],lines:q.lines||[],
-                  answer:q.answer||'',steps:q.steps||[]}))}))
+                  answer:q.answer||'',steps:q.steps||[],
+                  difficulty:q.difficulty||'',topic:q.topic||'',source:q.source||''}))}))
       .filter(s=>s.questions.length);
     if(!chosen.length)return toast('請至少保留一題。');
     const old=btn.textContent;btn.disabled=true;btn.textContent='排版中…';
