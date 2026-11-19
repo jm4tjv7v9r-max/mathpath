@@ -5996,7 +5996,7 @@ async function generatePaperModal(){
           return `<div class="gen-qrow${q.on?'':' off'}" data-row="${si}-${qi}">
             <label class="gen-qcheck"><input type="checkbox" data-check="${si}-${qi}" ${q.on?'checked':''} aria-label="選用第 ${n} 題"></label>
             <div class="gen-qbody">
-              <p class="gen-qmeta">第 ${n} 題 · ${q.marks} 分${q.difficulty?` · ${q.difficulty}`:''}${q.bankId?' · 題庫':''}</p>
+              <p class="gen-qmeta">第 ${n} 題 · ${q.marks} 分${q.difficulty?` · ${q.difficulty}`:''}${q.bankId?' · 題庫':''}${q.source&&!/^(校本題庫|AI 生成|自編)$/.test(q.source)?` · 來源：${esc(q.source)}`:''}</p>
               <p class="gen-qstem">${mathText(q.stem)}</p>
               ${(q.options||[]).length?`<p class="gen-qopts">${q.options.map(o=>mathText(o)).join('　')}</p>`:''}
               ${q.answer?`<p class="gen-qans">${icon('check')}<span>答案：${mathText(q.answer)}</span></p>`:''}

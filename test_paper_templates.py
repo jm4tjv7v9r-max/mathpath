@@ -1338,6 +1338,70 @@ class PaperLayoutTests(unittest.TestCase):
                          '某某中學 數學測驗')
 
 
+class SourceAndBlueprintTests(unittest.TestCase):
+    """卷面出處與雙向細目表：外部來源要標在題幹，細目表要能重複查閱。"""
+
+    def render(self, questions):
+        doc = Document()
+        doc.add_paragraph('測試卷')
+        doc.add_paragraph('一、解答題')
+        doc.add_paragraph('1.\t題目')
+        buf = io.BytesIO()
+        doc.save(buf)
+        raw, _ = paper_format.render_with_sections(
+            buf.getvalue(),
+            [paper_format.Section(title='一、解答題', questions=questions)], '測試卷')
+        return [p.text for p in Document(io.BytesIO(raw)).paragraphs]
+
+    def test_external_source_is_printed_after_the_stem(self):
+        """網上／教科書找來的題目，卷面要標明出處（老師要能交代題目來源）。"""
+        texts = self.render([paper_format.Question(
+            stem='求 $x$。', marks=5, source='2024 港澳盃 第 5 題')])
+        self.assertTrue(any('（來源：2024 港澳盃 第 5 題）' in t for t in texts), texts)
+
+    def test_own_bank_and_ai_sources_are_not_printed(self):
+        """校本題庫／AI 生成／自編不算「出處」，印上去只會弄髒卷面。"""
+        for src in ('校本題庫', 'AI 生成', '自編', ''):
+            texts = self.render([paper_format.Question(stem='求 $x$。', marks=5, source=src)])
+            self.assertFalse(any('來源：' in t for t in texts), src)
+
+    def test_overlong_source_is_skipped(self):
+        texts = self.render([paper_format.Question(stem='求 $x$。', marks=5, source='某' * 61)])
+        self.assertFalse(any('來源：' in t for t in texts), '出處太長就不印，免得卷面一整行都是來源')
+
+    def test_blueprint_counts_topics_and_difficulties(self):
+        sections = [paper_format.Section(title='一、選擇題', questions=[
+            paper_format.Question(stem='a', marks=4, difficulty='易', topic='因式分解'),
+            paper_format.Question(stem='b', marks=4, difficulty='中', topic='因式分解'),
+            paper_format.Question(stem='c', marks=4, difficulty='難', topic='函數'),
+        ])]
+        bp = paper_format.blueprint_data(sections)
+        self.assertEqual((bp['totalCount'], bp['totalMarks']), (3, 12))
+        rows = {r['topic']: r for r in bp['rows']}
+        self.assertEqual(rows['因式分解']['cells']['易']['count'], 1)
+        self.assertEqual(rows['因式分解']['count'], 2)
+        self.assertEqual(rows['函數']['cells']['難']['marks'], 4)
+        self.assertEqual(bp['totals']['易']['count'], 1)
+        self.assertFalse(bp['ok'], '3 題不可能剛好符合 7:2:1')
+        self.assertGreater(bp['diff'], 0)
+
+    def test_blueprint_falls_back_when_topic_or_difficulty_is_missing(self):
+        """AI 沒給知識點／難度時不能讓細目表爆掉：歸到「未標知識點」與「中」。"""
+        bp = paper_format.blueprint_data([paper_format.Section(title='一、解答題', questions=[
+            paper_format.Question(stem='a', marks=5)])])
+        self.assertEqual(bp['rows'][0]['topic'], '（未標知識點）')
+        self.assertEqual(bp['rows'][0]['cells']['中']['count'], 1)
+
+    def test_source_survives_save_and_reload(self):
+        """存進「我的試卷」再讀回來，出處與難度／知識點都不能掉。"""
+        sections = [paper_format.Section(title='一、解答題', questions=[
+            paper_format.Question(stem='a', marks=5, difficulty='易', topic='方程',
+                                  source='2023 校際賽')])]
+        back = paper_format.sections_from_dict(paper_format.sections_to_dict(sections))
+        q = back[0].questions[0]
+        self.assertEqual((q.difficulty, q.topic, q.source), ('易', '方程', '2023 校際賽'))
+
+
 class QueryPathTests(unittest.TestCase):
     """查詢參數白名單：測試直接呼叫 dispatch，繞過了 HTTP 層，所以要在這裡單獨守。"""
 

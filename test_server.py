@@ -2865,6 +2865,62 @@ class PaperGenerateTests(unittest.TestCase):
         self.assertEqual(ctx.exception.status, 400)
         self.assertIn('類型', ctx.exception.message)
 
+    def test_preview_returns_source_so_the_paper_can_cite_it(self):
+        """老師在預覽挑題時要看到出處；確認時原樣送回，卷面與存檔才留得住。"""
+        self.app.ai.call = lambda *a, **k: {'sections': [
+            {'title': '一、選擇題', 'qtype': '選擇題', 'questions': [
+                {'stem': f'題{i}', 'options': ['A', 'B', 'C', 'D'], 'marks': 10,
+                 'difficulty': '易', 'topic': '一元二次方程',
+                 'source': '2024 港澳盃 第 5 題' if i == 0 else 'AI 生成',
+                 'answer': 'A', 'steps': []} for i in range(10)]}]}
+        out = self.call('POST', '/api/papers/preview', self.payload(
+            source='ai', qtypes=[{'type': '選擇題', 'optionCount': 4}]))
+        rows = out['sections'][0]['questions']
+        self.assertEqual(rows[0]['source'], '2024 港澳盃 第 5 題', '預覽要把出處帶回前端')
+        self.assertEqual(rows[1]['source'], 'AI 生成')
+        self.assertEqual(rows[0]['topic'], '一元二次方程')
+
+        # 老師原樣確認 → 存進「我的試卷」的出處不能掉。
+        confirmed = [{'title': '一、選擇題', 'questions': [
+            {'stem': q['stem'], 'marks': q['marks'], 'options': q['options'],
+             'difficulty': q['difficulty'], 'topic': q['topic'], 'source': q['source']}
+            for q in rows]}]
+        saved = self.call('POST', '/api/papers/generate',
+                          self.payload(source='ai', sections=confirmed))
+        kept = self.sections_of(saved)[0]['questions']
+        self.assertEqual(kept[0]['source'], '2024 港澳盃 第 5 題')
+        self.assertEqual(kept[0]['topic'], '一元二次方程')
+
+    def test_generated_paper_keeps_a_blueprint_for_later_review(self):
+        """雙向細目表要跟著試卷存起來，之後在「我的試卷」可重複查閱。"""
+        self.app.ai.call = lambda *a, **k: {'sections': [
+            {'title': '一、選擇題', 'qtype': '選擇題', 'questions': [
+                {'stem': f'題{i}', 'options': ['A', 'B', 'C', 'D'], 'marks': 10,
+                 'difficulty': '易' if i < 7 else ('中' if i < 9 else '難'),
+                 'topic': '一元二次方程', 'answer': 'A', 'steps': []} for i in range(10)]}]}
+        out = self.call('POST', '/api/papers/generate', self.payload(
+            source='ai', difficulty={'易': 7, '中': 2, '難': 1},
+            qtypes=[{'type': '選擇題', 'optionCount': 4}]))
+        listed = [p for p in self.call('GET', '/api/papers')['papers']
+                  if p['id'] == out['paper']['id']][0]
+        bp = listed['blueprint']
+        self.assertIsNotNone(bp, '生成時要一併存下雙向細目表')
+        self.assertEqual(bp['totalCount'], 10)
+        self.assertEqual(bp['totalMarks'], 100)
+        self.assertEqual(bp['rows'][0]['topic'], '一元二次方程')
+        self.assertEqual(bp['totals']['易']['count'], 7)
+        self.assertTrue(bp['ok'], '7:2:1 的難度分佈要標成符合')
+
+    def test_replace_marks_the_new_question_as_ai_made(self):
+        """「更換」換來的是 AI 出的題：出處標 AI 生成，不要留空或沿用舊題來源。"""
+        self.app.ai.call = lambda *a, **k: {
+            'stem': '新題目（　　）', 'options': ['A', 'B', 'C', 'D'], 'marks': 5,
+            'difficulty': '難', 'answer': 'B', 'steps': []}
+        out = self.call('POST', '/api/papers/replace', {
+            'qtype': '選擇題', 'marks': 5, 'optionCount': 4,
+            'ranges': ['一元二次方程'], 'difficulty': '難', 'avoid': []})
+        self.assertEqual(out['question']['source'], 'AI 生成')
+
 
 class ContestTests(unittest.TestCase):
     """數學比賽清單：內建整理資料 + 每週排程寫入（要權杖）。"""

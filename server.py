@@ -2855,6 +2855,8 @@ def paper_preview_payload(sections):
             rows.append({'stem': q.stem, 'options': list(q.options or []), 'lines': list(q.lines or []),
                          'marks': q.marks, 'difficulty': getattr(q, 'difficulty', '') or '',
                          'topic': getattr(q, 'topic', '') or '',
+                         # 出處要一起帶回前端：老師確認時原樣送回，卷面才印得出「（來源：…）」。
+                         'source': getattr(q, 'source', '') or '',
                          'bankId': getattr(q, 'bank_id', None),
                          # 一併帶回前端：老師按「確定」時原樣送回，答案才不會在存檔時掉掉。
                          'answer': getattr(q, 'answer', '') or '',
@@ -2901,6 +2903,7 @@ def ai_generate_one(app, kind, marks, option_count, ranges, difficulty, avoid):
     level = str(result.get('difficulty') or '').strip()
     return {'stem': stem, 'options': options, 'lines': [], 'marks': marks,
             'difficulty': level if level in PAPER_DIFFICULTY else difficulty,
+            'source': 'AI 生成',
             'answer': str(result.get('answer') or '')}
 
 
