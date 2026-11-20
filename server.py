@@ -9370,15 +9370,26 @@ class Application:
                 for r in db.execute("SELECT user_id, kind, COALESCE(SUM(amount),0) AS total "
                                     "FROM coin_events GROUP BY user_id, kind"):
                     extras.setdefault(r['user_id'], {})[r['kind']] = int(r['total'])
+                # 班別：金幣頁要能按班別找學生（一個學年幾百人，捲動找太慢）。
+                classes_of = {}
+                for r in db.execute('SELECT cs.user_id, c.name FROM class_students cs '
+                                    'JOIN classes c ON c.id=cs.class_id ORDER BY c.name, c.id'):
+                    classes_of.setdefault(r['user_id'], []).append(r['name'])
+                classes = [{'id': r['id'], 'name': r['name'], 'studentCount': r['n']}
+                           for r in db.execute('SELECT c.id, c.name, count(cs.user_id) AS n '
+                                               'FROM classes c LEFT JOIN class_students cs '
+                                               'ON cs.class_id=c.id GROUP BY c.id '
+                                               'ORDER BY c.name, c.id')]
             rows = []
             for st in students:
                 score = int(math.floor(scores.get(st['id'], 0) or 0))
                 got = extras.get(st['id'], {})
                 daily, manual = got.get('daily', 0), got.get('manual', 0)
                 rows.append({**st, 'scoreCoins': score, 'dailyCoins': daily,
-                             'manualCoins': manual, 'coins': score + daily + manual})
+                             'manualCoins': manual, 'coins': score + daily + manual,
+                             'classNames': classes_of.get(st['id'], [])})
             return {'students': rows, 'dailyBonus': COIN_DAILY_BONUS,
-                    'grants': list(COIN_GRANTS)}, headers
+                    'grants': list(COIN_GRANTS), 'classes': classes}, headers
         if path == '/api/coins/grant' and method == 'POST':
             # 教師額外獎勵金幣：介面上就是 10／20／50 三個按鈕，後端也只收這三個數字。
             # 獎勵是「加分」不是改資料，所以任何教師都可以給任何學生（不限制建立者）。

@@ -1498,6 +1498,14 @@ class APITests(unittest.TestCase):
         self.assertEqual(row['scoreCoins'], 7)
         self.assertEqual(row['manualCoins'], 20)
         self.assertEqual(listing['grants'], [10, 20, 50])
+        # 班別：金幣頁要能按班別找學生
+        self.request('POST', '/api/classes', {'name': '金幣班', 'studentIds': [sid]},
+                     cookie=self.teacher, expect=200)
+        _, listing2, _ = self.request('GET', '/api/coins/students', cookie=self.teacher, expect=200)
+        row2 = next(r for r in listing2['students'] if r['id'] == sid)
+        self.assertEqual(row2['classNames'], ['金幣班'])
+        self.assertIn('金幣班', [c['name'] for c in listing2['classes']])
+        self.assertEqual(row2['coins'], 37, '加班級不該影響金幣')
         self.request('GET', '/api/coins/students', cookie=self.student, expect=403)
         # 教師本身沒有金幣
         self.request('GET', '/api/coins', cookie=self.teacher, expect=403)
