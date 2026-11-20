@@ -158,6 +158,29 @@ class HomeworkTests(unittest.TestCase):
         # 已經刪掉 → 404
         self.error(404, 'POST', f'/api/classes/{cid}/delete', {}, self.teacher)
 
+    def test_assignment_answer_modes(self):
+        """老師可限制作業的作答方式（手寫／文字／上傳手稿）；不帶＝不限制；空或不合法要擋。"""
+        aid = self.assignment(answerModes=['text'])
+        detail = self.call('GET', f'/api/assignments/{aid}', None, self.teacher)
+        self.assertEqual(detail['assignment']['answerModes'], ['text'])
+        # 學生看到的也是同一份設定
+        mine = self.call('GET', f'/api/assignments/{aid}', None, self.student)
+        self.assertEqual(mine['assignment']['answerModes'], ['text'])
+        # 重複值去重、保留順序
+        aid2 = self.assignment(answerModes=['hand', 'hand', 'upload'])
+        self.assertEqual(self.call('GET', f'/api/assignments/{aid2}', None, self.teacher)
+                         ['assignment']['answerModes'], ['hand', 'upload'])
+        # 不帶這個欄位＝不限制（空清單，舊作業就是這樣）
+        aid3 = self.assignment()
+        self.assertEqual(self.call('GET', f'/api/assignments/{aid3}', None, self.teacher)
+                         ['assignment']['answerModes'], [])
+        # 空清單、不認識的值、不是清單 → 400
+        base = {'title': 'x', 'classId': self.cid, 'questionIds': [1],
+                'dueAt': (datetime.now(timezone.utc) + timedelta(days=2)).isoformat()}
+        self.error(400, 'POST', '/api/assignments', dict(base, answerModes=[]), self.teacher)
+        self.error(400, 'POST', '/api/assignments', dict(base, answerModes=['pen']), self.teacher)
+        self.error(400, 'POST', '/api/assignments', dict(base, answerModes='text'), self.teacher)
+
     def test_class_list_includes_members(self):
         """班級清單（GET /api/classes）要帶成員編號：帳號管理靠它按班別篩選學生。"""
         out = self.call('GET', '/api/classes', None, self.teacher)

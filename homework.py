@@ -6,6 +6,10 @@ import json
 import re
 from urllib.parse import parse_qsl
 
+# 老師在佈置作業時可以限制的作答方式（選擇題一律用「點選作答」，不在此列）。
+ANSWER_MODES = ('hand', 'text', 'upload')
+ANSWER_MODE_NAMES = {'hand': '手寫解題', 'text': '文字作答', 'upload': '上傳手稿'}
+
 
 class Homework:
     def __init__(self, app, fail, fields, text, number, utc_now):
@@ -77,6 +81,10 @@ class Homework:
             # AI 批閱後要不要直接把分數確認為教師分數。
             # 預設 0（只給建議）：一鍵 AI 批閱只寫入建議分，教師仍要逐題或批次確認。
             db.execute('ALTER TABLE assignments ADD COLUMN ai_auto_confirm INTEGER NOT NULL DEFAULT 0')
+        if 'answer_modes' not in assignment_columns:
+            # 老師指定這份作業可以用哪些作答方式（手寫解題／文字作答／上傳手稿），
+            # 存 JSON 陣列。空陣列＝沒指定（舊作業沿用全部方式）。
+            db.execute("ALTER TABLE assignments ADD COLUMN answer_modes TEXT NOT NULL DEFAULT '[]'")
         for name, sql in (
             ('resubmitted_at', 'ALTER TABLE assignment_recipients ADD COLUMN resubmitted_at TEXT'),
             ('submit_count', 'ALTER TABLE assignment_recipients ADD COLUMN submit_count INTEGER NOT NULL DEFAULT 0'),
@@ -471,6 +479,7 @@ class Homework:
                 'durationMinutes': row['duration_minutes'] if 'duration_minutes' in row.keys() else None,
                 'aiGrading': self.ai_grading(row),
                 'aiAutoConfirm': bool(row['ai_auto_confirm']) if 'ai_auto_confirm' in row.keys() else False,
+                'answerModes': self.answer_modes(row),
                 'dueAt': row['due_at'], 'createdAt': row['created_at'], 'questionCount': len(questions),
                 'totalPoints': sum(q['points'] for q in questions), 'studentCount': total,
                 'submittedCount': None, 'gradedCount': None, 'status': 'published',
@@ -488,6 +497,17 @@ class Homework:
         if detail:
             item.update(description=row['description'], allowLate=bool(row['allow_late']))
         return item
+
+    @staticmethod
+    def answer_modes(row):
+        """這份作業允許的作答方式；空清單＝沒指定（沿用全部方式，舊作業就是這樣）。"""
+        try:
+            raw = json.loads(row['answer_modes']) if 'answer_modes' in row.keys() and row['answer_modes'] else []
+        except (ValueError, TypeError):
+            raw = []
+        if not isinstance(raw, list):
+            return []
+        return [m for m in raw if m in ANSWER_MODES]
 
     def class_public(self, db, row, user):
         ids = [r[0] for r in db.execute('SELECT user_id FROM class_students WHERE class_id=? ORDER BY user_id', (row['id'],))]
@@ -1123,7 +1143,7 @@ class Homework:
         if method == 'POST' and path == '/api/assignments':
             self.app.teacher(user)
             self.fields(body, ('title', 'classId', 'questionIds', 'dueAt', 'description', 'allowLate', 'kind',
-                               'durationMinutes', 'aiGrading', 'aiAutoConfirm'),
+                               'durationMinutes', 'aiGrading', 'aiAutoConfirm', 'answerModes'),
                         ('title', 'classId', 'questionIds', 'dueAt'))
             title = self.text(body['title'], '作業標題', 200)
             kind = body.get('kind', 'homework')
@@ -1151,6 +1171,23 @@ class Homework:
             duration = body.get('durationMinutes')
             if duration is not None:
                 duration = self.number(duration, '作答時間（分鐘）', 1, 300, True)
+            # 作答方式：老師可以限制學生只能用手寫／文字／上傳手稿（可多選）。
+            # 不帶這個欄位＝不限制；帶了空清單就是「一種都不准」，直接擋掉。
+            raw_modes = body.get('answerModes')
+            if raw_modes is None:
+                modes = []
+            else:
+                if not isinstance(raw_modes, list):
+                    self.fail(400, 'answerModes 必須是文字清單。')
+                modes = []
+                for mode in raw_modes:
+                    if not isinstance(mode, str) or mode not in ANSWER_MODES:
+                        self.fail(400, '作答方式只接受 hand（手寫解題）、text（文字作答）、'
+                                       'upload（上傳手稿）。')
+                    if mode not in modes:
+                        modes.append(mode)
+                if not modes:
+                    self.fail(400, '至少要保留一種作答方式。')
             with self.app.db() as db:
                 db.execute('BEGIN IMMEDIATE')
                 classroom = db.execute('SELECT * FROM classes WHERE id=?', (cid,)).fetchone()
@@ -1165,8 +1202,8 @@ class Homework:
                 if any(not self.recommendable(q) for q in questions):
                     self.fail(400, '作業題必須已有答案，且已完成教師核驗。')
                 self.deadline(due)
-                cur = db.execute('INSERT INTO assignments(teacher_id,class_id,class_name,title,description,due_at,created_at,allow_late,kind,duration_minutes,ai_grading,ai_auto_confirm) '
-                                 'VALUES(?,?,?,?,?,?,?,?,?,?,?,?)', (user['id'], cid, classroom['name'], title, description, due, self.utc_now(), int(allow_late), kind, duration, int(ai_grading), int(ai_auto_confirm)))
+                cur = db.execute('INSERT INTO assignments(teacher_id,class_id,class_name,title,description,due_at,created_at,allow_late,kind,duration_minutes,ai_grading,ai_auto_confirm,answer_modes) '
+                                 'VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)', (user['id'], cid, classroom['name'], title, description, due, self.utc_now(), int(allow_late), kind, duration, int(ai_grading), int(ai_auto_confirm), json.dumps(modes)))
                 aid = cur.lastrowid
                 db.executemany('INSERT INTO assignment_questions(assignment_id,question_id,position,payload) VALUES(?,?,?,?)',
                                [(aid, q['id'], i, json.dumps(q, ensure_ascii=False)) for i, q in enumerate(questions)])

@@ -3367,3 +3367,9 @@ span.small-text.roster-class{background:transparent;border:0;color:#a3b1a6;paddi
 /* 鍵盤彈出時，編輯器視窗往上讓位，否則「插入答案」會被鍵盤蓋住按不到。 */
 body.math-kb-open .modal-backdrop{align-items:flex-start;padding-top:16px}
 body.math-kb-open .modal{max-height:calc(100dvh - var(--math-kb,240px) - 32px)}
+
+/* 「開始解題」是實心主色按鈕，字要用白色。
+   它原本被後面的 .practice-btn{color:var(--green-dark)!important} 蓋成深紫字，
+   紫底配深紫字對比只有 1.6:1，幾乎看不見（學生作業頁）。 */
+.assignment-question-row .practice-btn{color:#fff!important}
+.assignment-question-row .practice-btn:disabled{color:#93a597!important}
