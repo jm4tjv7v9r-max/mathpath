@@ -1496,7 +1496,7 @@ async function openMathEditor(){
   catch(err){toast(err.message);return;}
   modal(`<p class="eyebrow">MATH EDITOR</p><h2>公式編輯器</h2>
   <p class="modal-intro">像在 Word 裡打公式：直接輸入 LaTeX，或按輸入區右側的鍵盤圖標開啟數學符號。分數、根號、次方的結構會即時排版。每次開啟都是空白；完成後按「插入答案」覆蓋作答欄（按「取消」不會動到原本的答案）。</p>
-  <div class="math-editor-host"><math-field id="math-editor-field" virtual-keyboard-mode="manual"></math-field></div>
+  <div class="math-editor-host"><math-field id="math-editor-field" virtual-keyboard-mode="auto"></math-field></div>
   <p class="error-text" id="math-editor-error"></p>
   <div class="submit-row"><button class="primary" id="math-editor-ok">${icon('check')}插入答案</button><button class="secondary" data-action="close-modal">取消</button></div>`);
   const field=$('#math-editor-field');
@@ -1504,7 +1504,14 @@ async function openMathEditor(){
   // 每次開啟都是空白（使用者要求）：避免舊內容與新輸入混在一起。
   // 按「取消」不會動到作答欄；只有按「插入答案」才會覆蓋。
   field.value='';
-  field.focus();
+  // 焦點要真的落在輸入區：MathLive 升級元素、載入字體都可能晚一幀才完成，
+  // 只 focus 一次有時會落在視窗標題上，之後打的第一個字就被吃掉。
+  const focusField=()=>{try{field.focus();}catch(_){}};
+  focusField();requestAnimationFrame(focusField);setTimeout(focusField,150);
+  // 有些輸入法／浮動鍵盤在第一個字元後會把焦點搶走，看起來像「只打得出一個字」；
+  // 這裡在每次輸入後檢查一次，焦點跑了就還回去。
+  field.addEventListener('input',()=>{if(document.activeElement!==field)focusField();});
+  watchMathKeyboard();
   $('#math-editor-ok').onclick=()=>{
     const latex=(field.value||'').trim();
     input.value=latex;
@@ -1512,6 +1519,29 @@ async function openMathEditor(){
     closeModal();
     toast(latex?'已插入公式，可繼續微調。':'已清空最終答案。');
   };
+}
+// ── 公式編輯器的數學鍵盤 ────────────────────────────────────────────────
+// MathLive 把虛擬鍵盤動態掛到 body（div.ML__keyboard），預設貼死螢幕底部：
+// 手機上最底一行（左下、右下角的鍵）會被瀏覽器工具列／安全區切掉按不到，
+// 而且整塊會蓋住編輯器視窗的「插入答案」。這裡量出鍵盤實際佔掉的高度，
+// 讓編輯器視窗往上讓位（鍵盤本身由 CSS 抬起，見 styles.css）。
+let mathKbTimer=null;
+function watchMathKeyboard(){
+  const sync=()=>{
+    if(!document.getElementById('math-editor-field')){    // 編輯器關了：收工
+      if(mathKbTimer){clearInterval(mathKbTimer);mathKbTimer=null;}
+      document.body.classList.remove('math-kb-open');
+      document.documentElement.style.removeProperty('--math-kb');
+      return;
+    }
+    const plate=document.querySelector('.ML__keyboard .MLK__plate');
+    const rect=plate?plate.getBoundingClientRect():null;
+    const h=rect&&rect.height>0?Math.max(0,Math.round(window.innerHeight-rect.top)):0;
+    document.body.classList.toggle('math-kb-open',h>0);
+    document.documentElement.style.setProperty('--math-kb',h+'px');
+  };
+  sync();
+  if(!mathKbTimer)mathKbTimer=setInterval(sync,300);
 }
 function syncMathKeyboard(){
   // 數學鍵盤已經從作答頁移除（改用「開啟公式編輯器」），這裡保留只是為了相容舊結構。

@@ -3353,3 +3353,17 @@ html[data-role=teacher][data-theme=night] .feature-list li .icon{color:#b3d0f2 !
 .roster-filter #roster-count{color:#8c9e88;white-space:nowrap}
 .roster-class{font-size:calc(12px*var(--fs));background:#eef4fb;color:#3f6b93;border:1px solid #d5e2f0;border-radius:99px;padding:2px 9px;white-space:nowrap}
 span.small-text.roster-class{background:transparent;border:0;color:#a3b1a6;padding:0 2px}
+
+/* ── 公式編輯器的數學鍵盤 ────────────────────────────────────────────── */
+/* MathLive 的鍵盤預設貼死螢幕底部：手機上最底一行（左下／右下角的鍵）
+   會被瀏覽器工具列或安全區切掉。整塊往上抬，留出可點擊的空間。 */
+.ML__keyboard{bottom:env(safe-area-inset-bottom,0px)!important}
+/* 觸控裝置（手機／平板，不分橫直向）與窄視窗：整塊再往上抬，
+   最底一行（左下、右下角的鍵）不會被瀏覽器工具列或 Home 指示條蓋住。
+   height:auto 是必要的——MathLive 把容器高度寫死成 100vh，只改 bottom 不會動。 */
+@media (pointer:coarse),(max-width:960px){
+  .ML__keyboard{bottom:calc(env(safe-area-inset-bottom,0px) + 64px)!important;height:auto!important}
+}
+/* 鍵盤彈出時，編輯器視窗往上讓位，否則「插入答案」會被鍵盤蓋住按不到。 */
+body.math-kb-open .modal-backdrop{align-items:flex-start;padding-top:16px}
+body.math-kb-open .modal{max-height:calc(100dvh - var(--math-kb,240px) - 32px)}
