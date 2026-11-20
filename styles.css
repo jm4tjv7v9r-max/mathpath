@@ -3345,3 +3345,11 @@ html[data-role=teacher][data-theme=night] .feature-list li .icon{color:#b3d0f2 !
 .coin-actions .text-button{color:#b8892f;font-weight:600}
 .coin-table td{vertical-align:middle}
 @media(max-width:960px){.coin-cards{grid-template-columns:1fr}.coin-split{border-left:0;padding-left:0;gap:18px}}
+
+/* 帳號管理：按班別／關鍵字篩選學生 */
+.roster-filter{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:0 0 10px}
+.roster-filter .search-field{flex:1 1 220px;min-width:0}
+.roster-filter select{flex:0 1 220px;min-width:0}
+.roster-filter #roster-count{color:#8c9e88;white-space:nowrap}
+.roster-class{font-size:calc(12px*var(--fs));background:#eef4fb;color:#3f6b93;border:1px solid #d5e2f0;border-radius:99px;padding:2px 9px;white-space:nowrap}
+span.small-text.roster-class{background:transparent;border:0;color:#a3b1a6;padding:0 2px}

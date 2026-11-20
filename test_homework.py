@@ -158,6 +158,18 @@ class HomeworkTests(unittest.TestCase):
         # 已經刪掉 → 404
         self.error(404, 'POST', f'/api/classes/{cid}/delete', {}, self.teacher)
 
+    def test_class_list_includes_members(self):
+        """班級清單（GET /api/classes）要帶成員編號：帳號管理靠它按班別篩選學生。"""
+        out = self.call('GET', '/api/classes', None, self.teacher)
+        self.assertEqual(len(out['classes']), 1)
+        room = out['classes'][0]
+        self.assertEqual(room['name'], '三年级')
+        self.assertEqual(sorted(room['studentIds']), [1, 3])
+        self.assertEqual(room['studentCount'], 2)
+        # 只有自己建立的班級，且學生不能呼叫
+        self.assertEqual(self.call('GET', '/api/classes', None, self.teacher2)['classes'], [])
+        self.error(403, 'GET', '/api/classes', None, self.student)
+
     def test_class_roster_export(self):
         """匯出學生名單：回學號、姓名、班內號、年級；不含密碼；按班內號排序。"""
         with self.app.db() as db:

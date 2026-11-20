@@ -920,6 +920,14 @@ class Homework:
             return {'items': items, 'hasMore': has_more, 'status': status,
                     'nextBefore': picked[-1]['id'] if picked else None}
 
+        if method == 'GET' and path == '/api/classes':
+            # 班級清單（含成員編號）：帳號管理要按「班別」篩選學生，
+            # 不必為了拿成員而拉整份 /api/homework（那裡還帶著作業與作答紀錄）。
+            self.app.teacher(user)
+            with self.app.db() as db:
+                rows = db.execute('SELECT * FROM classes WHERE teacher_id=? ORDER BY name, id',
+                                  (user['id'],)).fetchall()
+                return {'classes': [self.class_public(db, r, user) for r in rows]}
         if method == 'POST' and path == '/api/classes':
             self.app.teacher(user)
             # 建立班級不必先選學生：studentIds 可省略或給空陣列。
