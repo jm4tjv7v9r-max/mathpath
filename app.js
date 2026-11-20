@@ -8339,14 +8339,15 @@ function renderCalculator(){
   $$('#calc-root [data-calc]').forEach(b=>b.onclick=()=>calcPress(b.dataset.calc));
   calcScreen(calcExpr);
 }
-// 左上角品牌＝回首頁（數學題庫）。它原本只是 <a href="#bank">，只改網址、不換頁：
-// 看起來像沒反應，重新整理反而回到預設的「作業與成績」，像被帶去別頁。
-// 這裡接成真正的頁內導覽，並擋掉預設的 hash 行為（網址不再亂加 #bank）。
+// 左上角品牌＝回首頁。首頁依角色而定，但兩者都是同一個頁面（標題會自己換）：
+// 學生看到「我的作業」，教師看到「作業與成績」。
+// 它原本只是 <a href="#bank">，本專案沒有 hash 路由，點下去只改網址、畫面不動，
+// 重新整理反而被帶回預設頁。這裡接成真正的頁內導覽，並擋掉預設的 hash 行為。
 const brandLink=$('#brand');
 if(brandLink)brandLink.addEventListener('click',e=>{
   e.preventDefault();
   if(busy)return toast('目前操作正在進行，請等待完成。');
-  navigate('bank');
+  navigate('homework');
 });
 async function init(){loadBookmarks();homeworkPage();try{const session=await api('/api/session');serverOnline=true;serverIssue='';if(session.user){await refresh();homeworkPage();}}catch(e){serverIssue=e.message;toast(/初始化/.test(e.message)?e.message:'無法連接網站服務；目前為訪客界面預覽。請確認網站服務狀態。');}}
 init();
