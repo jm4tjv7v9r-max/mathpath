@@ -3320,3 +3320,28 @@ html[data-role=teacher][data-theme=night] .feature-list li .icon{color:#b3d0f2 !
 .form-grid.form-grid-4{grid-template-columns:repeat(4,minmax(0,1fr))}
 @media(max-width:1180px){.form-grid.form-grid-4{grid-template-columns:1fr 1fr;gap:10px}}
 @media(max-width:740px){.form-grid.form-grid-4{grid-template-columns:1fr}}
+
+/* ── 金幣 ───────────────────────────────────────────────────────────── */
+.coin-hero{display:flex;flex-wrap:wrap;align-items:center;gap:26px}
+.coin-total{display:flex;align-items:center;gap:10px}
+.coin-badge{width:calc(46px*var(--fs));height:calc(46px*var(--fs));border-radius:50%;display:grid;place-items:center;background:#fdf3d8;color:#b8892f;flex:0 0 auto}
+.coin-badge .icon{width:calc(24px*var(--fs));height:calc(24px*var(--fs))}
+.coin-total strong{font-size:calc(42px*var(--fs));line-height:1;color:#b8892f;font-weight:600}
+.coin-total small{color:#8c9e88;font-size:calc(14px*var(--fs))}
+.coin-split{display:flex;gap:24px;flex-wrap:wrap;border-left:1px solid var(--border);padding-left:26px}
+.coin-split div{display:flex;flex-direction:column;gap:4px}
+.coin-split span{font-size:calc(13px*var(--fs));color:#8c9e88}
+.coin-split strong{font-size:calc(20px*var(--fs));color:#6b7f63}
+.coin-cards{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;margin-top:16px}
+.coin-cards h2{font-size:calc(16px*var(--fs));margin-bottom:8px;display:flex;gap:8px;align-items:center}
+.coin-cards .small-text{line-height:1.8;margin:0}
+.coin-row{display:flex;gap:14px;align-items:center;padding:10px 0;border-bottom:1px solid var(--border)}
+.coin-row:last-child{border-bottom:0}
+.coin-amount{font-weight:600;color:#b8892f;min-width:56px}
+.coin-why{flex:1;min-width:0}
+.coin-actions{white-space:nowrap}
+.coin-table .coin-actions{display:flex;gap:10px;align-items:center}
+.coin-table .coin-actions .text-button{padding:2px 4px}
+.coin-actions .text-button{color:#b8892f;font-weight:600}
+.coin-table td{vertical-align:middle}
+@media(max-width:960px){.coin-cards{grid-template-columns:1fr}.coin-split{border-left:0;padding-left:0;gap:18px}}

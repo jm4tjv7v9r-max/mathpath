@@ -45,7 +45,10 @@ RESTORE_NOTICE = (
 # 學年重置會清空的表（子表在前，符合外鍵刪除順序）。
 # questions（題庫）、users 的教師帳號、meta 與 calendar_notes 都不在其中。
 STUDENT_TABLES = ('corrections', 'attempts', 'assignment_recipients', 'assignment_questions',
-                  'assignments', 'class_students', 'classes', 'mock_questions', 'mock_exams')
+                  'assignments', 'class_students', 'classes', 'mock_questions', 'mock_exams',
+                  # 金幣紀錄也屬於這一學年（含每日登入與教師獎勵），重置時一併清掉；
+                  # 不清的話 users 會被 coin_events 的外鍵卡住，整個重置會失敗。
+                  'coin_events')
 
 STAT_TABLES = ('questions', 'attempts', 'users', 'classes', 'assignments', 'mock_exams',
                'calendar_notes', 'sessions')
@@ -600,6 +603,8 @@ class DataAdmin:
             'DELETE FROM assignment_recipients WHERE user_id=?', (uid,)).rowcount
         removed['corrections'] = db.execute('DELETE FROM corrections WHERE user_id=?', (uid,)).rowcount
         removed['calendar_notes'] = db.execute('DELETE FROM calendar_notes WHERE user_id=?', (uid,)).rowcount
+        # 金幣紀錄要跟著帳號走：留著會變成孤兒，而且外鍵會擋住下面的刪除。
+        removed['coin_events'] = db.execute('DELETE FROM coin_events WHERE user_id=?', (uid,)).rowcount
         exams = [r['id'] for r in db.execute('SELECT id FROM mock_exams WHERE user_id=?', (uid,))]
         if exams:
             marks = ','.join('?' * len(exams))

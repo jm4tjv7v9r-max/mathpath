@@ -228,7 +228,8 @@ const paths = {
  mock:'<path d="M12 3v3M12 18v3M3 12h3M18 12h3M6 6l2 2M16 16l2 2M18 6l-2 2M8 16l-2 2"/><circle cx="12" cy="12" r="4"/>',
  text:'<path d="M4 20 10 4h4l6 16M7 14h10"/>',
  calculator:'<rect x="5" y="3" width="14" height="18" rx="2"/><path d="M8.5 7h7M8.5 11h1M12 11h1M15.5 11h1M8.5 15h1M12 15h1M15.5 15h1"/>',
- edit:'<path d="M4 20h4L19 9a2.12 2.12 0 0 0-3-3L5 17Z"/><path d="M14.5 6.5 17.5 9.5"/>'
+ edit:'<path d="M4 20h4L19 9a2.12 2.12 0 0 0-3-3L5 17Z"/><path d="M14.5 6.5 17.5 9.5"/>',
+ coin:'<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3.2"/>'
 };
 const icon = name => `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true">${paths[name] || paths.bank}</svg>`;
 const topicTree = {
@@ -912,10 +913,11 @@ function shell(){// 「新手上路」放最後——那是第一次來看的，
 // 日曆、排行榜、新手上路已移到頂欄快速連結，側欄只留其餘功能（按使用頻率排）。
 // 教師側欄只有五大類；「題庫與入題」「批閱」是按下去才向下展開的分組。
   // 展開狀態記在 navOpen：沒設定過就跟著當前頁面（在裡面就展開）。
-  const navRow=(id,label,active,child,iconId)=>`<button class="nav-item${child?' child':''} ${active?'active':''}" data-page="${id}">${icon(iconId||id)}<span>${label}</span>${id==='bank'?`<span class="count">${S.user?S.questions.length:'示例'}</span>`:''}</button>`;
+  const navRow=(id,label,active,child,iconId)=>`<button class="nav-item${child?' child':''} ${active?'active':''}" data-page="${id}">${icon(iconId||id)}<span>${label}</span>${id==='bank'?`<span class="count">${S.user?S.questions.length:'示例'}</span>`:''}${id==='coins'&&S.coins?`<span class="count" title="目前金幣">${S.coins.total}</span>`:''}</button>`;
   const TEACHER_NAV=[
     {key:'homework',label:'作業成績',iconId:'homework',
      children:[['homework','作業成績','list'],['scores','成績總表','papers']]},
+    {id:'coins',label:'金幣',iconId:'coin'},
     {key:'review',label:'批閱',iconId:'edit',
      children:[['mistakes','作業批閱'],['paper','紙本批閱'],['paperbatch','全班紙本批閱']]},
     {key:'bank',label:'題庫與入題',iconId:'bank',
@@ -938,14 +940,14 @@ function shell(){// 「新手上路」放最後——那是第一次來看的，
       return head+kids;
     }).join('');
   }else{
-    let nav=[['classroom','課堂'],['homework','我的作業'],['mock','模擬測驗'],['bank','數學題庫'],['practice','自主練習'],['mistakes','我的錯題本'],['growth','學習足跡']];
+    let nav=[['classroom','課堂'],['homework','我的作業'],['mock','模擬測驗'],['bank','數學題庫'],['practice','自主練習'],['mistakes','我的錯題本'],['coins','我的金幣'],['growth','學習足跡']];
     if(S.user?.role!=='student')nav=nav.filter(([id])=>id!=='mock');
     navHtml=nav.map(([id,label])=>navRow(id,label,page===id,false)).join('');
   }
   // 依登入角色設定主題色：未登入=綠，學生=紫，教師=藍
   if(S.user?.role==='teacher'||S.user?.role==='student'){document.documentElement.dataset.role=S.user.role;}
   else{delete document.documentElement.dataset.role;}
-  $('#nav').innerHTML=navHtml;$('#settings-nav').innerHTML=icon('settings')+'<span>設定與隱私</span>';$('#settings-nav').classList.toggle('active',page==='settings');$('#account').innerHTML=`<span class="avatar">${S.user?(S.user.role==='teacher'?'師':'學'):'M'}</span><span class="account-info">${S.user?esc(S.user.name):'訪客預覽'}<small>${S.user?(S.user.role==='teacher'?'教師工作空間':'中三數學學習者'):'登入後開始學習'}</small></span>${icon(S.user?'chevron':'logout')}`;$('#avatar').textContent=S.user?(S.user.role==='teacher'?'師':'學'):'M';const labels={contests:'數學比賽',guide:'新手上路',homework:S.user?.role==='teacher'?'作業成績':'我的作業',calendar:'日曆',board:'排行榜',mock:'模擬測驗',ai:'模型端點',bank:'數學題庫',practice:'自主練習',import:'試卷拆題入庫',mistakes:S.user?.role==='teacher'?'作業批閱':'我的錯題本',paper:'紙本批閱',paperbatch:'全班紙本批閱',classroom:(S.user?.role==='teacher'?'課堂應用':'課堂'),classroomRecords:'課堂紀錄',layout:'試卷修正排版',papers:'我的試卷',growth:'學習足跡',newq:'新增題目',settings:'設定與隱私'};$('#crumb').textContent=labels[page] || '數學題庫';renderCalculator();}
+  $('#nav').innerHTML=navHtml;$('#settings-nav').innerHTML=icon('settings')+'<span>設定與隱私</span>';$('#settings-nav').classList.toggle('active',page==='settings');$('#account').innerHTML=`<span class="avatar">${S.user?(S.user.role==='teacher'?'師':'學'):'M'}</span><span class="account-info">${S.user?esc(S.user.name):'訪客預覽'}<small>${S.user?(S.user.role==='teacher'?'教師工作空間':'中三數學學習者'):'登入後開始學習'}</small></span>${icon(S.user?'chevron':'logout')}`;$('#avatar').textContent=S.user?(S.user.role==='teacher'?'師':'學'):'M';const labels={contests:'數學比賽',guide:'新手上路',homework:S.user?.role==='teacher'?'作業成績':'我的作業',calendar:'日曆',board:'排行榜',mock:'模擬測驗',ai:'模型端點',bank:'數學題庫',practice:'自主練習',import:'試卷拆題入庫',mistakes:S.user?.role==='teacher'?'作業批閱':'我的錯題本',paper:'紙本批閱',paperbatch:'全班紙本批閱',classroom:(S.user?.role==='teacher'?'課堂應用':'課堂'),classroomRecords:'課堂紀錄',layout:'試卷修正排版',papers:'我的試卷',growth:'學習足跡',newq:'新增題目',coins:'金幣',settings:'設定與隱私'};$('#crumb').textContent=labels[page] || '數學題庫';renderCalculator();}
 
 let calCursor=null,calSelected=null;
 const calPad=n=>String(n).padStart(2,'0');
@@ -1314,7 +1316,7 @@ async function loadServerDemo(){
       const box=$('#login-demo-note');if(box)box.outerHTML=demoAccountsHtml();}
   }catch(_){}                      // 讀不到就維持「尚未確認」，不顯示任何帳密
 }
-function loginModal(after){const lastUser=(()=>{try{return localStorage.getItem('mathpath_last_user')||''}catch(_){return ''}})();modal(`<div class="login-brand"><span class="brand-symbol">m<span>↗</span></span>MathPath</div><h2>登入學習空間</h2><p class="modal-intro">先選擇身分，再輸入密碼。系統會記住你的帳戶，下次開啟不必重新輸入。</p><div class="role-cards"><button type="button" data-role="student" class="role-card active"><span class="role-card-icon">${icon('practice')}</span><strong>學生</strong><small>領取作業、手寫或打字解題、查看自己的分數與建議</small></button><button type="button" data-role="teacher" class="role-card"><span class="role-card-icon">${icon('import')}</span><strong>教師</strong><small>佈置作業與測驗、批閱、查看全班成績</small></button></div><form id="login-form"><div class="form-field"><label class="field-label" for="username">校內帳戶</label><input id="username" name="username" autocomplete="username" value="${esc(lastUser||'student')}" required maxlength="64">${lastUser?`<p class="field-hint login-remembered">已記住上次登入的帳戶：<strong>${esc(lastUser)}</strong></p>`:''}</div><div class="form-field"><label class="field-label" for="password">密碼</label><input id="password" type="password" name="password" autocomplete="current-password" placeholder="輸入帳戶密碼" required maxlength="256"></div><label class="checkbox-line remember-line login-remember"><input type="checkbox" id="remember" checked><span><strong>記住我（30 天）</strong><small>下次開啟不必重新登入；公用電腦請取消勾選。</small></span></label><p class="error-text" id="login-error" role="alert"></p><button type="submit" class="primary wide login-submit">登入學習空間 ${icon('arrow')}</button></form>${demoAccountsHtml()}`);if(serverDemo===null)loadServerDemo();$$('[data-role]').forEach(b=>b.onclick=()=>{$$('[data-role]').forEach(x=>x.classList.toggle('active',x===b));$('#username').value=b.dataset.role;$('#password').value='';$('#password').focus();});$$('[data-role]').forEach(x=>x.classList.toggle('active',x.dataset.role===(lastUser==='teacher'?'teacher':'student')));$('#login-form').onsubmit=async e=>{e.preventDefault();const btn=$('button[type="submit"]',e.target);btn.disabled=true;$('#login-error').textContent='';const uname=$('#username').value;try{await api('/api/login',{username:uname,password:$('#password').value,remember:$('#remember').checked});try{localStorage.setItem('mathpath_last_user',uname);}catch(_){}await refresh();closeModal();toast('已登入，學習紀錄已準備就緒。');if(after)after();else navigate('homework');/* 登入後直接到作業頁：學生先知道有沒有作業要交，教師先看批閱 */}catch(err){$('#login-error').textContent=err.message;}finally{btn.disabled=false;}};if(serverIssue){const box=$('#login-error');if(box)box.textContent=serverIssue;}}
+function loginModal(after){const lastUser=(()=>{try{return localStorage.getItem('mathpath_last_user')||''}catch(_){return ''}})();modal(`<div class="login-brand"><span class="brand-symbol">m<span>↗</span></span>MathPath</div><h2>登入學習空間</h2><p class="modal-intro">先選擇身分，再輸入密碼。系統會記住你的帳戶，下次開啟不必重新輸入。</p><div class="role-cards"><button type="button" data-role="student" class="role-card active"><span class="role-card-icon">${icon('practice')}</span><strong>學生</strong><small>領取作業、手寫或打字解題、查看自己的分數與建議</small></button><button type="button" data-role="teacher" class="role-card"><span class="role-card-icon">${icon('import')}</span><strong>教師</strong><small>佈置作業與測驗、批閱、查看全班成績</small></button></div><form id="login-form"><div class="form-field"><label class="field-label" for="username">校內帳戶</label><input id="username" name="username" autocomplete="username" value="${esc(lastUser||'student')}" required maxlength="64">${lastUser?`<p class="field-hint login-remembered">已記住上次登入的帳戶：<strong>${esc(lastUser)}</strong></p>`:''}</div><div class="form-field"><label class="field-label" for="password">密碼</label><input id="password" type="password" name="password" autocomplete="current-password" placeholder="輸入帳戶密碼" required maxlength="256"></div><label class="checkbox-line remember-line login-remember"><input type="checkbox" id="remember" checked><span><strong>記住我（30 天）</strong><small>下次開啟不必重新登入；公用電腦請取消勾選。</small></span></label><p class="error-text" id="login-error" role="alert"></p><button type="submit" class="primary wide login-submit">登入學習空間 ${icon('arrow')}</button></form>${demoAccountsHtml()}`);if(serverDemo===null)loadServerDemo();$$('[data-role]').forEach(b=>b.onclick=()=>{$$('[data-role]').forEach(x=>x.classList.toggle('active',x===b));$('#username').value=b.dataset.role;$('#password').value='';$('#password').focus();});$$('[data-role]').forEach(x=>x.classList.toggle('active',x.dataset.role===(lastUser==='teacher'?'teacher':'student')));$('#login-form').onsubmit=async e=>{e.preventDefault();const btn=$('button[type="submit"]',e.target);btn.disabled=true;$('#login-error').textContent='';const uname=$('#username').value;try{const logged=await api('/api/login',{username:uname,password:$('#password').value,remember:$('#remember').checked});try{localStorage.setItem('mathpath_last_user',uname);}catch(_){}await refresh();closeModal();toast(logged&&logged.dailyCoins?`已登入，今日登入 +${logged.dailyCoins} 枚金幣！`:'已登入，學習紀錄已準備就緒。');if(after)after();else navigate('homework');/* 登入後直接到作業頁：學生先知道有沒有作業要交，教師先看批閱 */}catch(err){$('#login-error').textContent=err.message;}finally{btn.disabled=false;}};if(serverIssue){const box=$('#login-error');if(box)box.textContent=serverIssue;}}
 function accountModal(){if(!S.user)return loginModal();modal(`<h2>${esc(S.user.name)}</h2><p class="modal-intro">${S.user.role==='teacher'?'教師工作空間':'中三數學學習空間'} · 資料保存在網站伺服器；實際位置由管理員確認</p>${S.notice?`<div class="import-warning">${esc(S.notice)}</div>`:''}<div class="result-actions"><button class="secondary" id="password-link">${icon('lock')}更換密碼</button><button class="secondary" id="logout-btn">${icon('logout')}登出</button></div>`);$('#password-link').onclick=()=>{closeModal();navigate('settings');};$('#logout-btn').onclick=async()=>{beginView();stopQuizClock();pendingQuizSubmission=null;quizDeadlines.clear();try{await api('/api/logout',{});clearUserDrafts(S.user.id);S={user:null,questions:preview,attempts:[],stats:{completed:0,accuracy:0,streak:0,minutes:0},ai:{configured:false,mode:'off'}};strokes=[];answerFile=null;lastResult=null;lastSolution=null;currentQuestion=null;assignmentContext=null;assignmentDetail=null;HW=null;resultData=null;closeModal();loadBookmarks();homeworkPage();toast('已登出。');}catch(e){toast(e.message);}};}
 async function openQuestion(id){if(busy)return toast('正在保存作答，請等待完成。');preserveDraft();if(!S.user){loginModal(()=>openQuestion(id));return;}const q=S.questions.find(q=>q.id===Number(id));if(!q)return toast('找不到題目，請重新整理題庫。');if(currentQuestion&&currentQuestion.id!==q.id&&strokes.length&&!lastResult&&await askCancel('目前手寫內容尚未提交，確定切換題目？'))return;assignmentContext=null;mockContext=null;currentQuestion=q;lastResult=null;lastSolution=null;answerMode=(q.options&&q.options.length)?'choice':'hand';answerFile=null;selectedOption=null;window.answerTextDraft='';strokes=[];redoStrokes=[];recommendations=null;stopQuizClock();practice();const target=viewTarget();try{const rec=await api(`/api/questions/${q.id}/recommendations`);if(viewMatches(target)){recommendations=rec;renderRecommendations();}}catch(e){if(viewMatches(target))toast(e.message);}}
 // ── 自主練習：先選章節與題型 ──
@@ -5433,6 +5435,90 @@ async function leaderboardPage(month){
     body.innerHTML=block(b.dataset.boardTab,b.dataset.boardTab==='score'?scoreTable:progressTable);
   });
 }
+// ── 金幣 ────────────────────────────────────────────────────────────────
+// 學生：看自己的金幣與來源；教師：看全班金幣，並可獎勵 10／20／50。
+async function coinsPage(){
+  page='coins';shell();
+  if(!S.user)return loginModal(coinsPage);
+  if(S.user.role==='teacher')return teacherCoinsPage();
+  $('#main').innerHTML=`<div class="fade-in">${heading('COINS','我的金幣','每得 1 分就有 1 枚金幣，每天第一次登入再送 10 枚；金幣會一直累積。')}<section class="panel panel-pad"><p class="small-text">載入中…</p></section></div>`;
+  let data;
+  try{data=await api('/api/coins');}
+  catch(err){$('#main').innerHTML=`<div class="fade-in">${heading('COINS','我的金幣','')}${empty('讀取金幣失敗',err.message,'')}</div>`;return;}
+  const c=data.coins,events=data.events||[];
+  const rows=events.map(e=>`<div class="coin-row"><span class="coin-amount">+${e.amount}</span><span class="coin-why">${esc(e.reason||'金幣')}</span><span class="small-text">${esc(e.day||'')}</span></div>`).join('');
+  $('#main').innerHTML=`<div class="fade-in">${heading('COINS','我的金幣','每得 1 分就有 1 枚金幣，每天第一次登入再送 10 枚；金幣會一直累積。')}
+    <section class="panel panel-pad coin-hero">
+      <div class="coin-total"><span class="coin-badge">${icon('coin')}</span><strong>${c.total}</strong><small>枚金幣</small></div>
+      <div class="coin-split">
+        <div><span>得分換來</span><strong>${c.scoreCoins}</strong></div>
+        <div><span>每日登入</span><strong>${c.dailyCoins}</strong></div>
+        <div><span>老師獎勵</span><strong>${c.manualCoins}</strong></div>
+      </div>
+      <p class="field-hint" style="margin:12px 0 0">${c.todayClaimed?`今天已領取每日 ${c.dailyBonus} 枚。`:`今天的每日 ${c.dailyBonus} 枚還沒領，下次登入時會自動發放。`}</p>
+    </section>
+    <div class="coin-cards">
+      <section class="panel panel-pad"><h2>${icon('target')}得分換金幣</h2><p class="small-text">每得 1 分自動 +1 枚。作業要老師批閱後才算；分數有小數時向下取整（7.5 分 → 7 枚）。</p></section>
+      <section class="panel panel-pad"><h2>${icon('clock')}每日登入</h2><p class="small-text">每天第一次登入 +${c.dailyBonus} 枚；同一天再登入不會重複發。</p></section>
+      <section class="panel panel-pad"><h2>${icon('spark')}老師獎勵</h2><p class="small-text">老師可以在「金幣」頁額外送你 10、20 或 50 枚。</p></section>
+    </div>
+    <section class="panel panel-pad" style="margin-top:16px"><h2 style="margin-bottom:10px">最近紀錄</h2>
+      ${rows||'<p class="small-text">還沒有每日登入或老師獎勵的紀錄。</p>'}
+      <p class="field-hint" style="margin-top:12px">得分換來的金幣會即時反映在上面的總數，不逐筆列出。</p></section>
+    </div>`;
+}
+
+async function teacherCoinsPage(){
+  $('#main').innerHTML=`<div class="fade-in">${heading('COINS','金幣','')}<section class="panel panel-pad"><p class="small-text">載入中…</p></section></div>`;
+  let data;
+  try{data=await api('/api/coins/students');}
+  catch(err){$('#main').innerHTML=`<div class="fade-in">${heading('COINS','金幣','')}${empty('讀取金幣失敗',err.message,'')}</div>`;return;}
+  const students=data.students||[],grants=data.grants||[10,20,50];
+  const rowHtml=(s)=>`<tr data-coin-row="${s.id}">
+      <td>${s.seat?esc(s.seat):'—'}</td>
+      <td>${esc(s.name)}${s.username===s.name?'':` <span class="small-text">${esc(s.username)}</span>`}${s.disabled?' <span class="role-badge off">已停用</span>':''}</td>
+      <td>${esc(s.grade||'—')}</td>
+      <td>${s.scoreCoins}</td><td>${s.dailyCoins}</td><td data-coin-manual>${s.manualCoins}</td>
+      <td><strong data-coin-total>${s.coins}</strong></td>
+      <td class="coin-actions">${grants.map(g=>`<button class="text-button" data-coin-grant="${s.id}" data-coin-amount="${g}" data-coin-name="${esc(s.name)}">+${g}</button>`).join('')}</td>
+    </tr>`;
+  const listHtml=(kw)=>{
+    const q=(kw||'').trim().toLowerCase();
+    const list=students.filter(s=>!q||[s.name,s.username,s.seat,s.grade].some(v=>String(v||'').toLowerCase().includes(q)));
+    if(!students.length)return '<p class="small-text">還沒有學生帳號。</p>';
+    if(!list.length)return '<p class="small-text">沒有符合的學生。</p>';
+    return `<div class="table-scroll"><table class="results-table coin-table"><thead><tr><th>座號</th><th>學生</th><th>年級</th><th>得分</th><th>每日</th><th>獎勵</th><th>總計</th><th>加金幣</th></tr></thead><tbody>${list.map(rowHtml).join('')}</tbody></table></div>`;
+  };
+  $('#main').innerHTML=`<div class="fade-in">${heading('COINS','金幣','學生每得 1 分 = 1 枚金幣，每天第一次登入 +10；你可以再獎勵 10、20 或 50 枚。',
+    `<label class="search-field">${icon('search')}<input id="coin-search" placeholder="搜尋姓名、學號或座號…" aria-label="搜尋學生"></label>`)}
+    <section class="panel panel-pad"><div id="coin-body">${listHtml('')}</div>
+    <p class="field-hint" style="margin-top:12px">「得分」是已批閱的分數換來的（作業要老師批閱過才算）；「每日」是每天第一次登入的 +10；「獎勵」是老師額外給的。</p></section></div>`;
+  const bind=()=>{$$('[data-coin-grant]').forEach(b=>{
+    b.onclick=async()=>{
+      const uid=Number(b.dataset.coinGrant),amount=Number(b.dataset.coinAmount);
+      if(b.disabled)return;
+      b.disabled=true;
+      try{
+        const r=await api('/api/coins/grant',{userId:uid,amount});
+        const st=students.find(s=>s.id===uid);
+        if(st){st.manualCoins=r.coins.manualCoins;st.coins=r.coins.total;}
+        // 就地更新那一列（重畫整張表會讓搜尋框失焦）
+        const row=$(`[data-coin-row="${uid}"]`);
+        if(row){
+          const man=row.querySelector('[data-coin-manual]'),tot=row.querySelector('[data-coin-total]');
+          if(man)man.textContent=r.coins.manualCoins;
+          if(tot)tot.textContent=r.coins.total;
+        }
+        toast(`已給 ${r.student.name} +${amount} 枚金幣（目前 ${r.coins.total} 枚）。`);
+      }catch(err){toast(err.message);}
+      finally{b.disabled=false;}
+    };
+  });};
+  bind();
+  const input=$('#coin-search');
+  if(input)input.oninput=()=>{$('#coin-body').innerHTML=listHtml(input.value);bind();};
+}
+
 // 紙本功課：獨立呈現，不混進做題數／正確率，也不進排行榜。
 function paperJourneyHtml(st){
   const n=(st&&st.paperCount)||0;
@@ -7292,10 +7378,10 @@ $('#bulk-submit').onclick=async()=>{const {rows,errors}=bulkPreview();if(errors.
 function deploymentHelp(){modal(`<p class="eyebrow">SERVER SETUP</p><h2>啟動與部署說明</h2><p class="modal-intro">資料保存在網站伺服器；實際位置由管理員確認。以下是可選部署方式，不代表目前網站的部署狀態。</p><h3>本機預覽</h3><p class="info-note">雙擊 start.command，或用 Python 3 啟動：</p><pre class="code-block">python3 server.py --host 127.0.0.1 --port 8765</pre><p class="info-note">瀏覽器開啟 http://127.0.0.1:8765。</p><h3>校內連線</h3><p class="info-note">由資訊人員將 --host 設為伺服器的校內 IP，並限制防火牆只允許校內來源；正式使用需反向代理 HTTPS。不要把演示帳戶直接用於全校。</p><h3>目前帳戶範圍</h3><p class="info-note">初始演示配置包含學生與教師帳戶；實際帳戶由管理員確認。教師可在「設定與隱私」建立獨立學生帳戶，避免共用作答紀錄。可在「作業與成績」建立班級並發布作業；校內單一登入及批量帳戶管理仍可再擴充。</p><div class="import-warning">資料保存在網站伺服器；實際位置由管理員確認。預設資料庫路徑為 data/mathpath.sqlite3；備份及保存年限應按學校規定安排。AI 必須另行配置，未配置時手写作答由教師批閱。</div>`);}
 async function navigate(target){if(busy)return toast('目前操作正在進行，請等待完成。');if(crStudentTimer){clearInterval(crStudentTimer);crStudentTimer=null;}preserveDraft();if(page==='practice'&&strokes.length&&target!=='practice'&&!lastResult&&await askCancel('尚未提交的手寫內容未保存。確定離開？'))return;beginView();$('#sidebar').classList.remove('open');if(target!=='practice'){assignmentContext=null;mockContext=null;stopQuizClock();}page=target;switch(target){case'guide':guidePage();break;
 case'homework':homeworkPage();break;case'scores':scoreGridPage();break;case'paperbatch':paperBatchPage();break;
-case'classroom':classroomPage();break;case'classroomRecords':classroomRecordsPage();break;case'calendar':calendarPage();break;case'board':leaderboardPage();break;case'mock':mockPage();break;case'contests':contestsPage();break;case'ai':aiConfigPage();break;case'bank':bank();break;case'practice':practice();break;case'import':importPage();break;case'newq':newQuestionPage();break;case'mistakes':recordsPage();break;case'paper':paperGradePage();break;case'layout':paperLayoutPage();break;case'papers':papersPage();break;case'growth':growthPage();break;case'settings':settingsPage();break;default:bank();}window.scrollTo({top:0,behavior:'instant'});}
+case'classroom':classroomPage();break;case'classroomRecords':classroomRecordsPage();break;case'calendar':calendarPage();break;case'board':leaderboardPage();break;case'mock':mockPage();break;case'contests':contestsPage();break;case'ai':aiConfigPage();break;case'bank':bank();break;case'practice':practice();break;case'import':importPage();break;case'newq':newQuestionPage();break;case'mistakes':recordsPage();break;case'paper':paperGradePage();break;case'layout':paperLayoutPage();break;case'papers':papersPage();break;case'growth':growthPage();break;case'coins':coinsPage();break;case'settings':settingsPage();break;default:bank();}window.scrollTo({top:0,behavior:'instant'});}
 // 切字體／版面後重新渲染目前頁面主體，讓按鈕的 .active 狀態跟得上（不然字體變了、
 // 但「標準／大／特大」的選中樣式還停在舊的）。頁面函式會自己呼叫 shell()。
-function renderCurrentPage(){switch(page){case'guide':guidePage();break;case'homework':homeworkPage();break;case'scores':scoreGridPage();break;case'paperbatch':paperBatchPage();break;case'classroom':classroomPage();break;case'classroomRecords':classroomRecordsPage();break;case'calendar':calendarPage();break;case'board':leaderboardPage();break;case'mock':mockPage();break;case'contests':contestsPage();break;case'ai':aiConfigPage();break;case'bank':bank();break;case'practice':practice();break;case'import':importPage();break;case'newq':newQuestionPage();break;case'mistakes':recordsPage();break;case'paper':paperGradePage();break;case'layout':paperLayoutPage();break;case'papers':papersPage();break;case'growth':growthPage();break;case'settings':settingsPage();break;default:bank();}}
+function renderCurrentPage(){switch(page){case'guide':guidePage();break;case'homework':homeworkPage();break;case'scores':scoreGridPage();break;case'paperbatch':paperBatchPage();break;case'classroom':classroomPage();break;case'classroomRecords':classroomRecordsPage();break;case'calendar':calendarPage();break;case'board':leaderboardPage();break;case'mock':mockPage();break;case'contests':contestsPage();break;case'ai':aiConfigPage();break;case'bank':bank();break;case'practice':practice();break;case'import':importPage();break;case'newq':newQuestionPage();break;case'mistakes':recordsPage();break;case'paper':paperGradePage();break;case'layout':paperLayoutPage();break;case'papers':papersPage();break;case'growth':growthPage();break;case'coins':coinsPage();break;case'settings':settingsPage();break;default:bank();}}
 document.addEventListener('click',async e=>{const b=e.target.closest('button');if(!b||b.disabled)return;if(b.dataset.fontScale){applyFontScale(b.dataset.fontScale);renderCurrentPage();toast(`字體已設為「${FONT_SCALES.find(([id])=>id===b.dataset.fontScale)[1]}」，只影響這台裝置。`);return;}
 if(b.dataset.themeId){applyTheme(b.dataset.themeId);renderCurrentPage();toast(`版面已設為「${THEMES.find(([id])=>id===b.dataset.themeId)[1]}」，只影響這台裝置。`);return;}
 if(b.id==='open-math-editor'){openMathEditor();return;}

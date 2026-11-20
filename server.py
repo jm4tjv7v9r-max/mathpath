@@ -5931,6 +5931,58 @@ def leaderboard_payload(db, month):
             'score': score_board, 'progress': progress_board}
 
 
+# ── 金幣 ────────────────────────────────────────────────────────────────
+# 規則：每得 1 分 = 1 金幣；每日首次登入 +10；教師可再獎勵 10／20／50。
+# 分數換的金幣**不另存**，一律由 attempts 即時算——老師改分、退回重批之後
+# 金幣會跟著分數走，不會出現「帳本與分數對不上」的鬼數。
+COIN_DAILY_BONUS = 10
+COIN_GRANTS = (10, 20, 50)
+# 「每日」以澳門時間（UTC+8）為準：用 UTC 的話，學生早上 8 點前登入會被算成前一天。
+COIN_UTC_OFFSET_HOURS = 8
+
+
+def coin_day(moment=None):
+    """今天（澳門時間）的 YYYY-MM-DD；每日登入獎勵用它判重複。"""
+    moment = moment or datetime.now(timezone.utc)
+    return (moment + timedelta(hours=COIN_UTC_OFFSET_HOURS)).strftime('%Y-%m-%d')
+
+
+def score_coins(db, user_id):
+    """分數換來的金幣：與排行榜同一口徑（作業要教師批閱過才算）。
+
+    分數可能有小數（例如 3.5），金幣只發整數，所以整批加總後向下取整：
+    總分 12.5 → 12 枚，不會出現半枚金幣。
+    """
+    row = db.execute(
+        "SELECT COALESCE(SUM(score),0) AS total FROM attempts "
+        "WHERE user_id=? AND status='graded' "
+        "AND (assignment_id IS NULL OR teacher_reviewed=1)", (user_id,)).fetchone()
+    return int(math.floor(row['total'] or 0))
+
+
+def coin_summary(db, user_id):
+    """某位學生的金幣總覽：分數金幣 ＋ 每日登入 ＋ 教師獎勵。"""
+    score = score_coins(db, user_id)
+    sums = {'daily': 0, 'manual': 0}
+    for r in db.execute("SELECT kind, COALESCE(SUM(amount),0) AS total FROM coin_events "
+                        "WHERE user_id=? GROUP BY kind", (user_id,)):
+        sums[r['kind']] = int(r['total'])
+    day = coin_day()
+    claimed = db.execute("SELECT 1 FROM coin_events WHERE user_id=? AND kind='daily' AND day=?",
+                         (user_id, day)).fetchone() is not None
+    return {'scoreCoins': score, 'dailyCoins': sums['daily'], 'manualCoins': sums['manual'],
+            'total': score + sums['daily'] + sums['manual'],
+            'dailyBonus': COIN_DAILY_BONUS, 'todayClaimed': claimed, 'day': day}
+
+
+def grant_daily_coins(db, user_id):
+    """每日首次登入 +10；今天已領過就什麼都不做。回傳這次有沒有發放。"""
+    cur = db.execute("INSERT OR IGNORE INTO coin_events(user_id,amount,kind,reason,day,created_at) "
+                     "VALUES(?,?,'daily','每日登入',?,?)",
+                     (user_id, COIN_DAILY_BONUS, coin_day(), utc_now()))
+    return cur.rowcount > 0
+
+
 
 class Application:
     def __init__(self, data_dir, static_dir=ROOT):
@@ -6090,6 +6142,21 @@ class Application:
                     feedback TEXT NOT NULL DEFAULT '', method TEXT NOT NULL DEFAULT '',
                     created_at TEXT NOT NULL);
                 CREATE INDEX IF NOT EXISTS attempt_reviews_attempt ON attempt_reviews(attempt_id, id);
+                -- 金幣帳本：只記「不是分數換來」的金幣（每日登入、教師獎勵）。
+                -- 分數換的金幣一律由 attempts 即時算，避免重複計分或對不上分數。
+                CREATE TABLE IF NOT EXISTS coin_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL REFERENCES users(id),
+                    amount INTEGER NOT NULL,
+                    kind TEXT NOT NULL CHECK(kind IN ('daily','manual')),
+                    reason TEXT NOT NULL DEFAULT '',
+                    day TEXT NOT NULL DEFAULT '',
+                    created_by INTEGER,
+                    created_at TEXT NOT NULL);
+                CREATE INDEX IF NOT EXISTS coin_events_user ON coin_events(user_id, id DESC);
+                -- 每日登入只能領一次：靠 (user_id, day) 唯一索引擋重複（不用先查再寫）。
+                CREATE UNIQUE INDEX IF NOT EXISTS coin_events_daily
+                    ON coin_events(user_id, day) WHERE kind='daily';
             ''')
             # 題目圖形：固定 SQL 增量加欄，不重建舊表、不刪除既有題目資料。
             question_columns = {r['name'] for r in db.execute('PRAGMA table_info(questions)')}
@@ -9187,11 +9254,15 @@ class Application:
                 db.execute('DELETE FROM login_events WHERE user_id=? AND id NOT IN '
                            '(SELECT id FROM login_events WHERE user_id=? ORDER BY id DESC LIMIT 500)',
                            (row['id'], row['id']))
+                # 每日首次登入的 +10 金幣（同一天重複登入不會再發）。
+                daily_coin = grant_daily_coins(db, row['id']) if row['role'] == 'student' else False
             headers['Set-Cookie'] = self.cookie(token, seconds=seconds)
             # 與 /api/session 一致：前端靠 isOwner 決定要不要顯示管理員功能。
             login_user = self.user_public(row)
             login_user['isOwner'] = self.is_owner(row)
-            return {'user': login_user, 'notice': self.notice(row)}, headers
+            # dailyCoins：今天第一次登入時為 True，前端可以提示「今日登入 +10 金幣」。
+            return {'user': login_user, 'notice': self.notice(row),
+                    'dailyCoins': daily_coin}, headers
         # ── 公開端點：不需要登入 ──────────────────────────────────
         if method == 'GET' and path == '/api/contests':
             # 數學比賽清單：公開資料（不含個人資料），訪客也看得到（頂欄「比賽」對訪客也顯示）。
@@ -9272,6 +9343,62 @@ class Application:
                            (hashlib.sha256(token.encode()).hexdigest(), user['id'], time.time() + SESSION_SECONDS))
             headers['Set-Cookie'] = self.cookie(token)
             return {'user': self.user_public(user), 'notice': '密碼已更新，其他登入工作階段已失效。'}, headers
+        if path == '/api/coins' and method == 'GET':
+            # 學生查自己的金幣與最近紀錄。教師沒有金幣（要看學生請用 /api/coins/students）。
+            if user['role'] != 'student':
+                fail(403, '金幣只發給學生帳號；教師請到「金幣」頁查看學生。')
+            with self.db() as db:
+                summary = coin_summary(db, user['id'])
+                events = [{'amount': r['amount'], 'kind': r['kind'], 'reason': r['reason'],
+                           'day': r['day'], 'createdAt': r['created_at']}
+                          for r in db.execute('SELECT * FROM coin_events WHERE user_id=? '
+                                              'ORDER BY id DESC LIMIT 30', (user['id'],))]
+            return {'coins': summary, 'events': events}, headers
+        if path == '/api/coins/students' and method == 'GET':
+            # 教師查全班學生的金幣。一次算完，不逐個學生查（一班 40 人就是 40 次查詢）。
+            self.teacher(user)
+            with self.db() as db:
+                students = [dict(r) for r in db.execute(
+                    "SELECT id,name,username,seat,grade,disabled FROM users WHERE role='student' "
+                    "ORDER BY CASE WHEN seat IS NULL OR trim(seat)='' THEN 1 ELSE 0 END, "
+                    "CAST(seat AS INTEGER), seat, name, id")]
+                scores = {r['user_id']: r['total'] for r in db.execute(
+                    "SELECT user_id, COALESCE(SUM(score),0) AS total FROM attempts "
+                    "WHERE status='graded' AND (assignment_id IS NULL OR teacher_reviewed=1) "
+                    "GROUP BY user_id")}
+                extras = {}
+                for r in db.execute("SELECT user_id, kind, COALESCE(SUM(amount),0) AS total "
+                                    "FROM coin_events GROUP BY user_id, kind"):
+                    extras.setdefault(r['user_id'], {})[r['kind']] = int(r['total'])
+            rows = []
+            for st in students:
+                score = int(math.floor(scores.get(st['id'], 0) or 0))
+                got = extras.get(st['id'], {})
+                daily, manual = got.get('daily', 0), got.get('manual', 0)
+                rows.append({**st, 'scoreCoins': score, 'dailyCoins': daily,
+                             'manualCoins': manual, 'coins': score + daily + manual})
+            return {'students': rows, 'dailyBonus': COIN_DAILY_BONUS,
+                    'grants': list(COIN_GRANTS)}, headers
+        if path == '/api/coins/grant' and method == 'POST':
+            # 教師額外獎勵金幣：介面上就是 10／20／50 三個按鈕，後端也只收這三個數字。
+            # 獎勵是「加分」不是改資料，所以任何教師都可以給任何學生（不限制建立者）。
+            self.teacher(user)
+            fields(body, ('userId', 'amount'), ('userId', 'amount'))
+            uid = number(body['userId'], '學生編號', 1, 2 ** 63 - 1, True)
+            amount = number(body['amount'], '金幣數量', 1, 1000, True)
+            if amount not in COIN_GRANTS:
+                fail(400, f'金幣獎勵只能是 {"／".join(str(v) for v in COIN_GRANTS)} 枚。')
+            with self.db() as db:
+                target = db.execute('SELECT id,name,role FROM users WHERE id=?', (uid,)).fetchone()
+                if target is None or target['role'] != 'student':
+                    fail(404, '找不到這位學生。')
+                db.execute('BEGIN IMMEDIATE')
+                db.execute("INSERT INTO coin_events(user_id,amount,kind,reason,day,created_by,created_at) "
+                           "VALUES(?,?,'manual',?,?,?,?)",
+                           (uid, amount, f'{user["name"]} 獎勵', coin_day(), user['id'], utc_now()))
+                summary = coin_summary(db, uid)
+            return {'student': {'id': target['id'], 'name': target['name']},
+                    'coins': summary}, headers
         if path == '/api/users' and method in ('GET', 'POST'):
             self.teacher(user)
             if method == 'GET':
@@ -9676,6 +9803,8 @@ class Application:
                 own = [r for r in rows if r['user_id'] == user['id']]
                 # 紙本累計要在連線還開著時算（下面 return 時 with 已結束）。
                 paper = self.paper_stats(db, user['id']) if user['role'] == 'student' else {}
+                # 學生的金幣（側欄徽章、金幣頁都用同一份數字）。
+                coins = coin_summary(db, user['id']) if user['role'] == 'student' else None
                 account_owner = self.owner_id(db)
             payload_user = self.user_public(user)
             # 管理員＝最早建立的教師帳號；前端用它決定要不要顯示「新增教師」與資料管理。
@@ -9686,7 +9815,7 @@ class Application:
                     'pendingReviews': pending_reviews,
                     'attemptsTruncated': attempts_truncated,
                     'stats': stats, 'ai': self.ai.public(), 'topics': TOPICS, 'grades': GRADES,
-                    'topicTree': TOPIC_TREE,
+                    'topicTree': TOPIC_TREE, 'coins': coins,
                     'notice': self.notice(user), 'minutesNotice': '分鐘數僅按同日相鄰提交間隔估算，不是正式學習計時。'}, headers
         match = re.fullmatch(r'/api/questions/([1-9]\d{0,17})/(recommendations|generate)', path)
         if match:

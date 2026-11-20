@@ -1448,6 +1448,91 @@ class APITests(unittest.TestCase):
         self.app.ai.configured = False
         self.request('POST', '/api/questions/ai-generate', payload, cookie=self.teacher, expect=409)
 
+    def test_coins_from_scores_daily_login_and_teacher_grant(self):
+        """金幣：分數 1:1（小數向下取整）、每日登入 +10（同日不重複）、教師可獎勵 10／20／50。"""
+        # setUp 已登入過學生一次 → 今天已領每日 +10
+        _, body, _ = self.request('GET', '/api/coins', cookie=self.student, expect=200)
+        self.assertEqual(body['coins']['scoreCoins'], 0)
+        self.assertEqual(body['coins']['dailyCoins'], 10)
+        self.assertEqual(body['coins']['total'], 10)
+        self.assertEqual(body['coins']['dailyBonus'], 10)
+        self.assertTrue(body['coins']['todayClaimed'])
+
+        # 同一天再登入不該重複發
+        self.login('student', 'Math1234!')
+        _, again, _ = self.request('GET', '/api/coins', cookie=self.student, expect=200)
+        self.assertEqual(again['coins']['dailyCoins'], 10, '同一天重複登入不該再加金幣')
+
+        # 得分 1 分 = 1 金幣；7.5 分向下取整為 7 枚（不發半枚）
+        sid = self.student_id('student')
+        with self.app.db() as db:
+            qid = db.execute('SELECT id FROM questions ORDER BY id LIMIT 1').fetchone()[0]
+            db.execute("INSERT INTO attempts(user_id,question_id,answer_text,max_score,status,feedback,"
+                       "submitted_at,method,score) VALUES(?,?,?,?,?,?,?,?,?)",
+                       (sid, qid, 'x', 10, 'graded', '', '2026-11-20T02:00:00Z', 'rule', 7.5))
+        _, scored, _ = self.request('GET', '/api/coins', cookie=self.student, expect=200)
+        self.assertEqual(scored['coins']['scoreCoins'], 7)
+        self.assertEqual(scored['coins']['total'], 17)
+
+        # 教師獎勵 +20
+        _, granted, _ = self.request('POST', '/api/coins/grant',
+                                     {'userId': sid, 'amount': 20}, cookie=self.teacher, expect=200)
+        self.assertEqual(granted['coins']['manualCoins'], 20)
+        self.assertEqual(granted['coins']['total'], 37)
+        # 只收 10／20／50
+        self.request('POST', '/api/coins/grant', {'userId': sid, 'amount': 30},
+                     cookie=self.teacher, expect=400)
+        self.request('POST', '/api/coins/grant', {'userId': sid, 'amount': 10},
+                     cookie=self.student, expect=403)
+        # 找不到／不是學生
+        self.request('POST', '/api/coins/grant', {'userId': 999999, 'amount': 10},
+                     cookie=self.teacher, expect=404)
+        self.request('POST', '/api/coins/grant',
+                     {'userId': self.student_id('teacher'), 'amount': 10},
+                     cookie=self.teacher, expect=404)
+
+        # 教師查全班金幣
+        _, listing, _ = self.request('GET', '/api/coins/students', cookie=self.teacher, expect=200)
+        row = next(r for r in listing['students'] if r['id'] == sid)
+        self.assertEqual(row['coins'], 37)
+        self.assertEqual(row['scoreCoins'], 7)
+        self.assertEqual(row['manualCoins'], 20)
+        self.assertEqual(listing['grants'], [10, 20, 50])
+        self.request('GET', '/api/coins/students', cookie=self.student, expect=403)
+        # 教師本身沒有金幣
+        self.request('GET', '/api/coins', cookie=self.teacher, expect=403)
+        # /api/state 也帶金幣（側欄徽章用）
+        _, state, _ = self.request('GET', '/api/state', cookie=self.student, expect=200)
+        self.assertEqual(state['coins']['total'], 37)
+        # 紀錄看得到每日登入
+        self.assertIn('daily', {e['kind'] for e in scored['events']})
+
+    def test_deleting_student_removes_coin_events(self):
+        """刪除學生時金幣紀錄要一起刪：留著會變孤兒，外鍵也會擋住刪除。"""
+        _, created, _ = self.request('POST', '/api/users', {
+            'username': 'coin01', 'password': 'CoinPass1234', 'name': '金幣測試'},
+            cookie=self.teacher, expect=200)
+        uid = created['user']['id']
+        self.login('coin01', 'CoinPass1234')          # 每日登入 +10
+        self.request('POST', '/api/coins/grant', {'userId': uid, 'amount': 10},
+                     cookie=self.teacher, expect=200)
+        with self.app.db() as db:
+            self.assertIsNotNone(db.execute('SELECT 1 FROM coin_events WHERE user_id=?',
+                                            (uid,)).fetchone())
+        self.request('POST', f'/api/users/{uid}/delete', {'confirm': 'DELETE'},
+                     cookie=self.teacher, expect=200)
+        with self.app.db() as db:
+            self.assertIsNone(db.execute('SELECT 1 FROM coin_events WHERE user_id=?',
+                                         (uid,)).fetchone())
+
+    def test_coin_day_uses_macau_time(self):
+        """「每日」以澳門時間（UTC+8）為準：UTC 23:30 已是澳門隔天。"""
+        from datetime import datetime, timezone
+        late = datetime(2026, 11, 19, 23, 30, tzinfo=timezone.utc)
+        self.assertEqual(server.coin_day(late), '2026-11-20')
+        early = datetime(2026, 11, 20, 0, 30, tzinfo=timezone.utc)
+        self.assertEqual(server.coin_day(early), '2026-11-20')
+
     def test_handwritten_verdict_for_full_partial_and_wrong(self):
         # 手寫作答要有整體判定（全對／全錯／部分正確），前端據此在手稿上蓋紅剔／紅叉／紅剔加一撇。
         self.app.ai.configured = True
