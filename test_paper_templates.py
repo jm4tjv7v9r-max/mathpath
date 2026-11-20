@@ -236,7 +236,7 @@ class PaperTemplateTests(unittest.TestCase):
         raw, _ = paper_format.render_with_sections(buf.getvalue(), sections, '中三數學 小測')
         out = Document(io.BytesIO(raw))
         text = '\n'.join(p.text for p in out.paragraphs)
-        self.assertIn('一、單項選擇題（每題 5 分，共 10 分）', text,
+        self.assertIn('一、單項選擇題（每題 5 分，共 2 題，10 分）', text,
                       '標題要沿用範本的寫法（單項選擇題）並更新配分數字')
         first = [p for p in out.paragraphs if p.text.startswith('1.')][0]
         self.assertIn('\t', first.text, '範本用 tab 對齊，輸出也要用 tab')
@@ -1150,7 +1150,7 @@ class PaperLayoutTests(unittest.TestCase):
         ])]
         raw, _ = paper_format.render_with_sections(buf.getvalue(), sections, '測試卷')
         texts = [p.text for p in Document(io.BytesIO(raw)).paragraphs]
-        self.assertIn('一、單項選擇題（每題 4 分，共 8 分）', texts,
+        self.assertIn('一、單項選擇題（每題 4 分，共 2 題，8 分）', texts,
                       '配分不能整段消失，總分要按實際題數重算')
 
     def test_numbering_is_continuous_by_default_and_can_restart(self):
@@ -1306,8 +1306,28 @@ class PaperLayoutTests(unittest.TestCase):
             paper_format.Question(stem='乙。', marks=10)])]
         raw, _ = paper_format.render_with_sections(buf.getvalue(), sections, '測試卷')
         texts = [p.text for p in Document(io.BytesIO(raw)).paragraphs]
-        self.assertIn('一、解答題：(共 20 分)', texts)
+        self.assertIn('一、解答題：(共 2 題，20 分)', texts)
         self.assertFalse(any('每題' in t for t in texts), '解答題不該出現「每題 X 分」')
+
+    def test_new_section_without_template_heading_gets_count_and_marks(self):
+        """範本沒有「附加題」分部時，新分部仍要標出題數與配分（例如「共 1 題，10 分」）。"""
+        doc = Document()
+        doc.add_paragraph('測試卷')
+        doc.add_paragraph('一、解答題（共 20 分）')
+        doc.add_paragraph('1.\t題目。')
+        buf = io.BytesIO()
+        doc.save(buf)
+        sections = [paper_format.Section(title='一、解答題', questions=[
+            paper_format.Question(stem='甲。', marks=10),
+            paper_format.Question(stem='乙。', marks=10)]),
+            paper_format.Section(title='二、附加題', questions=[
+                paper_format.Question(stem='(1) 求 a；(2) 求 b。', marks=10)])]
+        raw, _ = paper_format.render_with_sections(buf.getvalue(), sections, '測試卷')
+        texts = [p.text for p in Document(io.BytesIO(raw)).paragraphs]
+        extra = [t for t in texts if '附加' in t]
+        self.assertTrue(extra, '附加題要有獨立標題')
+        self.assertIn('共 1 題，10 分', extra[0],
+                      '範本沒有附加題標題時，仍要標出題數與配分')
 
     def test_choice_heading_keeps_each_question_marks(self):
         """選擇題仍然保留「每題 X 分」（分數寫在標題）。"""
@@ -1323,7 +1343,7 @@ class PaperLayoutTests(unittest.TestCase):
             paper_format.Question(stem='乙（　　）', marks=4, options=['A. 1', 'B. 2'])])]
         raw, _ = paper_format.render_with_sections(buf.getvalue(), sections, '測試卷')
         texts = [p.text for p in Document(io.BytesIO(raw)).paragraphs]
-        self.assertIn('一、單項選擇題：(每題 4 分，共 8 分)', texts)
+        self.assertIn('一、單項選擇題：(每題 4 分，共 2 題，8 分)', texts)
 
     def test_option_columns_are_the_same_for_every_question(self):
         """長選項那一題不可以自己變成 2 欄，否則選項字母跟第一題對不齊。"""

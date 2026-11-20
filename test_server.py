@@ -2683,7 +2683,8 @@ class PaperGenerateTests(unittest.TestCase):
                 {'stem': f'解{i}', 'options': [], 'marks': 12,
                  'difficulty': '中', 'answer': 'x', 'steps': []} for i in range(5)]},
             {'title': '三、附加題', 'qtype': '附加題', 'questions': [
-                {'stem': '附加題', 'options': [], 'marks': 10, 'difficulty': '難',
+                {'stem': '已知函數 $f(x)=x^{2}-2x$。(1) 求 $f(3)$；(2) 求 $f(x)\\ge 0$ 的解集。',
+                 'options': [], 'marks': 10, 'difficulty': '難',
                  'answer': 'x', 'steps': []}]}]}
         out = self.call('POST', '/api/papers/generate', self.payload(
             source='ai', totalPoints=110,
@@ -3001,6 +3002,77 @@ class PaperGenerateTests(unittest.TestCase):
         self.assertEqual(len(kept[0]['figures']), 1, '確認時送的圖要存進我的試卷')
         raw = _b64.b64decode(out['docx'].split(',', 1)[1])
         self.assertEqual(len(Document(_io.BytesIO(raw)).inline_shapes), 1, 'Word 要把圖畫出來')
+
+    def test_heading_shows_question_count(self):
+        """大題標題要標明題數：「共 38 分」→「共 11 題，38 分」，且總分按實際題目加總。"""
+        self.app.ai.call = lambda *a, **k: {'sections': [
+            {'title': '一、選擇題', 'qtype': '選擇題', 'questions': [
+                {'stem': f'選{i}', 'options': ['A', 'B', 'C', 'D'], 'marks': 4,
+                 'difficulty': '易', 'answer': 'A', 'steps': []} for i in range(11)]}]}
+        out = self.call('POST', '/api/papers/generate', self.payload(
+            source='ai', qtypes=[{'type': '選擇題', 'optionCount': 4}],
+            totalPoints=44))
+        # 用範本重新渲染，檢查大題標題帶題數
+        sections = self.sections_of(out)
+        title = sections[0]['title']
+        # 細目表與標題由 paper_format 產生；直接測 _heading_text
+        import paper_format as _pf
+        qs = [_pf.Question(stem='q', marks=q['marks']) for q in sections[0]['questions']]
+        heading = _pf._heading_text('一、選擇題：（共 38 分）', title, qs)
+        self.assertIn('共 11 題', heading, '大題標題要標明題數')
+        self.assertIn('44 分', heading, '總分要按實際題目加總（11 題 × 4 分 = 44 分）')
+
+    def test_time_vs_quantity_warns_when_too_many(self):
+        """60 分鐘 40 題（每分鐘 0.67 題以下不算過多，但每分鐘 >2 題才警告）。"""
+        self.app.ai.call = lambda *a, **k: {'sections': [
+            {'title': '一、選擇題', 'qtype': '選擇題', 'questions': [
+                {'stem': f'選{i}', 'options': ['A', 'B', 'C', 'D'], 'marks': 2,
+                 'difficulty': '易', 'answer': 'A', 'steps': []} for i in range(30)]}]}
+        # 30 題 / 10 分鐘 = 每分鐘 3 題 → 太趕
+        out = self.call('POST', '/api/papers/generate', self.payload(
+            source='ai', qtypes=[{'type': '選擇題', 'optionCount': 4}],
+            totalPoints=60, duration=10))
+        self.assertTrue(any('偏多' in w for w in out.get('warnings', [])),
+                        '題量過多要有提醒')
+
+    def test_extra_question_must_have_two_sub_parts(self):
+        """附加題要一題兩問（(1) 中難度、(2) 偏難），且只出一題。"""
+        # 不帶 (1)(2) → 應被退回（problems）
+        def fake(*a, **k):
+            if '附加' in (a[1] if len(a) > 1 else '') or '附加' in str(k):
+                pass
+            return {'sections': [
+                {'title': '一、解答題', 'qtype': '解答題', 'questions': [
+                    {'stem': '求 $x$。', 'options': [], 'marks': 10,
+                     'difficulty': '中', 'answer': 'x', 'steps': []} for _ in range(9)]},
+                {'title': '二、附加題', 'qtype': '附加題', 'questions': [
+                    {'stem': '只一問的附加題', 'options': [], 'marks': 10,
+                     'difficulty': '難', 'answer': 'x', 'steps': []}]}]}
+        self.app.ai.call = fake
+        # 直接測檢核：附加題缺 (1)(2)
+        spec = {'totalPoints': 110, 'extraMarks': 10, 'duration': 60,
+                'difficulty': {'易': 6, '中': 3, '難': 1}, 'qtypes': [
+                    {'type': '解答題'}, {'type': '附加題'}]}
+        secs = [
+            server.paper_format.Section(title='一、解答題', questions=[
+                server.paper_format.Question(stem='求 $x$。', marks=10, difficulty='中')
+                for _ in range(9)]),
+            server.paper_format.Section(title='二、附加題', questions=[
+                server.paper_format.Question(stem='只一問', marks=10, difficulty='難')])]
+        problems, _ = server.paper_generation_check(spec, secs)
+        self.assertTrue(any('兩小問' in p for p in problems),
+                        '附加題缺 (1)(2) 要退回：' + str(problems))
+        # 帶兩問且難 → 通過
+        good = [
+            server.paper_format.Section(title='一、解答題', questions=[
+                server.paper_format.Question(stem='求 $x$。', marks=10, difficulty='中')
+                for _ in range(9)]),
+            server.paper_format.Section(title='二、附加題', questions=[
+                server.paper_format.Question(
+                    stem='(1) 求 $f(3)$；(2) 求 $f(x)\\ge 0$ 的解集。', marks=10, difficulty='難')])]
+        problems2, _ = server.paper_generation_check(spec, good)
+        self.assertFalse(any('兩小問' in p for p in problems2),
+                         '附加題帶兩問且偏難要通過：' + str(problems2))
 
     def test_saved_paper_tex_uses_the_same_template_as_word(self):
         """「下載 LaTeX」跟「下載 Word」要是同一份卷：卷頭、大題標題都照範本，不是另做一份。"""

@@ -2308,6 +2308,9 @@ PAPER_GEN_PROMPT = (
     '②所有題目 marks 加總必須剛好等於指定總分（先把配分算好再寫題目，不要最後才湊）；'
     '③選擇題 options 數量必須跟指定的一致（不要加 A. 前綴）；'
     '④若總分是 110 分，必須有「附加題」分部且剛好 10 分；'
+    '附加題只出一題，但這一題要包含兩小問：題幹先用「(1)」「(2)」分列，'
+    '首問（1）的難度設為「中」，第二問（2）設為「難」（整體 difficulty 記為「難」）；'
+    '兩小問要由淺入深、第二問以第一問為基礎再加深，不要兩問各論各；'
     '⑤題目要覆蓋指定測考範圍，難度按指定比例（易：中：難）分配，用語與命題風格依「參考方向」；'
     '⑥每題都要標 difficulty（只能是「易」「中」「難」）與 topic（該題考的中文知識點，例如「一元二次方程」「矩陣的乘法」）；'
     '⑥b每題都要標 source（出處／來源，30 字內，例如「校本題庫」「網路·2024高考真題」「AI 生成」，沒有就留空字串，'
@@ -2608,6 +2611,19 @@ def paper_generation_check(spec, sections, target=None, types=None, tolerance=0.
             problems.append(f'缺少「附加題」分部（要 {need:g} 分）')
         elif abs(sum((q.marks or 0) for q in extra[0].questions) - need) > 0.01:
             problems.append(f'附加題要剛好 {need:g} 分')
+        elif len(extra[0].questions) > 1:
+            # 附加題只出一題（這題內部含 (1)(2) 兩小問），不該出成好幾題。
+            problems.append('附加題只出一題，這一題裡面再用「(1)」「(2)」分兩小問；'
+                            f'目前出了 {len(extra[0].questions)} 題')
+        elif extra[0].questions:
+            eq = extra[0].questions[0]
+            # 兩小問：題幹要有 (1) 和 (2)
+            sub = re.findall(r'[（(]\s*[12]\s*[)）]', eq.stem or '')
+            if len(sub) < 2:
+                problems.append('附加題要一題兩問：題幹需同時有「(1)」與「(2)」兩小問')
+            # 難度：第二問偏難，整體標「難」
+            if eq.difficulty != '難':
+                problems.append('附加題的第二問偏難，整體難度應標「難」')
     for t in spec['qtypes']:
         if t['type'] != '選擇題':
             continue
@@ -2632,6 +2648,22 @@ def paper_generation_check(spec, sections, target=None, types=None, tolerance=0.
         if len(sec.questions) >= 4 and all(styles) and len(set(styles)) == 1:
             warnings.append(f'「{sec.title}」的 {len(sec.questions)} 題都是同一種寫法'
                             f'（{styles[0]}）；可按「更換」或再生成一次，讓題目多樣一些。')
+    # 時間與題量合理性：測考時間要跟題數、配分相稱。
+    #   - 每分鐘超過 2 題 → 太趕，學生做不完
+    #   - 每分鐘不到 0.5 題 → 太鬆，可能有題目過難或題數過少
+    # 只提示不退回：出卷優先權在老師手上，這裡幫忙把關「不合理」的組合。
+    duration = spec.get('duration') or 0
+    q_total = sum(len(sec.questions) for sec in sections)
+    if duration > 0 and q_total > 0:
+        per_minute = q_total / duration
+        if per_minute > 2.0:
+            warnings.append(
+                f'題量可能偏多：{duration:g} 分鐘要答 {q_total} 題（每分鐘約 {per_minute:.1f} 題），'
+                f'對一般學生偏趕；可減少題數或延長測考時間。')
+        elif per_minute < 0.4:
+            warnings.append(
+                f'題量可能偏少：{duration:g} 分鐘只有 {q_total} 題（每分鐘約 {per_minute:.1f} 題），'
+                f'若都是長題可接受，否則題目可能過少或過難。')
     return problems, warnings
 
 

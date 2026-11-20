@@ -887,6 +887,24 @@ HEADING_PREFIX_RE = re.compile(
 BRACKET_RE = re.compile(r'([（(])([^（）()]*)([)）])\s*$')
 EACH_MARKS_RE = re.compile(r'(每[題小])\s*[\d.]+\s*分')
 TOTAL_MARKS_RE = re.compile(r'共\s*[\d.]+\s*分')
+# 大題標題要標明題數：「共 38 分」→「共 11 題，38 分」。
+# 只取代「共…分」那一組，不動「每題 X 分」。
+COUNT_TOTAL_RE = re.compile(r'(共\s*)([\d.]+\s*分)')
+
+
+def _set_question_count(text: str, count: int) -> str:
+    """在「共 X 分」前面插入題數：「共 38 分」→「共 11 題，38 分」。
+
+    題數是老師看卷時第一個想知道的數字（「這大題有幾題」），只標總分不夠。
+    沒寫「共 X 分」就不動，避免在奇怪的標題上硬塞。
+    """
+    if not text or count <= 0:
+        return text
+
+    def repl(m):
+        return f'{m.group(1)}{count:g} 題，{m.group(2)}'
+
+    return COUNT_TOTAL_RE.sub(repl, text, count=1)
 
 
 def _set_each_marks(text: str, value: float) -> str:
@@ -963,6 +981,15 @@ def _heading_text(template_title: str, new_title: str, questions) -> str:
         before = tpl[tpl_prefix.end() if tpl_prefix else 0:tpl_b.start()]
         colon = '：' if before.rstrip().endswith(('：', ':')) else ''
     else:
+        # 範本沒有這個分部的標題（例如「附加題」是新加的分部）：
+        # 不能只印「二、附加題」卻不帶題數與配分，老師看不到這題值多少分。
+        marks = [q.marks for q in questions if q.marks is not None]
+        if marks and len(questions):
+            total = sum(marks)
+            # 解題長短不一，「每題 X 分」不準，一律只留題數與總分；
+            # 括號用全角，跟其他分部（一、解答題（共 10 題，100 分））同一種寫法。
+            out = f'共 {len(questions)} 題，{total:g} 分'
+            return f'{heading}（{out}）'
         return heading
     inner = bracket.group(2)
     # 括號用範本的寫法（半角「(…)」還是全角「（…）」），看起來才像同一份卷
@@ -980,6 +1007,7 @@ def _heading_text(template_title: str, new_title: str, questions) -> str:
         out = _set_total_marks(_set_each_marks(inner, value), value * len(questions))
         if not OBJECTIVE_RE.search(new):
             out = _strip_each_marks(out, value * len(questions))
+        out = _set_question_count(out, len(questions))
         return f'{heading}{colon}{open_ch}{out}{close_ch}'
     out = inner
     if len(set(marks)) == 1:
@@ -998,6 +1026,7 @@ def _heading_text(template_title: str, new_title: str, questions) -> str:
     if out == inner and not re.search(r'每[題小]|共', inner):
         # 範本只寫「（20 分）」這種總分：直接把那個數字換成新的總分
         out = re.sub(r'[\d.]+\s*分', f'{sum(marks):g} 分', inner, count=1)
+    out = _set_question_count(out, len(questions))
     return f'{heading}{colon}{open_ch}{out}{close_ch}'
 
 
