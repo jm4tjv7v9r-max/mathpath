@@ -7104,6 +7104,9 @@ function bulkGuessFields(parts){const isUser=v=>/^[A-Za-z0-9_.-]{3,40}$/.test(v)
 // 名單解析：姓名可以完全省略（只有學號、班內號、密碼也能匯入）；密碼省略時自動產生。
 function parseBulkStudents(text,order='auto'){const rows=[],errors=[];let fields=BULK_ORDERS[order]||null;const fixed=!!fields;String(text||'').split(/\r?\n/).forEach((line,i)=>{const raw=line.trim();if(!raw||raw.startsWith('#'))return;const parts=raw.split(/[,\t，;；]/).map(v=>v.trim());const header=bulkHeaderFields(parts);if(header){if(!fixed)fields=header;return;}if(!fields)fields=bulkGuessFields(parts);if(!fields){errors.push(`第 ${i+1} 行格式不正確：需要「學號,班內號,密碼」或「姓名,學號,密碼」，每行一位學生。`);return;}const least=fields[fields.length-1]==='password'?fields.length-1:fields.length;if(parts.length<least||parts.length>fields.length){errors.push(`第 ${i+1} 行欄位數不正確，需要「${fields.map(f=>BULK_FIELD_NAMES[f]).join(',')}」。`);return;}const rec={};fields.forEach((f,idx)=>{rec[f]=(parts[idx]||'').trim();});if(!rec.username){errors.push(`第 ${i+1} 行學號不可留空。`);return;}if(!/^[A-Za-z0-9_.-]{3,40}$/.test(rec.username)){errors.push(`第 ${i+1} 行學號須為3至40個英文字母、數字或 _ . -。`);return;}if(rec.seat&&!/^[A-Za-z0-9-]{1,20}$/.test(rec.seat)){errors.push(`第 ${i+1} 行班內號只接受1至20個英文字母、數字或連字號。`);return;}if(rec.password&&rec.password.length<10){errors.push(`第 ${i+1} 行密碼必須至少10字。`);return;}rows.push({name:rec.name||'',username:rec.username,seat:rec.seat||'',password:rec.password||randomPassword(),generated:!rec.password});});return{rows,errors,fields};}
 let ROSTER_USERS=[],ROSTER_OWNER=null;
+// 記住目前開的是哪一頁（學生／教師／全部），編輯、刪除、停用、清除手寫圖完成後
+// 要回到同一頁，而不是每次都跳回「帳號管理」。
+let ROSTER_FOCUS='all';
 // 誰能改這個帳號：管理員可改全部；教師可改自己與自己建立的學生；其餘只可檢視。
 function canEditAccount(u){return !!S.user?.isOwner||u.id===S.user?.id||(u.role==='student'&&u.createdBy===S.user?.id);}
 // 誰可以刪這個帳號：教師→只有管理員（且不能刪自己與管理員）；學生→匯入老師或管理員。
@@ -7148,7 +7151,7 @@ function editAccountModal(id){
     <p class="error-text" id="delete-error"></p>
     <button class="danger" type="button" id="delete-account">${icon('trash')}刪除帳號</button>
   </div>`:''}`);
-  $('#edit-cancel').onclick=()=>manageUsers();
+  $('#edit-cancel').onclick=()=>manageUsers(ROSTER_FOCUS);
   if($('#delete-account'))$('#delete-account').onclick=async()=>{
     const typed=$('#delete-confirm').value;
     if(typed.trim().toUpperCase()!=='DELETE'){$('#delete-error').textContent='請輸入 DELETE 確認。';return;}
@@ -7156,7 +7159,7 @@ function editAccountModal(id){
     const b=$('#delete-account');b.disabled=true;$('#delete-error').textContent='';
     try{const r=await api(`/api/users/${id}/delete`,{confirm:typed});
       toast(`已刪除 ${r.deleted.name} 的帳號：${r.removed.attempts} 筆作答${r.imagesDeleted?`、${r.imagesDeleted} 張圖片`:''}。`);
-      await manageUsers();}
+      await manageUsers(ROSTER_FOCUS);}
     catch(err){$('#delete-error').textContent=err.message;b.disabled=false;}
   };
   $('#account-edit-form').onsubmit=async e=>{
@@ -7176,12 +7179,12 @@ function editAccountModal(id){
       // 重設自己的密碼會刪掉目前這個登入，直接回到登入畫面，免得後續請求全部 401。
       if(body.password&&self){closeModal();S.user=null;shell();loginModal();toast('密碼已更新，請用新密碼重新登入。');return;}
       toast(`已更新 ${r.user.username} 的${r.changed.join('、')}。${r.passwordReset?`已登出${teacher?'該教師':'該生'}目前的登入。`:''}`);
-      await manageUsers();}
+      await manageUsers(ROSTER_FOCUS);}
     catch(err){$('#edit-error').textContent=err.message;b.disabled=false;}
   };
 }
 // focus：'all' 顯示全部（相容舊入口）、'teacher' 只顯示教師、'student' 只顯示學生
-async function manageUsers(focus='all'){try{const {users,ownerId}=await api('/api/users');ROSTER_USERS=users;ROSTER_OWNER=ownerId;
+async function manageUsers(focus='all'){ROSTER_FOCUS=focus;try{const {users,ownerId}=await api('/api/users');ROSTER_USERS=users;ROSTER_OWNER=ownerId;
 const teachers=users.filter(u=>u.role==='teacher'),students=users.filter(u=>u.role==='student');
 const canAddTeacher=!!S.user?.isOwner;
 const headHtml=`<p class="eyebrow">ACCOUNTS</p><h2>${focus==='teacher'?'教師帳號':focus==='student'?'學生帳號':'帳號管理'}</h2>
@@ -7227,7 +7230,7 @@ if(b.id==='open-math-editor'){openMathEditor();return;}
     const uid=Number(b.dataset.purgeImg),uname=b.dataset.purgeName||'';
     if(await askCancel(`清除「${uname}」的所有手寫圖與批註圖？\n\n⚠️ 會刪除網盤上的圖片檔，無法復原。\n作答紀錄與分數會保留。`))return;
     b.disabled=true;
-    api(`/api/users/${uid}/images/delete`,{}).then(r=>{toast(`已清除 ${r.images} 個圖片、${r.attempts} 筆作答的圖片欄位。`);manageUsers();})
+    api(`/api/users/${uid}/images/delete`,{}).then(r=>{toast(`已清除 ${r.images} 個圖片、${r.attempts} 筆作答的圖片欄位。`);manageUsers(ROSTER_FOCUS);})
       .catch(err=>{b.disabled=false;toast(err.message);});
     return;
   }
@@ -7239,7 +7242,7 @@ if(b.id==='open-math-editor'){openMathEditor();return;}
     if(await askCancel(ask))return;
     b.disabled=true;
     api(`/api/users/${uid}/disabled`,{disabled:off})
-      .then(()=>{toast(off?'已停用，該帳號目前的登入已失效。':'已重新啟用。');manageUsers();})
+      .then(()=>{toast(off?'已停用，該帳號目前的登入已失效。':'已重新啟用。');manageUsers(ROSTER_FOCUS);})
       .catch(err=>{b.disabled=false;toast(err.message);});
     return;
   }
@@ -7252,7 +7255,7 @@ if(b.id==='open-math-editor'){openMathEditor();return;}
     if(typed===null)return;
     if(typed.trim()!=='DELETE')return toast('未輸入 DELETE，已取消。');
     b.disabled=true;
-    api(`/api/users/${uid}/delete`,{confirm:'DELETE'}).then(()=>{toast('帳號已刪除。');manageUsers();})
+    api(`/api/users/${uid}/delete`,{confirm:'DELETE'}).then(()=>{toast('帳號已刪除。');manageUsers(ROSTER_FOCUS);})
       .catch(err=>{b.disabled=false;toast(err.message);});
     return;
   }
