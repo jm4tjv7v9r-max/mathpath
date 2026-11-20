@@ -2283,6 +2283,77 @@ def ai_answer_draft(app, body):
     return {**answer, 'qtype': qtype, 'options': options, 'method': 'AI 生成'}
 
 
+LEVEL_NAMES = ('', '基礎', '鞏固', '進階')
+
+
+def ai_question_draft(app, body):
+    """請 AI 依分類、年級、難度與題型「生成一道全新的題目」（含選項、答案、詳解）。
+
+    與 ai_answer_draft 的分別：那邊是「老師已寫好題目，AI 補答案」；
+    這邊是「老師只給方向，AI 出整道題」，所以要求模型自擬數字與情境。
+    """
+    if not app.ai.configured:
+        fail(409, '尚未設定 AI 模型；請先設定模型端點，或手動輸入題目。')
+    topic = body.get('topic') if body.get('topic') in TOPICS else TOPICS[0]
+    subtopic = body.get('subtopic') if isinstance(body.get('subtopic'), str) else ''
+    if subtopic and subtopic not in TOPIC_TREE.get(topic, ()):
+        subtopic = ''
+    grade = body.get('grade') if body.get('grade') in GRADES else '中三'
+    level = number(body['level'], '難度', 1, 3, True) if 'level' in body else 2
+    qtype = body.get('qtype') if body.get('qtype') in QTYPES else '解答題'
+    points = number(body['points'], '分值', 1, 100, True) if 'points' in body else 5
+    brief = text(body.get('brief', ''), '出題要求', 600, empty=True)
+    app.ai.consent(body.get('consentExternal'))
+    objective = qtype in OBJECTIVE_QTYPES
+    instruction = (
+        '你是資深中學數學教師。請按以下條件出一道全新的題目（數字與情境自擬，不要照抄常見例題）。'
+        f'年級：{grade}；知識分類：{topic}；子分類：{subtopic or "（不限）"}；'
+        f'難度：{LEVEL_NAMES[level]}；題型：{qtype}；分值：{points} 分。'
+        + (f'老師的額外要求：{brief}。' if brief else '')
+        + '返回 {title:str,content:str,options:[str],answer:str,steps:[str],analysis:str,'
+        'rubric:[{label:str,percent:number}]}。'
+        'title：15 字以內的中文短標題，說明考什麼。'
+        'content：完整題幹，就是學生看到的文字，不可包含答案或解法。'
+        + ('options：選擇題必須給 4 個選項，只寫選項內容、不要加「A.」這類前綴；'
+           '四個選項長度相近，只有一個正確。' if qtype == '選擇題'
+           else 'options：非選擇題一律給空陣列 []。')
+        + 'answer：選擇題只填正確選項的字母（A／B／C／D）；填空題填最終答案；'
+        '解答題填完整結論。'
+        'steps：完整解法，逐步寫出關鍵式子與理由，至少 2 步。'
+        'analysis：詳細解釋（二至四句），說明考點、解題思路與常見錯誤。'
+        + ('rubric：客觀題不需要評分標準，必須是空陣列 []。' if objective
+           else 'rubric：評分標準 3 至 6 項，每項 {label:評分要點,percent:佔分百分比}，'
+                '全部 percent 加總必須等於 100。')
+        + '數學式一律用 LaTeX：行內用 $...$。必須自行核算，確保題目有解、答案正確、'
+        '難度符合要求，不要捏造。'
+    )
+    result = app.ai.call(instruction, {'request': {'grade': grade, 'topic': topic, 'subtopic': subtopic,
+                                                   'level': LEVEL_NAMES[level], 'qtype': qtype,
+                                                   'points': points, 'brief': brief}})
+    if not isinstance(result, dict):
+        fail(502, 'AI 沒有回傳可用的題目；請調整出題要求後重試。')
+    raw_title = result.get('title')
+    title = repair_katex_html(raw_title if isinstance(raw_title, str) else '').strip()[:200]
+    raw_content = result.get('content')
+    content = repair_katex_html(raw_content if isinstance(raw_content, str) else '').strip()
+    if not content:
+        fail(502, 'AI 沒有產生題目內容；請調整出題要求後重試。')
+    options = []
+    raw_options = result.get('options')
+    if qtype == '選擇題' and isinstance(raw_options, list):
+        options = [repair_katex_html(str(v)).strip()[:600] for v in raw_options if str(v).strip()]
+        options = options[:len(OPTION_LETTERS)]
+        if len(options) < 2:
+            options = []
+    answer = coerce_ai_answer(result, qtype, options)
+    if answer is None:
+        fail(502, 'AI 沒有產生可用的答案；請重試，或手動輸入題目。')
+    if objective:
+        answer['rubric'] = []
+    return {'title': title or subtopic or topic, 'content': content[:79000], 'qtype': qtype,
+            'options': options, **answer, 'method': 'AI 生成'}
+
+
 # 教師端 /api/state 最多帶幾筆作答（其餘由 /api/reviews 分頁取）。
 TEACHER_ATTEMPT_CAP = 200
 PAPER_QTYPES = ('選擇題', '填空題', '解答題', '證明題', '附加題')
@@ -9738,6 +9809,14 @@ class Application:
             if 'consentExternal' in body and type(body['consentExternal']) is not bool:
                 fail(400, '外部上傳同意必須是布林值。')
             return ai_answer_draft(self, body), headers
+        if method == 'POST' and path == '/api/questions/ai-generate':
+            # 教師：只給分類、年級、難度與題型，請 AI 出一整道新題（含選項、答案、詳解）。
+            self.teacher(user)
+            fields(body, ('topic', 'subtopic', 'grade', 'level', 'qtype', 'points', 'brief',
+                          'consentExternal'), ())
+            if 'consentExternal' in body and type(body['consentExternal']) is not bool:
+                fail(400, '外部上傳同意必須是布林值。')
+            return ai_question_draft(self, body), headers
         if method == 'POST' and path == '/api/questions/ai-figure':
             # 教師：請 AI 先輸出圖形規格，再由程式畫成 SVG（附規格與自動檢查結果）。
             self.teacher(user)

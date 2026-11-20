@@ -3302,3 +3302,21 @@ html[data-role=teacher][data-theme=night] .feature-list li .icon{color:#b3d0f2 !
 .student-picks .pick-row strong{font-size:calc(14px*var(--fs))}
 .student-picks .pick-row small{font-size:calc(12px*var(--fs));margin-top:3px}
 @media(max-width:740px){.modal.class-modal{width:min(480px,100%)}.student-picks{grid-template-columns:1fr;max-height:320px}}
+
+/* 題目表單：題目標題／知識分類／子分類 放同一行（三欄），其餘欄位從第二行開始。 */
+.form-grid.form-grid-3{grid-template-columns:repeat(3,minmax(0,1fr))}
+@media(max-width:1180px){.form-grid.form-grid-3{grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}}
+@media(max-width:960px){.form-grid.form-grid-3{grid-template-columns:1fr 1fr}.form-grid.form-grid-3 .form-field:first-child{grid-column:1/-1}}
+@media(max-width:740px){.form-grid.form-grid-3{grid-template-columns:1fr}.form-grid.form-grid-3 .form-field:first-child{grid-column:auto}}
+/* AI 生成題目：一句話要求 + 按鈕，放在表單最上面。 */
+.ai-gen-box{border:1px dashed #cfe0d4;background:#f7fbf6;border-radius:9px;padding:14px 16px;margin:0 0 18px}
+.ai-gen-box .ai-gen-row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.ai-gen-box .ai-gen-row input{flex:1 1 260px;min-width:0;padding:11px 12px;border:1px solid var(--border);border-radius:7px;color:#607c65;background:#fff}
+.ai-gen-box .ai-gen-row button{flex:0 0 auto}
+.ai-gen-box .field-hint{margin:9px 0 0}
+@media(max-width:740px){.ai-gen-box .ai-gen-row button{width:100%}}
+
+/* 題目表單第二行：年級／難度／題型／分值 剛好一行四欄。 */
+.form-grid.form-grid-4{grid-template-columns:repeat(4,minmax(0,1fr))}
+@media(max-width:1180px){.form-grid.form-grid-4{grid-template-columns:1fr 1fr;gap:10px}}
+@media(max-width:740px){.form-grid.form-grid-4{grid-template-columns:1fr}}

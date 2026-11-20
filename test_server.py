@@ -1413,6 +1413,41 @@ class APITests(unittest.TestCase):
         self.app.ai.configured = False
         self.request('POST', '/api/questions/ai-answer', payload, cookie=self.teacher, expect=409)
 
+    def test_ai_generate_question_endpoint(self):
+        """AI 出題：只給分類、年級、難度與題型，回傳一整道新題（含選項、答案、詳解）。"""
+        canned = {'title': '外套折扣', 'content': '一件外套原價 $200$ 元，打八折後售價多少？',
+                  'options': ['$160$ 元', '$180$ 元', '$140$ 元', '$120$ 元'],
+                  'answer': 'A', 'steps': ['八折＝原價的 80%。', '$200\\times0.8=160$。'],
+                  'analysis': '考百分比折扣；常見錯誤是把八折當成減 8 元。', 'rubric': []}
+        payload = {'topic': '數與數系', 'subtopic': '正數與負數', 'grade': '中三', 'level': 1,
+                   'qtype': '選擇題', 'points': 5, 'brief': '用超巿折扣情境'}
+        self.app.ai.configured = True
+        with patch.object(self.app.ai, 'call', return_value=canned) as ai:
+            # 學生不可使用；而且不能白呼叫模型
+            self.request('POST', '/api/questions/ai-generate', payload, cookie=self.student, expect=403)
+            ai.assert_not_called()
+            _, body, _ = self.request('POST', '/api/questions/ai-generate', payload,
+                                      cookie=self.teacher, expect=200)
+        self.assertEqual(body['title'], '外套折扣')
+        self.assertIn('八折', body['content'])
+        self.assertEqual(len(body['options']), 4)
+        self.assertIn(body['answer'], list('ABCD'), '選擇題答案要正規化成選項字母')
+        self.assertEqual(body['qtype'], '選擇題')
+        self.assertEqual(body['rubric'], [], '客觀題不該有評分標準')
+        self.assertEqual(body['method'], 'AI 生成')
+        # 解答題：AI 給了選項也要被清掉
+        essay = dict(payload, qtype='解答題')
+        with patch.object(self.app.ai, 'call', return_value=dict(canned, options=['a', 'b'])):
+            _, body2, _ = self.request('POST', '/api/questions/ai-generate', essay,
+                                       cookie=self.teacher, expect=200)
+        self.assertEqual(body2['options'], [], '非選擇題不該帶選項')
+        # 沒有題幹 → 502，不讓空白題目進到表單
+        with patch.object(self.app.ai, 'call', return_value={'title': 'x', 'content': '   '}):
+            self.request('POST', '/api/questions/ai-generate', payload, cookie=self.teacher, expect=502)
+        # 未設定 AI → 409
+        self.app.ai.configured = False
+        self.request('POST', '/api/questions/ai-generate', payload, cookie=self.teacher, expect=409)
+
     def test_handwritten_verdict_for_full_partial_and_wrong(self):
         # 手寫作答要有整體判定（全對／全錯／部分正確），前端據此在手稿上蓋紅剔／紅叉／紅剔加一撇。
         self.app.ai.configured = True

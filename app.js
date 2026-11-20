@@ -2726,7 +2726,7 @@ function newQuestionPage(){
   }
   newQuestionFigure='';
   const state={options:[],rubric:[]};
-  $('#main').innerHTML=`<div class="fade-in">${heading('NEW QUESTION','新增題目','不必先匯入整份試卷，直接建立一道題目；圖形可以用 AI 生成、自己手繪或上傳圖片。')}<div class="import-layout"><section class="panel import-panel"><div class="form-field"><label class="field-label">題目圖形（可選）</label><div class="fig-source-row"><button type="button" class="secondary" id="newq-figure-btn">${icon('image')}開啟題目圖形</button><button type="button" class="secondary" id="newq-figure-clear">移除圖形</button><span class="small-text">AI 生成、核對、手繪、貼上或上傳圖片都在同一個工作室</span></div><div id="newq-figure-preview" class="fig-image-preview"></div></div>${questionFormHtml('newq',{submitLabel:'建立題目'})}</section><div class="right-stack"><section class="panel right-panel"><h2>${icon('bulb')}出題小提示</h2><ul class="feature-list"><li><strong>${icon('spark')}AI 生成答案</strong>填好題目內容後可按「AI 生成答案與評分標準」，產生的內容仍可自行修改。</li><li><strong>${icon('image')}題目圖形</strong>AI 畫得不對時，可以在工作室裡直接手繪，也可以上傳課本截圖或貼上圖片。</li><li><strong>${icon('check')}建立之後</strong>題目直接進入題庫，可以立即用來佈置作業或讓學生練習。</li></ul></section></div></div></div>`;
+  $('#main').innerHTML=`<div class="fade-in">${heading('NEW QUESTION','新增題目','不必先匯入整份試卷，直接建立一道題目；圖形可以用 AI 生成、自己手繪或上傳圖片。')}<div class="import-layout"><section class="panel import-panel"><div class="form-field"><label class="field-label">題目圖形（可選）</label><div class="fig-source-row"><button type="button" class="secondary" id="newq-figure-btn">${icon('image')}開啟題目圖形</button><button type="button" class="secondary" id="newq-figure-clear">移除圖形</button><span class="small-text">AI 生成、核對、手繪、貼上或上傳圖片都在同一個工作室</span></div><div id="newq-figure-preview" class="fig-image-preview"></div></div><div class="ai-gen-box"><label class="field-label" for="newq-brief">AI 生成題目</label><div class="ai-gen-row"><input id="newq-brief" maxlength="600" placeholder="一句話說明想要什麼題目，例如：用超巿折扣情境考一元一次方程"><button type="button" class="secondary" id="newq-ai-gen">${icon('spark')}AI 生成題目</button></div><p class="field-hint">會依下面選的知識分類、子分類、年級、難度與題型生成一道新題，直接填入題目內容、選項、答案與詳解；生成後仍可自行修改。</p></div>${questionFormHtml('newq',{submitLabel:'建立題目'})}</section><div class="right-stack"><section class="panel right-panel"><h2>${icon('bulb')}出題小提示</h2><ul class="feature-list"><li><strong>${icon('spark')}AI 生成答案</strong>填好題目內容後可按「AI 生成答案與評分標準」，產生的內容仍可自行修改。</li><li><strong>${icon('image')}題目圖形</strong>AI 畫得不對時，可以在工作室裡直接手繪，也可以上傳課本截圖或貼上圖片。</li><li><strong>${icon('check')}建立之後</strong>題目直接進入題庫，可以立即用來佈置作業或讓學生練習。</li></ul></section></div></div></div>`;
   renderNewQuestionFigure();
   $('#newq-figure-btn').onclick=()=>openFigureStudio({
     title:$('#newq-title').value.trim(),content:$('#newq-content').value.trim(),
@@ -2735,6 +2735,35 @@ function newQuestionPage(){
     apply:async figure=>{newQuestionFigure=figure||'';closeModal();renderNewQuestionFigure();
       toast(figure?'已設定題目圖形。':'已移除題目圖形。');}});
   $('#newq-figure-clear').onclick=()=>{newQuestionFigure='';renderNewQuestionFigure();toast('已移除題目圖形。');};
+  // AI 出題：只給方向（分類／年級／難度／題型＋一句話要求），由 AI 出整道題；
+  // 生成結果直接填進下面的表單，老師核對、修改後才按「建立題目」。
+  $('#newq-ai-gen').onclick=async()=>{
+    if(!S.ai.configured)return toast('AI 尚未設定：請先設定模型端點，或手動輸入題目。');
+    if(!(await aiConfirmExternal()))return;
+    const btn=$('#newq-ai-gen'),old=btn.innerHTML;
+    btn.disabled=true;btn.innerHTML=icon('clock')+'AI 出題中…';
+    $('#newq-error').textContent='';
+    try{
+      const r=await api('/api/questions/ai-generate',{
+        topic:$('#newq-topic').value,subtopic:$('#newq-subtopic').value,
+        grade:$('#newq-grade').value,level:Number($('#newq-level').value),
+        qtype:$('#newq-qtype').value,points:Number($('#newq-points').value)||5,
+        brief:$('#newq-brief').value.trim(),consentExternal:true});
+      if(r.title)$('#newq-title').value=r.title;
+      $('#newq-content').value=r.content||'';
+      $('#newq-answer').value=r.answer||'';
+      $('#newq-steps').value=(r.steps||[]).join('\n');
+      $('#newq-analysis').value=r.analysis||'';
+      if($('#newq-qtype').value==='選擇題'&&(r.options||[]).length){
+        state.options.length=0;r.options.forEach(o=>state.options.push(o));renderQuestionOptions('newq',state);
+      }
+      const store=rubricStores.get('newq'),items=store?store.items:null;
+      if(items){items.length=0;(r.rubric||[]).forEach(x=>items.push(x));}
+      rubricRender('newq');
+      toast('AI 已生成題目、選項、答案與詳解；請核對後按「建立題目」。');
+    }catch(e){$('#newq-error').textContent=e.message;}
+    finally{btn.disabled=false;btn.innerHTML=old;}
+  };
   wireQuestionForm('newq',state,{figure:()=>newQuestionFigure||undefined,onSubmit:async draft=>{
     const btn=$('#newq-add');
     btn.disabled=true;btn.textContent='正在建立…';
@@ -2757,10 +2786,12 @@ function newQuestionPage(){
 function questionFormHtml(prefix, opts){
   const o=opts||{};
   const qtype=o.qtype||'選擇題';
-  return `<div class="form-grid">
+  return `<div class="form-grid form-grid-3">
     <div class="form-field"><label class="field-label" for="${prefix}-title">題目標題</label><input id="${prefix}-title" maxlength="200" placeholder="例如：直角三角形求斜邊"></div>
     <div class="form-field"><label class="field-label" for="${prefix}-topic">知識分類</label><select id="${prefix}-topic">${topics.map(t=>`<option>${t}</option>`).join('')}</select></div>
     <div class="form-field"><label class="field-label" for="${prefix}-subtopic">子分類</label><select id="${prefix}-subtopic"></select></div>
+  </div>
+  <div class="form-grid form-grid-4">
     <div class="form-field"><label class="field-label" for="${prefix}-grade">年級</label><select id="${prefix}-grade">${grades.map(g=>`<option${g==='中三'?' selected':''}>${g}</option>`).join('')}</select></div>
     <div class="form-field"><label class="field-label" for="${prefix}-level">難度</label><select id="${prefix}-level">${[1,2,3].map(n=>`<option value="${n}">${levels[n]}</option>`).join('')}</select></div>
     <div class="form-field"><label class="field-label" for="${prefix}-qtype">題型</label><select id="${prefix}-qtype">${qtypes.map(t=>`<option>${t}</option>`).join('')}</select></div>
@@ -2832,6 +2863,8 @@ function wireQuestionForm(prefix, state, opts){
       hint:el('hint').value.trim(),source:o.source||'手動輸入',tags:o.tags||[],
       figure:o.figure?o.figure():undefined});
   };
+  // 初次載入也要跑一次 change：預設題型是選擇題，選項欄本來就該顯示（不然要切一次題型才看得到）。
+  if(el('qtype'))el('qtype').dispatchEvent(new Event('change',{bubbles:true}));
 }
 
 const manualState={options:[],rubric:[]};
