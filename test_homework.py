@@ -158,6 +158,29 @@ class HomeworkTests(unittest.TestCase):
         # 已經刪掉 → 404
         self.error(404, 'POST', f'/api/classes/{cid}/delete', {}, self.teacher)
 
+    def test_class_roster_export(self):
+        """匯出學生名單：回學號、姓名、班內號、年級；不含密碼；按班內號排序。"""
+        with self.app.db() as db:
+            db.execute("UPDATE users SET seat=?, grade=? WHERE id=?", ('10', '中四', 1))
+            db.execute("UPDATE users SET seat=?, grade=? WHERE id=?", ('2', '中三', 3))
+        out = self.call('GET', f'/api/classes/{self.cid}/roster', None, self.teacher)
+        self.assertEqual(out['class']['name'], '三年级')
+        self.assertEqual(out['class']['studentCount'], 2)
+        rows = out['students']
+        self.assertEqual([r['seat'] for r in rows], ['2', '10'], '班內號要按數字排序，不是字串排序')
+        self.assertEqual([r['grade'] for r in rows], ['中三', '中四'])
+        for r in rows:
+            self.assertIn('username', r)
+            self.assertIn('name', r)
+            self.assertNotIn('password', r, '名單不該帶密碼（雜湊也不該外流）')
+
+        # 別的教師不能匯出（不是自己班）
+        self.error(403, 'GET', f'/api/classes/{self.cid}/roster', None, user=self.teacher2)
+        # 不存在的班級 → 404
+        self.error(404, 'GET', '/api/classes/99999/roster', None, self.teacher)
+        # 學生不能呼叫
+        self.error(403, 'GET', f'/api/classes/{self.cid}/roster', None, self.student)
+
     def test_class_delete_blocked_when_has_assignments(self):
         """有作業的班級不能刪（避免作業變孤兒、學生成績無處可查）。"""
         aid = self.assignment()

@@ -3936,8 +3936,17 @@ class DataAdminTests(unittest.TestCase):
         _, out, _ = self.request('POST', path, {'name': '陳大文', 'seat': '9'},
                                  cookie=self.teacher, expect=200)
         self.assertEqual(out['user'], {'id': uid, 'username': 'u1a01', 'name': '陳大文',
-                                       'role': 'student', 'seat': '9'})
+                                       'role': 'student', 'seat': '9', 'grade': None})
         self.assertEqual(out['changed'], ['姓名', '班內號'])
+        # 年級（排行榜用）：路由層白名單要放行 grade，否則編輯年級會 400。
+        _, out, _ = self.request('POST', path, {'grade': '中四'}, cookie=self.teacher, expect=200)
+        self.assertEqual(out['user']['grade'], '中四')
+        self.assertEqual(out['changed'], ['年級'])
+        # 不合法年級要 400，且不能寫進資料庫
+        self.request('POST', path, {'grade': '中七'}, cookie=self.teacher, expect=400)
+        # 可以清空年級（不列入排行榜）
+        _, out, _ = self.request('POST', path, {'grade': ''}, cookie=self.teacher, expect=200)
+        self.assertIsNone(out['user']['grade'])
         # 改學號；被別人用掉要 409
         _, out, _ = self.request('POST', path, {'username': 'u1a01x'}, cookie=self.teacher, expect=200)
         self.assertEqual(out['user']['username'], 'u1a01x')

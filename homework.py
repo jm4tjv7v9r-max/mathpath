@@ -1039,6 +1039,29 @@ class Homework:
                               'studentCount': len(roster), 'assignmentCount': len(assignments)},
                     'students': students}
 
+        class_roster = re.fullmatch(r'/api/classes/([1-9]\d{0,17})/roster', path)
+        if class_roster and method == 'GET':
+            # 匯出學生名單：只回名單需要的欄位。密碼是雜湊、取不回來，所以不在名單裡。
+            self.app.teacher(user)
+            cid = int(class_roster[1])
+            with self.app.db() as db:
+                classroom = db.execute('SELECT * FROM classes WHERE id=?', (cid,)).fetchone()
+                if not classroom:
+                    self.fail(404, '找不到班級。')
+                if classroom['teacher_id'] != user['id'] and not self.app.is_owner(user, db):
+                    self.fail(403, '只能匯出自己班級的名單。')
+                rows = db.execute(
+                    'SELECT u.id, u.username, u.name, u.seat, u.grade, u.disabled '
+                    'FROM class_students s JOIN users u ON u.id=s.user_id '
+                    'WHERE s.class_id=? ORDER BY '
+                    "CASE WHEN u.seat IS NULL OR trim(u.seat)='' THEN 1 ELSE 0 END, "
+                    'CAST(u.seat AS INTEGER), u.seat, u.name, u.id', (cid,)).fetchall()
+            return {'class': {'id': classroom['id'], 'name': classroom['name'],
+                              'studentCount': len(rows)},
+                    'students': [{'id': r['id'], 'username': r['username'], 'name': r['name'],
+                                  'seat': r['seat'], 'grade': r['grade'],
+                                  'disabled': bool(r['disabled'])} for r in rows]}
+
         class_del = re.fullmatch(r'/api/classes/([1-9]\d{0,17})/delete', path)
         if method == 'POST' and class_del:
             # 刪除班級：只有建立者或管理員可以。有作業的班級先拒絕，避免作業變孤兒、

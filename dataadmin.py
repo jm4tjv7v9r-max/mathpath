@@ -470,7 +470,7 @@ class DataAdmin:
         if not assignments:
             self.fail(400, '沒有要修改的欄位。')
         db.execute('UPDATE users SET %s WHERE id=?' % ','.join(assignments), (*values, uid))
-        updated = db.execute('SELECT id,username,name,role,seat FROM users WHERE id=?', (uid,)).fetchone()
+        updated = db.execute('SELECT id,username,name,role,seat,grade FROM users WHERE id=?', (uid,)).fetchone()
         return {'user': dict(updated), 'changed': changed,
                 'passwordReset': bool(revoked), 'sessionsRevoked': revoked}
 
@@ -525,7 +525,7 @@ class DataAdmin:
         if not assignments:
             self.fail(400, '沒有要修改的欄位。')
         db.execute('UPDATE users SET %s WHERE id=?' % ','.join(assignments), (*values, uid))
-        updated = db.execute('SELECT id,username,name,role,seat FROM users WHERE id=?', (uid,)).fetchone()
+        updated = db.execute('SELECT id,username,name,role,seat,grade FROM users WHERE id=?', (uid,)).fetchone()
         return {'user': dict(updated), 'changed': changed,
                 'passwordReset': bool(revoked), 'sessionsRevoked': revoked}
 

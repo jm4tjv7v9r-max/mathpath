@@ -9320,7 +9320,7 @@ class Application:
             # 編輯帳戶：只改有填的欄位；重設密碼會同時登出該使用者。
             # 管理員可改任何帳號；一般教師只能改自己，或自己建立的學生。
             self.teacher(user)
-            fields(body, ('username', 'name', 'seat', 'password'), ())
+            fields(body, ('username', 'name', 'seat', 'grade', 'password'), ())
             with self.db() as db:
                 db.execute('BEGIN IMMEDIATE')
                 return self.dataadmin.update_user(db, int(update_user[1]), body, actor=user), headers
