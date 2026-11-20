@@ -1675,6 +1675,20 @@ class APITests(unittest.TestCase):
         visible = [q for q in tstate['questions'] if q['title'] == '隱藏測試'][0]
         self.assertEqual(visible['rubric'], [{'label': 'A', 'percent': 100.0}])
 
+    def test_skipped_question_needs_no_external_consent(self):
+        # 「本題不會」沒有作答內容要送給 AI，外部模式下不該要求同意（否則學生被 403 擋住）。
+        self.app.ai.configured = True
+        self.app.ai.mode = 'external'
+        aid = self.ai_assignment([1])
+        with patch.object(self.app.ai, 'call') as ai:
+            # 不帶 consentExternal，也不該 403；且不應呼叫模型。
+            _, response, _ = self.request('POST', '/api/attempts',
+                                          {'questionId': 1, 'skipped': True, 'assignmentId': aid},
+                                          cookie=self.student, expect=200)
+            ai.assert_not_called()
+            self.assertTrue(response['attempt']['skipped'])
+            self.assertEqual(response['attempt']['gradingMethod'], 'awaiting-review')
+
     def test_external_consent_and_ai_grade_validation(self):
         self.app.ai.configured = True
         self.app.ai.mode = 'external'

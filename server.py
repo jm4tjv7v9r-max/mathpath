@@ -10324,7 +10324,9 @@ class Application:
             else:
                 ai_grading = True
                 practice_mode = True
-            if self.ai.configured and ai_grading:
+            if self.ai.configured and ai_grading and not skipped:
+                # 只有真的會把作答送給 AI 才需要同意；「本題不會」沒有作答內容，
+                # 不會呼叫模型，不需要也不應要求外部上傳同意（否則學生被 403 擋住）。
                 self.ai.consent(body.get('consentExternal'))
             has_image = image is not None
             image_key = None
