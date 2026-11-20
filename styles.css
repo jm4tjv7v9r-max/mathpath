@@ -3373,3 +3373,9 @@ body.math-kb-open .modal{max-height:calc(100dvh - var(--math-kb,240px) - 32px)}
    紫底配深紫字對比只有 1.6:1，幾乎看不見（學生作業頁）。 */
 .assignment-question-row .practice-btn{color:#fff!important}
 .assignment-question-row .practice-btn:disabled{color:#93a597!important}
+
+/* ── 金幣頁「總計」排序 ──────────────────────────────────────────────── */
+/* 表頭可點擊排序：給一點可點擊的視覺提示（顏色、游標），排序箭頭用主色。 */
+.coin-table th.coin-sortable{cursor:pointer;user-select:none;white-space:nowrap;color:#5f8b52}
+.coin-table th.coin-sortable:hover{color:#3f6b34;text-decoration:underline}
+.coin-table th.coin-sortable:active{color:#2f5226}

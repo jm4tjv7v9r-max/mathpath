@@ -5512,6 +5512,9 @@ async function teacherCoinsPage(){
   try{data=await api('/api/coins/students');}
   catch(err){$('#main').innerHTML=`<div class="fade-in">${heading('COINS','金幣','')}${empty('讀取金幣失敗',err.message,'')}</div>`;return;}
   const students=data.students||[],grants=data.grants||[10,20,50],classes=data.classes||[];
+  // 點「總計」表頭排序：0=原始順序、1=金幣由高至低、-1=由低至高。
+  let sortDir=0;
+  const sortArrow=()=>sortDir===1?' ↓':sortDir===-1?' ↑':'';
   const classChips=(s)=>{const cs=s.classNames||[];return cs.length
     ?cs.map(c=>`<span class="roster-class">${esc(c)}</span>`).join(' ')
     :'<span class="small-text roster-class">未分班</span>';};
@@ -5538,10 +5541,11 @@ async function teacherCoinsPage(){
       return [s.name,s.username,s.seat,s.grade,cs.join(' ')]
         .some(v=>{const t=String(v||'').toLowerCase();return t.includes(q)||t.includes(qm);});
     });
+    if(sortDir!==0)list.sort((a,b)=>-sortDir*(a.coins-b.coins)||(a.seat||'').localeCompare(b.seat||'',undefined,{numeric:true}));
     const count=$('#coin-count');
     if(count)count.textContent=`顯示 ${list.length} / ${students.length} 位`;
     if(!list.length)return '<p class="small-text" style="padding:14px 0">沒有符合條件的學生。</p>';
-    return `<div class="table-scroll"><table class="results-table coin-table"><thead><tr><th>座號</th><th>學生</th><th>班別</th><th>年級</th><th>得分</th><th>每日</th><th>獎勵</th><th>總計</th><th>加金幣</th></tr></thead><tbody>${list.map(rowHtml).join('')}</tbody></table></div>`;
+    return `<div class="table-scroll"><table class="results-table coin-table"><thead><tr><th>座號</th><th>學生</th><th>班別</th><th>年級</th><th>得分</th><th>每日</th><th>獎勵</th><th class="coin-sortable" data-coin-sort title="按一下依總計排序">總計${sortArrow()}</th><th>加金幣</th></tr></thead><tbody>${list.map(rowHtml).join('')}</tbody></table></div>`;
   };
   $('#main').innerHTML=`<div class="fade-in">${heading('COINS','金幣','學生每得 1 分 = 1 枚金幣，每天第一次登入 +10；你可以再獎勵 10、20 或 50 枚。')}
     <section class="panel panel-pad"><div class="roster-filter"><label class="search-field">${icon('search')}<input id="coin-search" placeholder="搜尋姓名、學號、座號或班別…" aria-label="搜尋學生"></label><select id="coin-class" aria-label="班別"><option value="">全部班別</option><option value="__none">未分班</option>${classes.map(c=>`<option value="${c.id}">${esc(c.name)}（${c.studentCount}）</option>`).join('')}</select><span class="small-text" id="coin-count"></span></div>
@@ -5563,6 +5567,8 @@ async function teacherCoinsPage(){
           if(man)man.textContent=r.coins.manualCoins;
           if(tot)tot.textContent=r.coins.total;
         }
+        // 已依金幣排序時，加完後順序可能變，重繪以保持正確排序。
+        if(sortDir!==0)repaint();
         toast(`已給 ${r.student.name} +${amount} 枚金幣（目前 ${r.coins.total} 枚）。`);
       }catch(err){toast(err.message);}
       finally{b.disabled=false;}
@@ -5572,6 +5578,11 @@ async function teacherCoinsPage(){
     $('#coin-body').innerHTML=listHtml($('#coin-search')?$('#coin-search').value:'',
                                        $('#coin-class')?$('#coin-class').value:'');
     bind();
+    // 每次重繪都會重建表頭，要在新節點上重新綁排序。
+    if($('[data-coin-sort]'))$('[data-coin-sort]').onclick=()=>{
+      sortDir=sortDir===1?-1:(sortDir===0?1:0);
+      repaint();
+    };
   };
   repaint();
   if($('#coin-search'))$('#coin-search').oninput=repaint;
