@@ -2658,6 +2658,8 @@ def paper_marks_even(sections, target):
     secs = [(sec, rows) for sec, rows in secs if rows]
     if not secs:
         return 0
+    # target 可能是 float（例如 32 分拆不開），配分只認整數，統一把它收成整數。
+    target = int(round(target))
     # 每個分部先給一個「每題分數」的理想值：用題型比重換算，加權後總和剛好是 target。
     per_q_weight = {'選擇題': 3, '填空題': 4, '解答題': 8, '證明題': 10, '附加題': 10}
     weights = []
@@ -2668,7 +2670,8 @@ def paper_marks_even(sections, target):
     # 每題的理想分數（不是分部總分）：w_i 佔比 × 總分。
     ideal = [target * w / weight_sum for w in weights]
     # 動態規劃：逐一決定每個分部的每題分數，湊出剛好 target 分。
-    cap = max(1, min(40, target))
+    # target 可能是 float（例如 32 分拆不開），range 上界要整數。
+    cap = max(1, min(40, int(target)))
     states = {0: (0.0, [])}          # 已用分數 -> (偏差平方和, 每題分數清單)
     for (sec, rows), want in zip(secs, ideal):
         n = len(rows)
@@ -8683,6 +8686,9 @@ class Application:
                 if row['owner_id'] != user['id'] and not self.is_owner(user, db):
                     fail(403, '只有建立者或管理員可以處理這份試卷。')
                 if method == 'DELETE':
+                    # paper_questions 外鍵指向 papers(id)：先清掉這份卷的題目關聯，
+                    # 否則有「已匯入題庫」的卷會因 FOREIGN KEY constraint 刪不掉。
+                    db.execute('DELETE FROM paper_questions WHERE paper_id=?', (paper_id,))
                     db.execute('DELETE FROM papers WHERE id=?', (paper_id,))
                     return {'ok': True}, headers
                 # 這份卷匯入題庫的那些題目（「出作業」直接拿這個清單）

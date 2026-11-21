@@ -3306,6 +3306,47 @@ class PaperGenerateTests(unittest.TestCase):
         self.assertEqual(out['question']['marks'], 5)
         self.assertEqual(len(out['question']['options']), 4)
 
+    def test_delete_paper_also_clears_its_question_links(self):
+        """刪除一份「已匯入題庫」的試卷：外鍵（paper_questions）要先清掉，
+        否則 self.db() 開著 PRAGMA foreign_keys=ON 會因 FOREIGN KEY constraint 刪不掉，
+        前端就彈「本地資料庫暫時無法處理請求」。"""
+        self.app.ai.call = lambda *a, **k: {'sections': [
+            {'title': '一、選擇題', 'qtype': '選擇題', 'questions': [
+                {'stem': f'選{i}', 'options': ['A', 'B', 'C', 'D'], 'marks': 4,
+                 'difficulty': '易', 'answer': 'A', 'steps': []} for i in range(3)]},
+            {'title': '二、解答題', 'qtype': '解答題', 'questions': [
+                {'stem': '解題', 'options': [], 'marks': 10,
+                 'difficulty': '中', 'answer': 'x', 'steps': []} for _ in range(2)]}]}
+        out = self.call('POST', '/api/papers/generate', self.payload(
+            source='ai', totalPoints=32,
+            qtypes=[{'type': '選擇題', 'optionCount': 4}, {'type': '解答題'}]))
+        pid = out['paper']['id']
+        # 模擬「已匯入題庫」：寫進 paper_questions（模擬 to-bank 的效果）
+        qids = []
+        with self.app.db() as db:
+            for i in range(3):
+                q = self.app.insert_question(db, {
+                    'title': f'已匯入題{i}', 'content': f'[{i}] 題目', 'topic': '一元二次方程',
+                    'subtopic': '', 'grade': '初三', 'level': 2, 'points': 4,
+                    'qtype': '選擇題', 'options': ['A', 'B', 'C', 'D'], 'answer': 'A',
+                    'steps': [], 'hint': '', 'analysis': '', 'rubric': [], 'source': '校本題庫',
+                    'tags': []})
+                qids.append(q['id'])
+            for qid in qids:
+                db.execute('INSERT INTO paper_questions(paper_id, question_id) VALUES(?,?)',
+                           (pid, qid))
+        with self.app.db() as db:
+            n = db.execute('SELECT COUNT(*) FROM paper_questions WHERE paper_id=?',
+                           (pid,)).fetchone()[0]
+        self.assertEqual(n, 3, '關聯應已建立')
+        # 刪除（舊程式碼會因外鍵失敗回 503）
+        out2 = self.call('DELETE', f'/api/papers/{pid}')
+        self.assertEqual(out2, {'ok': True})
+        with self.app.db() as db:
+            left = db.execute('SELECT COUNT(*) FROM paper_questions WHERE paper_id=?',
+                              (pid,)).fetchone()[0]
+        self.assertEqual(left, 0, '關聯應一併清除')
+
 
 class ContestTests(unittest.TestCase):
     """數學比賽清單：內建整理資料 + 每週排程寫入（要權杖）。"""
