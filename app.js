@@ -8026,11 +8026,11 @@ function manageClassModal(id){
   };
 }
 
-function createAssignmentModal(){if(!HW.classes.length)return createClassModal();const qs=S.questions.filter(q=>q.answer?.trim()&&!/待.*(?:核驗|核验|審核|审核|確認|确认)/.test(q.source+' '+q.tags.join(' ')));
+function createAssignmentModal(){if(!HW.classes.length)return createClassModal();let qs=S.questions.filter(q=>q.answer?.trim()&&!/待.*(?:核驗|核验|審核|审核|確認|确认)/.test(q.source+' '+q.tags.join(' ')));
   // 挑題：先選章節（主分類／子分類），或直接輸入關鍵字搜尋，再勾選要佈置的題目。
   const qById=new Map(qs.map(q=>[q.id,q]));
   const pickState={topic:'',subtopic:'',search:'',picked:new Set(),page:1};
-  const pickTopics=[...new Set(qs.map(q=>q.topic))].sort();
+  let pickTopics=[...new Set(qs.map(q=>q.topic))].sort();
   const pickCount=t=>qs.filter(q=>q.topic===t).length;
   const PICK_LIMIT=60;
   const pickPool=()=>qs.filter(q=>(!pickState.topic||q.topic===pickState.topic)&&(!pickState.subtopic||q.subtopic===pickState.subtopic)&&(!pickState.search||`${q.title} ${q.content} ${q.topic} ${q.subtopic||''} ${q.tags.join(' ')}`.toLowerCase().includes(pickState.search)));
@@ -8041,18 +8041,92 @@ function createAssignmentModal(){if(!HW.classes.length)return createClassModal()
   const syncPickSubtopics=()=>{const sel=$('#pick-subtopic');if(!sel)return;
     const list=[...new Set(qs.filter(q=>!pickState.topic||q.topic===pickState.topic).map(q=>q.subtopic).filter(Boolean))].sort();
     sel.innerHTML=`<option value="">全部子分類</option>`+list.map(s=>`<option value="${esc(s)}"${s===pickState.subtopic?' selected':''}>${esc(s)}</option>`).join('');};
+  // ── AI 生成作業題：一次多題 ──
+  // 依老師選的章節／子分類／年級／難度／題型，請 AI 生成 N 道新題，
+  // 生成後自動加入「已選」清單（老師可再移除）。逐題呼叫，失敗一題不影響其他。
+  const genState={count:3,busy:false};
+  const aiGenCount=()=>Math.max(1,Math.min(10,Number($('#assign-gen-count')?.value)||3));
+  const aiGen=async()=>{
+    if(genState.busy)return;
+    if(!S.ai.configured)return toast('尚未接入 AI，無法生成題目。請先到「模型端點」設定。');
+    const topic=$('#assign-gen-topic')?.value||'',subtopic=$('#assign-gen-subtopic')?.value||'';
+    const grade=$('#assign-gen-grade')?.value||'中三',level=Number($('#assign-gen-level')?.value)||2;
+    const qtype=$('#assign-gen-qtype')?.value||'解答題',points=Number($('#assign-gen-points')?.value)||5;
+    const brief=($('#assign-gen-brief')?.value||'').trim();
+    const count=aiGenCount();
+    if(pickState.picked.size+count>30)return toast(`每份作業最多 30 題，目前已選 ${pickState.picked.size} 題，無法再生成 ${count} 題。`);
+    genState.busy=true;
+    const btn=$('#assign-gen-btn'),status=$('#assign-gen-status');
+    if(btn)btn.disabled=true;
+    if(status)status.textContent=`正在生成第 1 / ${count} 題…`;
+    let ok=0;
+    for(let i=1;i<=count;i++){
+      try{
+        const r=await api('/api/questions/ai-generate',{
+          topic,subtopic,grade,level,qtype,points,
+          brief:brief?`${brief}（這是本份作業第 ${i} 題）`:'',
+          consentExternal:S.ai.mode==='external'});
+        if(r.title){
+          // 生成後需入題庫才能佈置 → 直接建立題目（AI 生成已核對內容，來源標「AI 生成」）。
+          const created=await api('/api/questions/import',{dedupe:false,questions:[{
+            title:r.title,content:r.content,topic,subtopic,grade,level,qtype,
+            points,answer:r.answer,steps:r.steps||[],analysis:r.analysis||'',
+            options:r.options||[],rubric:r.rubric||[],tags:['AI 生成作業題'],source:'AI 生成'}]});
+          const qid=created.questions&&created.questions[0]?.id;
+          if(qid){
+            pickState.picked.add(qid);ok++;
+            // 把新題加進可選清單（讓老師能再次看到／選它）。
+            const newQ={id:qid,title:r.title,content:r.content,topic,subtopic,grade,level,qtype,
+              points,answer:r.answer,steps:r.steps||[],analysis:r.analysis||'',options:r.options||[],
+              rubric:r.rubric||[],tags:['AI 生成作業題'],source:'AI 生成'};
+            qs.push(newQ);qById.set(qid,newQ);
+            pickTopics=[...new Set(qs.map(q=>q.topic))].sort();
+            const pt=$('#assign-gen-topic'),pt2=$('#pick-topic');
+            if(pt&&!pt.querySelector(`option[value="${CSS.escape(topic)}"]`)){
+              pt.insertAdjacentHTML('beforeend',`<option value="${esc(topic)}">${esc(topic)}</option>`);}
+            if(pt2&&!pt2.querySelector(`option[value="${CSS.escape(topic)}"]`)){
+              pt2.insertAdjacentHTML('beforeend',`<option value="${esc(topic)}">${esc(topic)}（${pickCount(topic)} 題）</option>`);}
+          }
+        }
+      }catch(err){toast(`第 ${i} 題生成失敗：${err.message}`);}
+      if(status)status.textContent=ok<count?`已生成 ${ok} / ${count} 題，正在繼續…`:`已生成 ${ok} 題，加入已選清單。`;
+    }
+    genState.busy=false;
+    if(btn)btn.disabled=false;
+    if(status)status.textContent=ok?`✅ 已生成 ${ok} 題並加入已選清單（共 ${pickState.picked.size} 題）。`:'未能生成任何題目。';
+    renderPickList();renderPickCount();renderPickedChips();
+    // 回到題庫頁刷新題庫列表
+    await refresh().catch(()=>{});
+  };
   const renderPickList=()=>{const box=$('#assignment-picks');if(!box)return;const pool=pickPool(),pages=Math.max(1,Math.ceil(pool.length/PICK_LIMIT));pickState.page=Math.max(1,Math.min(pickState.page,pages));const shown=pool.slice((pickState.page-1)*PICK_LIMIT,pickState.page*PICK_LIMIT);
     box.innerHTML=shown.length?shown.map(q=>`<label class="pick-row"><input type="checkbox" name="assignment-questions" value="${q.id}" ${pickState.picked.has(q.id)?'checked':''}><span><strong>${mathText(q.title)}</strong><small>${esc(q.topic)}${q.subtopic?' · '+esc(q.subtopic):''} · ${mathText(q.content)}</small></span><span class="badge l${q.level}">${levels[q.level]} · ${q.points} 分</span></label>`).join('')
       :`<p class="pick-empty">沒有符合條件的題目，請換一個章節或關鍵字。</p>`;
-    box.insertAdjacentHTML('beforeend',`<div class="pick-pagination"><button type="button" class="secondary" data-pick-page="${pickState.page-1}" ${pickState.page<=1?'disabled':''}>上一頁</button><span class="small-text">第 ${pickState.page} / ${pages} 頁</span><button type="button" class="secondary" data-pick-page="${pickState.page+1}" ${pickState.page>=pages?'disabled':''}>下一頁</button></div>`);const hint=$('#pick-hint');if(hint)hint.textContent=`符合條件 ${pool.length} 題，顯示 ${shown.length} 題 · 可佈置題目共 ${qs.length} 題 · 最多選 30 題`;};const due=new Date();due.setDate(due.getDate()+7);due.setHours(23,59,0,0);const local=new Date(due.getTime()-due.getTimezoneOffset()*60000).toISOString().slice(0,16);modal(`<p class="eyebrow">ASSIGN HOMEWORK</p><h2>佈置作業或測驗</h2><p class="modal-intro">題目及分值發布後固定；每題需要已核驗參考答案，AI 待核驗題不會列入。</p><form id="assignment-form"><div class="form-grid"><div class="form-field"><label class="field-label" for="assignment-title">作業名稱</label><input id="assignment-title" placeholder="例如：因式分解鞏固練習" maxlength="200" required></div><div class="form-field"><label class="field-label" for="assignment-class">指派班級</label><select id="assignment-class">${HW.classes.map(c=>`<option value="${c.id}">${esc(c.name)} · ${c.studentCount} 人</option>`).join('')}</select></div><div class="form-field"><label class="field-label" for="assignment-due">截止時間（本地時區）</label><input id="assignment-due" type="datetime-local" value="${local}" required></div><div class="form-field"><label class="field-label" for="assignment-kind">類型</label><select id="assignment-kind"><option value="homework">作業</option><option value="quiz">測驗</option></select></div><div class="form-field"><label class="field-label" for="assignment-duration">時間限制（分鐘）</label><input id="assignment-duration" type="number" min="1" max="300" placeholder="留空＝不限時"><p class="field-hint">模擬測驗建議設定 20–45 分鐘；學生按「開始測驗」後倒數，時間到自動提交。</p></div><div class="form-field"><label class="field-label" for="assignment-description">作業說明</label><input id="assignment-description" maxlength="4000" placeholder="寫出完整步驟，並代回檢查。"></div></div><div class="section-head" style="margin:24px 0 12px"><h2 style="font-size:calc(16px*var(--fs))">選擇題目</h2><span class="small-text" id="selected-question-count">已選 0 題</span></div><div class="pick-filters"><div class="form-field"><label class="field-label" for="pick-topic">章節（主分類）</label><select id="pick-topic"><option value="">全部章節</option>${pickTopics.map(t=>`<option value="${esc(t)}">${esc(t)}（${pickCount(t)} 題）</option>`).join('')}</select></div><div class="form-field"><label class="field-label" for="pick-subtopic">子分類</label><select id="pick-subtopic"><option value="">全部子分類</option></select></div><div class="form-field"><label class="field-label" for="pick-search">搜尋題目</label><input id="pick-search" placeholder="輸入關鍵字，例如：因式分解、三角形面積" maxlength="60"></div></div><div class="assignment-question-picks" id="assignment-picks"></div><p class="field-hint" id="pick-hint"></p><div id="picked-chips" class="picked-chips"></div><div class="form-field" style="margin:18px 0 6px"><label class="field-label">解題過程的作答方式（可多選）</label><div class="mode-checks"><label class="checkbox-line"><input id="assignment-mode-hand" type="checkbox" checked>手寫解題</label><label class="checkbox-line"><input id="assignment-mode-text" type="checkbox" checked>文字作答</label><label class="checkbox-line"><input id="assignment-mode-upload" type="checkbox" checked>上傳手稿</label></div><p class="field-hint">學生只能用你勾選的方式作答；選擇題一律用「點選作答」。至少要保留一種。</p></div><label class="checkbox-line"><input id="assignment-late" type="checkbox">允許截止時間後補交（會記錄遲交）</label><label class="checkbox-line"><input id="assignment-ai" type="checkbox" ${S.ai.configured?'':'disabled'}>使用 AI 建議評分與簡評（僅供教師覆核，不直接作正式成績；${S.ai.configured?(S.ai.mode==='local'?'本地模型':'外部模型'):'尚未接入 AI，無法啟用'}）</label><label class="checkbox-line" style="margin-left:22px"><input id="assignment-ai-confirm" type="checkbox" ${S.ai.configured?'':'disabled'}>AI 批閱後自動確認為教師分數<span class="small-text">（不建議：分數會直接計入成績，教師未看過）</span></label><div class="import-warning">學生逐題保存作答後，需正式提交整份作業。正式提交後作答鎖定，教師仍可覆核。上限30題。</div><p class="error-text" id="assignment-error"></p><button class="primary wide" type="submit">發布給班級 ${icon('arrow')}</button></form>`,true);
+    box.insertAdjacentHTML('beforeend',`<div class="pick-pagination"><button type="button" class="secondary" data-pick-page="${pickState.page-1}" ${pickState.page<=1?'disabled':''}>上一頁</button><span class="small-text">第 ${pickState.page} / ${pages} 頁</span><button type="button" class="secondary" data-pick-page="${pickState.page+1}" ${pickState.page>=pages?'disabled':''}>下一頁</button></div>`);const hint=$('#pick-hint');if(hint)hint.textContent=`符合條件 ${pool.length} 題，顯示 ${shown.length} 題 · 可佈置題目共 ${qs.length} 題 · 最多選 30 題`;};const due=new Date();due.setDate(due.getDate()+7);due.setHours(23,59,0,0);const local=new Date(due.getTime()-due.getTimezoneOffset()*60000).toISOString().slice(0,16);modal(`<p class="eyebrow">ASSIGN HOMEWORK</p><h2>佈置作業或測驗</h2><p class="modal-intro">題目及分值發布後固定；每題需要已核驗參考答案，AI 待核驗題不會列入。</p><form id="assignment-form"><div class="form-grid"><div class="form-field"><label class="field-label" for="assignment-title">作業名稱</label><input id="assignment-title" placeholder="例如：因式分解鞏固練習" maxlength="200" required></div><div class="form-field"><label class="field-label" for="assignment-class">指派班級</label><select id="assignment-class">${HW.classes.map(c=>`<option value="${c.id}">${esc(c.name)} · ${c.studentCount} 人</option>`).join('')}</select></div><div class="form-field"><label class="field-label" for="assignment-due">截止時間（本地時區）</label><input id="assignment-due" type="datetime-local" value="${local}" required></div><div class="form-field"><label class="field-label" for="assignment-kind">類型</label><select id="assignment-kind"><option value="homework">作業</option><option value="quiz">測驗</option></select></div><div class="form-field"><label class="field-label" for="assignment-duration">時間限制（分鐘）</label><input id="assignment-duration" type="number" min="1" max="300" placeholder="留空＝不限時"><p class="field-hint">模擬測驗建議設定 20–45 分鐘；學生按「開始測驗」後倒數，時間到自動提交。</p></div><div class="form-field"><label class="field-label" for="assignment-description">作業說明</label><input id="assignment-description" maxlength="4000" placeholder="寫出完整步驟，並代回檢查。"></div></div><div class="section-head" style="margin:24px 0 12px"><h2 style="font-size:calc(16px*var(--fs))">選擇題目</h2><span class="small-text" id="selected-question-count">已選 0 題</span></div><div class="pick-filters"><div class="form-field"><label class="field-label" for="pick-topic">章節（主分類）</label><select id="pick-topic"><option value="">全部章節</option>${pickTopics.map(t=>`<option value="${esc(t)}">${esc(t)}（${pickCount(t)} 題）</option>`).join('')}</select></div><div class="form-field"><label class="field-label" for="pick-subtopic">子分類</label><select id="pick-subtopic"><option value="">全部子分類</option></select></div><div class="form-field"><label class="field-label" for="pick-search">搜尋題目</label><input id="pick-search" placeholder="輸入關鍵字，例如：因式分解、三角形面積" maxlength="60"></div><div class="form-field pick-select-all"><label class="field-label">&nbsp;</label><button type="button" class="secondary" id="pick-select-all">全選目前篩選結果</button></div></div><div class="ai-gen-box" style="margin:14px 0 10px"><label class="field-label" for="assign-gen-brief">🤖 AI 生成作業題（一次多題）</label><div class="ai-gen-row"><input id="assign-gen-brief" maxlength="600" placeholder="一句話說明想要什麼題目，例如：用超巿折扣情境考一元一次方程"><select id="assign-gen-count" aria-label="生成題數"><option value="1">1 題</option><option value="3" selected>3 題</option><option value="5">5 題</option><option value="10">10 題</option></select><button type="button" class="secondary" id="assign-gen-btn">${icon('spark')}AI 生成並加入</button></div><div class="ai-gen-fields"><select id="assign-gen-topic">${pickTopics.map(t=>`<option value="${esc(t)}">${esc(t)}</option>`).join('')}</select><select id="assign-gen-subtopic"></select><select id="assign-gen-grade">${grades.map(g=>`<option${g==='中三'?' selected':''}>${g}</option>`).join('')}</select><select id="assign-gen-level">${[1,2,3].map(n=>`<option value="${n}">${levels[n]}</option>`).join('')}</select><select id="assign-gen-qtype">${qtypes.map(t=>`<option>${t}</option>`).join('')}</select><input id="assign-gen-points" type="number" min="1" max="100" value="5" aria-label="分值"></div><p class="field-hint" id="assign-gen-status">依下面的章節／年級／難度／題型生成新題，自動加入已選清單；生成後仍可移除。</p></div><div class="assignment-question-picks" id="assignment-picks"></div><p class="field-hint" id="pick-hint"></p><div id="picked-chips" class="picked-chips"></div><div class="form-field" style="margin:18px 0 6px"><label class="field-label">解題過程的作答方式（可多選）</label><div class="mode-checks"><label class="checkbox-line"><input id="assignment-mode-hand" type="checkbox" checked>手寫解題</label><label class="checkbox-line"><input id="assignment-mode-text" type="checkbox" checked>文字作答</label><label class="checkbox-line"><input id="assignment-mode-upload" type="checkbox" checked>上傳手稿</label></div><p class="field-hint">學生只能用你勾選的方式作答；選擇題一律用「點選作答」。至少要保留一種。</p></div><label class="checkbox-line"><input id="assignment-late" type="checkbox">允許截止時間後補交（會記錄遲交）</label><label class="checkbox-line"><input id="assignment-ai" type="checkbox" ${S.ai.configured?'':'disabled'}>使用 AI 建議評分與簡評（僅供教師覆核，不直接作正式成績；${S.ai.configured?(S.ai.mode==='local'?'本地模型':'外部模型'):'尚未接入 AI，無法啟用'}）</label><label class="checkbox-line" style="margin-left:22px"><input id="assignment-ai-confirm" type="checkbox" ${S.ai.configured?'':'disabled'}>AI 批閱後自動確認為教師分數<span class="small-text">（不建議：分數會直接計入成績，教師未看過）</span></label><div class="import-warning">學生逐題保存作答後，需正式提交整份作業。正式提交後作答鎖定，教師仍可覆核。上限30題。</div><p class="error-text" id="assignment-error"></p><button class="primary wide" type="submit">發布給班級 ${icon('arrow')}</button></form>`,true);
 $('#pick-topic').onchange=e=>{pickState.topic=e.target.value;pickState.subtopic='';pickState.page=1;syncPickSubtopics();renderPickList();};
 $('#pick-subtopic').onchange=e=>{pickState.subtopic=e.target.value;pickState.page=1;renderPickList();};
 $('#pick-search').oninput=e=>{pickState.search=e.target.value.trim().toLowerCase();pickState.page=1;renderPickList();};
+// 全選目前篩選結果：一次勾完當前篩選（章節／子分類／搜尋）下的所有題目，省去逐頁勾選。
+if($('#pick-select-all'))$('#pick-select-all').onclick=()=>{
+  const pool=pickPool();
+  if(!pool.length)return toast('目前篩選下沒有題目。');
+  if(pickState.picked.size+pool.length>30)return toast(`全選會選 ${pool.length} 題，超過上限 30 題；請先移除或縮小篩選範圍。`);
+  pool.forEach(q=>pickState.picked.add(q.id));
+  renderPickList();renderPickCount();renderPickedChips();
+  toast(`已全選 ${pool.length} 題（目前共 ${pickState.picked.size} 題）。`);
+};
 // 勾選狀態存在 pickState.picked，篩選後仍保留已選題目（不會因換章節而漏掉）。
 $('#assignment-picks').onchange=e=>{const cb=e.target.closest('input[name=assignment-questions]');if(!cb)return;const id=Number(cb.value);if(cb.checked){if(pickState.picked.size>=30){cb.checked=false;toast('每份作業最多選 30 題，請先移除已選題目。');return;}pickState.picked.add(id);}else pickState.picked.delete(id);renderPickCount();renderPickedChips();};
 $('#assignment-picks').onclick=e=>{const b=e.target.closest('[data-pick-page]');if(!b||b.disabled)return;pickState.page=Number(b.dataset.pickPage);renderPickList();};
 $('#picked-chips').onclick=e=>{const b=e.target.closest('button');if(!b)return;if(b.id==='pick-clear')pickState.picked.clear();else if(b.dataset.unpick)pickState.picked.delete(Number(b.dataset.unpick));else return;renderPickList();renderPickCount();renderPickedChips();};
-syncPickSubtopics();renderPickList();renderPickCount();$('#assignment-form').onsubmit=async e=>{e.preventDefault();const b=$('[type=submit]',e.target);b.disabled=true;try{const raw=$('#assignment-due').value,dt=new Date(raw);if(!raw||!Number.isFinite(dt.getTime()))throw new Error('請填寫有效的截止時間。');const durRaw=$('#assignment-duration').value.trim();if(durRaw){const d=Number(durRaw);if(!Number.isInteger(d)||d<1||d>300)throw new Error('時間限制必須是 1 至 300 的整數分鐘。');}const modes=['hand','text','upload'].filter(m=>{const el=$('#assignment-mode-'+m);return !el||el.checked;});if(!modes.length)throw new Error('至少要保留一種作答方式。');await api('/api/assignments',{title:$('#assignment-title').value,kind:$('#assignment-kind').value,classId:Number($('#assignment-class').value),questionIds:[...pickState.picked],dueAt:dt.toISOString(),description:$('#assignment-description').value,allowLate:$('#assignment-late').checked,aiGrading:$('#assignment-ai').checked,aiAutoConfirm:$('#assignment-ai-confirm').checked,durationMinutes:durRaw?Number(durRaw):null,answerModes:modes});closeModal();toast('作業已發布到指定班級。');homeworkPage();}catch(err){$('#assignment-error').textContent=err.message;b.disabled=false;}};}
+syncPickSubtopics();renderPickList();renderPickCount();
+// AI 生成作業題：章節切換時同步子分類；按鈕觸發生成。
+if($('#assign-gen-topic'))$('#assign-gen-topic').onchange=e=>{
+  const t=e.target.value,sel=$('#assign-gen-subtopic');
+  if(sel){const list=[...new Set(qs.filter(q=>q.topic===t).map(q=>q.subtopic).filter(Boolean))].sort();
+    sel.innerHTML=`<option value="">全部子分類</option>`+list.map(s=>`<option value="${esc(s)}">${esc(s)}</option>`).join('');}
+};
+if($('#assign-gen-btn'))$('#assign-gen-btn').onclick=aiGen;
+$('#assignment-form').onsubmit=async e=>{e.preventDefault();const b=$('[type=submit]',e.target);b.disabled=true;try{const raw=$('#assignment-due').value,dt=new Date(raw);if(!raw||!Number.isFinite(dt.getTime()))throw new Error('請填寫有效的截止時間。');const durRaw=$('#assignment-duration').value.trim();if(durRaw){const d=Number(durRaw);if(!Number.isInteger(d)||d<1||d>300)throw new Error('時間限制必須是 1 至 300 的整數分鐘。');}const modes=['hand','text','upload'].filter(m=>{const el=$('#assignment-mode-'+m);return !el||el.checked;});if(!modes.length)throw new Error('至少要保留一種作答方式。');await api('/api/assignments',{title:$('#assignment-title').value,kind:$('#assignment-kind').value,classId:Number($('#assignment-class').value),questionIds:[...pickState.picked],dueAt:dt.toISOString(),description:$('#assignment-description').value,allowLate:$('#assignment-late').checked,aiGrading:$('#assignment-ai').checked,aiAutoConfirm:$('#assignment-ai-confirm').checked,durationMinutes:durRaw?Number(durRaw):null,answerModes:modes});closeModal();toast('作業已發布到指定班級。');homeworkPage();}catch(err){$('#assignment-error').textContent=err.message;b.disabled=false;}};}
 let quizClock=null,pendingQuizSubmission=null;
 const quizDeadlines=new Map(),quizSubmitting=new Set();
 function quizKey(target){return `${target.userId??S.user?.id}:${target.kind}:${target.id}`;}
