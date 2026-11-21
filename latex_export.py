@@ -37,6 +37,38 @@ ESCAPES = {
     '^': r'\textasciicircum{}',
 }
 
+# 中文文本裡的「裸希臘字母」問題：ctex 用的中文字體（PingFang TC / Noto Serif CJK…）
+# 沒有 α、λ、μ 這種字形，直接印就變成空白——卷面看上去像「並求 、 的值」少了一整段。
+# 數學式 $...$ 裡的 \lambda 是數學字體渲染的（正常），所以只把「文字」裡的希臘字母
+# 包進數學模式，交給 LaTeX 字體。
+GREEK = {
+    '\u0391': r'\Alpha', '\u0392': r'\Beta', '\u0393': r'\Gamma', '\u0394': r'\Delta',
+    '\u0395': r'\Epsilon', '\u0396': r'\Zeta', '\u0397': r'\Eta', '\u0398': r'\Theta',
+    '\u0399': r'\Iota', '\u039a': r'\Kappa', '\u039b': r'\Lambda', '\u039c': r'\Mu',
+    '\u039d': r'\Nu', '\u039e': r'\Xi', '\u039f': r'\Omicron', '\u03a0': r'\Pi',
+    '\u03a1': r'\Rho', '\u03a3': r'\Sigma', '\u03a4': r'\Tau', '\u03a5': r'\Upsilon',
+    '\u03a6': r'\Phi', '\u03a7': r'\Chi', '\u03a8': r'\Psi', '\u03a9': r'\Omega',
+    '\u03b1': r'\alpha', '\u03b2': r'\beta', '\u03b3': r'\gamma', '\u03b4': r'\delta',
+    '\u03b5': r'\epsilon', '\u03b6': r'\zeta', '\u03b7': r'\eta', '\u03b8': r'\theta',
+    '\u03b9': r'\iota', '\u03ba': r'\kappa', '\u03bb': r'\lambda', '\u03bc': r'\mu',
+    '\u03bd': r'\nu', '\u03be': r'\xi', '\u03bf': r'\omicron', '\u03c0': r'\pi',
+    '\u03c1': r'\rho', '\u03c2': r'\varsigma', '\u03c3': r'\sigma',
+    '\u03c4': r'\tau', '\u03c5': r'\upsilon', '\u03c6': r'\varphi',
+    '\u03c7': r'\chi', '\u03c8': r'\psi', '\u03c9': r'\omega',
+    # 常見數學符號（同樣常被當成裸字印在中文字體裡）
+    '\u2202': r'\partial', '\u2206': r'\nabla', '\u221a': r'\surd',
+    '\u2211': r'\sum', '\u220f': r'\prod', '\u222b': r'\int',
+    '\u221e': r'\infty', '\u2205': r'\emptyset', '\u2229': r'\cap',
+    '\u222a': r'\cup', '\u2208': r'\in', '\u2282': r'\subset', '\u2286': r'\subseteq',
+    '\u2288': r'\notin', '\u2203': r'\exists', '\u2200': r'\forall',
+    '\u2204': r'\neg', '\u21d2': r'\Rightarrow', '\u21d4': r'\Leftrightarrow',
+    '\u21d0': r'\Leftarrow', '\u2192': r'\rightarrow', '\u2190': r'\leftarrow',
+    '\u2261': r'\equiv', '\u2260': r'\neq', '\u2264': r'\leq', '\u2265': r'\geq',
+    '\u2248': r'\approx', '\u22c5': r'\cdot', '\u2217': r'\ast',
+    '\u00b1': r'\pm', '\u00d7': r'\times', '\u2020': r'\dagger',
+    '\u2021': r'\ddagger', '\u2218': r'\circ', '\u25b3': r'\triangle',
+}
+
 # 公式正規化（\degree、全角括號、\sqrt[\text{ }]…）放在 mathnorm，題庫入庫也用同一套
 from mathnorm import MATH_SPAN_RE, normalize_math, normalize_text  # noqa: E402
 
@@ -50,6 +82,13 @@ def escape_text(text: str) -> str:
     out, i = [], 0
     while i < len(text):
         ch = text[i]
+        # 中文文本裡的裸希臘字母／數學符號：中文字體（PingFang TC 等）沒字形，
+        # 直接印成空白。包進數學模式交給 LaTeX 字體（如 λ → $\lambda$）。
+        cmd = GREEK.get(ch)
+        if cmd:
+            out.append('$' + cmd + '$')
+            i += 1
+            continue
         if ch == '\\' and i + 1 < len(text) and text[i + 1] in '&%$#_{}':
             out.append(text[i:i + 2])
             i += 2
