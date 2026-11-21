@@ -49,6 +49,13 @@ MATRIX_DELIMS = {'pmatrix': ('(', ')'), 'bmatrix': ('[', ']'), 'Bmatrix': ('{', 
                  'vmatrix': ('|', '|'), 'Vmatrix': ('‖', '‖'), 'cases': ('{', '')}
 FUNCS = {'sin', 'cos', 'tan', 'cot', 'sec', 'csc', 'log', 'ln', 'lg',
          'arcsin', 'arccos', 'arctan', 'max', 'min', 'lim'}
+# 頂飾符號（accent）：向量、單位化、平均……AI 出向量題很常寫 \vec{a}，
+# Word 用 <m:acc> 表示，箭頭字元是 U+20D7。
+ACCENTS = {'vec': '\u20d7', 'hat': '\u0302', 'bar': '\u0304', 'overline': '\u0304',
+           'dot': '\u0307', 'ddot': '\u0308', 'tilde': '\u0303', 'check': '\u031c',
+           'overrightarrow': '\u20d8'}
+ACCENT_TO_CMD = {v: k for k, v in ACCENTS.items()}
+ACCENT_TO_CMD['\u0304'] = 'bar'          # bar 優於 overline
 
 # LaTeX 輸出時，把 Unicode 符號換回指令
 UNICODE_TO_CMD = {v: k for k, v in SYMBOLS.items() if k not in ('leq', 'geq', 'neq')}
@@ -229,6 +236,11 @@ class _Parser:
             nodes = sub.parse()
             self.warnings.extend(sub.warnings)
             return nodes
+        if name in ACCENTS:
+            # \vec{a}：頂飾符號，Word 用 <m:acc> 畫箭頭。
+            body = self.group()
+            return [_el('acc', _el('accPr', _el('chr', val=ACCENTS[name])),
+                        _el('e', *body))]
         if name in NARY:
             sub = sup = []
             while self.peek() in ('_', '^'):
@@ -438,8 +450,11 @@ def _node_to_latex(el) -> str:
             out += '^{' + sup + '}'
         return out + ' ' + body
     if tag in ('acc',):
+        pr = el.find(_m('accPr'))
+        chr_el = pr.find(_m('chr')) if pr is not None else None
+        char = chr_el.get(_m('val')) if chr_el is not None else '\u0304'
         body = ''.join(_node_to_latex(c) for c in el.findall(_m('e')))
-        return r'\bar{' + body + '}'
+        return '\\' + ACCENT_TO_CMD.get(char, 'bar') + '{' + body + '}'
     if tag == 'func':
         name = ''.join(_node_to_latex(c) for c in el.findall(_m('fName')))
         body = ''.join(_node_to_latex(c) for c in el.findall(_m('e')))

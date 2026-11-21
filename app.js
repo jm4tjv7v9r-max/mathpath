@@ -6294,11 +6294,14 @@ async function generatePaperModal(){
                   </div>`:'')}
               ${q.answer?`<p class="gen-qans">${icon('check')}<span>答案：${mathText(q.answer)}</span></p>`:''}
             </div>
-            <button type="button" class="text-button gen-qreplace" data-replace="${si}-${qi}">更換</button>
+            <span class="gen-qrow-actions">
+              <button type="button" class="text-button gen-qreplace" data-replace="${si}-${qi}">更換</button>
+              <button type="button" class="text-button danger-text" data-del="${si}-${qi}" aria-label="刪除第 ${n} 題">刪除</button>
+            </span>
           </div>`;}).join('')}
       </div>`;}).join('');
     box.innerHTML=`<p class="eyebrow">STEP 2 / 2</p><h2>確認題目</h2>
-      <p class="modal-intro">共 ${n} 題。可以取消勾選不要的題目，或按「更換」請 AI 重出那一題；按「確定」才排版存檔。</p>
+      <p class="modal-intro">共 ${n} 題。可以取消勾選不要的題目、按「更換」請 AI 重出那一題、或按「刪除」整題拿掉；按「確定」才排版存檔。</p>
       ${genWarnings.length?`<div class="gen-warn">${genWarnings.map(w=>`<p>${esc(w)}</p>`).join('')}</div>`:''}
       <div id="gen-blueprint" class="gen-blueprint"></div>
       <div class="gen-preview">${rows}</div>
@@ -6320,6 +6323,7 @@ async function generatePaperModal(){
     });
     $$('[data-replace]',box).forEach(el=>el.onclick=()=>replaceQuestion(el.dataset.replace,el));
     $$('[data-add]',box).forEach(el=>el.onclick=()=>addQuestion(Number(el.dataset.add),el));
+    $$('[data-del]',box).forEach(el=>el.onclick=()=>deleteQuestion(el.dataset.del,el));
     $$('[data-figure]',box).forEach(el=>el.onclick=()=>openFigureForQuestion(el.dataset.figure));
     $('#gen-back').onclick=()=>{$('#gen-preview-step').hidden=true;$('#gen-form-step').hidden=false;};
     $('#gen-confirm').onclick=confirmGenerate;
@@ -6410,6 +6414,18 @@ async function generatePaperModal(){
       renderPlan();
       toast(`已增加一題（${sec.title||sec.qtype}）`);
     }catch(e){toast(e.message);btn.disabled=false;btn.textContent=old;}
+  };
+
+  // 預覽時「刪除這題」：老師不想要的題目直接拿掉，不佔配分。
+  // 整段刪完的題型會跟著從卷面消失（排版時跳過空分部）。
+  const deleteQuestion=async (key)=>{
+    const [si,qi]=String(key).split('-').map(Number);
+    const sec=plan[si];if(!sec)return;
+    sec.questions.splice(qi,1);
+    // 整段刪空的分部跟著消失（排版時會重新編「一、二、三」）。
+    plan=plan.filter(s=>s.questions.length);
+    renderPlan();
+    toast('已刪除一題');
   };
 
   const confirmGenerate=async ()=>{

@@ -1063,6 +1063,12 @@ html[data-theme=night] .contest-status.closed{background:#26302c;color:#a8c4b8}
 .gen-qstem{margin:0;line-height:1.7;word-break:break-word}
 .gen-qopts{margin:4px 0 0;font-size:calc(12.5px*var(--fs));color:var(--muted-2);word-break:break-word}
 .gen-qreplace{flex:0 0 auto;white-space:nowrap;color:var(--green);padding-top:2px}
+/* 「更換／刪除」兩個操作並排靠右，不隨題目長度亂跑。 */
+.gen-qrow-actions{flex:0 0 auto;display:flex;gap:14px;align-items:center;padding-top:2px;margin-left:auto}
+.gen-qrow-actions .text-button{white-space:nowrap}
+/* 全域 .text-button 把顏色寫死成深綠；「刪除」是破壞性動作，要红色才看得出危險。 */
+.gen-qrow-actions .danger-text{color:#b8453b!important}
+.gen-qrow-actions .danger-text:hover{color:#8f332b!important}
 .gen-preview-foot{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;
   border-top:1px solid var(--border);padding:12px 0 2px;margin-top:10px;
   position:sticky;bottom:0;background:#fff}
