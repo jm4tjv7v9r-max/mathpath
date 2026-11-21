@@ -53,7 +53,9 @@ FUNCS = {'sin', 'cos', 'tan', 'cot', 'sec', 'csc', 'log', 'ln', 'lg',
 # Word 用 <m:acc> 表示，箭頭字元是 U+20D7。
 ACCENTS = {'vec': '\u20d7', 'hat': '\u0302', 'bar': '\u0304', 'overline': '\u0304',
            'dot': '\u0307', 'ddot': '\u0308', 'tilde': '\u0303', 'check': '\u031c',
-           'overrightarrow': '\u20d8'}
+           # \overrightarrow{AB} 橫跨兩字母的箭頭：Word 對短箭頭 U+20D7 支援最可靠，
+           # 長箭頭 U+20D8 在 Word 常常不顯示（變成沒有箭頭的純字母），所以統一用 U+20D7。
+           'overrightarrow': '\u20d7'}
 ACCENT_TO_CMD = {v: k for k, v in ACCENTS.items()}
 ACCENT_TO_CMD['\u0304'] = 'bar'          # bar 優於 overline
 

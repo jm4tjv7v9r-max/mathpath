@@ -20,6 +20,8 @@ DEFAULT_PREAMBLE = r"""% !TEX program = xelatex
 \usepackage{amsmath,amssymb}
 \usepackage{enumitem}
 \usepackage{needspace}
+% 有題目圖形時：\includegraphics{figures/q1.png}；圖檔跟 .tex 一起打包上傳 Overleaf
+\usepackage{graphicx}
 \setlength{\parindent}{0pt}
 \pagestyle{plain}
 % 大題標題靠左（ctex 預設置中，跟原卷不一致）
@@ -303,6 +305,8 @@ def preamble_from_plan(plan: dict) -> str:
         '\\usepackage{amsmath,amssymb}\n'
         '\\usepackage{enumitem}\n'
         '\\usepackage{needspace}\n'
+        '% 有題目圖形時：\\includegraphics{figures/q1.png}；圖檔跟 .tex 一起打包上傳 Overleaf\n'
+        '\\usepackage{graphicx}\n'
         '\\setlength{\\parindent}{0pt}\n'
         '\\pagestyle{plain}\n'
         '% 大題標題的字級、粗細、靠左都照範本（ctex 預設置中）\n'
@@ -311,7 +315,8 @@ def preamble_from_plan(plan: dict) -> str:
 
 
 def to_tex_plan(plan: dict, preamble: str | None = None,
-                options_per_line: int = 4) -> str:
+                options_per_line: int = 4,
+                figs_out: list | None = None) -> str:
     """用 paper_format.layout_plan() 的結果出 .tex。
 
     卷頭、分部標題、逐題配分、卷尾全部照 plan（也就是照 Word 檔那一份判斷），
@@ -369,6 +374,8 @@ def to_tex_plan(plan: dict, preamble: str | None = None,
             else:
                 body = stem
             lines.append(r'\item ' + body)
+            if figs_out is not None:
+                lines.append(collect_figures(q.get('figures'), figs_out))
             for extra in q.get('lines') or []:
                 lines += ['', tex_of(extra)]
             if q.get('options'):
@@ -391,7 +398,9 @@ def to_tex_plan(plan: dict, preamble: str | None = None,
 
 def to_tex(title: str | None, sections, marks_position: str = 'none',
            preamble: str | None = None, options_per_line: int = 4,
-           subtitle_lines: list[str] | None = None) -> str:
+           subtitle_lines: list[str] | None = None,
+           figs_out: list | None = None) -> str:
+    """出整份卷的 .tex；有題目圖就插進來，圖檔清單寫進 figs_out（供 zip 打包）。"""
     lines = [(preamble or DEFAULT_PREAMBLE).rstrip(), '', r'\begin{document}', '']
     # 卷頭整塊置中：卷名、副標題、姓名班別行
     subs = [str(s) for s in (subtitle_lines or []) if str(s).strip()]
@@ -420,6 +429,8 @@ def to_tex(title: str | None, sections, marks_position: str = 'none',
             else:
                 body = stem
             lines.append(r'\item ' + body)
+            if figs_out is not None:
+                lines.append(collect_figures(getattr(q, 'figures', None), figs_out))
             for extra in q.lines:
                 lines.append('')
                 lines.append(tex_of(extra))
@@ -436,3 +447,57 @@ def to_tex_bytes(title, sections, marks_position='none', preamble=None,
                  options_per_line: int = 4, subtitle_lines=None) -> bytes:
     return to_tex(title, sections, marks_position, preamble,
                   options_per_line, subtitle_lines).encode('utf-8')
+
+
+# ── 題目圖形 ──────────────────────────────────────────────────────────
+# 圖檔放 figures/ 目錄，.tex 用相對路徑 \includegraphics 引用。
+# 有圖時伺服器把 .tex + figures/ 一起打包成 zip（Overleaf 上傳整包就能編譯）；
+# 沒圖時只回 .tex，行為跟以前一樣。
+FIGURE_DIR = 'figures'
+
+
+def figure_bytes_of(fig) -> bytes | None:
+    """一張題目圖 → 原始 bytes（blob 或 data URL 都吃）。"""
+    if not isinstance(fig, dict):
+        return None
+    blob = fig.get('blob')
+    if isinstance(blob, (bytes, bytearray)) and blob:
+        return bytes(blob)
+    data = fig.get('data')
+    if isinstance(data, str) and data.startswith('data:') and ',' in data:
+        try:
+            return base64.b64decode(data.split(',', 1)[1], validate=True)
+        except (ValueError, TypeError):
+            return None
+    return None
+
+
+def figure_tex(fig: dict, index: int) -> str:
+    """一張題目圖 → LaTeX 圖形塊（figures/qN.png，寬度照存檔的 cx）。"""
+    try:
+        width_cm = int(fig.get('cx') or 0) / 360000.0
+    except (TypeError, ValueError):
+        width_cm = 0
+    width = 'width=%.2fcm' % width_cm if 0.5 <= width_cm <= 18 else 'width=6cm'
+    return ('\\par\\begin{center}\n'
+            '\\includegraphics[%s]{%s/q%d.png}\n'
+            '\\end{center}\n' % (width, FIGURE_DIR, index))
+
+
+def collect_figures(figs, figs_out: list) -> str:
+    """把一題的圖換成 \\includegraphics 片段；圖檔 bytes 追加進 figs_out。
+
+    figs_out 由呼叫端持有（全卷共用），檔名用 figures/q{序號}.png，序號＝加入後的
+    長度，保證各題不重複。回該題的 LaTeX 片段（沒圖回空字串）。
+    """
+    if not figs:
+        return ''
+    blocks = []
+    for fig in figs:
+        blob = figure_bytes_of(fig)
+        if not blob:
+            continue
+        n = len(figs_out) + 1
+        figs_out.append((f'{FIGURE_DIR}/q{n}.png', blob))
+        blocks.append(figure_tex({'cx': fig.get('cx')} if isinstance(fig, dict) else {}, n))
+    return ''.join(blocks)

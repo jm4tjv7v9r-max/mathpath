@@ -1651,7 +1651,7 @@ def layout_plan(tpl, sections: list[Section], title: str | None = None,
             questions.append({
                 'number': number, 'stem': q.stem, 'marks': q.marks,
                 'options': label_options(q.options), 'lines': list(q.lines),
-                'figures': len(q.figures),
+                'figures': [dict(f) for f in (q.figures or [])],
                 'answerLines': 0 if q.options else slot_lines,
             })
             number += 1
