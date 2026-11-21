@@ -10,7 +10,10 @@
 """
 from __future__ import annotations
 
+import base64
+import io
 import re
+import zipfile
 
 MATH_RE = re.compile(r'\$([^$]+)\$')
 
@@ -501,3 +504,18 @@ def collect_figures(figs, figs_out: list) -> str:
         figs_out.append((f'{FIGURE_DIR}/q{n}.png', blob))
         blocks.append(figure_tex({'cx': fig.get('cx')} if isinstance(fig, dict) else {}, n))
     return ''.join(blocks)
+
+
+def tex_zip_payload(tex: str, figs_out: list, tex_name: str = '試卷.tex') -> str | None:
+    """把 .tex + figures/ 打包成 zip，回 base64（含 data: 前綴）；沒圖回 None。
+
+    有圖時前端下載 zip（Overleaf 上傳整包就能編譯）；沒圖維持單一 .tex。
+    """
+    if not figs_out:
+        return None
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr(tex_name, tex)
+        for name, blob in figs_out:
+            zf.writestr(name, blob)
+    return 'data:application/zip;base64,' + base64.b64encode(buf.getvalue()).decode('ascii')

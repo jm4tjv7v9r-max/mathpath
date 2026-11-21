@@ -8280,13 +8280,16 @@ class Application:
                                    else 'continuous'))
                 except SystemExit as exc:
                     fail(400, str(exc) or '範本裡找不到題目段落（長得像「1. …」）。')
+            figs_out: list = []
             if plan is not None:
-                tex = latex_export.to_tex_plan(plan, preamble)
+                tex = latex_export.to_tex_plan(plan, preamble, figs_out=figs_out)
             else:
                 tex = latex_export.to_tex(title, sections, position, preamble,
-                                          subtitle_lines=subtitle)
+                                          subtitle_lines=subtitle, figs_out=figs_out)
             filename = (title or '試卷').replace('/', '／')[:60] + '.tex'
+            tex_zip = latex_export.tex_zip_payload(tex, figs_out, filename)
             return {'tex': tex, 'filename': filename,
+                    'texZip': tex_zip,
                     'stats': {'sections': len(sections),
                               'questions': sum(len(s.questions) for s in sections),
                               'formulas': paper_format.count_formulas(sections),
@@ -8649,9 +8652,13 @@ class Application:
                 db.executemany('INSERT OR IGNORE INTO paper_questions(paper_id, question_id) '
                                'VALUES(?,?)', [(paper_id, qid) for qid in ids])
                 row = db.execute('SELECT * FROM papers WHERE id=?', (paper_id,)).fetchone()
+            figs_out: list = []
+            tex = latex_export.to_tex(title, sections, 'trailing', figs_out=figs_out)
+            tex_name = title.replace('/', '／')[:60] + '.tex'
             result = {'paper': paper_public(row),
-                      'tex': latex_export.to_tex(title, sections, 'trailing'),
-                      'texName': title.replace('/', '／')[:60] + '.tex'}
+                      'tex': tex,
+                      'texName': tex_name,
+                      'texZip': latex_export.tex_zip_payload(tex, figs_out, tex_name)}
             if tpl is not None:
                 try:
                     output, _ = paper_format.render_with_sections(tpl['data'], sections, title)
@@ -8747,10 +8754,12 @@ class Application:
                         Document(io.BytesIO(tpl['data'])), sections, row['title'])
                 except SystemExit:
                     plan = None      # 範本壞了／找不到題目段落：退回通用版面，不要整份匯不出
-            tex = (latex_export.to_tex_plan(plan) if plan is not None
-                   else latex_export.to_tex(row['title'], sections, 'trailing'))
+            figs_out: list = []
+            tex = (latex_export.to_tex_plan(plan, figs_out=figs_out) if plan is not None
+                   else latex_export.to_tex(row['title'], sections, 'trailing', figs_out=figs_out))
             filename = (row['title'] or '試卷').replace('/', '／')[:60] + '.tex'
             return {'tex': tex, 'filename': filename,
+                    'texZip': latex_export.tex_zip_payload(tex, figs_out, filename),
                     'usesTemplate': plan is not None}, headers
 
         match = re.fullmatch(r'/api/papers/([1-9]\d{0,17})/to-bank', path)

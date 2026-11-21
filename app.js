@@ -5800,8 +5800,11 @@ async function papersPage(){
     const old=b.textContent;b.disabled=true;b.textContent='產生中…';
     try{
       const res=await api('/api/papers/'+b.dataset.paperTex+'/to-tex',{});
-      const blob=new Blob([res.tex],{type:'text/x-tex;charset=utf-8'});
-      const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=res.filename;a.click();
+      // 有題目圖形時回 zip（.tex + figures/）；沒圖維持單一 .tex
+      const a=document.createElement('a');
+      if(res.texZip){a.href=res.texZip;a.download=res.filename.replace(/\.tex$/, '.zip');}
+      else{a.href=URL.createObjectURL(new Blob([res.tex],{type:'text/x-tex;charset=utf-8'}));a.download=res.filename;}
+      a.click();
     }catch(e){toast(e.message);}
     b.disabled=false;b.textContent=old;
   });
@@ -6473,8 +6476,10 @@ async function generatePaperModal(){
         b.disabled=true;b.textContent='產生中…';
         try{
           const r=await api('/api/papers/'+pid+'/to-tex',{});
-          const blob=new Blob([r.tex],{type:'text/x-tex;charset=utf-8'});
-          const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=r.filename;a.click();
+          const a=document.createElement('a');
+          if(r.texZip){a.href=r.texZip;a.download=r.filename.replace(/\.tex$/, '.zip');}
+          else{a.href=URL.createObjectURL(new Blob([r.tex],{type:'text/x-tex;charset=utf-8'}));a.download=r.filename;}
+          a.click();
         }catch(err){toast(err.message);}
         b.disabled=false;b.textContent=old2;
       };
@@ -7157,8 +7162,10 @@ async function paperLayoutPage(){
       if(pre.value.trim())body.preamble=pre.value;
       const res=await apiJob('/api/papers/to-tex',body,
         job=>{btn.textContent=`產生中… ${Math.round(job.elapsed||0)} 秒`;});
-      const blob=new Blob([res.tex],{type:'text/x-tex;charset=utf-8'});
-      const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=res.filename;a.click();
+      const a=document.createElement('a');
+      if(res.texZip){a.href=res.texZip;a.download=res.filename.replace(/\.tex$/, '.zip');}
+      else{a.href=URL.createObjectURL(new Blob([res.tex],{type:'text/x-tex;charset=utf-8'}));a.download=res.filename;}
+      a.click();
       setTimeout(()=>URL.revokeObjectURL(a.href),2000);
       const st=res.stats||{};
       $('#tex-result').innerHTML=`<div class="layout-result"><div><strong>TeX 已下載</strong>
