@@ -3403,3 +3403,21 @@ body.math-kb-open .modal{max-height:calc(100dvh - var(--math-kb,240px) - 32px)}
 /* 佈置作業：全選目前篩選按鈕 */
 .pick-select-all{display:flex;align-items:flex-end}
 .pick-select-all .secondary{width:100%;padding:11px 12px;white-space:nowrap}
+
+/* ── 一鍵生成試卷：題型＋題數、範本操作、增加題目 ───────────────────── */
+/* 每個題型一張小卡：左邊勾選題型，右邊直接填「幾題」，一眼看完不必再猜。 */
+.gen-chip{padding:6px 10px 6px 11px;gap:8px}
+.gen-chip-head{display:inline-flex;align-items:center;gap:6px;cursor:pointer;white-space:nowrap}
+.gen-count-wrap{display:inline-flex;align-items:center;gap:3px;padding-left:8px;border-left:1px solid #e3ece5}
+.gen-count{width:54px;padding:4px 6px;border:1px solid var(--border);border-radius:6px;text-align:center;
+  font-size:calc(13px*var(--fs));font-weight:400;color:#4a6352;background:#fff}
+.gen-count:focus{outline:2px solid #cfe0d4;outline-offset:1px}
+.gen-tpl-actions{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+.danger-text{color:#b8453b}
+.danger-text:hover{color:#8f332b}
+.gen-sec-head{display:flex;justify-content:space-between;align-items:center;gap:12px}
+.gen-sec-head .text-button{white-space:nowrap}
+@media(max-width:560px){.gen-count{width:46px}}
+/* 刪除範本是破壞性操作：用紅色。要 !important 才蓋得過全域的 .text-button 顏色。 */
+.gen-tpl-actions .danger-text{color:#b8453b!important}
+.gen-tpl-actions .danger-text:hover{color:#8f332b!important}

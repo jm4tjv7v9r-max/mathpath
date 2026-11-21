@@ -384,7 +384,7 @@ TOPIC_TREE = {
 TOPICS = list(TOPIC_TREE)
 SUBTOPICS = [s for subs in TOPIC_TREE.values() for s in subs]
 # 年級：中一至中六（涵蓋初中與高中）。
-GRADES = ['中一', '中二', '中三', '中四', '中五', '中六']
+GRADES = ['小六', '中一', '中二', '中三', '中四', '中五', '中六']
 TOPIC_HINT = '、'.join(TOPICS)
 GRADE_HINT = '、'.join(GRADES)
 QTYPES = ['選擇題', '填空題', '解答題', '證明題']
@@ -2378,7 +2378,7 @@ PAPER_GEN_PROMPT = (
     '規則：①每個分部只放一種題型，title 用「一、選擇題」這種格式；'
     '②所有題目 marks 加總必須剛好等於指定總分（先把配分算好再寫題目，不要最後才湊）；'
     '③選擇題 options 數量必須跟指定的一致（不要加 A. 前綴）；'
-    '④若總分是 110 分，必須有「附加題」分部且剛好 10 分；'
+    '④若題型要求裡有「附加題」，就必須有一個「附加題」分部、剛好 10 分（不計入正卷總分）；'
     '附加題只出一題，但這一題要包含兩小問：題幹先用「(1)」「(2)」分列，'
     '首問（1）的難度設為「中」，第二問（2）設為「難」（整體 difficulty 記為「難」）；'
     '兩小問要由淺入深、第二問以第一問為基礎再加深，不要兩問各論各；'
@@ -2415,20 +2415,26 @@ def paper_generation_spec(body):
         if kind not in PAPER_QTYPES:
             fail(400, f'題型只能是：{"、".join(PAPER_QTYPES)}。')
         entry = {'type': kind}
+        # 題數：老師可以指定「選擇題 8 題、填空題 6 題…」；留空＝由 AI 自己決定。
+        raw_count = item.get('count')
+        if raw_count not in (None, ''):
+            count = number(raw_count, f'{kind}題數', 0, 40, True)
+            if count == 0:
+                continue          # 填 0 ＝這一種不要，不要留下空分部
+            entry['count'] = count
         if kind == '選擇題':
             entry['optionCount'] = number(item.get('optionCount', 4), '選項數量', 4, 5, True)
         qtypes.append(entry)
     if not qtypes:
         fail(400, '請至少選一種題型。')
     kinds = [t['type'] for t in qtypes]
-    if total == 110 and '附加題' not in kinds:
-        fail(400, '總分 110 分時一定要有附加題，而附加題固定 10 分。')
-    if total == 110:
-        extra_marks = 10
-    elif '附加題' in kinds:
-        extra_marks = max(2, round(total * 0.1))
-    else:
-        extra_marks = 0
+    # 附加題是「額外」的：總分 100 分＝正卷 100 分，附加題另加 10 分（卷面 110 分）。
+    # 所以 totalPoints 一律是正卷分數，附加題不從裡面扣。
+    extra_marks = 10 if '附加題' in kinds else 0
+    counts = [t['count'] for t in qtypes if t.get('count')]
+    if counts and sum(counts) > total + extra_marks:
+        fail(400, f'題數共 {sum(counts)} 題，比總分 {total} 分還多，'
+                  '這樣會有題目分不到分數；請減少題數或提高總分。')
     source = (body.get('source') or 'bank').strip()
     if source not in ('bank', 'ai'):
         fail(400, '題目來源只能是「題庫」或「AI 生成」。')
@@ -2445,13 +2451,15 @@ def paper_generation_spec(body):
         if sum(difficulty.values()) != 10:
             fail(400, f'難度比例（易：中：難）相加要等於 10，現在是 {sum(difficulty.values())}。')
     spec = {'ranges': ranges, 'totalPoints': total, 'qtypes': qtypes,
-            'duration': number(body.get('duration', 60), '測考時間（分鐘）', 10, 300, True),
+            'duration': number(body.get('duration', 40), '測考時間（分鐘）', 10, 300, True),
             'grade': text(body.get('grade') or '', '年級', 20, empty=True),
             'examKind': text(body.get('examKind') or '大測', '類型', 20),
             'term': text(body.get('term') or '第一段', '段', 20),
             'subject': text(body.get('subject') or '數學', '科目', 20),
             'source': source, 'difficulty': difficulty, 'extraMarks': extra_marks,
-            'region': text(body.get('region') or '澳門', '參考方向', 20),
+            # 卷面總分＝正卷＋附加題；附加題不佔正卷分數。
+            'paperTotal': total + extra_marks,
+            'region': text(body.get('region') or '全國', '參考方向', 20),
             'reference': text(body.get('reference') or '', '參考資料', 6000, empty=True)}
     if not re.fullmatch(r'(練習|小測|大測[一二三四]?|考試)', spec['examKind']):
         fail(400, '類型只能是練習、小測、大測、大測一至四或考試。')
@@ -2563,25 +2571,31 @@ def paper_bank_pick(rows, spec):
     scored = [kind for kind in wanted if kind != '附加題']
     weights = {kind: PAPER_QTYPE_WEIGHT.get(kind, 10) for kind in scored}
     total_weight = sum(weights.values()) or 1
-    budget_total = spec['totalPoints'] - (spec.get('extraMarks') or 0)
+    # 正卷分數＝老師填的總分；附加題另加，不從這裡扣。
+    budget_total = spec['totalPoints']
     budgets = {kind: budget_total * weights[kind] / total_weight for kind in scored}
+    # 老師指定了題數就照題數挑，多出來的分數交給 AI 補（配分由程式統一核算）。
+    max_count = {t['type']: t.get('count') for t in spec['qtypes'] if t.get('count')}
     picked = {}
     for kind in wanted:
         # 附加題一定是「額外、固定分」，交給 AI 整段出，題庫不參與，
-        # 這樣才保證「110 分 → 附加題剛好 10 分」不會被題庫的零碎分數破壞。
+        # 這樣才保證「附加題剛好 10 分」不會被題庫的零碎分數破壞。
         if kind == '附加題':
             picked[kind] = []
             continue
         budget = budgets[kind]
+        limit = max_count.get(kind)
         chosen, used = [], 0.0
         for q in _paper_level_order(pools[kind], spec['difficulty']):
+            if limit and len(chosen) >= limit:
+                break
             points = float(q.get('points') or 0)
             if points <= 0 or used + points > budget + 1e-9:
                 continue
             chosen.append(paper_question_from_bank(q))
             used += points
         picked[kind] = chosen
-    shortfall = spec['totalPoints'] - sum(
+    shortfall = spec.get('paperTotal', spec['totalPoints']) - sum(
         float(q.marks or 0) for rows_ in picked.values() for q in rows_)
     return picked, max(0.0, shortfall)
 
@@ -2631,6 +2645,54 @@ def paper_marks_normalize(sections, target):
     for q, mark in zip(rows, marks):
         q.marks = mark
     return sum(marks)
+
+
+def paper_marks_even(sections, target):
+    """把配分平均分到每個分部：同一分部的題目同分，總分剛好等於 target。
+
+    老師看「選擇題 8 題，每題 3 分」比「3、4、3、5 分」清楚得多，學生也容易估算。
+    做法：每個分部一個「每題分數」，求 總題數加權後剛好等於 target 的整數解，
+    並盡量貼近各題型的慣常配分（選擇題輕、證明題重）。真的無解才退回逐題調整。
+    """
+    secs = [(sec, [q for q in sec.questions]) for sec in sections]
+    secs = [(sec, rows) for sec, rows in secs if rows]
+    if not secs:
+        return 0
+    # 每個分部先給一個「每題分數」的理想值：用題型比重換算，加權後總和剛好是 target。
+    per_q_weight = {'選擇題': 3, '填空題': 4, '解答題': 8, '證明題': 10, '附加題': 10}
+    weights = []
+    for sec, rows in secs:
+        kind = next((k for k in PAPER_QTYPES if k in (sec.title or '')), '解答題')
+        weights.append(per_q_weight.get(kind, 6))
+    weight_sum = sum(w * len(rows) for w, (sec, rows) in zip(weights, secs)) or 1
+    # 每題的理想分數（不是分部總分）：w_i 佔比 × 總分。
+    ideal = [target * w / weight_sum for w in weights]
+    # 動態規劃：逐一決定每個分部的每題分數，湊出剛好 target 分。
+    cap = max(1, min(40, target))
+    states = {0: (0.0, [])}          # 已用分數 -> (偏差平方和, 每題分數清單)
+    for (sec, rows), want in zip(secs, ideal):
+        n = len(rows)
+        nxt = {}
+        for used, (cost, picks) in states.items():
+            for m in range(1, cap + 1):
+                total = used + n * m
+                if total > target:
+                    break
+                c = cost + (m - want) ** 2
+                cur = nxt.get(total)
+                if cur is None or c < cur[0]:
+                    nxt[total] = (c, picks + [m])
+        if not nxt:
+            break
+        states = nxt
+    best = states.get(target)
+    if best is None:
+        # 沒有剛好整除的配法（例如 7 題要分 100 分），退回逐題調整，至少總分是對的。
+        return paper_marks_normalize(sections, target)
+    for (sec, rows), m in zip(secs, best[1]):
+        for q in rows:
+            q.marks = m
+    return sum(len(rows) * m for (sec, rows), m in zip(secs, best[1]))
 
 
 def paper_difficulty_counts(sections):
@@ -2806,9 +2868,14 @@ def paper_marks_review(app, sections, spec, limit=40):
 def ai_generate_paper(app, spec, target, types=None, fix=None, note=None):
     """請 AI 出卷；回（分部清單, 問題清單, 提醒清單）。"""
     chosen = types if types is not None else spec['qtypes']
-    want = '、'.join(
-        f'{t["type"]}（{t["optionCount"]} 個選項）' if t['type'] == '選擇題' else t['type']
-        for t in chosen)
+    def _want_label(t):
+        label = t['type']
+        if t['type'] == '選擇題':
+            label += f'（{t["optionCount"]} 個選項）'
+        if t.get('count'):
+            label += f' 剛好 {t["count"]} 題'
+        return label
+    want = '、'.join(_want_label(t) for t in chosen)
     ratio = spec['difficulty']
     instruction = PAPER_GEN_PROMPT
     if fix:
@@ -2817,8 +2884,8 @@ def ai_generate_paper(app, spec, target, types=None, fix=None, note=None):
         '年級': spec['grade'], '類型': spec['examKind'], '段': spec['term'],
         '科目': spec['subject'], '測考範圍': spec['ranges'], '測考時間（分鐘）': spec['duration'],
         '題型要求': want, '總分': target,
-        '參考方向': spec.get('region') or '澳門',
-        '方向說明': PAPER_REGION_HINT.get(spec.get('region') or '澳門', ''),
+        '參考方向': spec.get('region') or '全國',
+        '方向說明': PAPER_REGION_HINT.get(spec.get('region') or '全國', ''),
         '難度比例（易：中：難）': f"{ratio['易']}：{ratio['中']}：{ratio['難']}"}
     if note:
         payload['補充說明'] = note
@@ -2858,6 +2925,16 @@ def ai_generate_paper(app, spec, target, types=None, fix=None, note=None):
         if rows:
             sections.append(paper_format.Section(title=str(sec.get('title') or '') or None, questions=rows))
     problems, warnings = paper_generation_check(spec, sections, target, types=chosen, tolerance=None)
+    # 老師指定了題數：整份卷都由 AI 出時，逐個分部核對題數（題庫補足時不核，因為
+    # 題數是整份卷的要求，AI 只負責其中一部分）。
+    if note is None:
+        for t in chosen:
+            if not t.get('count'):
+                continue
+            got = sum(len(sec.questions) for sec in sections
+                      if t['type'] in (sec.title or ''))
+            if got != t['count']:
+                problems.append(f'{t["type"]}要剛好 {t["count"]} 題，目前是 {got} 題')
     # 總分交給 paper_marks_normalize() 收拾，這裡只擋「題數少到不合理」：
     # 一題要吃 40 分，印出來一定不是一份正常試卷。
     rows = [q for sec in sections for q in sec.questions]
@@ -2905,7 +2982,9 @@ def build_generated_sections(app, spec):
     bank_count = 0
     ai_count = 0
     warnings = []
-    remaining = float(spec['totalPoints'])
+    # 要補的分數包含附加題（正卷＋附加題），附加題最後會被單獨核算成 10 分。
+    paper_total = float(spec.get('paperTotal') or spec['totalPoints'])
+    remaining = paper_total
     if spec['source'] == 'bank':
         with app.db() as db:
             rows = [app.question_row(r) for r in
@@ -2922,8 +3001,8 @@ def build_generated_sections(app, spec):
         if not open_types:
             open_types = spec['qtypes']
         note = None
-        if spec['source'] == 'bank' and remaining < spec['totalPoints']:
-            note = (f'題庫已提供 {spec["totalPoints"] - remaining:g} 分的題目，'
+        if spec['source'] == 'bank' and remaining < paper_total:
+            note = (f'題庫已提供 {paper_total - remaining:g} 分的題目，'
                     f'這次只需要補足 {remaining:g} 分，不要出整份卷。')
         fix = None
         for attempt in range(3):
@@ -2939,8 +3018,10 @@ def build_generated_sections(app, spec):
             main = [s for s in ai_sections if s not in extra]
             extra_marks = spec.get('extraMarks') or 0
             if extra and extra_marks:
-                paper_marks_normalize(extra, extra_marks)
-            paper_marks_normalize(main, remaining - (extra_marks if extra else 0))
+                paper_marks_even(extra, extra_marks)
+            # 只把「還欠的分數」配給 AI 補的題目；題庫已挑到的題目維持原配分。
+            # 附加題的 10 分已含在 remaining 裡，要先扣掉，否則會多算一次。
+            paper_marks_even(main, remaining - (extra_marks if extra else 0))
             merged = _merge_ai(groups, ai_sections, spec, open_types)
             counts = paper_difficulty_counts(_groups_to_sections(merged))
             expect = paper_difficulty_expect(counts, spec['difficulty'])
@@ -2961,7 +3042,8 @@ def build_generated_sections(app, spec):
     if spec['source'] == 'bank' and bank_count == 0:
         warnings.append('題庫沒有符合這個範圍與題型的題目，整份卷由 AI 出題；'
                         '把題目加進題庫後再生成，就會優先取用題庫的題目。')
-    problems, notes = paper_generation_check(spec, sections)
+    problems, notes = paper_generation_check(spec, sections,
+                                             target=spec.get('paperTotal') or spec['totalPoints'])
     warnings.extend(notes)
     if problems:
         fail(422, '卷面不符合要求：' + '；'.join(problems[:4]) + '。可以再按一次生成。')
@@ -3063,8 +3145,9 @@ def confirmed_sections(raw, spec):
     main = [s for s in sections if s not in extra]
     extra_marks = spec.get('extraMarks') or 0
     if extra and extra_marks:
-        paper_marks_normalize(extra, extra_marks)
-    paper_marks_normalize(main, spec['totalPoints'] - (extra_marks if extra else 0))
+        paper_marks_even(extra, extra_marks)
+    # 正卷分數＝老師填的總分；附加題另計，不從正卷扣。
+    paper_marks_even(main, spec['totalPoints'])
     return sections
 
 
@@ -8443,8 +8526,8 @@ class Application:
                     'warnings': warnings, 'spec': spec,
                     'totalPoints': spec['totalPoints']}, headers
 
-        if method == 'POST' and path == '/api/papers/replace':
-            # 換掉預覽清單裡的某一題（只請 AI 出這一題，不必重跑整份卷）。
+        if method == 'POST' and path in ('/api/papers/replace', '/api/papers/add-question'):
+            # 換掉預覽清單裡的某一題／在該分部再加一題：都只請 AI 出這一題，不必重跑整份卷。
             self.teacher(user)
             if not self.ai.configured:
                 fail(409, '尚未設定 AI 模型；無法即時更換題目。')

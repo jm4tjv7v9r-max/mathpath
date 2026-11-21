@@ -1207,12 +1207,15 @@ function askDialog(opts) {
            <input id="${id}-in" value="${esc(o.value || '')}" placeholder="${esc(o.placeholder || '')}"
                   maxlength="${Number(o.maxlength) || 200}"></div>`
       : '';
+    // opts.root：要疊在哪一層。在一個大視窗（例如一鍵生成試卷）裡問「確定嗎？」時，
+    // 傳 '#modal-root-2' 才不會把底下的視窗換掉——否則一按確定，整個表單就消失了。
+    const rootSel = o.root || '#modal-root';
     modal(`<p class="eyebrow">請確認</p><h2>${esc(o.title || '請確認')}</h2>${message}${field}
       <div class="ask-actions">
         <button class="text-button" id="${id}-no">${esc(o.cancelText || '取消')}</button>
         <button class="${o.danger ? 'danger' : 'primary'}" id="${id}-yes">${esc(o.confirmText || '確定')}</button>
-      </div>`);
-    const root = $('#modal-root');
+      </div>`, false, true, rootSel);
+    const root = modalRootEl(rootSel);
     let settled = false;
     const finish = value => {
       if (settled) return;
@@ -5624,10 +5627,10 @@ let paperPage=1;
 // 剛剛生成過試卷：不論老師用「關閉」、✕ 還是 ESC 離開，回到列表都要立刻看到新卷。
 let papersStale=false;
 const PAPER_PER_PAGE=8;
-const PAPER_GRADES=['中一','中二','中三','中四','中五','中六'];
+const PAPER_GRADES=['小六','中一','中二','中三','中四','中五','中六'];
 const PAPER_GRADE_ALIAS={初一:'中一',初二:'中二',初三:'中三',高一:'中四',高二:'中五',高三:'中六'};
 // 出卷的年級選項：高中分普通班／職業班，兩者課程不同，出卷要分開。
-const GEN_GRADES=['初一','初二','初三',
+const GEN_GRADES=['小六','初一','初二','初三',
   '高一（普通班）','高一（職業班）','高二（普通班）','高二（職業班）','高三（普通班）','高三（職業班）'];
 // 出卷的參考方向：題目用語與命題風格依哪一套課程（後端 PAPER_REGIONS 要一致）。
 const PAPER_REGIONS=['全國','北京','澳門'];
@@ -5986,7 +5989,15 @@ async function generatePaperModal(){
   let genWarnings=[];
   try{tpls=(await api('/api/paper-templates')).templates||[];}catch(e){return toast(e.message);}
   const rangeRow=(v='')=>`<div class="range-row"><input class="range-input" value="${esc(v)}" maxlength="120" placeholder="例如：直線的傾斜角與斜率"><button type="button" class="text-button range-del" aria-label="刪除這個範圍">✕</button></div>`;
-  const chip=(t)=>`<label class="gen-chip${['選擇題','填空題','解答題'].includes(t)?' on':''}"><input type="checkbox" class="gen-qtype" value="${t}" ${['選擇題','填空題','解答題'].includes(t)?'checked':''}>${t}</label>`;
+  // 每個題型：勾選要不要，並直接填「幾題」。老師最常說的就是「選擇題 8 題、填空題 6 題…」。
+  const QTYPE_DEFAULT_COUNT={'選擇題':8,'填空題':6,'解答題':4,'證明題':2,'附加題':1};
+  const chip=(t)=>{
+    const on=['選擇題','填空題','解答題'].includes(t);
+    return `<div class="gen-chip${on?' on':''}">
+      <label class="gen-chip-head"><input type="checkbox" class="gen-qtype" value="${t}" ${on?'checked':''}>${t}</label>
+      <span class="gen-count-wrap"><input type="number" class="gen-count" data-type="${t}" min="0" max="40" value="${QTYPE_DEFAULT_COUNT[t]||0}" aria-label="${t}題數"><span class="small-text">題</span></span>
+    </div>`;
+  };
   modal(`<p class="eyebrow">AI PAPER</p><h2>一鍵生成試卷</h2>
     <p class="modal-intro">選範本 → 填範圍與配分 → 挑題目 → 確定。預設先從題庫挑題，分數不夠才由 AI 補；配分由程式核算，總分一定等於你填的分數。</p>
     <div id="gen-form-step">
@@ -5994,7 +6005,10 @@ async function generatePaperModal(){
       <div class="form-field"><label class="field-label" for="gen-template">範本</label>
         <select id="gen-template">${tpls.map(t=>`<option value="${t.id}">${esc(t.name)}</option>`).join('')}</select></div>
       <div class="form-field">
-        <button type="button" class="secondary" id="gen-upload">${icon('file')}上傳新範本（.docx／.pdf）</button>
+        <div class="gen-tpl-actions">
+          <button type="button" class="secondary" id="gen-upload">${icon('file')}上傳新範本（.docx／.pdf）</button>
+          <button type="button" class="text-button danger-text" id="gen-tpl-del">刪除這個範本</button>
+        </div>
         <input type="file" id="gen-tpl-file" accept=".docx,.pdf" hidden></div>
     </div>
     ${tpls.length?'':'<p class="field-hint" style="margin:6px 0 0">還沒有範本；先上傳一份學校的空白卷（.docx 或 .pdf），版式會原樣沿用。</p>'}
@@ -6002,13 +6016,13 @@ async function generatePaperModal(){
       <div id="gen-ranges">${rangeRow()}</div>
       <button type="button" class="text-button" id="gen-add-range">＋ 增加範圍</button></div>
     <div class="gen-grid">
-      <div class="form-field"><label class="field-label" for="gen-duration">時間（分鐘）</label><input id="gen-duration" type="number" min="10" max="300" value="60"></div>
+      <div class="form-field"><label class="field-label" for="gen-duration">時間（分鐘）</label><input id="gen-duration" type="number" min="10" max="300" value="40"></div>
       <div class="form-field"><label class="field-label" for="gen-grade">年級</label><select id="gen-grade">${GEN_GRADES.map(g=>`<option>${g}</option>`).join('')}</select></div>
       <div class="form-field"><label class="field-label" for="gen-kind">類型</label><select id="gen-kind">${['練習','小測','大測','大測一','大測二','大測三','大測四','考試'].map(k=>`<option ${k==='大測'?'selected':''}>${k}</option>`).join('')}</select></div>
       <div class="form-field"><label class="field-label" for="gen-term">段</label><select id="gen-term"><option>第一段</option><option>第二段</option><option>第三段</option></select></div>
       <div class="form-field"><label class="field-label" for="gen-subject">科目</label><select id="gen-subject"><option>數學</option><option>幾何</option></select></div>
-      <div class="form-field"><label class="field-label" for="gen-region">參考方向</label><select id="gen-region">${PAPER_REGIONS.map(r=>`<option ${r==='澳門'?'selected':''}>${r}</option>`).join('')}</select></div>
-      <div class="form-field"><label class="field-label" for="gen-total">總分</label><input id="gen-total" type="number" min="10" max="300" value="100"></div>
+      <div class="form-field"><label class="field-label" for="gen-region">參考方向</label><select id="gen-region">${PAPER_REGIONS.map(r=>`<option ${r==='全國'?'selected':''}>${r}</option>`).join('')}</select></div>
+      <div class="form-field"><label class="field-label" for="gen-total">總分（正卷）</label><input id="gen-total" type="number" min="10" max="300" value="100"></div>
     </div>
     <div class="gen-block" style="margin-top:14px">
       <div class="gen-block-head">
@@ -6018,7 +6032,8 @@ async function generatePaperModal(){
           <label><input type="radio" name="gen-opt" value="5">5 個</label></div>
       </div>
       <div class="gen-chips">${['選擇題','填空題','解答題','證明題','附加題'].map(chip).join('')}</div>
-      <p class="field-hint" style="margin:6px 0 0">同一個題型會混用不同寫法：直接計算、情境應用、圖表資訊、逆向求證、開放探究、易錯辨析；預覽時每題都會標出來，不滿意的可以單題「更換」。</p>
+      <p class="field-hint" style="margin:6px 0 0">勾選題型並填題數；配分由程式平均分配（同一題型每題同分），總分一定等於你填的分數。
+        同一題型會混用不同寫法：直接計算、情境應用、圖表資訊、逆向求證、開放探究、易錯辨析，預覽時每題都會標出來，不滿意的可以單題「更換」。</p>
     </div>
     <div class="gen-block" style="margin-top:12px">
       <div class="gen-block-head">
@@ -6041,7 +6056,7 @@ async function generatePaperModal(){
           <input id="gen-diff-hard" type="number" min="0" max="10" value="1" aria-label="難的比例">
           <span class="small-text gen-diff-sum" id="gen-diff-sum">合共 10</span></div></div>
     </div>
-    <p class="field-hint" style="margin-top:12px">總分填 110 分時，附加題固定 10 分（會自動勾選）。</p>
+    <p class="field-hint" style="margin-top:12px">總分指「正卷」分數：填 100 分就是正卷 100 分，附加題另加 10 分（卷面 110 分），不佔正卷分數。</p>
     <p class="error-text" id="gen-error"></p>
     <button class="primary wide" id="gen-submit">列出題目 ${icon('spark')}</button>
     </div>
@@ -6072,6 +6087,27 @@ async function generatePaperModal(){
     }catch(err){toast(err.message);}
     finally{btn.disabled=false;btn.innerHTML=old;e.target.value='';}
   };
+  // 刪除範本：只刪這一個範本檔，已生成的試卷不受影響（它們各自存了內容）。
+  $('#gen-tpl-del').onclick=async()=>{
+    const sel=$('#gen-template');
+    const id=Number(sel&&sel.value||0);
+    if(!id)return toast('請先選一個範本。');
+    const name=sel.options[sel.selectedIndex]?sel.options[sel.selectedIndex].textContent:'';
+    if(await askCancel(`刪除範本「${name}」？刪除後要重新上傳才能再用它排版。`,
+                       {root:'#modal-root-2',danger:true,confirmText:'刪除'}))return;
+    try{
+      await api(`/api/paper-templates/${id}`,{},'DELETE');
+      sel.remove(sel.selectedIndex);
+      toast(`已刪除範本「${name}」`);
+      if(!sel.options.length){
+        // 一個範本都不剩：把「上傳」推到最前面，避免老師對著空下拉按生成。
+        const hint=document.createElement('p');
+        hint.className='field-hint';
+        hint.textContent='還沒有範本；先上傳一份學校的空白卷（.docx 或 .pdf），版式會原樣沿用。';
+        sel.closest('.gen-tpl-row').after(hint);
+      }
+    }catch(e){toast(e.message);}
+  };
   $('#gen-add-range').onclick=()=>{ranges.insertAdjacentHTML('beforeend',rangeRow());};
   ranges.addEventListener('click',e=>{
     const del=e.target.closest('.range-del');if(!del)return;
@@ -6097,13 +6133,7 @@ async function generatePaperModal(){
     el.style.color=sum===10?'':'#b8453b';
   };
   diffInputs.forEach(i=>i.oninput=syncDiff);syncDiff();
-  // 總分 110 分＝附加題固定 10 分，所以直接幫教師勾好，不用記規則。
-  const totalInput=$('#gen-total');
-  totalInput.oninput=()=>{
-    if(Number(totalInput.value)!==110)return;
-    const box=[...document.querySelectorAll('.gen-qtype')].find(x=>x.value==='附加題');
-    if(box&&!box.checked){box.checked=true;syncOptions();}
-  };
+  // 附加題是額外的 10 分：總分改動時只更新提示，不自動勾選（勾不勾由老師決定）。
   // 參考文檔：上傳後立刻換成文字（PDF 抽文、圖片請視覺模型寫摘要），出題時一併交給 AI。
   const refs=[];
   const renderRefs=()=>{
@@ -6139,11 +6169,26 @@ async function generatePaperModal(){
     if(!tplId){err.textContent='請先上傳或選一個範本。';return null;}
     const list=[...ranges.querySelectorAll('.range-input')].map(i=>i.value.trim()).filter(Boolean);
     if(!list.length){err.textContent='請至少填一個測考範圍。';return null;}
-    const qtypes=[...document.querySelectorAll('.gen-qtype')].filter(x=>x.checked).map(x=>({type:x.value}));
-    if(!qtypes.length){err.textContent='請至少選一種題型。';return null;}
+    // 題型＋題數：勾了才算；題數填 0 當作不要這一種；留空＝由 AI 決定題數。
+    const qtypes=[];
+    document.querySelectorAll('.gen-qtype').forEach(box=>{
+      if(!box.checked)return;
+      const input=document.querySelector(`.gen-count[data-type="${box.value}"]`);
+      const raw=input?input.value.trim():'';
+      const n=raw===''?null:Number(raw);
+      if(n===0)return;
+      const entry={type:box.value};
+      if(n&&n>0)entry.count=Math.min(40,n);
+      qtypes.push(entry);
+    });
+    if(!qtypes.length){err.textContent='請至少選一種題型，並填上題數。';return null;}
     const total=Number($('#gen-total').value)||100;
-    if(total===110&&!qtypes.some(t=>t.type==='附加題')){
-      err.textContent='總分 110 分時一定要有附加題（固定 10 分）。';return null;}
+    const extraOn=qtypes.some(t=>t.type==='附加題');
+    const pickedCount=qtypes.reduce((a,t)=>a+(t.count||0),0);
+    if(pickedCount&&pickedCount>total+(extraOn?10:0)){
+      err.textContent=`題數共 ${pickedCount} 題，比總分 ${total} 分（附加題另加 10 分）還多；請減少題數或提高總分。`;
+      return null;
+    }
     const opt=document.querySelector('input[name=gen-opt]:checked');
     qtypes.forEach(t=>{if(t.type==='選擇題')t.optionCount=Number(opt?opt.value:4);});
     const difficulty={易:Number($('#gen-diff-easy').value)||0,
@@ -6152,7 +6197,7 @@ async function generatePaperModal(){
     if(difficulty.易+difficulty.中+difficulty.難!==10){
       err.textContent=`難度比例（易：中：難）相加要等於 10，現在是 ${difficulty.易+difficulty.中+difficulty.難}。`;return null;}
     const source=(document.querySelector('input[name=gen-source]:checked')||{}).value||'bank';
-    return {templateId:tplId,ranges:list,duration:Number($('#gen-duration').value)||60,
+    return {templateId:tplId,ranges:list,duration:Number($('#gen-duration').value)||40,
             grade:$('#gen-grade').value,examKind:$('#gen-kind').value,term:$('#gen-term').value,
             subject:$('#gen-subject').value,region:$('#gen-region').value,
             reference:refs.map(r=>`【${r.name}】\n${r.text}`).join('\n\n').slice(0,6000),
@@ -6211,10 +6256,12 @@ async function generatePaperModal(){
     const all=plan.flatMap(s=>s.questions);
     const chosen=all.filter(q=>q.on);
     const sum=chosen.reduce((n,q)=>n+(Number(q.marks)||0),0);
+    // 卷面總分＝正卷＋附加題（附加題另加 10 分，不佔正卷）。
+    const paperTotal=base.totalPoints+(base.qtypes.some(t=>t.type==='附加題')?10:0);
     const picked=$('#gen-picked'), marks=$('#gen-marks'), note=$('#gen-marks-note');
     if(picked)picked.textContent=chosen.length;
     if(marks)marks.textContent=sum;
-    if(note)note.textContent=sum===base.totalPoints?'':`（確定後會調整為 ${base.totalPoints} 分）`;
+    if(note)note.textContent=sum===paperTotal?'':`（確定後會平均調整為 ${paperTotal} 分）`;
     const btn=$('#gen-confirm');
     if(btn)btn.disabled=!chosen.length;
     const bp=$('#gen-blueprint');
@@ -6227,7 +6274,10 @@ async function generatePaperModal(){
     const rows=plan.map((sec,si)=>{
       const on=sec.questions.filter(q=>q.on).length;
       return `<div class="gen-sec">
-        <p class="gen-sec-title">${esc(sec.title||sec.qtype||'題目')}<span class="small-text">　${on} / ${sec.questions.length} 題</span></p>
+        <div class="gen-sec-head">
+          <p class="gen-sec-title">${esc(sec.title||sec.qtype||'題目')}<span class="small-text">　${on} / ${sec.questions.length} 題</span></p>
+          <button type="button" class="text-button" data-add="${si}">＋ 增加一題</button>
+        </div>
         ${sec.questions.map((q,qi)=>{
           n+=1;
           return `<div class="gen-qrow${q.on?'':' off'}" data-row="${si}-${qi}">
@@ -6269,6 +6319,7 @@ async function generatePaperModal(){
       syncTotals();
     });
     $$('[data-replace]',box).forEach(el=>el.onclick=()=>replaceQuestion(el.dataset.replace,el));
+    $$('[data-add]',box).forEach(el=>el.onclick=()=>addQuestion(Number(el.dataset.add),el));
     $$('[data-figure]',box).forEach(el=>el.onclick=()=>openFigureForQuestion(el.dataset.figure));
     $('#gen-back').onclick=()=>{$('#gen-preview-step').hidden=true;$('#gen-form-step').hidden=false;};
     $('#gen-confirm').onclick=confirmGenerate;
@@ -6339,6 +6390,25 @@ async function generatePaperModal(){
       plan[si].questions[qi]={...res.question,on:q.on};
       renderPlan();
       toast('已更換一題');
+    }catch(e){toast(e.message);btn.disabled=false;btn.textContent=old;}
+  };
+
+  // 預覽時「增加一題」：沿用該分部的題型與每題分數，只請 AI 再出這一題。
+  const addQuestion=async (si,btn)=>{
+    const sec=plan[si];if(!sec)return;
+    const marks=sec.questions.length?Math.max(1,Math.round(Number(sec.questions[0].marks)||5)):5;
+    const old=btn.textContent;btn.disabled=true;btn.textContent='出題中…';
+    try{
+      const res=await api('/api/papers/add-question',{
+        qtype:sec.qtype||'解答題',marks,
+        optionCount:(base.qtypes.find(t=>t.type==='選擇題')||{}).optionCount||4,
+        ranges:base.ranges,difficulty:'中',
+        avoid:plan.flatMap(s=>s.questions.map(x=>x.stem)).slice(0,16),
+        avoidStyles:[...new Set(sec.questions.map(x=>x.style).filter(Boolean))],
+        consentExternal:S.ai.mode==='external'});
+      sec.questions.push({...res.question,on:true});
+      renderPlan();
+      toast(`已增加一題（${sec.title||sec.qtype}）`);
     }catch(e){toast(e.message);btn.disabled=false;btn.textContent=old;}
   };
 

@@ -533,7 +533,7 @@ class APITests(unittest.TestCase):
 
     def test_import_atomic_validation(self):
         for invalid in [dict(self.draft, level=0), dict(self.draft, points=True), dict(self.draft, topic='任意'),
-                        dict(self.draft, tags='abc'), dict(self.draft, steps=[1]), dict(self.draft, grade='小六'),
+                        dict(self.draft, tags='abc'), dict(self.draft, steps=[1]), dict(self.draft, grade='小七'),
                         dict(self.draft, title='<title>', unknown='x'), dict(self.draft, content=''),
                         dict(self.draft, level=1.5), dict(self.draft, answer=None)]:
             self.request('POST', '/api/questions/import', {'questions': [self.draft, invalid]}, cookie=self.teacher, expect=400)
@@ -2829,7 +2829,7 @@ class PaperGenerateTests(unittest.TestCase):
                  'options': [], 'marks': 10, 'difficulty': '難',
                  'answer': 'x', 'steps': []}]}]}
         out = self.call('POST', '/api/papers/generate', self.payload(
-            source='ai', totalPoints=110,
+            source='ai', totalPoints=100,
             qtypes=[{'type': '選擇題', 'optionCount': 4}, {'type': '解答題'},
                     {'type': '附加題'}]))
         self.assertEqual(out['paper']['questionCount'], 16)
@@ -2838,6 +2838,7 @@ class PaperGenerateTests(unittest.TestCase):
         self.assertEqual(out['paper']['term'], '第一段')
         self.assertEqual(out['spec']['extraMarks'], 10)
         sections = self.sections_of(out)
+        # 老師填 100 分＝正卷 100 分；附加題另加 10 分，卷面合共 110 分。
         self.assertEqual(sum(q['marks'] for s in sections for q in s['questions']), 110)
         extra = [s for s in sections if '附加' in s['title']][0]
         self.assertEqual(sum(q['marks'] for q in extra['questions']), 10)
@@ -2892,12 +2893,30 @@ class PaperGenerateTests(unittest.TestCase):
         self.assertEqual(ctx.exception.status, 400)
         self.assertIn('等於 10', ctx.exception.message)
 
-    def test_110_marks_requires_the_extra_section(self):
+    def test_extra_question_is_bonus_on_top_of_the_base_total(self):
+        """附加題是額外的：填 100 分＝正卷 100 分，附加題另加 10 分（卷面 110）。"""
+        base = server.paper_generation_spec({
+            'ranges': ['一元二次方程'], 'totalPoints': 100,
+            'qtypes': [{'type': '選擇題', 'optionCount': 4}]})
+        self.assertEqual(base['extraMarks'], 0)
+        self.assertEqual(base['paperTotal'], 100)
+        with_extra = server.paper_generation_spec({
+            'ranges': ['一元二次方程'], 'totalPoints': 100,
+            'qtypes': [{'type': '選擇題', 'optionCount': 4},
+                       {'type': '附加題', 'count': 1}]})
+        self.assertEqual(with_extra['totalPoints'], 100, '正卷仍是 100，不會被附加題吃掉')
+        self.assertEqual(with_extra['extraMarks'], 10)
+        self.assertEqual(with_extra['paperTotal'], 110)
+
+    def test_too_many_questions_for_the_total_is_rejected(self):
+        """題數比總分多時先擋住：否則一定有題目分不到分數。"""
         with self.assertRaises(server.APIError) as ctx:
-            self.call('POST', '/api/papers/generate', self.payload(
-                totalPoints=110, qtypes=[{'type': '選擇題', 'optionCount': 4}]))
+            server.paper_generation_spec({
+                'ranges': ['一元二次方程'], 'totalPoints': 10,
+                'qtypes': [{'type': '選擇題', 'count': 8, 'optionCount': 4},
+                           {'type': '解答題', 'count': 8}]})
         self.assertEqual(ctx.exception.status, 400)
-        self.assertIn('附加題', ctx.exception.message)
+        self.assertIn('題數', ctx.exception.message)
 
     def test_rejects_when_question_count_is_far_off(self):
         """只給一題 50 分、卻要 100 分：題數明顯不對，要退回重做而不是硬湊。"""
@@ -3242,6 +3261,50 @@ class PaperGenerateTests(unittest.TestCase):
             'qtype': '選擇題', 'marks': 5, 'optionCount': 4,
             'ranges': ['一元二次方程'], 'difficulty': '難', 'avoid': []})
         self.assertEqual(out['question']['source'], 'AI 生成')
+
+    def test_generation_spec_keeps_question_counts_and_new_defaults(self):
+        """題數、40 分鐘、全國、附加題另計：老師填 100 分就是正卷 100 分。"""
+        spec = server.paper_generation_spec({
+            'ranges': ['一元二次方程'], 'totalPoints': 100,
+            'qtypes': [{'type': '選擇題', 'count': 8, 'optionCount': 4},
+                       {'type': '填空題', 'count': 6},
+                       {'type': '證明題', 'count': 0},
+                       {'type': '附加題', 'count': 1}]})
+        self.assertEqual([t.get('count') for t in spec['qtypes']], [8, 6, 1])
+        self.assertEqual([t['type'] for t in spec['qtypes']], ['選擇題', '填空題', '附加題'])
+        self.assertEqual(spec['duration'], 40)
+        self.assertEqual(spec['region'], '全國')
+        # 附加題不佔正卷分數：100 分正卷＋10 分附加＝卷面 110 分
+        self.assertEqual(spec['totalPoints'], 100)
+        self.assertEqual(spec['extraMarks'], 10)
+        self.assertEqual(spec['paperTotal'], 110)
+
+    def test_marks_are_even_within_a_section_and_add_up(self):
+        """同一題型每題同分（要整除），加起來剛好等於總分。"""
+        import paper_format
+        def sec(title, n):
+            return paper_format.Section(title=title, questions=[
+                paper_format.Question(stem=f'q{i}', marks=5) for i in range(n)])
+        sections = [sec('一、選擇題', 8), sec('二、填空題', 6),
+                    sec('三、解答題', 4), sec('四、證明題', 2)]
+        total = server.paper_marks_even(sections, 100)
+        self.assertEqual(total, 100)
+        for s in sections:
+            marks = [q.marks for q in s.questions]
+            self.assertEqual(len(set(marks)), 1, f'{s.title} 每題分數要一樣：{marks}')
+        self.assertEqual(sum(q.marks for s in sections for q in s.questions), 100)
+        self.assertEqual([s.questions[0].marks for s in sections], [3, 4, 8, 10])
+
+    def test_add_question_endpoint_generates_one_more(self):
+        """預覽頁的「增加一題」：只請 AI 出一題，回傳可插進該分部的題目。"""
+        self.app.ai.call = lambda *a, **k: {
+            'stem': '新增題（　　）', 'options': ['A', 'B', 'C', 'D'], 'marks': 5,
+            'difficulty': '中', 'answer': 'A', 'steps': []}
+        out = self.call('POST', '/api/papers/add-question', {
+            'qtype': '選擇題', 'marks': 5, 'optionCount': 4,
+            'ranges': ['一元二次方程'], 'difficulty': '中', 'avoid': []})
+        self.assertEqual(out['question']['marks'], 5)
+        self.assertEqual(len(out['question']['options']), 4)
 
 
 class ContestTests(unittest.TestCase):
