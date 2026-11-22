@@ -116,7 +116,8 @@ class MockExams:
 
     # ---------- 挑題 ----------
     def pool(self, db, topic, subtopic, level, qtype):
-        rows = db.execute('SELECT * FROM questions ORDER BY id').fetchall()
+        rows = db.execute('SELECT id, payload, (figure IS NOT NULL) AS has_figure, '
+                    'figure_key, created_at FROM questions ORDER BY id').fetchall()
         items = []
         for r in rows:
             q = self.app.question_row(r)
@@ -254,7 +255,8 @@ class MockExams:
         return (int(m[1]), m[2]) if m else None
 
     def options(self, db):
-        rows = db.execute('SELECT * FROM questions ORDER BY id').fetchall()
+        rows = db.execute('SELECT id, payload, (figure IS NOT NULL) AS has_figure, '
+                    'figure_key, created_at FROM questions ORDER BY id').fetchall()
         pool = [self.app.question_row(r) for r in rows]
         usable = [q for q in pool if self.homework.recommendable(q)]
         topics = []
