@@ -29,6 +29,16 @@ function svgToPng(svg,widthPx=900){
       ctx.fillStyle='#ffffff';ctx.fillRect(0,0,canvas.width,canvas.height);
       ctx.drawImage(img,0,0,canvas.width,canvas.height);
       URL.revokeObjectURL(url);
+      // AI 畫圖失敗時會回一張全白 SVG，轉成 PNG 後塞進 Word 就是一條橫貫整行的
+      // 空位。抽樣看有沒有非白像素：全白就當畫圖失敗，不要讓它進確認頁／Word。
+      try{
+        const px=ctx.getImageData(0,0,canvas.width,canvas.height).data;
+        let ink=false;
+        for(let i=0;i<px.length;i+=4){ // 逐像素，找到第一個非白點就停（有圖很快就停）
+          if(px[i]<245||px[i+1]<245||px[i+2]<245){ink=true;break;}
+        }
+        if(!ink){reject(new Error('AI 畫出的圖是空白的，已略過；可試「更換」或手動上傳圖片。'));return;}
+      }catch(e){/* 讀不到像素就照舊放行 */}
       resolve({data:canvas.toDataURL('image/png'),widthCm:7.5});
     };
     img.onerror=()=>{URL.revokeObjectURL(url);reject(new Error('圖形轉檔失敗'));};

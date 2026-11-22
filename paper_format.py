@@ -1133,11 +1133,30 @@ def webp_to_png(blob: bytes) -> bytes | None:
         return None
 
 
+def is_blank_image(blob: bytes) -> bool:
+    """AI 畫圖失敗時會回一張全白圖：塞進 Word／LaTeX 就是一條橫貫整行的空位。
+
+    判斷法：整張圖任一通道只要有像素暗於 250 就算有內容、保留；三個通道
+    最小值都 >=250（等於全白或近乎全白）才算空白。不縮圖——縮圖 averaging
+    會把數軸這種 1px 細線沖淡成白，反而誤殺正常圖。getextrema() 是 C 實作，
+    700×500 的圖也是瞬間完成。讀不出來就當「不是空白」，照原本流程處理。
+    """
+    try:
+        from PIL import Image
+        img = Image.open(io.BytesIO(blob)).convert('RGB')
+        # getextrema() 回 [(Rmin,Rmax),(Gmin,Gmax),(Bmin,Bmax)]；
+        # 三個通道最小值都接近白才算空白，任一通道有深色像素就保留。
+        return all(mn >= 250 for mn, _mx in img.getextrema())
+    except Exception:
+        return False
+
+
 def figure_bytes(fig) -> bytes | None:
     """題目圖 → bytes（排版用）：不管是 blob 還是 data URL 都吃。
 
     WebP 轉成 PNG：python-docx 不支援 WebP，手繪／AI 圖早期存成 WebP 時
     過去會在 add_picture  silently 失敗，讓圖形從 Word 裡消失。
+    全白圖（AI 畫圖失敗）直接略過，避免 Word 出現一大段莫名空位。
     """
     if not isinstance(fig, dict):
         return None
@@ -1155,7 +1174,12 @@ def figure_bytes(fig) -> bytes | None:
     if raw is None:
         return None
     if _sniff_image(raw) == 'image/webp':
-        return webp_to_png(raw) or raw
+        converted = webp_to_png(raw)
+        if converted is None:
+            return None
+        raw = converted
+    if is_blank_image(raw):
+        return None
     return raw
 
 

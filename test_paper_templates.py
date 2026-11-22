@@ -612,6 +612,16 @@ class LatexExportTests(unittest.TestCase):
         self.assertIn(r'\rule', tex)
         self.assertNotIn(r'\_\_\_', tex)
 
+    def test_blank_figure_is_not_packaged_into_tex(self):
+        """全白圖不該被當成題圖打包進 .tex，否則 Overleaf 也會有相同空位。"""
+        try:
+            from PIL import Image
+        except ImportError:
+            self.skipTest('沒有 Pillow，略過空白圖測試')
+        buf = io.BytesIO()
+        Image.new('RGB', (700, 90), (255, 255, 255)).save(buf, 'PNG')
+        self.assertIsNone(latex_export.figure_bytes_of({'blob': buf.getvalue()}))
+
 
 PAPER_SECTIONS = [{
     'title': '一、單項選擇題：（@3分，共30分）',
@@ -1135,6 +1145,39 @@ class PaperFigureTests(unittest.TestCase):
         Image.new('RGB', (30, 20), (60, 200, 60)).save(buf, 'WEBP')
         url = 'data:image/webp;base64,' + base64.b64encode(buf.getvalue()).decode()
         self.assertEqual(paper_format.figure_bytes({'data': url})[:8], b'\x89PNG\r\n\x1a\n')
+
+    def test_blank_ai_figure_is_dropped_from_word(self):
+        """AI 畫圖失敗會回一張全白圖：塞進 Word 就是一條橫貫整行的空位，要略過。"""
+        try:
+            from PIL import Image
+        except ImportError:
+            self.skipTest('沒有 Pillow，略過空白圖測試')
+        buf = io.BytesIO()
+        Image.new('RGB', (700, 90), (255, 255, 255)).save(buf, 'PNG')
+        blank = buf.getvalue()
+        self.assertTrue(paper_format.is_blank_image(blank), '全白圖要被認出來')
+        self.assertIsNone(paper_format.figure_bytes({'blob': blank}), '全白圖不該進 Word')
+        # 真的有內容的圖不能被誤殺
+        im = Image.new('RGB', (700, 90), (255, 255, 255))
+        for x in range(100, 600):
+            for y in range(43, 47):
+                im.putpixel((x, y), (0, 0, 0))
+        buf2 = io.BytesIO()
+        im.save(buf2, 'PNG')
+        self.assertFalse(paper_format.is_blank_image(buf2.getvalue()), '有線條的圖要保留')
+
+    def test_blank_figure_leaves_no_gap_in_word(self):
+        """整題只有一張全白圖時，Word 不該多出一個空白圖片段落。"""
+        try:
+            from PIL import Image
+        except ImportError:
+            self.skipTest('沒有 Pillow，略過空白圖測試')
+        buf = io.BytesIO()
+        Image.new('RGB', (700, 90), (255, 255, 255)).save(buf, 'PNG')
+        doc = self.render([paper_format.Section(title='一、解答題', questions=[
+            paper_format.Question(stem='解不等式 $2x-3<5$。', marks=10,
+                                  figures=[{'blob': buf.getvalue(), 'cx': 2880000, 'cy': 0}])])])
+        self.assertEqual(len(doc.inline_shapes), 0, '全白圖不該在 Word 留下空位')
 
 
 class PaperLayoutTests(unittest.TestCase):

@@ -502,6 +502,7 @@ def figure_bytes_of(fig) -> bytes | None:
     """一張題目圖 → PNG bytes（blob 或 data URL 都吃）。
 
     打包的檔名是 .png，WebP 要先用 Pillow 轉 PNG，否則 Overleaf 編譯會壞圖。
+    全白圖（AI 畫圖失敗）直接略過，否則 tex 會留一張空白圖撐出大空位。
     """
     if not isinstance(fig, dict):
         return None
@@ -526,9 +527,13 @@ def figure_bytes_of(fig) -> bytes | None:
             bg.alpha_composite(img)
             buf = io.BytesIO()
             bg.convert('RGB').save(buf, 'PNG')
-            return buf.getvalue()
+            raw = buf.getvalue()
         except Exception:
-            return raw
+            pass
+    # 與 Word 同一道關卡：全白圖不進 tex（避免重複邏輯，這裡才引入）
+    from paper_format import is_blank_image
+    if is_blank_image(raw):
+        return None
     return raw
 
 
