@@ -5712,7 +5712,7 @@ function paperCardHtml(p,newId){
     <h3 class="paper-title">${esc(p.title)}</h3>
     <p class="paper-meta">${esc(meta||'未填年份／學段')}</p>
     <div class="paper-actions">
-      <button class="primary" data-paper-assign="${p.id}">出作業</button>
+      <button class="primary" data-paper-assign="${p.id}" ${!p.importedCount?'disabled title="這份試卷還沒匯入題庫；先按下方「一鍵匯入題庫」才能出作業"':''}>出作業</button>
       ${p.templateId?`<button class="secondary" data-paper-docx="${p.id}" title="用原範本重新下載 Word">Word</button>`:''}
       <button class="secondary" data-paper-tex="${p.id}" title="下載 LaTeX（.tex）">.tex</button>
       <button class="text-button" data-paper-del="${p.id}" style="color:#b8453b">刪除</button>
