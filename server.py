@@ -8561,7 +8561,11 @@ class Application:
                     if value:
                         conds.append(f'{column}=?')
                         args.append(value)
-                sql = 'SELECT * FROM papers'
+                # 列表只回卡片需要的欄位：sections 是每份卷的完整題目 JSON（可能很大），
+                # 卡片根本不用，取回 200 份會白白多讀好幾 MB。詳情才用 SELECT *。
+                sql = ('SELECT id, owner_id, title, year, grade, term, template_id, '
+                       'question_count, imported_at, imported_count, created_at, blueprint '
+                       'FROM papers')
                 if conds:
                     sql += ' WHERE ' + ' AND '.join(conds)
                 rows = db.execute(sql + ' ORDER BY id DESC LIMIT 200', args).fetchall()
