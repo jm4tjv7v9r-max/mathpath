@@ -3053,6 +3053,67 @@ class PaperGenerateTests(unittest.TestCase):
         self.assertEqual(kept[0]['source'], '2024 港澳盃 第 5 題')
         self.assertEqual(kept[0]['topic'], '一元二次方程')
 
+    def test_duplicate_groups_catches_same_question_with_different_numbers(self):
+        """選擇題和填空題只把數字換掉，要被判為同款。"""
+        import paper_format
+        Q = paper_format.Question
+        sections = [
+            paper_format.Section(title='一、選擇題', questions=[
+                Q(stem='一個圓的半徑是 3 cm，求它的面積', options=['A. 12', 'B. 25'])]),
+            paper_format.Section(title='二、填空題', questions=[
+                Q(stem='一個圓的半徑是 5 cm，求它的面積 ______', options=[])]),
+        ]
+        groups = server.duplicate_groups(sections)
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(len(groups[0]), 2)
+
+    def test_duplicate_groups_keeps_different_topics(self):
+        """知識點不同（面積公式 vs 解方程）不能被誤殺。"""
+        import paper_format
+        Q = paper_format.Question
+        sections = [
+            paper_format.Section(title='一、選擇題', questions=[
+                Q(stem='解方程 x^2-5x+6=0 的根', options=['A. 2', 'B. 3'])]),
+            paper_format.Section(title='二、填空題', questions=[
+                Q(stem='一個圓的面積公式是 ______', options=[])]),
+        ]
+        self.assertEqual(server.duplicate_groups(sections), [])
+
+    def test_replace_duplicate_questions_converges(self):
+        """同款題要被換掉；即使第一次換出來仍同款，下一輪也要繼續換到收斂。"""
+        import paper_format
+        Q = paper_format.Question
+        sections = [
+            paper_format.Section(title='一、選擇題', questions=[
+                Q(stem='一個圓的半徑是 3 cm，求它的面積', options=['A. 12', 'B. 25'])]),
+            paper_format.Section(title='二、填空題', questions=[
+                Q(stem='一個圓的半徑是 5 cm，求它的面積 ______', options=[])]),
+        ]
+        class FakeAI:
+            configured = True
+            def __init__(self):
+                self.calls = 0
+            def call(self, prompt, payload):
+                self.calls += 1
+                # 第一次仍出同款（圓），第二次換成不同款（正方形）
+                stem = ('正方形邊長是 7，求它的面積' if self.calls >= 2
+                        else '一個圓的半徑是 7 cm，求它的面積')
+                return {'stem': stem, 'options': [], 'difficulty': '中',
+                        'style': '直接計算', 'answer': '49'}
+        class FakeApp:
+            def __init__(self):
+                self.ai = FakeAI()
+        app = FakeApp()
+        out, warns = server.replace_duplicate_questions(app, {'ranges': []}, sections,
+                                                         max_rounds=4)
+        self.assertEqual(server.duplicate_groups(out), [], '換完不該再有同款')
+        self.assertEqual(app.ai.calls, 2)
+        stems = [q.stem for s in out for q in s.questions]
+        self.assertTrue(any('正方形' in x for x in stems))
+        self.assertEqual(warns, [])
+        # 換題不能改動配分
+        self.assertEqual([q.marks for s in out for q in s.questions], [None, None])
+
     def test_pdf_plan_endpoint_returns_word_plan(self):
         """/api/papers/{id}/pdf-plan 要回傳跟 Word 同源的排版計畫，供 PDF 用。"""
         self.app.ai.call = lambda *a, **k: {'sections': [

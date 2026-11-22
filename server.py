@@ -2735,6 +2735,135 @@ def paper_difficulty_expect(counts, ratio):
     return base
 
 
+# ── 同款題目二次檢查 ─────────────────────────────────────────────
+# 老師要求：一份卷裡不能有「同款題」——最典型是選擇題和填空題只把數字換掉，
+# 中文題幹幾乎一模一樣。AI 即使在 prompt 裡被要求「不要重複」仍常常犯，
+# 所以生成完再獨立檢查一次，撞款的就換掉，直到每題都不同款。
+
+# 題幹骨架要忽略的東西：數字（含全形、LaTeX 裡的）、數學符號、底線、標點、
+# 選項標號，以及「下列何者」「求」這類每題都有的通用詞。留下中文主干用來比對。
+_DUP_GENERIC = frozenset('下列何者哪一項正確的是求計算法的值多少單位請問找到以下關於')
+_DUP_STRIP_RE = re.compile(
+    r'\$[^$]*\$|\\\[[^\]]*\\\]|'          # LaTeX 數學式整段
+    r'[0-9０-９]+(?:\.[0-9]+)?|'          # 數字（含小數）
+    r'[A-Za-z]+|'                          # 英文變數（x、y、π…）
+    r'[_＿]{2,}|[\s,.;:、，。；：？?（）()\[\]「」『』/\\+×÷=≠≥≤^~％%—－]'
+)
+
+
+def paper_dup_fingerprint(stem, options=None):
+    """題幹 → 同款指紋：只留中文主干字元的「有序序列」。
+
+    去掉數字與數學式後，「半徑 3 求面積」和「半徑 5 求面積」會得到同一串；
+    選擇題把選項併進來，跨題型（選擇 vs 填空）也抓得到。
+    回 (中文序列, 中文字集合)；集合用來算相似度，序列用來快速判斷相等。
+    """
+    text = str(stem or '')
+    for opt in (options or []):
+        text += ' ' + re.sub(r'^[A-E][.、]\s*', '', str(opt))
+    text = _DUP_STRIP_RE.sub('', text)
+    # 去掉通用詞，避免每題都有的「求…的值」把所有題都變同款
+    chars = [c for c in text if '\u4e00' <= c <= '\u9fff' and c not in _DUP_GENERIC]
+    return ''.join(chars), set(chars)
+
+
+def duplicate_groups(sections, threshold=0.82):
+    """找出同款題：回 [[(sec_i, q_i), ...], ...]，每組是彼此同款的題目索引。
+
+    用中文字集合的 Jaccard 相似度；指紋完全相同或相似度 >= threshold 就當同款。
+    太短的指紋（少於 4 個中文字）不判斷，避免「證明」「計算」這種字被誤殺。
+    """
+    items = []
+    for si, sec in enumerate(sections or []):
+        for qi, q in enumerate(sec.questions or []):
+            seq, chars = paper_dup_fingerprint(q.stem, getattr(q, 'options', None))
+            if len(chars) >= 4:
+                items.append(((si, qi), seq, chars))
+    groups = []
+    used = set()
+    for idx, (pos, seq, chars) in enumerate(items):
+        if pos in used:
+            continue
+        group = [pos]
+        for jdx in range(idx + 1, len(items)):
+            pos2, seq2, chars2 = items[jdx]
+            if pos2 in used:
+                continue
+            same = seq == seq2
+            union = chars | chars2
+            sim = len(chars & chars2) / len(union) if union else 0
+            if same or sim >= threshold:
+                group.append(pos2)
+                used.add(pos2)
+        if len(group) > 1:
+            used.add(pos)
+            groups.append(group)
+    return groups
+
+
+def replace_duplicate_questions(app, spec, sections, max_rounds=3, limit=12):
+    """把同款題換掉，直到每題不同款或達重試上限。回（更新後的 sections, 提醒）。
+
+    每組同款保留第一題，其餘用 ai_generate_one 重出；avoid 帶同卷其他題幹，
+    讓 AI 明確避開。換題失敗或 AI 沒設定時安靜保留原題並加提醒，不讓出卷失敗。
+    """
+    if not getattr(app.ai, 'configured', False):
+        return sections, []
+    warnings = []
+    spec_ranges = spec.get('ranges') or []
+    for _ in range(max_rounds):
+        groups = duplicate_groups(sections)
+        if not groups:
+            return sections, warnings
+        changed = False
+        for group in groups[:limit]:
+            keep = group[0]
+            for si, qi in group[1:]:
+                sec = sections[si]
+                old = sec.questions[qi]
+                kind = next((k for k in PAPER_QTYPES if k in (sec.title or '')), '解答題')
+                option_count = max(4, min(5, len(old.options) or 4))
+                # 同卷其他題（含保留那題）都放進 avoid，避免再撞同款
+                avoid = []
+                for s in sections:
+                    for q in s.questions:
+                        if len(avoid) >= 12:
+                            break
+                        avoid.append(str(q.stem or '')[:120])
+                level = getattr(old, 'difficulty', '') or '中'
+                if level not in PAPER_DIFFICULTY:
+                    level = '中'
+                try:
+                    fresh = ai_generate_one(app, kind, old.marks or 5, option_count,
+                                            spec_ranges, level, avoid)
+                except Exception as exc:
+                    ai_log(f'同款換題略過：{exc}')
+                    continue
+                seq, chars = paper_dup_fingerprint(fresh['stem'], fresh.get('options'))
+                if len(chars) < 4:
+                    continue
+                # 新題就算仍撞款也先接受：下一輪 groups 會再把它揪出來換。
+                # 這樣多輪會收斂，而不是在這裡卡住永遠不換。
+                newq = paper_format.Question(
+                    stem=fresh['stem'], marks=old.marks, options=list(fresh.get('options') or []),
+                    lines=list(getattr(old, 'lines', []) or []),
+                    figures=list(getattr(old, 'figures', []) or []),
+                    answer=fresh.get('answer') or '', steps=[],
+                    # 難度沿用原題：換題不能破壞前面已核對過的難度比例。
+                    difficulty=level,
+                    topic=getattr(old, 'topic', ''), source='AI 生成',
+                    style=fresh.get('style') or '')
+                sec.questions[qi] = newq
+                changed = True
+        if not changed:
+            break
+    remain = duplicate_groups(sections)
+    if remain:
+        warnings.append(f'仍有 {len(remain)} 組題目寫法相近，已盡量更換；'
+                        '可在預覽清單按「更換」逐題微調。')
+    return sections, warnings
+
+
 def paper_generation_check(spec, sections, target=None, types=None, tolerance=0.01):
     """把卷面跟要求逐項核對；回（一定要改的問題, 只作提示的提醒）。
 
@@ -3053,6 +3182,11 @@ def build_generated_sections(app, spec):
     if not sections:
         fail(422, '題庫裡沒有符合這個範圍的題目，AI 也沒有產出可用的題目；'
                   '請放寬範圍，或改用「全部由 AI 出題」。')
+    # 二次檢查：把同款題（含跨題型只換數字的題）換掉，直到每題不同款。
+    # 放在配分最後核算之前，換題後配分仍由下面的 paper_generation_check 保證total。
+    if spec.get('avoidDuplicates', True):
+        sections, dup_notes = replace_duplicate_questions(app, spec, sections)
+        warnings.extend(dup_notes)
     if spec['source'] == 'bank' and bank_count == 0:
         warnings.append('題庫沒有符合這個範圍與題型的題目，整份卷由 AI 出題；'
                         '把題目加進題庫後再生成，就會優先取用題庫的題目。')
