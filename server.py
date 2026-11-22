@@ -10191,107 +10191,11 @@ class Application:
             return {'ok': True}, headers
         return None
 
-    def dispatch(self, method, path, body, user, token_hash, ip, query=''):
-        headers = {}
-        # 配額按「誰在呼叫」計：登入者用帳號，訪客用 IP（登入頁與同意前的呼叫）。
-        begin_ai_request(AIQuota.key_for(user, ip))
-        # /api/health 即使 DB 還沒好也要能回應，讓 Render 健康檢查不會 timeout。
-        job_match = re.fullmatch(r'/api/jobs/([A-Za-z0-9_-]{8,40})', path)
-        if method == 'GET' and job_match:
-            self.teacher(user)
-            job = JOBS.get(job_match[1])
-            if job is None:
-                fail(404, '這個工作已經結束或不存在（伺服器可能重啟過），請重新排版。')
-            if job['user'] != user['id']:
-                fail(403, '只能查看自己的工作。')
-            payload = {'status': job['status'], 'error': job['error'],
-                       'elapsed': round(time.time() - job['started'], 1)}
-            if job.get('progress'):
-                payload['progress'] = job['progress']
-            if job['status'] == 'done':
-                payload['result'] = job['result']
-            return payload, headers
-        hit = self._dispatch_paper_keys(method, path, body, user, headers)
-        if hit is not None:
-            return hit
-        hit = self._dispatch_paper_grades(method, path, body, user, headers)
-        if hit is not None:
-            return hit
-        hit = self._dispatch_classroom(method, path, body, user, token_hash, ip, query, headers)
-        if hit is not None:
-            return hit
-        if method == 'POST' and path == '/api/papers/to-tex':
-            self.teacher(user)
-            fields(body, ('file', 'preamble', 'marksPosition', 'consentExternal', 'async',
-                          'templateId', 'numbering'), ('file',))
-            if body.get('async'):
-                return {'jobId': self.start_job(
-                    user, lambda: self.dispatch(method, path, {**body, 'async': False},
-                                                user, token_hash, ip)[0])}, headers
-            kind, data = decode_paper(body['file'])
-            preamble = body.get('preamble')
-            if preamble:
-                preamble = text(preamble, 'Preamble', 20000)
-                if '\\begin{document}' in preamble:
-                    fail(400, 'Preamble 不要包含 \\begin{document}，系統會自動加上。')
-            else:
-                preamble = None
-            position = body.get('marksPosition') or 'trailing'
-            if position not in ('leading', 'trailing'):
-                fail(400, '配分位置只接受 leading 或 trailing。')
-            if kind == 'pdf':
-                self.ai.consent(body.get('consentExternal'))
-                pages = pdf_page_images(data, max_pages=10)
-                if not pages:
-                    fail(422, 'PDF 沒有可讀的頁面。')
-                title, raw_sections = pdf_layout.extract_content(self.ai, pages)
-                sections = sections_from_pdf_data(raw_sections)
-                head = [title] if title else []
-                if not sections:
-                    fail(422, 'AI 在這份 PDF 裡讀不到題目。')
-            else:
-                try:
-                    head, sections = paper_format.parse_content_bytes(data)
-                except Exception:
-                    fail(422, '讀不到這份 Word 的內容，請確認檔案沒有損壞。')
-            if not sections:
-                fail(422, '這份 Word 裡找不到題目（題號要長得像「1. …」）。')
-            title = head[0] if head else None
-            subtitle = [line for line in head[1:] if str(line).strip()]
-            # 選了範本就跟 Word 用同一份版面計劃：卷頭、大題標題、配分、卷尾都一致
-            template_id = body.get('templateId')
-            plan = None
-            if template_id:
-                with self.db() as db:
-                    tpl_row = db.execute('SELECT * FROM paper_templates WHERE id=?',
-                                         (number(template_id, '範本', 1, 10 ** 18, True),)).fetchone()
-                    if tpl_row is None:
-                        fail(404, '找不到這個範本。')
-                    if tpl_row['owner_id'] != user['id'] and not self.is_owner(user, db):
-                        fail(403, '只有建立者或管理員可以使用這個範本。')
-                try:
-                    plan = paper_format.layout_plan(
-                        Document(io.BytesIO(tpl_row['data'])), sections, title,
-                        numbering=('section' if body.get('numbering') == 'section'
-                                   else 'continuous'))
-                except SystemExit as exc:
-                    fail(400, str(exc) or '範本裡找不到題目段落（長得像「1. …」）。')
-            figs_out: list = []
-            if plan is not None:
-                tex = latex_export.to_tex_plan(plan, preamble, figs_out=figs_out)
-            else:
-                tex = latex_export.to_tex(title, sections, position, preamble,
-                                          subtitle_lines=subtitle, figs_out=figs_out)
-            filename = (title or '試卷').replace('/', '／')[:60] + '.tex'
-            tex_zip = latex_export.tex_zip_payload(tex, figs_out, filename)
-            return {'tex': tex, 'filename': filename,
-                    'texZip': tex_zip,
-                    'stats': {'sections': len(sections),
-                              'questions': sum(len(s.questions) for s in sections),
-                              'formulas': paper_format.count_formulas(sections),
-                              'oleObjects': (paper_format.count_ole_objects(data)
-                                             if kind == 'docx' else 0)}}, headers
+    def _dispatch_paper_templates(self, method, path, body, user, token_hash, ip, headers):
+        """卷面範本：列表／建立／刪除／套用版式。
 
+        從 dispatch 抽出的內聚路由組；沒有命中回 None，讓 dispatch 繼續往下試。
+        """
         # ---------- 卷面排版：記住範本版式，把新卷套成同樣版面 ----------
         if path == '/api/paper-templates' and method in ('GET', 'POST'):
             self.teacher(user)
@@ -10422,6 +10326,112 @@ class Application:
                     'geometry': paper_format.geometry_candidates(sections),
                     'content': {'title': report.get('title'),
                                 'sections': paper_format.sections_to_dict(sections)}}, headers
+        return None
+
+    def dispatch(self, method, path, body, user, token_hash, ip, query=''):
+        headers = {}
+        # 配額按「誰在呼叫」計：登入者用帳號，訪客用 IP（登入頁與同意前的呼叫）。
+        begin_ai_request(AIQuota.key_for(user, ip))
+        # /api/health 即使 DB 還沒好也要能回應，讓 Render 健康檢查不會 timeout。
+        job_match = re.fullmatch(r'/api/jobs/([A-Za-z0-9_-]{8,40})', path)
+        if method == 'GET' and job_match:
+            self.teacher(user)
+            job = JOBS.get(job_match[1])
+            if job is None:
+                fail(404, '這個工作已經結束或不存在（伺服器可能重啟過），請重新排版。')
+            if job['user'] != user['id']:
+                fail(403, '只能查看自己的工作。')
+            payload = {'status': job['status'], 'error': job['error'],
+                       'elapsed': round(time.time() - job['started'], 1)}
+            if job.get('progress'):
+                payload['progress'] = job['progress']
+            if job['status'] == 'done':
+                payload['result'] = job['result']
+            return payload, headers
+        hit = self._dispatch_paper_keys(method, path, body, user, headers)
+        if hit is not None:
+            return hit
+        hit = self._dispatch_paper_grades(method, path, body, user, headers)
+        if hit is not None:
+            return hit
+        hit = self._dispatch_classroom(method, path, body, user, token_hash, ip, query, headers)
+        if hit is not None:
+            return hit
+        if method == 'POST' and path == '/api/papers/to-tex':
+            self.teacher(user)
+            fields(body, ('file', 'preamble', 'marksPosition', 'consentExternal', 'async',
+                          'templateId', 'numbering'), ('file',))
+            if body.get('async'):
+                return {'jobId': self.start_job(
+                    user, lambda: self.dispatch(method, path, {**body, 'async': False},
+                                                user, token_hash, ip)[0])}, headers
+            kind, data = decode_paper(body['file'])
+            preamble = body.get('preamble')
+            if preamble:
+                preamble = text(preamble, 'Preamble', 20000)
+                if '\\begin{document}' in preamble:
+                    fail(400, 'Preamble 不要包含 \\begin{document}，系統會自動加上。')
+            else:
+                preamble = None
+            position = body.get('marksPosition') or 'trailing'
+            if position not in ('leading', 'trailing'):
+                fail(400, '配分位置只接受 leading 或 trailing。')
+            if kind == 'pdf':
+                self.ai.consent(body.get('consentExternal'))
+                pages = pdf_page_images(data, max_pages=10)
+                if not pages:
+                    fail(422, 'PDF 沒有可讀的頁面。')
+                title, raw_sections = pdf_layout.extract_content(self.ai, pages)
+                sections = sections_from_pdf_data(raw_sections)
+                head = [title] if title else []
+                if not sections:
+                    fail(422, 'AI 在這份 PDF 裡讀不到題目。')
+            else:
+                try:
+                    head, sections = paper_format.parse_content_bytes(data)
+                except Exception:
+                    fail(422, '讀不到這份 Word 的內容，請確認檔案沒有損壞。')
+            if not sections:
+                fail(422, '這份 Word 裡找不到題目（題號要長得像「1. …」）。')
+            title = head[0] if head else None
+            subtitle = [line for line in head[1:] if str(line).strip()]
+            # 選了範本就跟 Word 用同一份版面計劃：卷頭、大題標題、配分、卷尾都一致
+            template_id = body.get('templateId')
+            plan = None
+            if template_id:
+                with self.db() as db:
+                    tpl_row = db.execute('SELECT * FROM paper_templates WHERE id=?',
+                                         (number(template_id, '範本', 1, 10 ** 18, True),)).fetchone()
+                    if tpl_row is None:
+                        fail(404, '找不到這個範本。')
+                    if tpl_row['owner_id'] != user['id'] and not self.is_owner(user, db):
+                        fail(403, '只有建立者或管理員可以使用這個範本。')
+                try:
+                    plan = paper_format.layout_plan(
+                        Document(io.BytesIO(tpl_row['data'])), sections, title,
+                        numbering=('section' if body.get('numbering') == 'section'
+                                   else 'continuous'))
+                except SystemExit as exc:
+                    fail(400, str(exc) or '範本裡找不到題目段落（長得像「1. …」）。')
+            figs_out: list = []
+            if plan is not None:
+                tex = latex_export.to_tex_plan(plan, preamble, figs_out=figs_out)
+            else:
+                tex = latex_export.to_tex(title, sections, position, preamble,
+                                          subtitle_lines=subtitle, figs_out=figs_out)
+            filename = (title or '試卷').replace('/', '／')[:60] + '.tex'
+            tex_zip = latex_export.tex_zip_payload(tex, figs_out, filename)
+            return {'tex': tex, 'filename': filename,
+                    'texZip': tex_zip,
+                    'stats': {'sections': len(sections),
+                              'questions': sum(len(s.questions) for s in sections),
+                              'formulas': paper_format.count_formulas(sections),
+                              'oleObjects': (paper_format.count_ole_objects(data)
+                                             if kind == 'docx' else 0)}}, headers
+
+        hit = self._dispatch_paper_templates(method, path, body, user, token_hash, ip, headers)
+        if hit is not None:
+            return hit
 
         # ---------- 我的試卷：存起來、搜尋篩選、一鍵匯入題庫 ----------
         hit = self._dispatch_papers(method, path, body, user, query, headers)
