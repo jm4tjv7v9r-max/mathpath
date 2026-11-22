@@ -2211,7 +2211,8 @@ def ai_figure_draft(app, body):
         rounds = index + 1
         if isinstance(result, dict) and result.get('needed') is False:
             if best is None:
-                fail(422, 'AI 判斷這道題不需要圖形；如需附圖，請自行上傳或貼上圖片。')
+                fail(422, 'AI 判斷這道題不需要圖形（例如純文字判斷題）。'
+                          '如仍需要附圖，請改用「手動插入圖形」上傳或貼上圖片。')
             break
         spec = figure_spec(result)
         if spec is None:
