@@ -1703,9 +1703,17 @@ const FIGURE_ROUNDS=2;
 const FIGURE_ISSUE_LIMIT=6;
 
 function figureNeeded(topic){return FIGURE_TOPICS.includes(topic);}
+// 確認框要開在「目前最上面一層」的再上面一層：
+// 圖形工作室疊在第二層時，確認框若開在預設的第一層，會把底下一鍵生成的預覽頁整層換掉。
+function modalRootAbove(){return '#modal-root-' + (modalStack.length + 1);}
 // 外部模型要先取得同意；生成與核對都會把題目內容（及圖形）送出。
 async function aiExternalOk(what){
-  return !(S.ai.mode==='external'&&await askCancel(`${what}會將題目內容與圖形（不含學生作答）傳送至學校配置的外部 AI，是否繼續？`));
+  if(S.ai.mode!=='external')return true;
+  const saved=figStudio;   // 確認框關閉會走 closeModal、把 figStudio 清掉；先留一盞燈
+  const cancelled=await askCancel(`${what}會將題目內容與圖形（不含學生作答）傳送至學校配置的外部 AI，是否繼續？`,
+                                   {root:modalRootAbove()});
+  figStudio=saved;
+  return !cancelled;
 }
 
 function openFigureStudio(ctx){
