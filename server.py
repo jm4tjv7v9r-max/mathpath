@@ -8886,6 +8886,388 @@ class Application:
             return hit
         return None
 
+    def _dispatch_attempts(self, method, path, body, user, headers):
+        """作答紀錄（attempts）：提交作答／AI 批註／教師批註／詳情／覆核／分數異動紀錄。
+
+        從 dispatch 抽出的內聚路由組；沒有命中回 None，讓 dispatch 繼續往下試。
+        """
+        if method == 'POST' and path == '/api/attempts':
+            fields(body, ('questionId', 'answerText', 'image', 'consentExternal', 'assignmentId', 'mockId', 'skipped'),
+                   ('questionId',))
+            # 學生可以標示「本題不會」：留空作答並明確記錄，教師端看得到、不自動記零分，
+            # 也不需要逼學生隨便打一個字才交得出去。
+            skipped = body.get('skipped', False)
+            if type(skipped) is not bool:
+                fail(400, 'skipped 必須是布林值。')
+            if skipped and ('answerText' in body and body['answerText'] or 'image' in body):
+                fail(400, '標示「不會」時不要再附作答內容。')
+            assignment_id = (number(body['assignmentId'], '作业编号', 1, 2**63 - 1, True)
+                             if 'assignmentId' in body else None)
+            qid = number(body['questionId'], '題目編號', 1, 2**63 - 1, True)
+            mock_id = (number(body['mockId'], '模擬測驗編號', 1, 2**63 - 1, True)
+                       if 'mockId' in body else None)
+            answer = text(body.get('answerText', ''), '作答文字', MAX_TEXT, empty=True)
+            if 'consentExternal' in body and type(body['consentExternal']) is not bool:
+                fail(400, 'consentExternal 必須是布林值。')
+            image, mime, ai_image = (None, None, None)
+            if 'image' in body:
+                # 學生可以上傳相片（含手機拍照）或 PDF：PDF 先讀文字層，
+                # 掃描檔沒有文字層時改取內嵌的 JPEG 當作答圖片。
+                declared = body['image'][:40]
+                if declared.startswith('data:application/pdf'):
+                    pdf_bytes, _ = decode_data_url(body['image'], ('application/pdf',), MAX_PDF)
+                    extracted, embedded, embedded_mime = student_pdf_answer(pdf_bytes)
+                    if extracted:
+                        answer = (answer + '\n' + extracted).strip() if answer else extracted
+                    if embedded:
+                        image, mime = validate_image('data:%s;base64,%s'
+                                                     % (embedded_mime, base64.b64encode(embedded).decode()))
+                        ai_image = 'data:%s;base64,%s' % (mime, base64.b64encode(image).decode())
+                    elif not extracted:
+                        fail(400, '這份 PDF 沒有可讀取的文字或圖片（可能是純掃描或加密檔）；'
+                                  '請改用手機拍照上傳，或先把 PDF 頁面另存成圖片。')
+                else:
+                    image, mime = validate_image(body['image'])
+                    ai_image = body['image']
+            if not skipped and not answer and image is None:
+                fail(400, '請填寫答案或提交手寫圖片；如果這題不會，請按「本題不會」。')
+            if assignment_id is not None and mock_id is not None:
+                fail(400, '不能同時屬於作業與模擬測驗。')
+            assignment_row = None
+            with self.db() as db:
+                if assignment_id is not None:
+                    assignment_row = self.homework.assert_open(db, assignment_id, user, qid)
+                    q = self.homework.question(db, assignment_id, qid)
+                elif mock_id is not None:
+                    self.mock.assert_open(db, mock_id, user, qid)
+                    q = self.mock.question(db, mock_id, qid)
+                else:
+                    q = self.get_question(db, qid)
+            # 是否使用 AI 批改：
+            # - 教師佈置的作業／測驗：由教師在佈置時決定（學生不可自行選擇），AI 只作建議。
+            # - 自主練習與自助模擬測驗：一律 AI 即時評分並記錄分數，不需教師批閱。
+            if assignment_row is not None:
+                ai_grading = self.homework.ai_grading(assignment_row)
+                practice_mode = False
+            else:
+                ai_grading = True
+                practice_mode = True
+            if self.ai.configured and ai_grading and not skipped:
+                # 只有真的會把作答送給 AI 才需要同意；「本題不會」沒有作答內容，
+                # 不會呼叫模型，不需要也不應要求外部上傳同意（否則學生被 403 擋住）。
+                self.ai.consent(body.get('consentExternal'))
+            has_image = image is not None
+            image_key = None
+            if has_image and self.storage.mode == 'r2':
+                # 物件儲存不可用時要如實回報 503（由學生重試），不做半套保存。
+                image_key = self.storage.put('attempts', image, mime)
+                image = None
+            # 先接收保存，再呼叫模型：等待 AI 期間跨過截止／正式提交都不會丟掉原作答。
+            with self.db() as db:
+                db.execute('BEGIN IMMEDIATE')
+                if assignment_id is not None:
+                    self.homework.assert_open(db, assignment_id, user, qid)
+                if mock_id is not None:
+                    self.mock.assert_open(db, mock_id, user, qid)
+                cur = db.execute('INSERT INTO attempts(user_id,question_id,answer_text,image,image_mime,image_key,'
+                                 'score,max_score,status,feedback,submitted_at,method,assignment_id,mock_id,suggestion,'
+                                 'skipped) '
+                                 'VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                                 (user['id'], qid, answer, image, mime, image_key, None, q['points'], 'pending',
+                                  '作答已接收，等待評分。', utc_now(), 'pending-teacher', assignment_id, mock_id, '{}',
+                                  1 if skipped else 0))
+                accepted_id = cur.lastrowid
+            score, status, ai_steps = None, 'pending', []
+            method = 'pending-teacher'
+            feedback = ('學生標示本題不會，等待教師處理；未自動記零分。' if skipped else
+                        '手寫圖片尚未批閱，等待教師評分；沒有產生 AI 成績。' if has_image else
+                        '此題尚無參考答案，等待教師批閱。')
+            fallback_note = ''
+            ai_failed = False
+            # 「建議覆核」只屬於教師佈置的作業／測驗；自主練習即時給分，不需要旗標。
+            review_flags = []
+            if self.ai.configured and ai_grading and not skipped:
+                # 外部模型的資料傳送同意屬隱私要求，不因批改失敗而降級。
+                self.ai.consent(body.get('consentExternal'))
+                try:
+                    score, feedback, ai_steps, review_flags = self.grade_with_ai(q, answer, ai_image, practice_mode)
+                    status = 'graded'
+                    method = 'ai-practice' if practice_mode else 'ai-advisory'
+                except APIError as exc:
+                    # 模型失敗時一定要保住學生的作答，不能整個請求失敗讓學生重打一次。
+                    ai_log(f'AI 批改失敗（{"自主練習" if practice_mode else "作業"}）：{exc.message}')
+                    if practice_mode:
+                        # 自主練習以「即時評分、記錄分數」為目的，退回規則核對。
+                        fallback_note = '（AI 暫時無法使用，本次改用規則核對最終答案；分數只作個人練習紀錄。）'
+                    else:
+                        # 作業／測驗的 AI 只是輔助：改為等待教師批閱，不自動用規則給分，
+                        # 避免教師把規則分數誤當成 AI 建議分數。
+                        ai_failed = True
+                        feedback = f'AI 建議評分暫時無法使用（{exc.message}）作答已保存，改由教師批閱。'
+                    if has_image:
+                        feedback = 'AI 暫時無法辨識手寫內容，作答已保存；此題需教師批閱。'
+            if method == 'pending-teacher' and not ai_failed and not has_image and not skipped and q['answer'].strip():
+                # 這裡刻意沿用既有的評分約定：只認「最終答案：」那一行，沒標明就用整份作答比對。
+                # 比對不上記 0 分並在評語說明「可請教師覆核」，讓學生學會把最終答案寫清楚。
+                # （旗標與提示用的 rule_verdict 才是三態；這一條是評分，不變。）
+                correct = final_correct(answer, q['answer'])
+                score = q['points'] if correct else 0
+                status, method = 'graded', 'rule-final'
+                feedback = ('規則評分：最終答案與參考答案嚴格等價。' if correct else '規則評分：未能確認最終答案與參考答案嚴格等價，記0分；可請教師覆核。') + '僅檢查最終答案，未批改推導步驟，也未使用 AI。' + fallback_note
+            with self.db() as db:
+                db.execute('BEGIN IMMEDIATE')
+                fresh = db.execute('SELECT * FROM attempts WHERE id=?', (accepted_id,)).fetchone()
+                if fresh is None:
+                    fail(409, '作答記錄已被管理員變更，請重新整理確認。')
+                late = False
+                if assignment_id is not None:
+                    # 作答已在截止前接收；但若教師／系統在模型執行期間正式提交，
+                    # 這筆遲到的作答要撤回，避免提交後仍可新增紀錄。
+                    recipient = db.execute('SELECT * FROM assignment_recipients WHERE assignment_id=? AND user_id=?',
+                                           (assignment_id, user['id'])).fetchone()
+                    correction = self.homework.open_correction(db, assignment_id, user['id'])
+                    late = bool(recipient and recipient['submitted_at'] is not None and not correction)
+                if not late:
+                    # 教師若已在 AI 執行期間完成覆核，不可被後到的模型結果覆蓋。
+                    if not fresh['teacher_reviewed']:
+                        suggestion = self.homework.rule_suggestion(db, q, {
+                            'score': score, 'max_score': q['points'], 'status': status,
+                            'feedback': feedback, 'method': method})
+                        db.execute('UPDATE attempts SET score=?,status=?,feedback=?,method=?,ai_steps=?,ai_score=?,'
+                                   'rule_score=?,suggestion=?,review_flags=? WHERE id=? AND teacher_reviewed=0',
+                                   (score, status, feedback, method, json.dumps(ai_steps, ensure_ascii=False),
+                                    score if method in ('ai-advisory', 'ai-practice') else None,
+                                    score if method == 'rule-final' else None,
+                                    json.dumps(suggestion, ensure_ascii=False),
+                                    json.dumps(review_flags if method == 'ai-advisory' else [], ensure_ascii=False),
+                                    accepted_id))
+                row = db.execute('SELECT * FROM attempts WHERE id=?', (accepted_id,)).fetchone()
+            if late:
+                # 撤回這筆遲到的作答：要用獨立交易，否則 fail() 會連同刪除一起回滾。
+                with self.db() as db:
+                    db.execute('DELETE FROM attempts WHERE id=?', (accepted_id,))
+                fail(403, '已正式提交的作業不能再次作答。')
+            if method in ('ai-advisory', 'ai-practice') and not row['teacher_reviewed']:
+                self.homework.ai_suggestion(q, row, body.get('consentExternal'))
+            with self.db() as db:
+                attempt = self.attempt_public(db, db.execute('SELECT * FROM attempts WHERE id=?', (row['id'],)).fetchone(), user)
+            # 已批閱的作答附上參考答案與詳解，讓學生能對照學習（未批閱不揭露）。
+            # 作業要等教師批閱後才揭露：批閱前連參考答案都不給，避免學生即時對答案。
+            solution = None
+            if status == 'graded' and not self.withheld_from_student(row, user):
+                solution = {'answer': q.get('answer', ''), 'steps': q.get('steps', []),
+                            'analysis': q.get('analysis', ''), 'rubric': q.get('rubric', [])}
+            return {'attempt': attempt, 'solution': solution}, headers
+        match = re.fullmatch(r'/api/attempts/([1-9]\d{0,17})/ai-annotation', path)
+        if method == 'POST' and match:
+            self.teacher(user)
+            fields(body, ('clear', 'consentExternal', 'marks'), ())
+            for key in ('clear', 'consentExternal'):
+                if key in body and type(body[key]) is not bool:
+                    fail(400, f'{key} 必須是布林值。')
+            if 'marks' in body and not isinstance(body['marks'], dict):
+                fail(400, 'marks 必須是物件。')
+            with self.db() as db:
+                row = db.execute('SELECT * FROM attempts WHERE id=?', (int(match[1]),)).fetchone()
+                if not row:
+                    fail(404, '找不到作答紀錄。')
+                if not self.homework.can_access_attempt(db, row, user):
+                    fail(403, '只有作業所屬教師可以為此作答產生 AI 批註。')
+                has_image = row['image'] is not None or ('image_key' in row.keys() and row['image_key'] is not None)
+                if not body.get('clear') and not has_image:
+                    fail(400, '此作答沒有手寫圖片，無法產生 AI 批註。')
+                question = self.homework.question_for_attempt(db, row)
+            if body.get('clear'):
+                with self.db() as db:
+                    db.execute("UPDATE attempts SET ai_annotation='{}',ai_annotation_at=NULL WHERE id=?", (row['id'],))
+                    attempt = self.attempt_public(db, db.execute('SELECT * FROM attempts WHERE id=?', (row['id'],)).fetchone(), user)
+                return {'attempt': attempt}, headers
+            if 'marks' in body:
+                # 教師移動印章／批語，或改寫批註文字後保存；沿用同一套座標驗證，
+                # 不因教師操作而放寬（位置仍必須是 0 至 1 的相對座標）。
+                marks = ai_annotation_valid(body['marks'], allow_placements=True)
+                marks['adjusted'] = True
+                marks['adjustedBy'] = user['id']
+                with self.db() as db:
+                    db.execute('UPDATE attempts SET ai_annotation=?,ai_annotation_at=? WHERE id=?',
+                               (json.dumps(marks, ensure_ascii=False), utc_now(), row['id']))
+                    attempt = self.attempt_public(db, db.execute('SELECT * FROM attempts WHERE id=?', (row['id'],)).fetchone(), user)
+                return {'attempt': attempt}, headers
+            if not (self.ai.configured and self.ai.vision):
+                fail(409, 'AI 批註需要設定支援視覺的模型（MATH_AI_VISION_MODEL）；未設定時不產生任何批註。')
+            self.ai.consent(body.get('consentExternal'))
+            if 'image_key' in row.keys() and row['image_key'] is not None:
+                raw, raw_mime = self.storage.get(row['image_key'])
+            else:
+                raw, raw_mime = row['image'], row['image_mime']
+            image_url = 'data:' + raw_mime + ';base64,' + base64.b64encode(raw).decode()
+            result = self.ai.call(
+                '你在學生的手寫數學作答照片上指出錯處，供教師覆核。只標示你能從照片確實看到的地方；看不清、不確定或無法辨認的字跡，一律不要標示，也不要猜測。'
+                '返回 {issues:[{x:float,y:float,label:str,comment:str}],summary:str}。'
+                'x、y 是該錯處在照片上的相對位置，必須是 0 到 1 之間的小數（左上角為0,0，右下角為1,1），不是像素值。'
+                'label 是簡短標籤（例如「符號錯誤」「漏寫第二個根」），comment 說明如何改正。最多20項，沒有發現錯處時 issues 回空陣列。',
+                {'question': {k: question[k] for k in ('title', 'content', 'answer', 'steps')},
+                 'studentWrittenAnswer': row['answer_text']},
+                image=image_url, model=self.ai.vision)
+            marks = ai_annotation_valid(result)
+            with self.db() as db:
+                db.execute('UPDATE attempts SET ai_annotation=?,ai_annotation_at=? WHERE id=?',
+                           (json.dumps(marks, ensure_ascii=False), utc_now(), row['id']))
+                attempt = self.attempt_public(db, db.execute('SELECT * FROM attempts WHERE id=?', (row['id'],)).fetchone(), user)
+            return {'attempt': attempt}, headers
+        match = re.fullmatch(r'/api/attempts/([1-9]\d{0,17})/annotation', path)
+        if method == 'POST' and match:
+            self.teacher(user)
+            fields(body, ('image',), ('image',))
+            data, mime = validate_image(body['image'])
+            if mime not in ('image/png', 'image/webp'):
+                fail(400, '批註圖片必須是 PNG 或 WebP。')
+            with self.db() as db:
+                db.execute('BEGIN IMMEDIATE')
+                row = db.execute('SELECT * FROM attempts WHERE id=?', (int(match[1]),)).fetchone()
+                if not row:
+                    fail(404, '找不到作答紀錄。')
+                if not self.homework.can_access_attempt(db, row, user):
+                    fail(403, '只有作業所屬教師可以為此作答加批註。')
+                has_image = row['image'] is not None or ('image_key' in row.keys() and row['image_key'] is not None)
+                if not has_image:
+                    fail(400, '此作答沒有手寫圖片，無法加上批註。')
+                if self.storage.mode == 'r2':
+                    annotation_key = self.storage.put('annotations', data, mime)
+                    db.execute('UPDATE attempts SET annotation=NULL,annotation_mime=?,annotation_key=?,annotation_at=? WHERE id=?',
+                               (mime, annotation_key, utc_now(), row['id']))
+                else:
+                    db.execute('UPDATE attempts SET annotation=?,annotation_mime=?,annotation_at=? WHERE id=?',
+                               (data, mime, utc_now(), row['id']))
+                attempt = self.attempt_public(db, db.execute('SELECT * FROM attempts WHERE id=?', (row['id'],)).fetchone(), user)
+            return {'attempt': attempt}, headers
+        match = re.fullmatch(r'/api/assignments/([1-9]\d{0,17})/ai-review', path)
+        if method == 'POST' and match:
+            # 教師一鍵 AI 全部批閱：對這份作業所有「尚未教師批閱」的最新作答逐題批閱並確認分數。
+            # 已經有 AI 原分的作答直接採用，不重複呼叫模型（省錢、也避免同一題兩次評分不一致）。
+            self.teacher(user)
+            fields(body, ('consentExternal', 'studentId'))
+            if 'consentExternal' in body and type(body['consentExternal']) is not bool:
+                fail(400, 'consentExternal 必須是布林值。')
+            # 可只針對一位學生（成績頁「確認這位學生的全部 AI 建議」）。
+            only_student = (number(body['studentId'], '學生編號', 1, 2**63 - 1, True)
+                            if 'studentId' in body else None)
+            aid = int(match[1])
+            with self.db() as db:
+                assignment = self.homework.get_assignment(db, aid, user)
+                if not self.homework.ai_grading(assignment):
+                    fail(409, '這份作業沒有由教師啟用 AI 建議評分，無法使用一鍵 AI 批閱。')
+                questions = {q['id']: q for q in self.homework.questions(db, aid)}
+                rows = db.execute(
+                    'SELECT a.* FROM attempts a JOIN (SELECT question_id,user_id,MAX(id) AS mid FROM attempts '
+                    'WHERE assignment_id=? GROUP BY question_id,user_id) latest ON a.id=latest.mid '
+                    'WHERE a.teacher_reviewed=0' + (' AND a.user_id=?' if only_student else '') +
+                    ' ORDER BY a.id', ((aid, only_student) if only_student else (aid,))).fetchall()
+            if not self.ai.configured:
+                fail(409, '尚未設定 AI 模型；請設定伺服器環境變數後再試。')
+            self.ai.consent(body.get('consentExternal'))
+            auto_confirm = bool(assignment['ai_auto_confirm']) if 'ai_auto_confirm' in assignment.keys() else False
+            pending, skipped = rows[:ai_review_limit()], []
+            reviewed, graded, failed = [], [], []
+            for row in pending:
+                q = questions.get(row['question_id'])
+                if q is None:
+                    continue
+                # 「學生標示不會」的空白作答不能丟給模型評分，留給教師自己決定（給分或要求訂正）。
+                if row['skipped']:
+                    skipped.append(row['id'])
+                    continue
+                try:
+                    if row['ai_score'] is not None:
+                        score = row['ai_score']
+                        feedback = ('採用先前 AI 建議分數。' if not auto_confirm
+                                    else '採用先前 AI 建議分數，由教師一鍵確認。')
+                        steps = json.loads(row['ai_steps'])
+                        _flags = json.loads(row['review_flags']) if row['review_flags'] else []
+                        ai_score = None
+                    else:
+                        image_url = self.attempt_image_url(row)
+                        score, feedback, steps, _flags = self.grade_with_ai(q, row['answer_text'], image_url, False)
+                        feedback = feedback.split('\n', 1)[-1]
+                        ai_score = score
+                    with self.db() as db:
+                        db.execute('BEGIN IMMEDIATE')
+                        fresh = db.execute('SELECT * FROM attempts WHERE id=?', (row['id'],)).fetchone()
+                        if not fresh or fresh['teacher_reviewed']:
+                            skipped.append(row['id'])
+                            continue
+                        if auto_confirm:
+                            self.confirm_attempt(db, fresh, user, score, feedback,
+                                                 prefix='AI 批閱（教師一鍵批閱）',
+                                                 ai_score=ai_score, ai_steps=steps)
+                        else:
+                            # 只給建議：分數先填好，但等教師確認才算正式成績。
+                            self.suggest_attempt(db, fresh, q, score, feedback, steps,
+                                                 flags=_flags, ai_score=ai_score)
+                    (reviewed if auto_confirm else graded).append(row['id'])
+                except APIError as exc:
+                    ai_log(f'一鍵批閱失敗 attempt={row["id"]}: {exc.message}')
+                    failed.append({'attemptId': row['id'], 'error': exc.message})
+            return {'reviewed': len(reviewed), 'graded': len(graded),
+                    'autoConfirm': auto_confirm,
+                    'failed': len(failed), 'skipped': len(skipped),
+                    'remaining': max(0, len(rows) - len(pending)),
+                    'errors': failed[:5]}, headers
+        match = re.fullmatch(r'/api/attempts/([1-9]\d{0,17})', path)
+        if method == 'GET' and match:
+            # 單筆作答詳情：批閱視窗用（列表是精簡版，答案全文／詳解／建議在這裡取）。
+            with self.db() as db:
+                row = db.execute('SELECT * FROM attempts WHERE id=?', (int(match[1]),)).fetchone()
+                if not row:
+                    fail(404, '找不到作答紀錄。')
+                if not self.homework.can_access_attempt(db, row, user):
+                    fail(403, '只能查看自己的作答。')
+                return {'attempt': self.attempt_public(db, row, user)}, headers
+
+        match = re.fullmatch(r'/api/attempts/([1-9]\d{0,17})/review', path)
+        if method == 'POST' and match:
+            self.teacher(user)
+            # 評語可以不寫：教師只想確認分數時留空即可。
+            fields(body, ('score', 'feedback'), ('score',))
+            raw_feedback = body.get('feedback', '')
+            if not isinstance(raw_feedback, str):
+                fail(400, 'feedback 必須是文字。')
+            feedback = text(raw_feedback, '教師評語', 12000, empty=True)
+            with self.db() as db:
+                db.execute('BEGIN IMMEDIATE')
+                row = db.execute('SELECT * FROM attempts WHERE id=?', (int(match[1]),)).fetchone()
+                if not row:
+                    fail(404, '找不到作答紀錄。')
+                if not self.homework.can_access_attempt(db, row, user):
+                    fail(403, '只有作業所屬教師可以覆核此記錄。')
+                score = number(body['score'], '分數', 0, row['max_score'])
+                self.confirm_attempt(db, row, user, score, feedback)
+                attempt = self.attempt_public(db, db.execute('SELECT * FROM attempts WHERE id=?', (row['id'],)).fetchone(), user)
+                result = {'attempt': attempt}
+                if row['assignment_id'] is not None:
+                    assignment = self.homework.get_assignment(db, row['assignment_id'], user)
+                    result['report'] = self.homework.report(db, assignment, row['user_id'])
+            return result, headers
+        history_path = re.fullmatch(r'/api/attempts/([1-9]\d{0,17})/history', path)
+        if method == 'GET' and history_path:
+            # 分數異動紀錄：有爭議時要能回答「誰在何時把幾分改成幾分」。
+            self.teacher(user)
+            attempt_id = int(history_path[1])
+            with self.db() as db:
+                row = db.execute('SELECT * FROM attempts WHERE id=?', (attempt_id,)).fetchone()
+                if row is None:
+                    fail(404, '找不到作答紀錄。')
+                if not self.homework.can_access_attempt(db, row, user):
+                    fail(403, '只有作業所屬教師可以查看批閱紀錄。')
+                rows = db.execute('SELECT * FROM attempt_reviews WHERE attempt_id=? ORDER BY id',
+                                  (attempt_id,)).fetchall()
+            return {'reviews': [{'id': r['id'], 'teacherId': r['teacher_id'],
+                                 'teacherName': r['teacher_name'], 'oldScore': r['old_score'],
+                                 'newScore': r['new_score'], 'maxScore': r['max_score'],
+                                 'feedback': r['feedback'], 'method': r['method'],
+                                 'createdAt': r['created_at']} for r in rows]}, headers
+        return None
+
     def dispatch(self, method, path, body, user, token_hash, ip, query=''):
         headers = {}
         # 配額按「誰在呼叫」計：登入者用帳號，訪客用 IP（登入頁與同意前的呼叫）。
@@ -10524,381 +10906,9 @@ class Application:
                 fail(404, '找不到這道題目。')
             self.ai.consent(body.get('consentExternal'))
             return ai_rubric_draft(self, self.question_row(row)), headers
-        if method == 'POST' and path == '/api/attempts':
-            fields(body, ('questionId', 'answerText', 'image', 'consentExternal', 'assignmentId', 'mockId', 'skipped'),
-                   ('questionId',))
-            # 學生可以標示「本題不會」：留空作答並明確記錄，教師端看得到、不自動記零分，
-            # 也不需要逼學生隨便打一個字才交得出去。
-            skipped = body.get('skipped', False)
-            if type(skipped) is not bool:
-                fail(400, 'skipped 必須是布林值。')
-            if skipped and ('answerText' in body and body['answerText'] or 'image' in body):
-                fail(400, '標示「不會」時不要再附作答內容。')
-            assignment_id = (number(body['assignmentId'], '作业编号', 1, 2**63 - 1, True)
-                             if 'assignmentId' in body else None)
-            qid = number(body['questionId'], '題目編號', 1, 2**63 - 1, True)
-            mock_id = (number(body['mockId'], '模擬測驗編號', 1, 2**63 - 1, True)
-                       if 'mockId' in body else None)
-            answer = text(body.get('answerText', ''), '作答文字', MAX_TEXT, empty=True)
-            if 'consentExternal' in body and type(body['consentExternal']) is not bool:
-                fail(400, 'consentExternal 必須是布林值。')
-            image, mime, ai_image = (None, None, None)
-            if 'image' in body:
-                # 學生可以上傳相片（含手機拍照）或 PDF：PDF 先讀文字層，
-                # 掃描檔沒有文字層時改取內嵌的 JPEG 當作答圖片。
-                declared = body['image'][:40]
-                if declared.startswith('data:application/pdf'):
-                    pdf_bytes, _ = decode_data_url(body['image'], ('application/pdf',), MAX_PDF)
-                    extracted, embedded, embedded_mime = student_pdf_answer(pdf_bytes)
-                    if extracted:
-                        answer = (answer + '\n' + extracted).strip() if answer else extracted
-                    if embedded:
-                        image, mime = validate_image('data:%s;base64,%s'
-                                                     % (embedded_mime, base64.b64encode(embedded).decode()))
-                        ai_image = 'data:%s;base64,%s' % (mime, base64.b64encode(image).decode())
-                    elif not extracted:
-                        fail(400, '這份 PDF 沒有可讀取的文字或圖片（可能是純掃描或加密檔）；'
-                                  '請改用手機拍照上傳，或先把 PDF 頁面另存成圖片。')
-                else:
-                    image, mime = validate_image(body['image'])
-                    ai_image = body['image']
-            if not skipped and not answer and image is None:
-                fail(400, '請填寫答案或提交手寫圖片；如果這題不會，請按「本題不會」。')
-            if assignment_id is not None and mock_id is not None:
-                fail(400, '不能同時屬於作業與模擬測驗。')
-            assignment_row = None
-            with self.db() as db:
-                if assignment_id is not None:
-                    assignment_row = self.homework.assert_open(db, assignment_id, user, qid)
-                    q = self.homework.question(db, assignment_id, qid)
-                elif mock_id is not None:
-                    self.mock.assert_open(db, mock_id, user, qid)
-                    q = self.mock.question(db, mock_id, qid)
-                else:
-                    q = self.get_question(db, qid)
-            # 是否使用 AI 批改：
-            # - 教師佈置的作業／測驗：由教師在佈置時決定（學生不可自行選擇），AI 只作建議。
-            # - 自主練習與自助模擬測驗：一律 AI 即時評分並記錄分數，不需教師批閱。
-            if assignment_row is not None:
-                ai_grading = self.homework.ai_grading(assignment_row)
-                practice_mode = False
-            else:
-                ai_grading = True
-                practice_mode = True
-            if self.ai.configured and ai_grading and not skipped:
-                # 只有真的會把作答送給 AI 才需要同意；「本題不會」沒有作答內容，
-                # 不會呼叫模型，不需要也不應要求外部上傳同意（否則學生被 403 擋住）。
-                self.ai.consent(body.get('consentExternal'))
-            has_image = image is not None
-            image_key = None
-            if has_image and self.storage.mode == 'r2':
-                # 物件儲存不可用時要如實回報 503（由學生重試），不做半套保存。
-                image_key = self.storage.put('attempts', image, mime)
-                image = None
-            # 先接收保存，再呼叫模型：等待 AI 期間跨過截止／正式提交都不會丟掉原作答。
-            with self.db() as db:
-                db.execute('BEGIN IMMEDIATE')
-                if assignment_id is not None:
-                    self.homework.assert_open(db, assignment_id, user, qid)
-                if mock_id is not None:
-                    self.mock.assert_open(db, mock_id, user, qid)
-                cur = db.execute('INSERT INTO attempts(user_id,question_id,answer_text,image,image_mime,image_key,'
-                                 'score,max_score,status,feedback,submitted_at,method,assignment_id,mock_id,suggestion,'
-                                 'skipped) '
-                                 'VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
-                                 (user['id'], qid, answer, image, mime, image_key, None, q['points'], 'pending',
-                                  '作答已接收，等待評分。', utc_now(), 'pending-teacher', assignment_id, mock_id, '{}',
-                                  1 if skipped else 0))
-                accepted_id = cur.lastrowid
-            score, status, ai_steps = None, 'pending', []
-            method = 'pending-teacher'
-            feedback = ('學生標示本題不會，等待教師處理；未自動記零分。' if skipped else
-                        '手寫圖片尚未批閱，等待教師評分；沒有產生 AI 成績。' if has_image else
-                        '此題尚無參考答案，等待教師批閱。')
-            fallback_note = ''
-            ai_failed = False
-            # 「建議覆核」只屬於教師佈置的作業／測驗；自主練習即時給分，不需要旗標。
-            review_flags = []
-            if self.ai.configured and ai_grading and not skipped:
-                # 外部模型的資料傳送同意屬隱私要求，不因批改失敗而降級。
-                self.ai.consent(body.get('consentExternal'))
-                try:
-                    score, feedback, ai_steps, review_flags = self.grade_with_ai(q, answer, ai_image, practice_mode)
-                    status = 'graded'
-                    method = 'ai-practice' if practice_mode else 'ai-advisory'
-                except APIError as exc:
-                    # 模型失敗時一定要保住學生的作答，不能整個請求失敗讓學生重打一次。
-                    ai_log(f'AI 批改失敗（{"自主練習" if practice_mode else "作業"}）：{exc.message}')
-                    if practice_mode:
-                        # 自主練習以「即時評分、記錄分數」為目的，退回規則核對。
-                        fallback_note = '（AI 暫時無法使用，本次改用規則核對最終答案；分數只作個人練習紀錄。）'
-                    else:
-                        # 作業／測驗的 AI 只是輔助：改為等待教師批閱，不自動用規則給分，
-                        # 避免教師把規則分數誤當成 AI 建議分數。
-                        ai_failed = True
-                        feedback = f'AI 建議評分暫時無法使用（{exc.message}）作答已保存，改由教師批閱。'
-                    if has_image:
-                        feedback = 'AI 暫時無法辨識手寫內容，作答已保存；此題需教師批閱。'
-            if method == 'pending-teacher' and not ai_failed and not has_image and not skipped and q['answer'].strip():
-                # 這裡刻意沿用既有的評分約定：只認「最終答案：」那一行，沒標明就用整份作答比對。
-                # 比對不上記 0 分並在評語說明「可請教師覆核」，讓學生學會把最終答案寫清楚。
-                # （旗標與提示用的 rule_verdict 才是三態；這一條是評分，不變。）
-                correct = final_correct(answer, q['answer'])
-                score = q['points'] if correct else 0
-                status, method = 'graded', 'rule-final'
-                feedback = ('規則評分：最終答案與參考答案嚴格等價。' if correct else '規則評分：未能確認最終答案與參考答案嚴格等價，記0分；可請教師覆核。') + '僅檢查最終答案，未批改推導步驟，也未使用 AI。' + fallback_note
-            with self.db() as db:
-                db.execute('BEGIN IMMEDIATE')
-                fresh = db.execute('SELECT * FROM attempts WHERE id=?', (accepted_id,)).fetchone()
-                if fresh is None:
-                    fail(409, '作答記錄已被管理員變更，請重新整理確認。')
-                late = False
-                if assignment_id is not None:
-                    # 作答已在截止前接收；但若教師／系統在模型執行期間正式提交，
-                    # 這筆遲到的作答要撤回，避免提交後仍可新增紀錄。
-                    recipient = db.execute('SELECT * FROM assignment_recipients WHERE assignment_id=? AND user_id=?',
-                                           (assignment_id, user['id'])).fetchone()
-                    correction = self.homework.open_correction(db, assignment_id, user['id'])
-                    late = bool(recipient and recipient['submitted_at'] is not None and not correction)
-                if not late:
-                    # 教師若已在 AI 執行期間完成覆核，不可被後到的模型結果覆蓋。
-                    if not fresh['teacher_reviewed']:
-                        suggestion = self.homework.rule_suggestion(db, q, {
-                            'score': score, 'max_score': q['points'], 'status': status,
-                            'feedback': feedback, 'method': method})
-                        db.execute('UPDATE attempts SET score=?,status=?,feedback=?,method=?,ai_steps=?,ai_score=?,'
-                                   'rule_score=?,suggestion=?,review_flags=? WHERE id=? AND teacher_reviewed=0',
-                                   (score, status, feedback, method, json.dumps(ai_steps, ensure_ascii=False),
-                                    score if method in ('ai-advisory', 'ai-practice') else None,
-                                    score if method == 'rule-final' else None,
-                                    json.dumps(suggestion, ensure_ascii=False),
-                                    json.dumps(review_flags if method == 'ai-advisory' else [], ensure_ascii=False),
-                                    accepted_id))
-                row = db.execute('SELECT * FROM attempts WHERE id=?', (accepted_id,)).fetchone()
-            if late:
-                # 撤回這筆遲到的作答：要用獨立交易，否則 fail() 會連同刪除一起回滾。
-                with self.db() as db:
-                    db.execute('DELETE FROM attempts WHERE id=?', (accepted_id,))
-                fail(403, '已正式提交的作業不能再次作答。')
-            if method in ('ai-advisory', 'ai-practice') and not row['teacher_reviewed']:
-                self.homework.ai_suggestion(q, row, body.get('consentExternal'))
-            with self.db() as db:
-                attempt = self.attempt_public(db, db.execute('SELECT * FROM attempts WHERE id=?', (row['id'],)).fetchone(), user)
-            # 已批閱的作答附上參考答案與詳解，讓學生能對照學習（未批閱不揭露）。
-            # 作業要等教師批閱後才揭露：批閱前連參考答案都不給，避免學生即時對答案。
-            solution = None
-            if status == 'graded' and not self.withheld_from_student(row, user):
-                solution = {'answer': q.get('answer', ''), 'steps': q.get('steps', []),
-                            'analysis': q.get('analysis', ''), 'rubric': q.get('rubric', [])}
-            return {'attempt': attempt, 'solution': solution}, headers
-        match = re.fullmatch(r'/api/attempts/([1-9]\d{0,17})/ai-annotation', path)
-        if method == 'POST' and match:
-            self.teacher(user)
-            fields(body, ('clear', 'consentExternal', 'marks'), ())
-            for key in ('clear', 'consentExternal'):
-                if key in body and type(body[key]) is not bool:
-                    fail(400, f'{key} 必須是布林值。')
-            if 'marks' in body and not isinstance(body['marks'], dict):
-                fail(400, 'marks 必須是物件。')
-            with self.db() as db:
-                row = db.execute('SELECT * FROM attempts WHERE id=?', (int(match[1]),)).fetchone()
-                if not row:
-                    fail(404, '找不到作答紀錄。')
-                if not self.homework.can_access_attempt(db, row, user):
-                    fail(403, '只有作業所屬教師可以為此作答產生 AI 批註。')
-                has_image = row['image'] is not None or ('image_key' in row.keys() and row['image_key'] is not None)
-                if not body.get('clear') and not has_image:
-                    fail(400, '此作答沒有手寫圖片，無法產生 AI 批註。')
-                question = self.homework.question_for_attempt(db, row)
-            if body.get('clear'):
-                with self.db() as db:
-                    db.execute("UPDATE attempts SET ai_annotation='{}',ai_annotation_at=NULL WHERE id=?", (row['id'],))
-                    attempt = self.attempt_public(db, db.execute('SELECT * FROM attempts WHERE id=?', (row['id'],)).fetchone(), user)
-                return {'attempt': attempt}, headers
-            if 'marks' in body:
-                # 教師移動印章／批語，或改寫批註文字後保存；沿用同一套座標驗證，
-                # 不因教師操作而放寬（位置仍必須是 0 至 1 的相對座標）。
-                marks = ai_annotation_valid(body['marks'], allow_placements=True)
-                marks['adjusted'] = True
-                marks['adjustedBy'] = user['id']
-                with self.db() as db:
-                    db.execute('UPDATE attempts SET ai_annotation=?,ai_annotation_at=? WHERE id=?',
-                               (json.dumps(marks, ensure_ascii=False), utc_now(), row['id']))
-                    attempt = self.attempt_public(db, db.execute('SELECT * FROM attempts WHERE id=?', (row['id'],)).fetchone(), user)
-                return {'attempt': attempt}, headers
-            if not (self.ai.configured and self.ai.vision):
-                fail(409, 'AI 批註需要設定支援視覺的模型（MATH_AI_VISION_MODEL）；未設定時不產生任何批註。')
-            self.ai.consent(body.get('consentExternal'))
-            if 'image_key' in row.keys() and row['image_key'] is not None:
-                raw, raw_mime = self.storage.get(row['image_key'])
-            else:
-                raw, raw_mime = row['image'], row['image_mime']
-            image_url = 'data:' + raw_mime + ';base64,' + base64.b64encode(raw).decode()
-            result = self.ai.call(
-                '你在學生的手寫數學作答照片上指出錯處，供教師覆核。只標示你能從照片確實看到的地方；看不清、不確定或無法辨認的字跡，一律不要標示，也不要猜測。'
-                '返回 {issues:[{x:float,y:float,label:str,comment:str}],summary:str}。'
-                'x、y 是該錯處在照片上的相對位置，必須是 0 到 1 之間的小數（左上角為0,0，右下角為1,1），不是像素值。'
-                'label 是簡短標籤（例如「符號錯誤」「漏寫第二個根」），comment 說明如何改正。最多20項，沒有發現錯處時 issues 回空陣列。',
-                {'question': {k: question[k] for k in ('title', 'content', 'answer', 'steps')},
-                 'studentWrittenAnswer': row['answer_text']},
-                image=image_url, model=self.ai.vision)
-            marks = ai_annotation_valid(result)
-            with self.db() as db:
-                db.execute('UPDATE attempts SET ai_annotation=?,ai_annotation_at=? WHERE id=?',
-                           (json.dumps(marks, ensure_ascii=False), utc_now(), row['id']))
-                attempt = self.attempt_public(db, db.execute('SELECT * FROM attempts WHERE id=?', (row['id'],)).fetchone(), user)
-            return {'attempt': attempt}, headers
-        match = re.fullmatch(r'/api/attempts/([1-9]\d{0,17})/annotation', path)
-        if method == 'POST' and match:
-            self.teacher(user)
-            fields(body, ('image',), ('image',))
-            data, mime = validate_image(body['image'])
-            if mime not in ('image/png', 'image/webp'):
-                fail(400, '批註圖片必須是 PNG 或 WebP。')
-            with self.db() as db:
-                db.execute('BEGIN IMMEDIATE')
-                row = db.execute('SELECT * FROM attempts WHERE id=?', (int(match[1]),)).fetchone()
-                if not row:
-                    fail(404, '找不到作答紀錄。')
-                if not self.homework.can_access_attempt(db, row, user):
-                    fail(403, '只有作業所屬教師可以為此作答加批註。')
-                has_image = row['image'] is not None or ('image_key' in row.keys() and row['image_key'] is not None)
-                if not has_image:
-                    fail(400, '此作答沒有手寫圖片，無法加上批註。')
-                if self.storage.mode == 'r2':
-                    annotation_key = self.storage.put('annotations', data, mime)
-                    db.execute('UPDATE attempts SET annotation=NULL,annotation_mime=?,annotation_key=?,annotation_at=? WHERE id=?',
-                               (mime, annotation_key, utc_now(), row['id']))
-                else:
-                    db.execute('UPDATE attempts SET annotation=?,annotation_mime=?,annotation_at=? WHERE id=?',
-                               (data, mime, utc_now(), row['id']))
-                attempt = self.attempt_public(db, db.execute('SELECT * FROM attempts WHERE id=?', (row['id'],)).fetchone(), user)
-            return {'attempt': attempt}, headers
-        match = re.fullmatch(r'/api/assignments/([1-9]\d{0,17})/ai-review', path)
-        if method == 'POST' and match:
-            # 教師一鍵 AI 全部批閱：對這份作業所有「尚未教師批閱」的最新作答逐題批閱並確認分數。
-            # 已經有 AI 原分的作答直接採用，不重複呼叫模型（省錢、也避免同一題兩次評分不一致）。
-            self.teacher(user)
-            fields(body, ('consentExternal', 'studentId'))
-            if 'consentExternal' in body and type(body['consentExternal']) is not bool:
-                fail(400, 'consentExternal 必須是布林值。')
-            # 可只針對一位學生（成績頁「確認這位學生的全部 AI 建議」）。
-            only_student = (number(body['studentId'], '學生編號', 1, 2**63 - 1, True)
-                            if 'studentId' in body else None)
-            aid = int(match[1])
-            with self.db() as db:
-                assignment = self.homework.get_assignment(db, aid, user)
-                if not self.homework.ai_grading(assignment):
-                    fail(409, '這份作業沒有由教師啟用 AI 建議評分，無法使用一鍵 AI 批閱。')
-                questions = {q['id']: q for q in self.homework.questions(db, aid)}
-                rows = db.execute(
-                    'SELECT a.* FROM attempts a JOIN (SELECT question_id,user_id,MAX(id) AS mid FROM attempts '
-                    'WHERE assignment_id=? GROUP BY question_id,user_id) latest ON a.id=latest.mid '
-                    'WHERE a.teacher_reviewed=0' + (' AND a.user_id=?' if only_student else '') +
-                    ' ORDER BY a.id', ((aid, only_student) if only_student else (aid,))).fetchall()
-            if not self.ai.configured:
-                fail(409, '尚未設定 AI 模型；請設定伺服器環境變數後再試。')
-            self.ai.consent(body.get('consentExternal'))
-            auto_confirm = bool(assignment['ai_auto_confirm']) if 'ai_auto_confirm' in assignment.keys() else False
-            pending, skipped = rows[:ai_review_limit()], []
-            reviewed, graded, failed = [], [], []
-            for row in pending:
-                q = questions.get(row['question_id'])
-                if q is None:
-                    continue
-                # 「學生標示不會」的空白作答不能丟給模型評分，留給教師自己決定（給分或要求訂正）。
-                if row['skipped']:
-                    skipped.append(row['id'])
-                    continue
-                try:
-                    if row['ai_score'] is not None:
-                        score = row['ai_score']
-                        feedback = ('採用先前 AI 建議分數。' if not auto_confirm
-                                    else '採用先前 AI 建議分數，由教師一鍵確認。')
-                        steps = json.loads(row['ai_steps'])
-                        _flags = json.loads(row['review_flags']) if row['review_flags'] else []
-                        ai_score = None
-                    else:
-                        image_url = self.attempt_image_url(row)
-                        score, feedback, steps, _flags = self.grade_with_ai(q, row['answer_text'], image_url, False)
-                        feedback = feedback.split('\n', 1)[-1]
-                        ai_score = score
-                    with self.db() as db:
-                        db.execute('BEGIN IMMEDIATE')
-                        fresh = db.execute('SELECT * FROM attempts WHERE id=?', (row['id'],)).fetchone()
-                        if not fresh or fresh['teacher_reviewed']:
-                            skipped.append(row['id'])
-                            continue
-                        if auto_confirm:
-                            self.confirm_attempt(db, fresh, user, score, feedback,
-                                                 prefix='AI 批閱（教師一鍵批閱）',
-                                                 ai_score=ai_score, ai_steps=steps)
-                        else:
-                            # 只給建議：分數先填好，但等教師確認才算正式成績。
-                            self.suggest_attempt(db, fresh, q, score, feedback, steps,
-                                                 flags=_flags, ai_score=ai_score)
-                    (reviewed if auto_confirm else graded).append(row['id'])
-                except APIError as exc:
-                    ai_log(f'一鍵批閱失敗 attempt={row["id"]}: {exc.message}')
-                    failed.append({'attemptId': row['id'], 'error': exc.message})
-            return {'reviewed': len(reviewed), 'graded': len(graded),
-                    'autoConfirm': auto_confirm,
-                    'failed': len(failed), 'skipped': len(skipped),
-                    'remaining': max(0, len(rows) - len(pending)),
-                    'errors': failed[:5]}, headers
-        match = re.fullmatch(r'/api/attempts/([1-9]\d{0,17})', path)
-        if method == 'GET' and match:
-            # 單筆作答詳情：批閱視窗用（列表是精簡版，答案全文／詳解／建議在這裡取）。
-            with self.db() as db:
-                row = db.execute('SELECT * FROM attempts WHERE id=?', (int(match[1]),)).fetchone()
-                if not row:
-                    fail(404, '找不到作答紀錄。')
-                if not self.homework.can_access_attempt(db, row, user):
-                    fail(403, '只能查看自己的作答。')
-                return {'attempt': self.attempt_public(db, row, user)}, headers
-
-        match = re.fullmatch(r'/api/attempts/([1-9]\d{0,17})/review', path)
-        if method == 'POST' and match:
-            self.teacher(user)
-            # 評語可以不寫：教師只想確認分數時留空即可。
-            fields(body, ('score', 'feedback'), ('score',))
-            raw_feedback = body.get('feedback', '')
-            if not isinstance(raw_feedback, str):
-                fail(400, 'feedback 必須是文字。')
-            feedback = text(raw_feedback, '教師評語', 12000, empty=True)
-            with self.db() as db:
-                db.execute('BEGIN IMMEDIATE')
-                row = db.execute('SELECT * FROM attempts WHERE id=?', (int(match[1]),)).fetchone()
-                if not row:
-                    fail(404, '找不到作答紀錄。')
-                if not self.homework.can_access_attempt(db, row, user):
-                    fail(403, '只有作業所屬教師可以覆核此記錄。')
-                score = number(body['score'], '分數', 0, row['max_score'])
-                self.confirm_attempt(db, row, user, score, feedback)
-                attempt = self.attempt_public(db, db.execute('SELECT * FROM attempts WHERE id=?', (row['id'],)).fetchone(), user)
-                result = {'attempt': attempt}
-                if row['assignment_id'] is not None:
-                    assignment = self.homework.get_assignment(db, row['assignment_id'], user)
-                    result['report'] = self.homework.report(db, assignment, row['user_id'])
-            return result, headers
-        history_path = re.fullmatch(r'/api/attempts/([1-9]\d{0,17})/history', path)
-        if method == 'GET' and history_path:
-            # 分數異動紀錄：有爭議時要能回答「誰在何時把幾分改成幾分」。
-            self.teacher(user)
-            attempt_id = int(history_path[1])
-            with self.db() as db:
-                row = db.execute('SELECT * FROM attempts WHERE id=?', (attempt_id,)).fetchone()
-                if row is None:
-                    fail(404, '找不到作答紀錄。')
-                if not self.homework.can_access_attempt(db, row, user):
-                    fail(403, '只有作業所屬教師可以查看批閱紀錄。')
-                rows = db.execute('SELECT * FROM attempt_reviews WHERE attempt_id=? ORDER BY id',
-                                  (attempt_id,)).fetchall()
-            return {'reviews': [{'id': r['id'], 'teacherId': r['teacher_id'],
-                                 'teacherName': r['teacher_name'], 'oldScore': r['old_score'],
-                                 'newScore': r['new_score'], 'maxScore': r['max_score'],
-                                 'feedback': r['feedback'], 'method': r['method'],
-                                 'createdAt': r['created_at']} for r in rows]}, headers
+        hit = self._dispatch_attempts(method, path, body, user, headers)
+        if hit is not None:
+            return hit
         fail(404, '找不到此 API 或不支援此操作。')
 
     def cookie(self, token, logout=False, seconds=SESSION_SECONDS):
