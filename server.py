@@ -10687,35 +10687,11 @@ class Application:
                     'notice': self.notice(user), 'minutesNotice': '分鐘數僅按同日相鄰提交間隔估算，不是正式學習計時。'}, headers
         return None
 
-    def dispatch(self, method, path, body, user, token_hash, ip, query=''):
-        headers = {}
-        # 配額按「誰在呼叫」計：登入者用帳號，訪客用 IP（登入頁與同意前的呼叫）。
-        begin_ai_request(AIQuota.key_for(user, ip))
-        # /api/health 即使 DB 還沒好也要能回應，讓 Render 健康檢查不會 timeout。
-        job_match = re.fullmatch(r'/api/jobs/([A-Za-z0-9_-]{8,40})', path)
-        if method == 'GET' and job_match:
-            self.teacher(user)
-            job = JOBS.get(job_match[1])
-            if job is None:
-                fail(404, '這個工作已經結束或不存在（伺服器可能重啟過），請重新排版。')
-            if job['user'] != user['id']:
-                fail(403, '只能查看自己的工作。')
-            payload = {'status': job['status'], 'error': job['error'],
-                       'elapsed': round(time.time() - job['started'], 1)}
-            if job.get('progress'):
-                payload['progress'] = job['progress']
-            if job['status'] == 'done':
-                payload['result'] = job['result']
-            return payload, headers
-        hit = self._dispatch_paper_keys(method, path, body, user, headers)
-        if hit is not None:
-            return hit
-        hit = self._dispatch_paper_grades(method, path, body, user, headers)
-        if hit is not None:
-            return hit
-        hit = self._dispatch_classroom(method, path, body, user, token_hash, ip, query, headers)
-        if hit is not None:
-            return hit
+    def _dispatch_papers_to_tex(self, method, path, body, user, token_hash, ip, headers):
+        """試卷轉 LaTeX：Word／PDF 解析後依範本版面輸出 .tex 與圖片壓縮包。
+
+        從 dispatch 抽出的內聚路由組；沒有命中回 None，讓 dispatch 繼續往下試。
+        """
         if method == 'POST' and path == '/api/papers/to-tex':
             self.teacher(user)
             fields(body, ('file', 'preamble', 'marksPosition', 'consentExternal', 'async',
@@ -10787,6 +10763,40 @@ class Application:
                               'formulas': paper_format.count_formulas(sections),
                               'oleObjects': (paper_format.count_ole_objects(data)
                                              if kind == 'docx' else 0)}}, headers
+        return None
+
+    def dispatch(self, method, path, body, user, token_hash, ip, query=''):
+        headers = {}
+        # 配額按「誰在呼叫」計：登入者用帳號，訪客用 IP（登入頁與同意前的呼叫）。
+        begin_ai_request(AIQuota.key_for(user, ip))
+        # /api/health 即使 DB 還沒好也要能回應，讓 Render 健康檢查不會 timeout。
+        job_match = re.fullmatch(r'/api/jobs/([A-Za-z0-9_-]{8,40})', path)
+        if method == 'GET' and job_match:
+            self.teacher(user)
+            job = JOBS.get(job_match[1])
+            if job is None:
+                fail(404, '這個工作已經結束或不存在（伺服器可能重啟過），請重新排版。')
+            if job['user'] != user['id']:
+                fail(403, '只能查看自己的工作。')
+            payload = {'status': job['status'], 'error': job['error'],
+                       'elapsed': round(time.time() - job['started'], 1)}
+            if job.get('progress'):
+                payload['progress'] = job['progress']
+            if job['status'] == 'done':
+                payload['result'] = job['result']
+            return payload, headers
+        hit = self._dispatch_paper_keys(method, path, body, user, headers)
+        if hit is not None:
+            return hit
+        hit = self._dispatch_paper_grades(method, path, body, user, headers)
+        if hit is not None:
+            return hit
+        hit = self._dispatch_classroom(method, path, body, user, token_hash, ip, query, headers)
+        if hit is not None:
+            return hit
+        hit = self._dispatch_papers_to_tex(method, path, body, user, token_hash, ip, headers)
+        if hit is not None:
+            return hit
 
         hit = self._dispatch_paper_templates(method, path, body, user, token_hash, ip, headers)
         if hit is not None:
