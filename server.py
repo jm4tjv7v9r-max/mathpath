@@ -9526,6 +9526,453 @@ class Application:
                                 'unmatched': sum(1 for x in sheets if not x['studentId'])}}, headers
         return None
 
+    def _dispatch_questions(self, method, path, body, user, headers):
+        """題庫題目：推薦／生成、AI 答案／出題／繪圖、拆題匯入、圖形、LaTeX、批次、核驗、解題、匯入、修改、評分標準。
+
+        從 dispatch 抽出的內聚路由組；沒有命中回 None，讓 dispatch 繼續往下試。
+        """
+        match = re.fullmatch(r'/api/questions/([1-9]\d{0,17})/(recommendations|generate)', path)
+        if match:
+            qid, action = int(match[1]), match[2]
+            with self.db() as db:
+                q = self.get_question(db, qid)
+                if method == 'GET' and action == 'recommendations':
+                    inventory = [self.question_row(r) for r in db.execute(
+                        'SELECT id, payload, (figure IS NOT NULL) AS has_figure, '
+                        'figure_key, created_at FROM questions WHERE id<>? ORDER BY id', (qid,))]
+                    same = [v for v in inventory if v['topic'] == q['topic']]
+                    similar = sorted([v for v in same if v['level'] == q['level']],
+                                     key=lambda v: (-len(set(q['tags']) & set(v['tags'])), v['id']))[:3]
+                    advanced = sorted([v for v in same if v['level'] > q['level']], key=lambda v: (v['level'], v['id']))[:3]
+                    return {'similar': [self.question_public(v, user) for v in similar],
+                            'advanced': [self.question_public(v, user) for v in advanced]}, headers
+            if method == 'POST' and action == 'generate':
+                # 依參考題由 AI 生成變式題草稿。只回傳草稿，**不直接寫入題庫**：
+                # 由教師核對內容、分類與答案後，再自行決定是否加入題庫。
+                self.teacher(user)
+                fields(body, ('kind', 'consentExternal', 'avoid'), ('kind',))
+                if 'consentExternal' in body and type(body['consentExternal']) is not bool:
+                    fail(400, '外部上傳同意必須是布林值。')
+                if body['kind'] not in ('similar', 'advanced'):
+                    fail(400, 'kind 必須是 similar 或 advanced。')
+                if body['kind'] == 'advanced' and q['level'] == 3:
+                    fail(409, '此題已是最高難度，請選擇相似題。')
+                raw_avoid = body.get('avoid', [])
+                if not isinstance(raw_avoid, list) or len(raw_avoid) > 20:
+                    fail(400, 'avoid 必須是最多 20 項的文字清單。')
+                avoid = []
+                for item in raw_avoid:
+                    if not isinstance(item, str):
+                        fail(400, 'avoid 必須是文字清單。')
+                    if item.strip():
+                        avoid.append(item.strip()[:160])
+                with self.db() as db:
+                    seen = self.draft_seen(db, qid)
+                # 伺服器記得的＋前端帶來的都要避開；重複的只留一份。
+                avoid = list(dict.fromkeys(avoid + seen))[:20]
+                seen_keys = {normalize_draft(v) for v in seen}
+                self.ai.consent(body.get('consentExternal'))
+                # 難度與題型都要說清楚，否則模型容易把「相似題」寫成另一種題目。
+                want_level = q['level'] if body['kind'] == 'similar' else min(3, q['level'] + 1)
+                kind_name = '相似題' if body['kind'] == 'similar' else '進階題'
+                ref_qtype = q.get('qtype') or classify_type(q['content'])
+                ref_steps = q.get('steps') or []
+                template = (f'參考題：「{q.get("title", "")}」{q.get("content", "")}'
+                            f'（題型 {ref_qtype}、子分類 {q.get("subtopic") or "（未設定）"}、'
+                            f'{q.get("points", 5)} 分、參考答案「{q.get("answer", "")}」、'
+                            f'參考解法共 {len(ref_steps)} 步）。')
+                if body['kind'] == 'similar':
+                    difficulty = (f'這是「相似題」：level 必須是 {want_level}，與參考題完全相同。'
+                                  + template +
+                                  '請把參考題當作模板，只替換數字與情境文字：'
+                                  f'知識點、解題方法、題型（{ref_qtype}）、小題數量、作答形式（例如一樣是「求兩根」）、'
+                                  f'步驟數量（約 {len(ref_steps)} 步）與推理深度，全部都要與參考題一致，'
+                                  '學生用完全相同的步驟就能解出來。'
+                                  '不可以變得更難、不可以新增條件、不可以改問法、不可以加入參考題沒有的新概念或新技巧。')
+                    variations = DRAFT_VARIATIONS_SIMILAR
+                else:
+                    difficulty = (f'這是「進階題」：level 必須是 {want_level}，比參考題高一級。'
+                                  + template +
+                                  '在同一個知識點與解題方法的基礎上加深：可以多一步推理、需要驗算或比較兩個結果，'
+                                  '但不可超出年級範圍，也不可使用更深奧的技巧；仍要能獨立作答。')
+                    variations = DRAFT_VARIATIONS_ADVANCED
+                base = (f'根據參考題生成一題同年級（{q.get("grade", "中三")}）的數學題。'
+                        '返回 {question:{title,content,topic,level,grade,points,answer,steps:[str],analysis,rubric:[{label:str,percent:number}],hint,source,tags:[str]}}。'
+                        f'topic 必須與參考題相同：{q["topic"]}；grade 必須與參考題相同。'
+                        'steps 為完整詳細解法；analysis 為二至四句詳細解釋（考點、思路、易錯處）；'
+                        'rubric 為評分標準 3 至 6 項，percent 加總必須等於 100。'
+                        '數學式用 LaTeX（行內 $...$）；必須自行核算答案和步驟。'
+                        + difficulty)
+                generated = None
+                for attempt in (1, 2):
+                    extra = ' 本次變化方向：' + secrets.choice(variations) + '。'
+                    if avoid:
+                        extra += ' 不可與下列題目重複（數字、情境與問法都要不同）：' + '｜'.join(avoid) + '。'
+                    if attempt == 2:
+                        extra += (' 注意：上一次生成的題目不符合要求（' + '；'.join(problems) + '），'
+                                  '這次務必修正，並換一組完全不同的數字與情境。')
+                    result = self.ai.call(base + extra, {'reference': q, 'kind': body['kind']},
+                                          temperature=DRAFT_TEMPERATURE)
+                    try:
+                        fields(result, ('question',), ('question',))
+                        fixed = coerce_ai_draft(result['question'])
+                        if fixed is None:
+                            raise ValueError()
+                        # 生成的題目必須與參考題同主分類、同子分類（保持知識點一致）。
+                        fixed['topic'] = q['topic']
+                        fixed['subtopic'] = q.get('subtopic', '')
+                        candidate = question_valid(fixed)
+                        if not candidate['answer']:
+                            raise ValueError()
+                    except (APIError, ValueError, TypeError, KeyError):
+                        fail(502, 'AI 生成題目的欄位、答案或難度無效，未保存。')
+                    # 品質檢查：難度一定要對；相似題還必須同題型、不與先前重複。
+                    problems = []
+                    if candidate['level'] != want_level:
+                        problems.append(f'難度必須是 {want_level}（1 基礎／2 鞏固／3 進階），卻回報 {candidate["level"]}')
+                    if body['kind'] == 'similar' and candidate['qtype'] != ref_qtype:
+                        problems.append(f'題型必須與參考題相同（{ref_qtype}），卻變成 {candidate["qtype"]}')
+                    if draft_summary(candidate) in seen_keys:
+                        problems.append('與先前生成過的題目重複')
+                    if not problems:
+                        generated = candidate
+                        break
+                    if attempt == 2:
+                        fail(502, f'AI 生成的題目不符合{kind_name}的要求（' + '；'.join(problems)
+                                  + '），未保存，請再按一次生成。')
+                generated['source'] = 'AI 生成 · 待核驗'
+                generated['tags'] = list(dict.fromkeys(generated['tags'] + ['待教師核驗']))[:20]
+                with self.db() as db:
+                    self.remember_draft(db, qid, draft_summary(generated))
+                return {'draft': generated, 'kind': body['kind'],
+                        'notice': '這是 AI 生成的草稿，尚未加入題庫。請核對題目內容、分類與參考答案後，再決定是否加入。'}, headers
+        if method == 'POST' and path == '/api/questions/ai-answer':
+            # 教師新增題目時，請 AI 產生答案、詳解、詳細解釋與評分標準（百分比）。
+            self.teacher(user)
+            fields(body, ('title', 'content', 'topic', 'subtopic', 'qtype', 'options', 'points', 'consentExternal'),
+                   ('content',))
+            if 'consentExternal' in body and type(body['consentExternal']) is not bool:
+                fail(400, '外部上傳同意必須是布林值。')
+            return ai_answer_draft(self, body), headers
+        if method == 'POST' and path == '/api/questions/ai-generate':
+            # 教師：只給分類、年級、難度與題型，請 AI 出一整道新題（含選項、答案、詳解）。
+            self.teacher(user)
+            fields(body, ('topic', 'subtopic', 'grade', 'level', 'qtype', 'points', 'brief',
+                          'consentExternal'), ())
+            if 'consentExternal' in body and type(body['consentExternal']) is not bool:
+                fail(400, '外部上傳同意必須是布林值。')
+            return ai_question_draft(self, body), headers
+        if method == 'POST' and path == '/api/questions/ai-figure':
+            # 教師：請 AI 先輸出圖形規格，再由程式畫成 SVG（附規格與自動檢查結果）。
+            self.teacher(user)
+            fields(body, ('title', 'content', 'topic', 'subtopic', 'qtype', 'issues', 'consentExternal'),
+                   ('content',))
+            if 'consentExternal' in body and type(body['consentExternal']) is not bool:
+                fail(400, '外部上傳同意必須是布林值。')
+            if 'issues' in body and not isinstance(body['issues'], list):
+                fail(400, 'issues 必須是文字清單。')
+            return ai_figure_draft(self, body), headers
+        if method == 'POST' and path == '/api/questions/ai-figure-check':
+            # 教師：反向謄寫核對（模型分別讀題目與圖形，程式再比對差異）。
+            self.teacher(user)
+            fields(body, ('title', 'content', 'image', 'consentExternal'), ('content', 'image'))
+            if 'consentExternal' in body and type(body['consentExternal']) is not bool:
+                fail(400, '外部上傳同意必須是布林值。')
+            return ai_figure_check(self, body), headers
+        if method == 'POST' and path == '/api/papers/parse':
+            self.teacher(user)
+            fields(body, ('name', 'text', 'dataUrl', 'mime', 'consentExternal'), ('name',))
+            name = text(body['name'], '試卷名稱', 200)
+            if 'consentExternal' in body and type(body['consentExternal']) is not bool:
+                fail(400, '外部上傳同意必須是布林值。')
+            drafts, method = paper_drafts(self, name, body)
+            return {'drafts': drafts, 'method': method,
+                    'notice': '需要教師確認題目內容、分類、難度、分值和參考答案後才可匯入；識別不代表答案已核驗。'}, headers
+        if method == 'POST' and path == '/api/papers/auto-import':
+            # 全自動：一次完成拆分、題型分類、知識點分類並寫入題庫，全部標示為待核驗。
+            self.teacher(user)
+            fields(body, ('name', 'text', 'dataUrl', 'mime', 'consentExternal'), ('name',))
+            name = text(body['name'], '試卷名稱', 200)
+            if 'consentExternal' in body and type(body['consentExternal']) is not bool:
+                fail(400, '外部上傳同意必須是布林值。')
+            drafts, method = paper_drafts(self, name, body)
+            # figureBox 是拆題階段的中間產物，不是題目欄位；先取出再匯入，
+            # 由前端裁好圖形後呼叫 POST /api/questions/figures 補上。
+            boxes = [q.pop('figureBox', None) for q in drafts]
+            for q in drafts:
+                q['tags'] = list(dict.fromkeys([*q.get('tags', []), '自動匯入', '待核驗']))[:20]
+            with self.db() as db:
+                saved = [self.insert_question(db, q) for q in drafts]
+            return {'count': len(saved), 'method': method,
+                    'questions': [self.question_public(q, user) for q in saved],
+                    'figureBoxes': boxes,
+                    'notice': '已全自動拆分並匯入題庫，全部標示為「自動匯入 · 待核驗」；請在題庫核對題型、分類與參考答案。'}, headers
+        if method == 'POST' and path == '/api/questions/figures':
+            # 教師批次設定題目圖形：拆題時由瀏覽器裁好圖後貼回題目（也支援清空）。
+            self.teacher(user)
+            fields(body, ('figures',), ('figures',))
+            items = body['figures']
+            if not isinstance(items, list) or not 1 <= len(items) <= 100:
+                fail(400, 'figures 必須是 1 至 100 筆的清單。')
+            prepared = []
+            for item in items:
+                fields(item, ('id', 'figure'), ('id', 'figure'))
+                qid = number(item['id'], '題目編號', 1, 2 ** 63 - 1, True)
+                figure, mime = decode_figure(item['figure'])
+                prepared.append((qid, figure, mime))
+            with self.db() as db:
+                # 先確認所有題號都存在再寫入，避免中途 404 造成一半更新一半沒有。
+                for qid, _, _ in prepared:
+                    if db.execute('SELECT 1 FROM questions WHERE id=?', (qid,)).fetchone() is None:
+                        fail(404, f'找不到題目 {qid}，請重新整理題庫後再試。')
+                for qid, figure, mime in prepared:
+                    figure_key = None
+                    if figure is not None and self.storage.mode == 'r2':
+                        figure_key = self.storage.put('figures', figure, mime)
+                        figure = None
+                    db.execute('UPDATE questions SET figure=?,figure_mime=?,figure_key=? WHERE id=?',
+                               (figure, mime, figure_key, qid))
+            return {'updated': len(prepared)}, headers
+        if method == 'POST' and path == '/api/questions/latex':
+            # 教師匯出：把題庫題目轉成可用 XeLaTeX 編譯的 .tex。
+            # 圖形不在此回傳（二進位），由前端把 /api/questions/{id}/figure 轉成 PNG 後打包成 zip。
+            self.teacher(user)
+            fields(body, ('questionIds', 'includeAnswers', 'title'), ('questionIds',))
+            raw_ids = body['questionIds']
+            if not isinstance(raw_ids, list) or not 1 <= len(raw_ids) <= 200:
+                fail(400, 'questionIds 必須是 1 至 200 題的清單。')
+            if 'includeAnswers' in body and type(body['includeAnswers']) is not bool:
+                fail(400, 'includeAnswers 必須是布林值。')
+            title = text(body.get('title') or 'MathPath 題庫匯出', '匯出標題', 200, empty=True) or 'MathPath 題庫匯出'
+            ids, seen = [], set()
+            for value in raw_ids:
+                qid = number(value, '題目編號', 1, 2 ** 63 - 1, True)
+                if qid not in seen:
+                    seen.add(qid)
+                    ids.append(qid)
+            with self.db() as db:
+                rows = []
+                for qid in ids:
+                    row = db.execute('SELECT * FROM questions WHERE id=?', (qid,)).fetchone()
+                    if row is None:
+                        fail(404, f'找不到題目 {qid}，請重新整理題庫後再匯出。')
+                    rows.append(self.question_row(row))
+            figures = {q['id']: f'figures/q{q["id"]}.png' for q in rows if q.get('figure')}
+            tex = latex.document(rows, title=title,
+                                 date=datetime.now(timezone.utc).date().isoformat(),
+                                 include_answers=body.get('includeAnswers', True),
+                                 figures=figures)
+            return {'tex': tex, 'count': len(rows),
+                    'figures': [{'id': qid, 'path': path_, 'url': f'/api/questions/{qid}/figure'}
+                                for qid, path_ in sorted(figures.items())],
+                    'notice': '請用 XeLaTeX 編譯（xelatex questions.tex）；圖形已放在 figures/ 資料夾。'}, headers
+        if method == 'POST' and path == '/api/questions/bulk':
+            # 批次修改：匯入的整份卷常常跨多個知識點，逐題改太慢，這裡一次改一批。
+            self.teacher(user)
+            fields(body, ('ids', 'action', 'patch'), ('ids', 'action'))
+            ids = body['ids']
+            if not isinstance(ids, list) or not 1 <= len(ids) <= 50:
+                fail(400, '一次最多處理 50 題。')
+            ids = [number(v, '題目編號', 1, 10 ** 18, True) for v in ids]
+            action = body['action']
+            if action not in ('update', 'delete'):
+                fail(400, '動作只接受 update 或 delete。')
+            patch = body.get('patch') or {}
+            if not isinstance(patch, dict):
+                fail(400, 'patch 必須是物件。')
+            change = {}
+            if 'topic' in patch:
+                topic = text(patch['topic'], '分類', 30)
+                if topic not in TOPICS:
+                    fail(400, f'分類必須是題庫提供的知識分類之一：{TOPIC_HINT}。')
+                change['topic'] = topic
+            if 'grade' in patch:
+                grade = text(patch['grade'], '年級', 10)
+                if grade not in GRADES:
+                    fail(400, f'年級必須是中一至中六之一：{GRADE_HINT}。')
+                change['grade'] = grade
+            if 'level' in patch:
+                change['level'] = number(patch['level'], '難度', 1, 3, True)
+            if action == 'update' and not change:
+                fail(400, '沒有要修改的欄位。')
+            updated, removed, skipped = [], [], []
+            with self.db() as db:
+                for qid in ids:
+                    row = db.execute('SELECT * FROM questions WHERE id=?', (qid,)).fetchone()
+                    if row is None:
+                        skipped.append(qid)
+                        continue
+                    if action == 'delete':
+                        # 有作答紀錄的題目不能刪（作答是學生成績的一部分）
+                        used = db.execute('SELECT COUNT(*) FROM attempts WHERE question_id=?',
+                                          (qid,)).fetchone()[0]
+                        if used:
+                            skipped.append(qid)
+                            continue
+                        db.execute('DELETE FROM paper_questions WHERE question_id=?', (qid,))
+                        db.execute('DELETE FROM questions WHERE id=?', (qid,))
+                        removed.append(qid)
+                        continue
+                    payload = json.loads(row['payload'])
+                    payload.update(change)
+                    if 'topic' in change:
+                        # 換了主分類，原本的子分類多半不再屬於它
+                        if payload.get('subtopic') and payload['subtopic'] not in TOPIC_TREE.get(change['topic'], ()):
+                            payload['subtopic'] = ''
+                    try:
+                        clean = question_valid(payload)
+                    except APIError:
+                        skipped.append(qid)
+                        continue
+                    db.execute('UPDATE questions SET payload=? WHERE id=?',
+                               (json.dumps(clean, ensure_ascii=False), qid))
+                    updated.append(qid)
+            return {'updated': updated, 'removed': removed, 'skipped': skipped}, headers
+        if method == 'POST' and path == '/api/questions/verify':
+            # 老師看過答案後按「核驗」：把「待核驗」拿掉，這題才能佈置作業
+            # （homework.recommendable() 會擋掉還掛著待核驗的題目）。
+            self.teacher(user)
+            fields(body, ('ids',), ('ids',))
+            ids = body['ids']
+            if not isinstance(ids, list) or not 1 <= len(ids) <= 30:
+                fail(400, '一次最多核驗 30 題。')
+            ids = [number(v, '題目編號', 1, 10 ** 18, True) for v in ids]
+            verified = []
+            with self.db() as db:
+                for qid in ids:
+                    row = db.execute('SELECT * FROM questions WHERE id=?', (qid,)).fetchone()
+                    if row is None:
+                        continue
+                    payload = json.loads(row['payload'])
+                    tags = [t for t in (payload.get('tags') or []) if not needs_review(t)]
+                    source = payload.get('source') or ''
+                    if needs_review(source):
+                        source = re.sub(r'\s*[·・]\s*待\S*$', '', source).strip() or '教師核驗'
+                    if tags == (payload.get('tags') or []) and source == (payload.get('source') or ''):
+                        continue
+                    payload['tags'] = tags
+                    payload['source'] = source
+                    db.execute('UPDATE questions SET payload=? WHERE id=?',
+                               (json.dumps(payload, ensure_ascii=False), qid))
+                    verified.append(qid)
+            return {'verified': verified}, headers
+        if method == 'POST' and path == '/api/questions/solve':
+            # 批次補答案：題庫裡「待核驗」的題目（多半是從試卷匯入的）一次解一批。
+            # 每批上限 5 題，前端分批呼叫——單一請求跑 20 題會超過網路層的 30 秒。
+            self.teacher(user)
+            fields(body, ('ids', 'consentExternal', 'force'), ('ids',))
+            if not self.ai.configured:
+                fail(409, '尚未設定 AI 模型；請先設定模型端點，或手動填寫答案。')
+            ids = body['ids']
+            if not isinstance(ids, list) or not 1 <= len(ids) <= 5:
+                fail(400, '一次最多補 5 題的答案。')
+            ids = [number(v, '題目編號', 1, 10 ** 18, True) for v in ids]
+            force = body.get('force') is True
+            consent = body.get('consentExternal')
+            self.ai.consent(consent)
+            solved, failed = [], []
+            with self.db() as db:
+                for qid in ids:
+                    row = db.execute('SELECT * FROM questions WHERE id=?', (qid,)).fetchone()
+                    if row is None:
+                        failed.append({'id': qid, 'reason': '找不到這道題目。'})
+                        continue
+                    q = self.question_row(row)
+                    if not force and (q.get('answer') or '').strip():
+                        failed.append({'id': qid, 'reason': '已經有答案。'})
+                        continue
+                    try:
+                        draft = ai_answer_draft(self, {
+                            'title': q.get('title', ''), 'content': q.get('content', ''),
+                            'topic': q.get('topic', ''), 'subtopic': q.get('subtopic', ''),
+                            'qtype': q.get('qtype'), 'options': q.get('options') or [],
+                            'points': q.get('points', 5), 'consentExternal': consent})
+                    except APIError as exc:
+                        failed.append({'id': qid, 'reason': exc.message})
+                        continue
+                    merged = {k: q.get(k) for k in
+                              ('title', 'content', 'topic', 'subtopic', 'level', 'points',
+                               'qtype', 'options', 'hint', 'source', 'tags')
+                              if q.get(k) is not None}
+                    merged.update({'answer': draft['answer'],
+                                   'steps': draft.get('steps') or [],
+                                   'analysis': draft.get('analysis') or '',
+                                   'rubric': draft.get('rubric') or []})
+                    try:
+                        payload = question_valid(merged)
+                    except APIError as exc:
+                        failed.append({'id': qid, 'reason': exc.message})
+                        continue
+                    db.execute('UPDATE questions SET payload=? WHERE id=?',
+                               (json.dumps(payload, ensure_ascii=False), qid))
+                    solved.append(self.question_public(
+                        {**payload, 'id': qid, 'figure': bool(q.get('figure'))}, user))
+            return {'solved': solved, 'failed': failed}, headers
+        if method == 'POST' and path == '/api/questions/import':
+            self.teacher(user)
+            fields(body, ('questions', 'dedupe'), ('questions',))
+            raw = body['questions']
+            if not isinstance(raw, list) or not 1 <= len(raw) <= 100:
+                fail(400, '每批必須包含1至100題。')
+            if 'dedupe' in body and type(body['dedupe']) is not bool:
+                fail(400, 'dedupe 必須是布林值。')
+            # 去重是「新增題目」這種人工輸入才要的：還原備份、合併題庫必須原樣寫入，
+            # 否則還原出來的題數會比備份少。
+            dedupe = body.get('dedupe') is True
+            prepared = []
+            for item in raw:
+                q = question_valid(item)
+                figure, figure_mime = decode_figure(item.get('figure'))
+                prepared.append((q, figure, figure_mime))
+            saved, skipped = [], []
+            with self.db() as db:
+                existing = set()
+                if dedupe:
+                    existing = {question_fingerprint(question_content(r['payload']))
+                                for r in db.execute('SELECT payload FROM questions')}
+                for q, figure, figure_mime in prepared:
+                    if dedupe:
+                        mark = question_fingerprint(q.get('content') or q.get('title') or '')
+                        if mark in existing:
+                            skipped.append({'title': (q.get('title') or '')[:60],
+                                            'reason': '題庫已有相同題目'})
+                            continue
+                        existing.add(mark)
+                    saved.append(self.insert_question(db, q, figure, figure_mime))
+            return {'count': len(saved), 'skipped': skipped,
+                    'questions': [self.question_public(q, user) for q in saved]}, headers
+        match = re.fullmatch(r'/api/questions/([1-9]\d{0,17})/update', path)
+        if method == 'POST' and match:
+            # 教師修改題目的所有設定（含題解與圖形）。驗證沿用 question_valid，
+            # 不因為是「修改」而放寬；子分類不屬於該主分類一樣會被擋。
+            self.teacher(user)
+            fields(body, ('question', 'figure'), ('question',))
+            item = body['question']
+            if not isinstance(item, dict):
+                fail(400, 'question 必須是物件。')
+            q = question_valid(item)
+            with self.db() as db:
+                saved = self.update_question(db, int(match[1]), q, body)
+            return {'question': self.question_public(saved, user)}, headers
+        rubric_path = re.fullmatch(r'/api/questions/([1-9]\d{0,17})/rubric', path)
+        if method == 'POST' and rubric_path:
+            # 只補評分標準：教師手上已有題目與核對過的答案，缺的只是 rubric。
+            # 重生成答案會把教師確認過的解法換掉，所以這裡刻意不碰 answer／steps。
+            self.teacher(user)
+            fields(body, ('consentExternal',), ())
+            if 'consentExternal' in body and type(body['consentExternal']) is not bool:
+                fail(400, '外部上傳同意必須是布林值。')
+            with self.db() as db:
+                row = db.execute('SELECT * FROM questions WHERE id=?', (int(rubric_path[1]),)).fetchone()
+            if row is None:
+                fail(404, '找不到這道題目。')
+            self.ai.consent(body.get('consentExternal'))
+            return ai_rubric_draft(self, self.question_row(row)), headers
+        hit = self._dispatch_attempts(method, path, body, user, headers)
+        if hit is not None:
+            return hit
+        return None
+
     def dispatch(self, method, path, body, user, token_hash, ip, query=''):
         headers = {}
         # 配額按「誰在呼叫」計：登入者用帳號，訪客用 IP（登入頁與同意前的呼叫）。
@@ -10479,444 +10926,7 @@ class Application:
                     'stats': stats, 'ai': self.ai.public(), 'topics': TOPICS, 'grades': GRADES,
                     'topicTree': TOPIC_TREE, 'coins': coins,
                     'notice': self.notice(user), 'minutesNotice': '分鐘數僅按同日相鄰提交間隔估算，不是正式學習計時。'}, headers
-        match = re.fullmatch(r'/api/questions/([1-9]\d{0,17})/(recommendations|generate)', path)
-        if match:
-            qid, action = int(match[1]), match[2]
-            with self.db() as db:
-                q = self.get_question(db, qid)
-                if method == 'GET' and action == 'recommendations':
-                    inventory = [self.question_row(r) for r in db.execute(
-                        'SELECT id, payload, (figure IS NOT NULL) AS has_figure, '
-                        'figure_key, created_at FROM questions WHERE id<>? ORDER BY id', (qid,))]
-                    same = [v for v in inventory if v['topic'] == q['topic']]
-                    similar = sorted([v for v in same if v['level'] == q['level']],
-                                     key=lambda v: (-len(set(q['tags']) & set(v['tags'])), v['id']))[:3]
-                    advanced = sorted([v for v in same if v['level'] > q['level']], key=lambda v: (v['level'], v['id']))[:3]
-                    return {'similar': [self.question_public(v, user) for v in similar],
-                            'advanced': [self.question_public(v, user) for v in advanced]}, headers
-            if method == 'POST' and action == 'generate':
-                # 依參考題由 AI 生成變式題草稿。只回傳草稿，**不直接寫入題庫**：
-                # 由教師核對內容、分類與答案後，再自行決定是否加入題庫。
-                self.teacher(user)
-                fields(body, ('kind', 'consentExternal', 'avoid'), ('kind',))
-                if 'consentExternal' in body and type(body['consentExternal']) is not bool:
-                    fail(400, '外部上傳同意必須是布林值。')
-                if body['kind'] not in ('similar', 'advanced'):
-                    fail(400, 'kind 必須是 similar 或 advanced。')
-                if body['kind'] == 'advanced' and q['level'] == 3:
-                    fail(409, '此題已是最高難度，請選擇相似題。')
-                raw_avoid = body.get('avoid', [])
-                if not isinstance(raw_avoid, list) or len(raw_avoid) > 20:
-                    fail(400, 'avoid 必須是最多 20 項的文字清單。')
-                avoid = []
-                for item in raw_avoid:
-                    if not isinstance(item, str):
-                        fail(400, 'avoid 必須是文字清單。')
-                    if item.strip():
-                        avoid.append(item.strip()[:160])
-                with self.db() as db:
-                    seen = self.draft_seen(db, qid)
-                # 伺服器記得的＋前端帶來的都要避開；重複的只留一份。
-                avoid = list(dict.fromkeys(avoid + seen))[:20]
-                seen_keys = {normalize_draft(v) for v in seen}
-                self.ai.consent(body.get('consentExternal'))
-                # 難度與題型都要說清楚，否則模型容易把「相似題」寫成另一種題目。
-                want_level = q['level'] if body['kind'] == 'similar' else min(3, q['level'] + 1)
-                kind_name = '相似題' if body['kind'] == 'similar' else '進階題'
-                ref_qtype = q.get('qtype') or classify_type(q['content'])
-                ref_steps = q.get('steps') or []
-                template = (f'參考題：「{q.get("title", "")}」{q.get("content", "")}'
-                            f'（題型 {ref_qtype}、子分類 {q.get("subtopic") or "（未設定）"}、'
-                            f'{q.get("points", 5)} 分、參考答案「{q.get("answer", "")}」、'
-                            f'參考解法共 {len(ref_steps)} 步）。')
-                if body['kind'] == 'similar':
-                    difficulty = (f'這是「相似題」：level 必須是 {want_level}，與參考題完全相同。'
-                                  + template +
-                                  '請把參考題當作模板，只替換數字與情境文字：'
-                                  f'知識點、解題方法、題型（{ref_qtype}）、小題數量、作答形式（例如一樣是「求兩根」）、'
-                                  f'步驟數量（約 {len(ref_steps)} 步）與推理深度，全部都要與參考題一致，'
-                                  '學生用完全相同的步驟就能解出來。'
-                                  '不可以變得更難、不可以新增條件、不可以改問法、不可以加入參考題沒有的新概念或新技巧。')
-                    variations = DRAFT_VARIATIONS_SIMILAR
-                else:
-                    difficulty = (f'這是「進階題」：level 必須是 {want_level}，比參考題高一級。'
-                                  + template +
-                                  '在同一個知識點與解題方法的基礎上加深：可以多一步推理、需要驗算或比較兩個結果，'
-                                  '但不可超出年級範圍，也不可使用更深奧的技巧；仍要能獨立作答。')
-                    variations = DRAFT_VARIATIONS_ADVANCED
-                base = (f'根據參考題生成一題同年級（{q.get("grade", "中三")}）的數學題。'
-                        '返回 {question:{title,content,topic,level,grade,points,answer,steps:[str],analysis,rubric:[{label:str,percent:number}],hint,source,tags:[str]}}。'
-                        f'topic 必須與參考題相同：{q["topic"]}；grade 必須與參考題相同。'
-                        'steps 為完整詳細解法；analysis 為二至四句詳細解釋（考點、思路、易錯處）；'
-                        'rubric 為評分標準 3 至 6 項，percent 加總必須等於 100。'
-                        '數學式用 LaTeX（行內 $...$）；必須自行核算答案和步驟。'
-                        + difficulty)
-                generated = None
-                for attempt in (1, 2):
-                    extra = ' 本次變化方向：' + secrets.choice(variations) + '。'
-                    if avoid:
-                        extra += ' 不可與下列題目重複（數字、情境與問法都要不同）：' + '｜'.join(avoid) + '。'
-                    if attempt == 2:
-                        extra += (' 注意：上一次生成的題目不符合要求（' + '；'.join(problems) + '），'
-                                  '這次務必修正，並換一組完全不同的數字與情境。')
-                    result = self.ai.call(base + extra, {'reference': q, 'kind': body['kind']},
-                                          temperature=DRAFT_TEMPERATURE)
-                    try:
-                        fields(result, ('question',), ('question',))
-                        fixed = coerce_ai_draft(result['question'])
-                        if fixed is None:
-                            raise ValueError()
-                        # 生成的題目必須與參考題同主分類、同子分類（保持知識點一致）。
-                        fixed['topic'] = q['topic']
-                        fixed['subtopic'] = q.get('subtopic', '')
-                        candidate = question_valid(fixed)
-                        if not candidate['answer']:
-                            raise ValueError()
-                    except (APIError, ValueError, TypeError, KeyError):
-                        fail(502, 'AI 生成題目的欄位、答案或難度無效，未保存。')
-                    # 品質檢查：難度一定要對；相似題還必須同題型、不與先前重複。
-                    problems = []
-                    if candidate['level'] != want_level:
-                        problems.append(f'難度必須是 {want_level}（1 基礎／2 鞏固／3 進階），卻回報 {candidate["level"]}')
-                    if body['kind'] == 'similar' and candidate['qtype'] != ref_qtype:
-                        problems.append(f'題型必須與參考題相同（{ref_qtype}），卻變成 {candidate["qtype"]}')
-                    if draft_summary(candidate) in seen_keys:
-                        problems.append('與先前生成過的題目重複')
-                    if not problems:
-                        generated = candidate
-                        break
-                    if attempt == 2:
-                        fail(502, f'AI 生成的題目不符合{kind_name}的要求（' + '；'.join(problems)
-                                  + '），未保存，請再按一次生成。')
-                generated['source'] = 'AI 生成 · 待核驗'
-                generated['tags'] = list(dict.fromkeys(generated['tags'] + ['待教師核驗']))[:20]
-                with self.db() as db:
-                    self.remember_draft(db, qid, draft_summary(generated))
-                return {'draft': generated, 'kind': body['kind'],
-                        'notice': '這是 AI 生成的草稿，尚未加入題庫。請核對題目內容、分類與參考答案後，再決定是否加入。'}, headers
-        if method == 'POST' and path == '/api/questions/ai-answer':
-            # 教師新增題目時，請 AI 產生答案、詳解、詳細解釋與評分標準（百分比）。
-            self.teacher(user)
-            fields(body, ('title', 'content', 'topic', 'subtopic', 'qtype', 'options', 'points', 'consentExternal'),
-                   ('content',))
-            if 'consentExternal' in body and type(body['consentExternal']) is not bool:
-                fail(400, '外部上傳同意必須是布林值。')
-            return ai_answer_draft(self, body), headers
-        if method == 'POST' and path == '/api/questions/ai-generate':
-            # 教師：只給分類、年級、難度與題型，請 AI 出一整道新題（含選項、答案、詳解）。
-            self.teacher(user)
-            fields(body, ('topic', 'subtopic', 'grade', 'level', 'qtype', 'points', 'brief',
-                          'consentExternal'), ())
-            if 'consentExternal' in body and type(body['consentExternal']) is not bool:
-                fail(400, '外部上傳同意必須是布林值。')
-            return ai_question_draft(self, body), headers
-        if method == 'POST' and path == '/api/questions/ai-figure':
-            # 教師：請 AI 先輸出圖形規格，再由程式畫成 SVG（附規格與自動檢查結果）。
-            self.teacher(user)
-            fields(body, ('title', 'content', 'topic', 'subtopic', 'qtype', 'issues', 'consentExternal'),
-                   ('content',))
-            if 'consentExternal' in body and type(body['consentExternal']) is not bool:
-                fail(400, '外部上傳同意必須是布林值。')
-            if 'issues' in body and not isinstance(body['issues'], list):
-                fail(400, 'issues 必須是文字清單。')
-            return ai_figure_draft(self, body), headers
-        if method == 'POST' and path == '/api/questions/ai-figure-check':
-            # 教師：反向謄寫核對（模型分別讀題目與圖形，程式再比對差異）。
-            self.teacher(user)
-            fields(body, ('title', 'content', 'image', 'consentExternal'), ('content', 'image'))
-            if 'consentExternal' in body and type(body['consentExternal']) is not bool:
-                fail(400, '外部上傳同意必須是布林值。')
-            return ai_figure_check(self, body), headers
-        if method == 'POST' and path == '/api/papers/parse':
-            self.teacher(user)
-            fields(body, ('name', 'text', 'dataUrl', 'mime', 'consentExternal'), ('name',))
-            name = text(body['name'], '試卷名稱', 200)
-            if 'consentExternal' in body and type(body['consentExternal']) is not bool:
-                fail(400, '外部上傳同意必須是布林值。')
-            drafts, method = paper_drafts(self, name, body)
-            return {'drafts': drafts, 'method': method,
-                    'notice': '需要教師確認題目內容、分類、難度、分值和參考答案後才可匯入；識別不代表答案已核驗。'}, headers
-        if method == 'POST' and path == '/api/papers/auto-import':
-            # 全自動：一次完成拆分、題型分類、知識點分類並寫入題庫，全部標示為待核驗。
-            self.teacher(user)
-            fields(body, ('name', 'text', 'dataUrl', 'mime', 'consentExternal'), ('name',))
-            name = text(body['name'], '試卷名稱', 200)
-            if 'consentExternal' in body and type(body['consentExternal']) is not bool:
-                fail(400, '外部上傳同意必須是布林值。')
-            drafts, method = paper_drafts(self, name, body)
-            # figureBox 是拆題階段的中間產物，不是題目欄位；先取出再匯入，
-            # 由前端裁好圖形後呼叫 POST /api/questions/figures 補上。
-            boxes = [q.pop('figureBox', None) for q in drafts]
-            for q in drafts:
-                q['tags'] = list(dict.fromkeys([*q.get('tags', []), '自動匯入', '待核驗']))[:20]
-            with self.db() as db:
-                saved = [self.insert_question(db, q) for q in drafts]
-            return {'count': len(saved), 'method': method,
-                    'questions': [self.question_public(q, user) for q in saved],
-                    'figureBoxes': boxes,
-                    'notice': '已全自動拆分並匯入題庫，全部標示為「自動匯入 · 待核驗」；請在題庫核對題型、分類與參考答案。'}, headers
-        if method == 'POST' and path == '/api/questions/figures':
-            # 教師批次設定題目圖形：拆題時由瀏覽器裁好圖後貼回題目（也支援清空）。
-            self.teacher(user)
-            fields(body, ('figures',), ('figures',))
-            items = body['figures']
-            if not isinstance(items, list) or not 1 <= len(items) <= 100:
-                fail(400, 'figures 必須是 1 至 100 筆的清單。')
-            prepared = []
-            for item in items:
-                fields(item, ('id', 'figure'), ('id', 'figure'))
-                qid = number(item['id'], '題目編號', 1, 2 ** 63 - 1, True)
-                figure, mime = decode_figure(item['figure'])
-                prepared.append((qid, figure, mime))
-            with self.db() as db:
-                # 先確認所有題號都存在再寫入，避免中途 404 造成一半更新一半沒有。
-                for qid, _, _ in prepared:
-                    if db.execute('SELECT 1 FROM questions WHERE id=?', (qid,)).fetchone() is None:
-                        fail(404, f'找不到題目 {qid}，請重新整理題庫後再試。')
-                for qid, figure, mime in prepared:
-                    figure_key = None
-                    if figure is not None and self.storage.mode == 'r2':
-                        figure_key = self.storage.put('figures', figure, mime)
-                        figure = None
-                    db.execute('UPDATE questions SET figure=?,figure_mime=?,figure_key=? WHERE id=?',
-                               (figure, mime, figure_key, qid))
-            return {'updated': len(prepared)}, headers
-        if method == 'POST' and path == '/api/questions/latex':
-            # 教師匯出：把題庫題目轉成可用 XeLaTeX 編譯的 .tex。
-            # 圖形不在此回傳（二進位），由前端把 /api/questions/{id}/figure 轉成 PNG 後打包成 zip。
-            self.teacher(user)
-            fields(body, ('questionIds', 'includeAnswers', 'title'), ('questionIds',))
-            raw_ids = body['questionIds']
-            if not isinstance(raw_ids, list) or not 1 <= len(raw_ids) <= 200:
-                fail(400, 'questionIds 必須是 1 至 200 題的清單。')
-            if 'includeAnswers' in body and type(body['includeAnswers']) is not bool:
-                fail(400, 'includeAnswers 必須是布林值。')
-            title = text(body.get('title') or 'MathPath 題庫匯出', '匯出標題', 200, empty=True) or 'MathPath 題庫匯出'
-            ids, seen = [], set()
-            for value in raw_ids:
-                qid = number(value, '題目編號', 1, 2 ** 63 - 1, True)
-                if qid not in seen:
-                    seen.add(qid)
-                    ids.append(qid)
-            with self.db() as db:
-                rows = []
-                for qid in ids:
-                    row = db.execute('SELECT * FROM questions WHERE id=?', (qid,)).fetchone()
-                    if row is None:
-                        fail(404, f'找不到題目 {qid}，請重新整理題庫後再匯出。')
-                    rows.append(self.question_row(row))
-            figures = {q['id']: f'figures/q{q["id"]}.png' for q in rows if q.get('figure')}
-            tex = latex.document(rows, title=title,
-                                 date=datetime.now(timezone.utc).date().isoformat(),
-                                 include_answers=body.get('includeAnswers', True),
-                                 figures=figures)
-            return {'tex': tex, 'count': len(rows),
-                    'figures': [{'id': qid, 'path': path_, 'url': f'/api/questions/{qid}/figure'}
-                                for qid, path_ in sorted(figures.items())],
-                    'notice': '請用 XeLaTeX 編譯（xelatex questions.tex）；圖形已放在 figures/ 資料夾。'}, headers
-        if method == 'POST' and path == '/api/questions/bulk':
-            # 批次修改：匯入的整份卷常常跨多個知識點，逐題改太慢，這裡一次改一批。
-            self.teacher(user)
-            fields(body, ('ids', 'action', 'patch'), ('ids', 'action'))
-            ids = body['ids']
-            if not isinstance(ids, list) or not 1 <= len(ids) <= 50:
-                fail(400, '一次最多處理 50 題。')
-            ids = [number(v, '題目編號', 1, 10 ** 18, True) for v in ids]
-            action = body['action']
-            if action not in ('update', 'delete'):
-                fail(400, '動作只接受 update 或 delete。')
-            patch = body.get('patch') or {}
-            if not isinstance(patch, dict):
-                fail(400, 'patch 必須是物件。')
-            change = {}
-            if 'topic' in patch:
-                topic = text(patch['topic'], '分類', 30)
-                if topic not in TOPICS:
-                    fail(400, f'分類必須是題庫提供的知識分類之一：{TOPIC_HINT}。')
-                change['topic'] = topic
-            if 'grade' in patch:
-                grade = text(patch['grade'], '年級', 10)
-                if grade not in GRADES:
-                    fail(400, f'年級必須是中一至中六之一：{GRADE_HINT}。')
-                change['grade'] = grade
-            if 'level' in patch:
-                change['level'] = number(patch['level'], '難度', 1, 3, True)
-            if action == 'update' and not change:
-                fail(400, '沒有要修改的欄位。')
-            updated, removed, skipped = [], [], []
-            with self.db() as db:
-                for qid in ids:
-                    row = db.execute('SELECT * FROM questions WHERE id=?', (qid,)).fetchone()
-                    if row is None:
-                        skipped.append(qid)
-                        continue
-                    if action == 'delete':
-                        # 有作答紀錄的題目不能刪（作答是學生成績的一部分）
-                        used = db.execute('SELECT COUNT(*) FROM attempts WHERE question_id=?',
-                                          (qid,)).fetchone()[0]
-                        if used:
-                            skipped.append(qid)
-                            continue
-                        db.execute('DELETE FROM paper_questions WHERE question_id=?', (qid,))
-                        db.execute('DELETE FROM questions WHERE id=?', (qid,))
-                        removed.append(qid)
-                        continue
-                    payload = json.loads(row['payload'])
-                    payload.update(change)
-                    if 'topic' in change:
-                        # 換了主分類，原本的子分類多半不再屬於它
-                        if payload.get('subtopic') and payload['subtopic'] not in TOPIC_TREE.get(change['topic'], ()):
-                            payload['subtopic'] = ''
-                    try:
-                        clean = question_valid(payload)
-                    except APIError:
-                        skipped.append(qid)
-                        continue
-                    db.execute('UPDATE questions SET payload=? WHERE id=?',
-                               (json.dumps(clean, ensure_ascii=False), qid))
-                    updated.append(qid)
-            return {'updated': updated, 'removed': removed, 'skipped': skipped}, headers
-        if method == 'POST' and path == '/api/questions/verify':
-            # 老師看過答案後按「核驗」：把「待核驗」拿掉，這題才能佈置作業
-            # （homework.recommendable() 會擋掉還掛著待核驗的題目）。
-            self.teacher(user)
-            fields(body, ('ids',), ('ids',))
-            ids = body['ids']
-            if not isinstance(ids, list) or not 1 <= len(ids) <= 30:
-                fail(400, '一次最多核驗 30 題。')
-            ids = [number(v, '題目編號', 1, 10 ** 18, True) for v in ids]
-            verified = []
-            with self.db() as db:
-                for qid in ids:
-                    row = db.execute('SELECT * FROM questions WHERE id=?', (qid,)).fetchone()
-                    if row is None:
-                        continue
-                    payload = json.loads(row['payload'])
-                    tags = [t for t in (payload.get('tags') or []) if not needs_review(t)]
-                    source = payload.get('source') or ''
-                    if needs_review(source):
-                        source = re.sub(r'\s*[·・]\s*待\S*$', '', source).strip() or '教師核驗'
-                    if tags == (payload.get('tags') or []) and source == (payload.get('source') or ''):
-                        continue
-                    payload['tags'] = tags
-                    payload['source'] = source
-                    db.execute('UPDATE questions SET payload=? WHERE id=?',
-                               (json.dumps(payload, ensure_ascii=False), qid))
-                    verified.append(qid)
-            return {'verified': verified}, headers
-        if method == 'POST' and path == '/api/questions/solve':
-            # 批次補答案：題庫裡「待核驗」的題目（多半是從試卷匯入的）一次解一批。
-            # 每批上限 5 題，前端分批呼叫——單一請求跑 20 題會超過網路層的 30 秒。
-            self.teacher(user)
-            fields(body, ('ids', 'consentExternal', 'force'), ('ids',))
-            if not self.ai.configured:
-                fail(409, '尚未設定 AI 模型；請先設定模型端點，或手動填寫答案。')
-            ids = body['ids']
-            if not isinstance(ids, list) or not 1 <= len(ids) <= 5:
-                fail(400, '一次最多補 5 題的答案。')
-            ids = [number(v, '題目編號', 1, 10 ** 18, True) for v in ids]
-            force = body.get('force') is True
-            consent = body.get('consentExternal')
-            self.ai.consent(consent)
-            solved, failed = [], []
-            with self.db() as db:
-                for qid in ids:
-                    row = db.execute('SELECT * FROM questions WHERE id=?', (qid,)).fetchone()
-                    if row is None:
-                        failed.append({'id': qid, 'reason': '找不到這道題目。'})
-                        continue
-                    q = self.question_row(row)
-                    if not force and (q.get('answer') or '').strip():
-                        failed.append({'id': qid, 'reason': '已經有答案。'})
-                        continue
-                    try:
-                        draft = ai_answer_draft(self, {
-                            'title': q.get('title', ''), 'content': q.get('content', ''),
-                            'topic': q.get('topic', ''), 'subtopic': q.get('subtopic', ''),
-                            'qtype': q.get('qtype'), 'options': q.get('options') or [],
-                            'points': q.get('points', 5), 'consentExternal': consent})
-                    except APIError as exc:
-                        failed.append({'id': qid, 'reason': exc.message})
-                        continue
-                    merged = {k: q.get(k) for k in
-                              ('title', 'content', 'topic', 'subtopic', 'level', 'points',
-                               'qtype', 'options', 'hint', 'source', 'tags')
-                              if q.get(k) is not None}
-                    merged.update({'answer': draft['answer'],
-                                   'steps': draft.get('steps') or [],
-                                   'analysis': draft.get('analysis') or '',
-                                   'rubric': draft.get('rubric') or []})
-                    try:
-                        payload = question_valid(merged)
-                    except APIError as exc:
-                        failed.append({'id': qid, 'reason': exc.message})
-                        continue
-                    db.execute('UPDATE questions SET payload=? WHERE id=?',
-                               (json.dumps(payload, ensure_ascii=False), qid))
-                    solved.append(self.question_public(
-                        {**payload, 'id': qid, 'figure': bool(q.get('figure'))}, user))
-            return {'solved': solved, 'failed': failed}, headers
-        if method == 'POST' and path == '/api/questions/import':
-            self.teacher(user)
-            fields(body, ('questions', 'dedupe'), ('questions',))
-            raw = body['questions']
-            if not isinstance(raw, list) or not 1 <= len(raw) <= 100:
-                fail(400, '每批必須包含1至100題。')
-            if 'dedupe' in body and type(body['dedupe']) is not bool:
-                fail(400, 'dedupe 必須是布林值。')
-            # 去重是「新增題目」這種人工輸入才要的：還原備份、合併題庫必須原樣寫入，
-            # 否則還原出來的題數會比備份少。
-            dedupe = body.get('dedupe') is True
-            prepared = []
-            for item in raw:
-                q = question_valid(item)
-                figure, figure_mime = decode_figure(item.get('figure'))
-                prepared.append((q, figure, figure_mime))
-            saved, skipped = [], []
-            with self.db() as db:
-                existing = set()
-                if dedupe:
-                    existing = {question_fingerprint(question_content(r['payload']))
-                                for r in db.execute('SELECT payload FROM questions')}
-                for q, figure, figure_mime in prepared:
-                    if dedupe:
-                        mark = question_fingerprint(q.get('content') or q.get('title') or '')
-                        if mark in existing:
-                            skipped.append({'title': (q.get('title') or '')[:60],
-                                            'reason': '題庫已有相同題目'})
-                            continue
-                        existing.add(mark)
-                    saved.append(self.insert_question(db, q, figure, figure_mime))
-            return {'count': len(saved), 'skipped': skipped,
-                    'questions': [self.question_public(q, user) for q in saved]}, headers
-        match = re.fullmatch(r'/api/questions/([1-9]\d{0,17})/update', path)
-        if method == 'POST' and match:
-            # 教師修改題目的所有設定（含題解與圖形）。驗證沿用 question_valid，
-            # 不因為是「修改」而放寬；子分類不屬於該主分類一樣會被擋。
-            self.teacher(user)
-            fields(body, ('question', 'figure'), ('question',))
-            item = body['question']
-            if not isinstance(item, dict):
-                fail(400, 'question 必須是物件。')
-            q = question_valid(item)
-            with self.db() as db:
-                saved = self.update_question(db, int(match[1]), q, body)
-            return {'question': self.question_public(saved, user)}, headers
-        rubric_path = re.fullmatch(r'/api/questions/([1-9]\d{0,17})/rubric', path)
-        if method == 'POST' and rubric_path:
-            # 只補評分標準：教師手上已有題目與核對過的答案，缺的只是 rubric。
-            # 重生成答案會把教師確認過的解法換掉，所以這裡刻意不碰 answer／steps。
-            self.teacher(user)
-            fields(body, ('consentExternal',), ())
-            if 'consentExternal' in body and type(body['consentExternal']) is not bool:
-                fail(400, '外部上傳同意必須是布林值。')
-            with self.db() as db:
-                row = db.execute('SELECT * FROM questions WHERE id=?', (int(rubric_path[1]),)).fetchone()
-            if row is None:
-                fail(404, '找不到這道題目。')
-            self.ai.consent(body.get('consentExternal'))
-            return ai_rubric_draft(self, self.question_row(row)), headers
-        hit = self._dispatch_attempts(method, path, body, user, headers)
+        hit = self._dispatch_questions(method, path, body, user, headers)
         if hit is not None:
             return hit
         fail(404, '找不到此 API 或不支援此操作。')
