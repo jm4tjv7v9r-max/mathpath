@@ -14,7 +14,7 @@
 | Git | `git@github.com:jm4tjv7v9r-max/mathpath.git`，主分支 `main` |
 | 雲端部署 | Render，網域 **https://mathshomework.link**（推 `main` 會自動重新部署，約 1–2 分鐘） |
 | 資料 | 雲端：Render 持久磁碟 SQLite + R2 網盤（圖片/備份）；本機 `data/mathpath.sqlite3` 只是開發副本 |
-| 目前 HEAD | `c429a3a`（dispatch 拆分第 9 步） |
+| 目前 HEAD | `bdb50af`（dispatch 拆分第 19 步，2026-11-22 已上線） |
 
 **重要**：使用者實際在用的是雲端 `mathshomework.link`。本機 `data/` 是測試庫，可隨意造/清測試資料，**不會影響雲端**。
 
@@ -24,10 +24,11 @@
 
 `server.py` 的 `dispatch()` 是唯一的路由分發方法，原本 **3618 行、104 個頂層 if 分支**，是最大架構風險。
 
-已完成 **9 步**拆分，`dispatch` 降到 **960 行（減 73%）**，抽出 9 個內聚方法：
+已完成 **19 步**拆分（HANDOFF 原列的 8 組全部清空），`dispatch` 降到 **154 行（減 96%）**，抽出 **20 個內聚方法、約 100 條路由**：
 
 | 方法 | 領域 | 路由數 |
 |---|---|---|
+| `_dispatch_health` | 健康檢查 | 1 |
 | `_dispatch_paper_keys` | 題目卷 | 4 |
 | `_dispatch_score_grid` | 成績總表 | 10 |
 | `_dispatch_paper_grades` | 紙本批改 | 5 |
@@ -37,8 +38,18 @@
 | `_dispatch_attempts` | 作答紀錄 | 6 |
 | `_dispatch_paper_grades_batch` | 批改批次／掃描 | 2 |
 | `_dispatch_questions` | 題庫題目 | 20 |
+| `_dispatch_drafts` | 批改草稿（清單／開啟／二次配對／卷面／方向／確認／刪除） | 7 |
+| `_dispatch_paper_templates` | 卷面範本 | 4 |
+| `_dispatch_auth` | session／login／比賽列表與寫入 | 4 |
+| `_dispatch_ai_config` | AI 端點設定／測試／計費 | 3 |
+| `_dispatch_ai_grading` | AI 批改品質統計 | 1 |
+| `_dispatch_logins` | 登入紀錄 | 1 |
+| `_dispatch_state` | 初始狀態（題庫／作答／統計／金幣） | 1 |
+| `_dispatch_papers_to_tex` | 試卷轉 LaTeX | 1 |
+| `_dispatch_coins` | 金幣（查詢／全班／獎勵） | 3 |
+| `_dispatch_admin` | 管理員工具（health／storage／backup／vacuum／reset） | 5 |
 
-每次拆分都是**純結構調整、行為不變**，並跑完 **550 個測試**才提交。
+每次拆分都是**純結構調整、行為不變**，並跑完 **550 個測試**才提交。第 10～19 步已於 2026-11-22 上線（`bdb50af`）。
 
 ---
 
@@ -108,22 +119,20 @@ open(path,'w',encoding='utf-8').write(src)
 
 ---
 
-## 五、剩餘待抽的塊（含行號與依賴，行號會隨改動位移，用錨點文字重新定位）
+## 五、剩餘零星路由（可選收尾）
 
-| 順序 | 群組 | 起點錨點（8 空格縮進） | 行數 | 依賴變數 | 建議方法名 |
-|---|---|---|---|---|---|
-| 1 | drafts | `if method == 'GET' and path == '/api/paper-grades/drafts':` | 211 | ip, query, headers | `_dispatch_drafts` |
-| 2 | paper-templates | `if path == '/api/paper-templates' and method in ('GET', 'POST'):` | 130 | token_hash, ip, headers | `_dispatch_paper_templates` |
-| 3 | auth+session | `if method == 'GET' and path == '/api/health':`（到 change-password 前） | 133 | token_hash, ip, query, headers | `_dispatch_auth` |
-| 4 | ai-config | `if path == '/api/ai-config' and method in ('GET', 'POST'):`（到 ai-grading/stats 後） | 98 | ip, headers | `_dispatch_ai_config` |
-| 5 | state | `if method == 'GET' and path == '/api/state':` | 77 | ip, headers | `_dispatch_state` |
-| 6 | papers/to-tex | `if method == 'POST' and path == '/api/papers/to-tex':` | 72 | token_hash, ip, headers | 併入 `_dispatch_papers` 或獨立 |
-| 7 | coins | `if path == '/api/coins' and method == 'GET':` | 68 | headers | `_dispatch_coins` |
-| 8 | admin | `if path == '/api/admin/health' and method == 'GET':` | 33 | ip, headers | `_dispatch_admin` |
+HANDOFF 原列的 8 組已全部抽完。`dispatch` 只剩 4 個零星路由（約 55 行），可再合成一個 `_dispatch_misc`，把 `dispatch` 降到 100 行以內：
 
-> 提示：`dispatch` 裡出現的 `if hit is not None: return hit` 是已抽好方法的呼叫點，**不要動它們**。
-> 注意 `drafts` 群組的起點在 `# ---------- 我的試卷` 註解之後，與已抽的 `_dispatch_papers` 呼叫點相鄰，定位時要看清楚。
-> 全部抽完後 `dispatch` 應可降到 400–500 行，只剩路由分發。
+| 順序 | 路由 | 起點錨點（8 空格縮進） | 行數 | 依賴變數 |
+|---|---|---|---|---|
+| 1 | 紙本批改紀錄列表 | `if method == 'GET' and path == '/api/paper-grades':` | 21 | user, headers |
+| 2 | 排行榜 | `if method == 'GET' and board_path:` | 7 | user, headers |
+| 3 | 登出 | `if method == 'POST' and path == '/api/logout':` | 6 | body, token_hash, headers |
+| 4 | 改密碼 | `if method == 'POST' and path == '/api/change-password':` | 21 | body, user, token_hash, headers |
+
+> 注意：這 4 條都在「登入守衛 `if user is None:`」之後，抽出的方法呼叫點也必須放在守衛之後，否則未登入會繞過 401。
+> 抽完後 `dispatch` 應只剩：初始化守衛、登入守衛、homework/mock 委派、12～13 個 `_dispatch_*` 呼叫。
+> 若不想再抽，現狀 154 行也已足夠清楚，可直接轉向第八節的其他待辦。
 
 ### 查詢剩餘塊的指令（可重跑）
 
@@ -216,4 +225,6 @@ curl -s https://mathshomework.link/api/health
 
 ## 十、開場建議（貼完這份後可直接說）
 
-> 「請從 `_dispatch_drafts` 開始（`/api/paper-grades/drafts` 群組，211 行，依賴 ip/query/headers），照 HANDOFF.md 第四節的抽取方法做，跑完 550 測試後提交。之後依表格順序繼續抽 paper-templates、auth、ai-config、state、papers/to-tex、coins、admin。」
+> 「`dispatch` 拆分已完成 19 步、HANDOFF 原列的 8 組全部抽完（3618→154 行，20 個 `_dispatch_*`，線上 `bdb50af`）。
+> 請先跑一次 550 測試確認基線，然後可選：把剩餘 4 個零星路由（paper-grades 列表／排行榜／logout／change-password）合成 `_dispatch_misc`，呼叫點要放在登入守衛之後；完成後 `dispatch` 可降到 100 行以內。
+> 之後轉向第八節的其他待辦：`app.js` 模組化、AI 繪圖失敗率、題庫答案核驗流程。」
