@@ -8410,6 +8410,164 @@ class Application:
                     'questions': [self.question_public(q, user) for q in saved]}, headers
         return None
 
+    def _dispatch_users(self, method, path, body, user, headers):
+        """帳戶管理：列表／建立／批次匯入／改資料／停用／刪除／清除圖片。
+
+        從 dispatch 抽出的內聚路由組；沒有命中回 None，讓 dispatch 繼續往下試。
+        """
+        if path == '/api/users' and method in ('GET', 'POST'):
+            self.teacher(user)
+            if method == 'GET':
+                # 名單所有教師都看得到（方便跨教師共用班級、代課），
+                # 但只有管理員與建立者能改——createdBy 讓前端決定要不要顯示「編輯」。
+                with self.db() as db:
+                    users = [{'id': r['id'], 'username': r['username'], 'name': r['name'], 'role': r['role'],
+                              'seat': r['seat'], 'grade': r['grade'], 'createdBy': r['created_by'],
+                              'disabled': bool(r['disabled'])}
+                             for r in db.execute('SELECT id,username,name,role,seat,grade,created_by,disabled '
+                                                 'FROM users ORDER BY id')]
+                    owner = self.owner_id(db)
+                return {'users': users, 'ownerId': owner}, headers
+            # 姓名可省略（只有學號的名單）：留空時以學號作為顯示名稱。
+            fields(body, ('username', 'name', 'password', 'seat', 'grade'), ('username', 'password'))
+            username = text(body['username'], '帳戶名稱', 40, strip=False)
+            if not re.fullmatch(r'[A-Za-z0-9_.-]{3,40}', username):
+                fail(400, '帳戶名稱須為3至40個 ASCII 字母、數字或 _ . -。')
+            name = student_name(body.get('name'), username)
+            if name != username:
+                name = mask_name(name)   # 學生姓名一律遮蔽（陳大文 → 陳X文）
+            if name != username:
+                name = mask_name(name)      # 學生姓名一律遮蔽（陳大文 → 陳X文）
+            seat = seat_value(body.get('seat'))
+            try:
+                grade = self.dataadmin.grade_value(body.get('grade'))
+            except ValueError as exc:
+                fail(400, str(exc))
+            pw = text(body['password'], '密碼', 256, strip=False)
+            if len(pw) < 10:
+                fail(400, '密碼必須至少10字。')
+            encoded = password_hash(pw)
+            try:
+                with self.db() as db:
+                    cur = db.execute('INSERT INTO users(username,name,role,password,demo,seat,grade,created_by) '
+                                     'VALUES(?,?,?,?,?,?,?,?)',
+                                     (username, name, 'student', encoded, 0, seat, grade, user['id']))
+                    created = {'id': cur.lastrowid, 'username': username, 'name': name, 'role': 'student',
+                               'seat': seat, 'grade': grade, 'createdBy': user['id'], 'disabled': False}
+            except sqlite3.IntegrityError as exc:
+                if exc.sqlite_errorcode == sqlite3.SQLITE_CONSTRAINT_UNIQUE:
+                    fail(409, '帳戶名稱已存在。')
+                raise
+            return {'user': created}, headers
+        if path == '/api/teachers' and method == 'POST':
+            # 建立教師帳號（設定與隱私 → 帳號管理）。只有管理員能新增教師——
+            # 一般教師只能管自己與自己建立的學生，不能自己擴權。
+            # 刻意獨立於 /api/users：那個端點只建立學生、不接受 role 參數，
+            # 免得角色可以從學生名單那條路被塞進來（見 test_users_validation_and_no_role_injection）。
+            self.require_owner(user)
+            fields(body, ('username', 'name', 'password'), ('username', 'name', 'password'))
+            username = text(body['username'], '帳戶名稱', 40, strip=False)
+            if not re.fullmatch(r'[A-Za-z0-9_.-]{3,40}', username):
+                fail(400, '帳戶名稱須為3至40個 ASCII 字母、數字或 _ . -。')
+            # 教師姓名必填：批閱記錄與成績表都會顯示，空名會認不出是誰。
+            name = text(body['name'], '姓名', 60)
+            pw = text(body['password'], '密碼', 256, strip=False)
+            if len(pw) < 10:
+                fail(400, '密碼必須至少10字。')
+            try:
+                with self.db() as db:
+                    cur = db.execute('INSERT INTO users(username,name,role,password,demo,seat,created_by) '
+                                     'VALUES(?,?,?,?,?,?,?)',
+                                     (username, name, 'teacher', password_hash(pw), 0, None, user['id']))
+                    created = {'id': cur.lastrowid, 'username': username, 'name': name, 'role': 'teacher',
+                               'seat': None, 'createdBy': user['id']}
+            except sqlite3.IntegrityError as exc:
+                if exc.sqlite_errorcode == sqlite3.SQLITE_CONSTRAINT_UNIQUE:
+                    fail(409, '帳戶名稱已存在。')
+                raise
+            return {'user': created}, headers
+        if path == '/api/users/bulk' and method == 'POST':
+            self.teacher(user)
+            fields(body, ('students',), ('students',))
+            raw = body['students']
+            if not isinstance(raw, list) or not 1 <= len(raw) <= 200:
+                fail(400, '每批必須包含1至200名學生。')
+            prepared, seen = [], set()
+            for index, item in enumerate(raw, 1):
+                if (not isinstance(item, dict) or set(item) - {'username', 'name', 'password', 'seat'}
+                        or not {'username', 'password'} <= set(item)):
+                    fail(400, f'第 {index} 行欄位不正確，只接受學號（帳戶名稱）、密碼，以及選填的姓名與班內號。')
+                username = text(item['username'], f'第 {index} 行帳戶名稱', 40, strip=False)
+                if not re.fullmatch(r'[A-Za-z0-9_.-]{3,40}', username):
+                    fail(400, f'第 {index} 行帳戶名稱須為3至40個 ASCII 字母、數字或 _ . -。')
+                if username in seen:
+                    fail(400, f'第 {index} 行帳戶名稱在本次批次中重複。')
+                seen.add(username)
+                name = student_name(item.get('name'), username, f'第 {index} 行姓名')
+                if name != username:
+                    name = mask_name(name)   # 學生姓名一律遮蔽（陳大文 → 陳X文）
+                if name != username:
+                    name = mask_name(name)
+                seat = seat_value(item.get('seat'), f'第 {index} 行班內號')
+                pw = text(item['password'], f'第 {index} 行密碼', 256, strip=False)
+                if len(pw) < 10:
+                    fail(400, f'第 {index} 行密碼必須至少10字。')
+                prepared.append((username, name, seat, password_hash(pw)))
+            # 先檢查全部帳戶名稱，再一次性寫入；任何一行有問題都不會建立部分帳戶。
+            with self.db() as db:
+                db.execute('BEGIN IMMEDIATE')
+                existing = {row['username'] for row in
+                            db.execute('SELECT username FROM users WHERE username IN (%s)'
+                                       % ','.join('?' * len(prepared)), [p[0] for p in prepared])}
+                if existing:
+                    fail(409, '帳戶名稱已存在：' + '、'.join(sorted(existing)[:5]))
+                created = []
+                for username, name, seat, encoded in prepared:
+                    cur = db.execute('INSERT INTO users(username,name,role,password,demo,seat,created_by) '
+                                     'VALUES(?,?,?,?,?,?,?)',
+                                     (username, name, 'student', encoded, 0, seat, user['id']))
+                    created.append({'id': cur.lastrowid, 'username': username, 'name': name, 'role': 'student',
+                                    'seat': seat, 'createdBy': user['id']})
+            return {'count': len(created), 'users': created}, headers
+        update_user = re.fullmatch(r'/api/users/([1-9]\d{0,17})/update', path)
+        if method == 'POST' and update_user:
+            # 編輯帳戶：只改有填的欄位；重設密碼會同時登出該使用者。
+            # 管理員可改任何帳號；一般教師只能改自己，或自己建立的學生。
+            self.teacher(user)
+            fields(body, ('username', 'name', 'seat', 'grade', 'password'), ())
+            with self.db() as db:
+                db.execute('BEGIN IMMEDIATE')
+                return self.dataadmin.update_user(db, int(update_user[1]), body, actor=user), headers
+        disable_user = re.fullmatch(r'/api/users/([1-9]\d{0,17})/disabled', path)
+        if method == 'POST' and disable_user:
+            # 停用／啟用：轉班、離職、長期請假用它，比刪除溫和——作答與分數都留著。
+            # 細部權限在 set_user_disabled 內判（教師只有管理員能停用；學生由匯入老師或管理員）。
+            self.teacher(user)
+            fields(body, ('disabled',), ('disabled',))
+            if type(body['disabled']) is not bool:
+                fail(400, 'disabled 必須是布林值。')
+            with self.db() as db:
+                db.execute('BEGIN IMMEDIATE')
+                return self.dataadmin.set_user_disabled(db, int(disable_user[1]), body['disabled'], user), headers
+        delete_user = re.fullmatch(r'/api/users/([1-9]\d{0,17})/delete', path)
+        if method == 'POST' and delete_user:
+            # 刪除帳號：學生＝匯入老師或管理員；教師＝只有管理員（細部在 delete_user 內判）。
+            # 學生的作答與手寫圖會一併刪除；教師的班級與作業轉給管理員。
+            self.teacher(user)
+            fields(body, ('confirm',), ('confirm',))
+            confirm = text(body['confirm'], '確認字串', 40, strip=False, empty=True)
+            with self.db() as db:
+                db.execute('BEGIN IMMEDIATE')
+                return self.dataadmin.delete_user(db, int(delete_user[1]), user, confirm), headers
+        purge_img = re.fullmatch(r'/api/users/([1-9]\d{0,17})/images/delete', path)
+        if method == 'POST' and purge_img:
+            # 清除學生手寫圖（網盤物件）與批註圖；作答紀錄與分數保留。
+            # 權限：匯入這位學生的教師或管理員（在 purge_student_images 內判）。
+            self.teacher(user)
+            with self.db() as db:
+                return self.dataadmin.purge_student_images(db, int(purge_img[1]), user), headers
+        return None
+
     def dispatch(self, method, path, body, user, token_hash, ip, query=''):
         headers = {}
         # 配額按「誰在呼叫」計：登入者用帳號，訪客用 IP（登入頁與同意前的呼叫）。
@@ -9645,157 +9803,9 @@ class Application:
                 summary = coin_summary(db, uid)
             return {'student': {'id': target['id'], 'name': target['name']},
                     'coins': summary}, headers
-        if path == '/api/users' and method in ('GET', 'POST'):
-            self.teacher(user)
-            if method == 'GET':
-                # 名單所有教師都看得到（方便跨教師共用班級、代課），
-                # 但只有管理員與建立者能改——createdBy 讓前端決定要不要顯示「編輯」。
-                with self.db() as db:
-                    users = [{'id': r['id'], 'username': r['username'], 'name': r['name'], 'role': r['role'],
-                              'seat': r['seat'], 'grade': r['grade'], 'createdBy': r['created_by'],
-                              'disabled': bool(r['disabled'])}
-                             for r in db.execute('SELECT id,username,name,role,seat,grade,created_by,disabled '
-                                                 'FROM users ORDER BY id')]
-                    owner = self.owner_id(db)
-                return {'users': users, 'ownerId': owner}, headers
-            # 姓名可省略（只有學號的名單）：留空時以學號作為顯示名稱。
-            fields(body, ('username', 'name', 'password', 'seat', 'grade'), ('username', 'password'))
-            username = text(body['username'], '帳戶名稱', 40, strip=False)
-            if not re.fullmatch(r'[A-Za-z0-9_.-]{3,40}', username):
-                fail(400, '帳戶名稱須為3至40個 ASCII 字母、數字或 _ . -。')
-            name = student_name(body.get('name'), username)
-            if name != username:
-                name = mask_name(name)   # 學生姓名一律遮蔽（陳大文 → 陳X文）
-            if name != username:
-                name = mask_name(name)      # 學生姓名一律遮蔽（陳大文 → 陳X文）
-            seat = seat_value(body.get('seat'))
-            try:
-                grade = self.dataadmin.grade_value(body.get('grade'))
-            except ValueError as exc:
-                fail(400, str(exc))
-            pw = text(body['password'], '密碼', 256, strip=False)
-            if len(pw) < 10:
-                fail(400, '密碼必須至少10字。')
-            encoded = password_hash(pw)
-            try:
-                with self.db() as db:
-                    cur = db.execute('INSERT INTO users(username,name,role,password,demo,seat,grade,created_by) '
-                                     'VALUES(?,?,?,?,?,?,?,?)',
-                                     (username, name, 'student', encoded, 0, seat, grade, user['id']))
-                    created = {'id': cur.lastrowid, 'username': username, 'name': name, 'role': 'student',
-                               'seat': seat, 'grade': grade, 'createdBy': user['id'], 'disabled': False}
-            except sqlite3.IntegrityError as exc:
-                if exc.sqlite_errorcode == sqlite3.SQLITE_CONSTRAINT_UNIQUE:
-                    fail(409, '帳戶名稱已存在。')
-                raise
-            return {'user': created}, headers
-        if path == '/api/teachers' and method == 'POST':
-            # 建立教師帳號（設定與隱私 → 帳號管理）。只有管理員能新增教師——
-            # 一般教師只能管自己與自己建立的學生，不能自己擴權。
-            # 刻意獨立於 /api/users：那個端點只建立學生、不接受 role 參數，
-            # 免得角色可以從學生名單那條路被塞進來（見 test_users_validation_and_no_role_injection）。
-            self.require_owner(user)
-            fields(body, ('username', 'name', 'password'), ('username', 'name', 'password'))
-            username = text(body['username'], '帳戶名稱', 40, strip=False)
-            if not re.fullmatch(r'[A-Za-z0-9_.-]{3,40}', username):
-                fail(400, '帳戶名稱須為3至40個 ASCII 字母、數字或 _ . -。')
-            # 教師姓名必填：批閱記錄與成績表都會顯示，空名會認不出是誰。
-            name = text(body['name'], '姓名', 60)
-            pw = text(body['password'], '密碼', 256, strip=False)
-            if len(pw) < 10:
-                fail(400, '密碼必須至少10字。')
-            try:
-                with self.db() as db:
-                    cur = db.execute('INSERT INTO users(username,name,role,password,demo,seat,created_by) '
-                                     'VALUES(?,?,?,?,?,?,?)',
-                                     (username, name, 'teacher', password_hash(pw), 0, None, user['id']))
-                    created = {'id': cur.lastrowid, 'username': username, 'name': name, 'role': 'teacher',
-                               'seat': None, 'createdBy': user['id']}
-            except sqlite3.IntegrityError as exc:
-                if exc.sqlite_errorcode == sqlite3.SQLITE_CONSTRAINT_UNIQUE:
-                    fail(409, '帳戶名稱已存在。')
-                raise
-            return {'user': created}, headers
-        if path == '/api/users/bulk' and method == 'POST':
-            self.teacher(user)
-            fields(body, ('students',), ('students',))
-            raw = body['students']
-            if not isinstance(raw, list) or not 1 <= len(raw) <= 200:
-                fail(400, '每批必須包含1至200名學生。')
-            prepared, seen = [], set()
-            for index, item in enumerate(raw, 1):
-                if (not isinstance(item, dict) or set(item) - {'username', 'name', 'password', 'seat'}
-                        or not {'username', 'password'} <= set(item)):
-                    fail(400, f'第 {index} 行欄位不正確，只接受學號（帳戶名稱）、密碼，以及選填的姓名與班內號。')
-                username = text(item['username'], f'第 {index} 行帳戶名稱', 40, strip=False)
-                if not re.fullmatch(r'[A-Za-z0-9_.-]{3,40}', username):
-                    fail(400, f'第 {index} 行帳戶名稱須為3至40個 ASCII 字母、數字或 _ . -。')
-                if username in seen:
-                    fail(400, f'第 {index} 行帳戶名稱在本次批次中重複。')
-                seen.add(username)
-                name = student_name(item.get('name'), username, f'第 {index} 行姓名')
-                if name != username:
-                    name = mask_name(name)   # 學生姓名一律遮蔽（陳大文 → 陳X文）
-                if name != username:
-                    name = mask_name(name)
-                seat = seat_value(item.get('seat'), f'第 {index} 行班內號')
-                pw = text(item['password'], f'第 {index} 行密碼', 256, strip=False)
-                if len(pw) < 10:
-                    fail(400, f'第 {index} 行密碼必須至少10字。')
-                prepared.append((username, name, seat, password_hash(pw)))
-            # 先檢查全部帳戶名稱，再一次性寫入；任何一行有問題都不會建立部分帳戶。
-            with self.db() as db:
-                db.execute('BEGIN IMMEDIATE')
-                existing = {row['username'] for row in
-                            db.execute('SELECT username FROM users WHERE username IN (%s)'
-                                       % ','.join('?' * len(prepared)), [p[0] for p in prepared])}
-                if existing:
-                    fail(409, '帳戶名稱已存在：' + '、'.join(sorted(existing)[:5]))
-                created = []
-                for username, name, seat, encoded in prepared:
-                    cur = db.execute('INSERT INTO users(username,name,role,password,demo,seat,created_by) '
-                                     'VALUES(?,?,?,?,?,?,?)',
-                                     (username, name, 'student', encoded, 0, seat, user['id']))
-                    created.append({'id': cur.lastrowid, 'username': username, 'name': name, 'role': 'student',
-                                    'seat': seat, 'createdBy': user['id']})
-            return {'count': len(created), 'users': created}, headers
-        update_user = re.fullmatch(r'/api/users/([1-9]\d{0,17})/update', path)
-        if method == 'POST' and update_user:
-            # 編輯帳戶：只改有填的欄位；重設密碼會同時登出該使用者。
-            # 管理員可改任何帳號；一般教師只能改自己，或自己建立的學生。
-            self.teacher(user)
-            fields(body, ('username', 'name', 'seat', 'grade', 'password'), ())
-            with self.db() as db:
-                db.execute('BEGIN IMMEDIATE')
-                return self.dataadmin.update_user(db, int(update_user[1]), body, actor=user), headers
-        disable_user = re.fullmatch(r'/api/users/([1-9]\d{0,17})/disabled', path)
-        if method == 'POST' and disable_user:
-            # 停用／啟用：轉班、離職、長期請假用它，比刪除溫和——作答與分數都留著。
-            # 細部權限在 set_user_disabled 內判（教師只有管理員能停用；學生由匯入老師或管理員）。
-            self.teacher(user)
-            fields(body, ('disabled',), ('disabled',))
-            if type(body['disabled']) is not bool:
-                fail(400, 'disabled 必須是布林值。')
-            with self.db() as db:
-                db.execute('BEGIN IMMEDIATE')
-                return self.dataadmin.set_user_disabled(db, int(disable_user[1]), body['disabled'], user), headers
-        delete_user = re.fullmatch(r'/api/users/([1-9]\d{0,17})/delete', path)
-        if method == 'POST' and delete_user:
-            # 刪除帳號：學生＝匯入老師或管理員；教師＝只有管理員（細部在 delete_user 內判）。
-            # 學生的作答與手寫圖會一併刪除；教師的班級與作業轉給管理員。
-            self.teacher(user)
-            fields(body, ('confirm',), ('confirm',))
-            confirm = text(body['confirm'], '確認字串', 40, strip=False, empty=True)
-            with self.db() as db:
-                db.execute('BEGIN IMMEDIATE')
-                return self.dataadmin.delete_user(db, int(delete_user[1]), user, confirm), headers
-        purge_img = re.fullmatch(r'/api/users/([1-9]\d{0,17})/images/delete', path)
-        if method == 'POST' and purge_img:
-            # 清除學生手寫圖（網盤物件）與批註圖；作答紀錄與分數保留。
-            # 權限：匯入這位學生的教師或管理員（在 purge_student_images 內判）。
-            self.teacher(user)
-            with self.db() as db:
-                return self.dataadmin.purge_student_images(db, int(purge_img[1]), user), headers
+        hit = self._dispatch_users(method, path, body, user, headers)
+        if hit is not None:
+            return hit
         if path == '/api/admin/health' and method == 'GET':
             # 完整健康資訊（網盤 bucket／endpoint、模型名稱、AI 錯誤細節）。
             # 原本掛在公開的 /api/health，等於未登入就能做基礎設施偵察。
