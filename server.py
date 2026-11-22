@@ -10529,6 +10529,53 @@ class Application:
             return {'active': self.ai.public(), 'economy': not self.ai.thinking}, headers
         return None
 
+    def _dispatch_ai_grading(self, method, path, body, user, headers):
+        """AI 批改品質統計：教師改分比例、調整方向、分類表現。
+
+        從 dispatch 抽出的內聚路由組；沒有命中回 None，讓 dispatch 繼續往下試。
+        """
+        if method == 'GET' and path == '/api/ai-grading/stats':
+            # AI 批改品質：老師最想知道「AI 準不準、哪裡不準」。
+            # 只用「教師改過分」的案例算調整方向——沒改分的題目不代表 AI 一定對，
+            # 但改了分的題目一定是 AI 判錯（或判得不符合本校慣例）。
+            self.teacher(user)
+            with self.db() as db:
+                rows = db.execute(
+                    'SELECT a.ai_score, a.teacher_confirmed_score, a.teacher_reviewed, a.review_flags '
+                    'FROM attempts a JOIN assignments s ON s.id=a.assignment_id '
+                    'WHERE s.teacher_id=? AND a.ai_score IS NOT NULL', (user['id'],)).fetchall()
+                samples = db.execute(
+                    'SELECT topic, qtype, ai_score, teacher_score, max_score '
+                    'FROM grading_samples ORDER BY id DESC LIMIT 500').fetchall()
+            total = len(rows)
+            reviewed = sum(1 for r in rows if r['teacher_reviewed'])
+            changed = [r for r in rows if r['teacher_confirmed_score'] is not None
+                       and abs(float(r['teacher_confirmed_score']) - float(r['ai_score'])) > 1e-9]
+            raised = sum(1 for r in changed
+                         if float(r['teacher_confirmed_score']) > float(r['ai_score']))
+            lowered = len(changed) - raised
+            delta = [float(r['teacher_confirmed_score']) - float(r['ai_score']) for r in changed]
+            flagged = sum(1 for r in rows if r['review_flags'] not in (None, '', '[]'))
+            by_topic = {}
+            for r in samples:
+                key = (r['topic'] or '（未分類）', r['qtype'] or '')
+                slot = by_topic.setdefault(key, {'topic': key[0], 'qtype': key[1],
+                                                 'n': 0, 'raised': 0, 'lowered': 0, 'delta': 0.0})
+                diff = float(r['teacher_score']) - float(r['ai_score'])
+                slot['n'] += 1
+                slot['delta'] += diff
+                slot['raised' if diff > 0 else 'lowered'] += 1
+            topics = sorted(by_topic.values(), key=lambda x: (-x['n'], x['topic']))[:12]
+            for t in topics:
+                t['avgDelta'] = round(t['delta'] / t['n'], 2)
+                t.pop('delta')
+            return {'total': total, 'reviewed': reviewed, 'changed': len(changed),
+                    'changeRate': round(len(changed) * 100 / reviewed, 1) if reviewed else None,
+                    'raised': raised, 'lowered': lowered, 'flagged': flagged,
+                    'avgDelta': round(sum(delta) / len(delta), 2) if delta else None,
+                    'byTopic': topics}, headers
+        return None
+
     def dispatch(self, method, path, body, user, token_hash, ip, query=''):
         headers = {}
         # 配額按「誰在呼叫」計：登入者用帳號，訪客用 IP（登入頁與同意前的呼叫）。
@@ -10826,46 +10873,9 @@ class Application:
         hit = self._dispatch_ai_config(method, path, body, user, ip, headers)
         if hit is not None:
             return hit
-        if method == 'GET' and path == '/api/ai-grading/stats':
-            # AI 批改品質：老師最想知道「AI 準不準、哪裡不準」。
-            # 只用「教師改過分」的案例算調整方向——沒改分的題目不代表 AI 一定對，
-            # 但改了分的題目一定是 AI 判錯（或判得不符合本校慣例）。
-            self.teacher(user)
-            with self.db() as db:
-                rows = db.execute(
-                    'SELECT a.ai_score, a.teacher_confirmed_score, a.teacher_reviewed, a.review_flags '
-                    'FROM attempts a JOIN assignments s ON s.id=a.assignment_id '
-                    'WHERE s.teacher_id=? AND a.ai_score IS NOT NULL', (user['id'],)).fetchall()
-                samples = db.execute(
-                    'SELECT topic, qtype, ai_score, teacher_score, max_score '
-                    'FROM grading_samples ORDER BY id DESC LIMIT 500').fetchall()
-            total = len(rows)
-            reviewed = sum(1 for r in rows if r['teacher_reviewed'])
-            changed = [r for r in rows if r['teacher_confirmed_score'] is not None
-                       and abs(float(r['teacher_confirmed_score']) - float(r['ai_score'])) > 1e-9]
-            raised = sum(1 for r in changed
-                         if float(r['teacher_confirmed_score']) > float(r['ai_score']))
-            lowered = len(changed) - raised
-            delta = [float(r['teacher_confirmed_score']) - float(r['ai_score']) for r in changed]
-            flagged = sum(1 for r in rows if r['review_flags'] not in (None, '', '[]'))
-            by_topic = {}
-            for r in samples:
-                key = (r['topic'] or '（未分類）', r['qtype'] or '')
-                slot = by_topic.setdefault(key, {'topic': key[0], 'qtype': key[1],
-                                                 'n': 0, 'raised': 0, 'lowered': 0, 'delta': 0.0})
-                diff = float(r['teacher_score']) - float(r['ai_score'])
-                slot['n'] += 1
-                slot['delta'] += diff
-                slot['raised' if diff > 0 else 'lowered'] += 1
-            topics = sorted(by_topic.values(), key=lambda x: (-x['n'], x['topic']))[:12]
-            for t in topics:
-                t['avgDelta'] = round(t['delta'] / t['n'], 2)
-                t.pop('delta')
-            return {'total': total, 'reviewed': reviewed, 'changed': len(changed),
-                    'changeRate': round(len(changed) * 100 / reviewed, 1) if reviewed else None,
-                    'raised': raised, 'lowered': lowered, 'flagged': flagged,
-                    'avgDelta': round(sum(delta) / len(delta), 2) if delta else None,
-                    'byTopic': topics}, headers
+        hit = self._dispatch_ai_grading(method, path, body, user, headers)
+        if hit is not None:
+            return hit
 
         if method == 'GET' and path == '/api/logins':
             # 管理員：所有教師的登入紀錄；教師：自己班學生的登入紀錄。
