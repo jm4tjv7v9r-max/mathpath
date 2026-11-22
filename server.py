@@ -10576,6 +10576,34 @@ class Application:
                     'byTopic': topics}, headers
         return None
 
+    def _dispatch_logins(self, method, path, body, user, headers):
+        """登入紀錄：管理員看全部，教師看自己班學生。
+
+        從 dispatch 抽出的內聚路由組；沒有命中回 None，讓 dispatch 繼續往下試。
+        """
+        if method == 'GET' and path == '/api/logins':
+            # 管理員：所有教師的登入紀錄；教師：自己班學生的登入紀錄。
+            with self.db() as db:
+                if self.is_owner(user, db):
+                    rows = db.execute(
+                        'SELECT e.at,e.ip,u.name,u.username,u.role FROM login_events e '
+                        "JOIN users u ON u.id=e.user_id WHERE u.role IN ('teacher','student') "
+                        'ORDER BY e.id DESC LIMIT 200').fetchall()
+                    scope = 'all'
+                else:
+                    self.teacher(user)
+                    rows = db.execute(
+                        'SELECT e.at,e.ip,u.name,u.username,u.role FROM login_events e '
+                        'JOIN users u ON u.id=e.user_id WHERE u.role=\'student\' AND EXISTS '
+                        '(SELECT 1 FROM class_students cs JOIN classes c ON c.id=cs.class_id '
+                        ' WHERE cs.user_id=u.id AND c.teacher_id=?) '
+                        'ORDER BY e.id DESC LIMIT 200', (user['id'],)).fetchall()
+                    scope = 'students'
+            return {'scope': scope,
+                    'events': [{'at': r['at'], 'ip': r['ip'], 'name': r['name'],
+                                'username': r['username'], 'role': r['role']} for r in rows]}, headers
+        return None
+
     def dispatch(self, method, path, body, user, token_hash, ip, query=''):
         headers = {}
         # 配額按「誰在呼叫」計：登入者用帳號，訪客用 IP（登入頁與同意前的呼叫）。
@@ -10877,27 +10905,9 @@ class Application:
         if hit is not None:
             return hit
 
-        if method == 'GET' and path == '/api/logins':
-            # 管理員：所有教師的登入紀錄；教師：自己班學生的登入紀錄。
-            with self.db() as db:
-                if self.is_owner(user, db):
-                    rows = db.execute(
-                        'SELECT e.at,e.ip,u.name,u.username,u.role FROM login_events e '
-                        "JOIN users u ON u.id=e.user_id WHERE u.role IN ('teacher','student') "
-                        'ORDER BY e.id DESC LIMIT 200').fetchall()
-                    scope = 'all'
-                else:
-                    self.teacher(user)
-                    rows = db.execute(
-                        'SELECT e.at,e.ip,u.name,u.username,u.role FROM login_events e '
-                        'JOIN users u ON u.id=e.user_id WHERE u.role=\'student\' AND EXISTS '
-                        '(SELECT 1 FROM class_students cs JOIN classes c ON c.id=cs.class_id '
-                        ' WHERE cs.user_id=u.id AND c.teacher_id=?) '
-                        'ORDER BY e.id DESC LIMIT 200', (user['id'],)).fetchall()
-                    scope = 'students'
-            return {'scope': scope,
-                    'events': [{'at': r['at'], 'ip': r['ip'], 'name': r['name'],
-                                'username': r['username'], 'role': r['role']} for r in rows]}, headers
+        hit = self._dispatch_logins(method, path, body, user, headers)
+        if hit is not None:
+            return hit
 
 
         if method == 'GET' and path == '/api/state':
