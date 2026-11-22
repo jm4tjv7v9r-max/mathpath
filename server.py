@@ -7361,6 +7361,400 @@ class Application:
                             'confirmed': confirm}}, headers
         return None
 
+    def _dispatch_score_grid(self, method, path, body, user, token_hash, ip, query, headers):
+        """成績總表（score-grid）：像 Excel 的網格，讀取／改欄位／改學生／匯入／匯出／打分。
+
+        從 dispatch 抽出的內聚路由組；沒有命中回 None，讓 dispatch 繼續往下試。
+        """
+        # ---------- 成績總表（教師用，像 Excel 的網格） ----------
+        if method == 'GET' and path == '/api/score-grid':
+            self.teacher(user)
+            class_id = class_id_param(body, query)
+            with self.db() as db:
+                db.execute("""CREATE TABLE IF NOT EXISTS score_overrides (
+                                assignment_id INTEGER NOT NULL,
+                                user_id INTEGER NOT NULL,
+                                score REAL NOT NULL,
+                                updated_by INTEGER,
+                                updated_at TEXT NOT NULL,
+                                PRIMARY KEY (assignment_id, user_id))""")
+                # 權限：只有「設立這個班級的老師」看得到自己班的成績；管理員例外。
+                mine = [r['id'] for r in db.execute(
+                    'SELECT id FROM classes WHERE teacher_id=?', (user['id'],))]
+                if class_id is not None and not self.is_owner(user, db) and class_id not in mine:
+                    fail(403, '這不是你設立的班別；只有該班老師可以查看成績。')
+                scope = None if self.is_owner(user, db) else (mine if class_id is None else [class_id])
+                if scope is not None and not scope:
+                    return {'columns': [], 'students': [],
+                            'summary': {'students': 0, 'assignments': 0},
+                            'notice': '你還沒有設立班級。'}, headers
+                if class_id:
+                    students = [dict(r) for r in db.execute(
+                        'SELECT u.id, u.name, u.seat FROM users u '
+                        'JOIN class_students cs ON cs.user_id=u.id WHERE cs.class_id=? '
+                        'ORDER BY ' + SEAT_ORDER + ', u.id', (class_id,))]
+                    where, args = 'WHERE class_id=?', (class_id,)
+                elif scope is None:
+                    students = [dict(r) for r in db.execute(
+                        "SELECT id, name, seat FROM users WHERE role='student' "
+                        'ORDER BY ' + SEAT_ORDER_BARE + ', id')]
+                    where, args = '', ()
+                else:
+                    marks = ','.join('?' * len(scope))
+                    students = [dict(r) for r in db.execute(
+                        'SELECT DISTINCT u.id, u.name, u.seat FROM users u '
+                        'JOIN class_students cs ON cs.user_id=u.id '
+                        f'WHERE cs.class_id IN ({marks}) '
+                        f'ORDER BY {SEAT_ORDER}, u.id', tuple(scope))]
+                    where, args = f'WHERE class_id IN ({marks})', tuple(scope)
+                assignments = [dict(r) for r in db.execute(
+                    'SELECT id, title, due_at, created_at, class_name FROM assignments ' + where
+                    + ' ORDER BY COALESCE(due_at, created_at), id', args)]
+                override = {(r['assignment_id'], r['user_id']): r['score'] for r in db.execute(
+                    'SELECT assignment_id, user_id, score FROM score_overrides')}
+                uid_list = [s['id'] for s in students]
+                columns = []
+                for a in assignments:
+                    qids = [r['question_id'] for r in db.execute(
+                        'SELECT question_id FROM assignment_questions WHERE assignment_id=? '
+                        'ORDER BY position', (a['id'],))]
+                    done = {r['user_id']: r for r in db.execute(
+                        'SELECT user_id, submitted_at FROM assignment_recipients WHERE assignment_id=?',
+                        (a['id'],))}
+                    scores = {}
+                    if qids and uid_list:
+                        marks = ','.join('?' * len(qids))
+                        users = ','.join('?' * len(uid_list))
+                        rows = db.execute(
+                            f'SELECT user_id, question_id, score FROM ('
+                            f'  SELECT user_id, question_id, score, ROW_NUMBER() OVER ('
+                            f'    PARTITION BY user_id, question_id ORDER BY submitted_at DESC) rn'
+                            f'  FROM attempts WHERE question_id IN ({marks}) AND user_id IN ({users})'
+                            f') WHERE rn=1', (*qids, *uid_list)).fetchall()
+                        for r in rows:
+                            scores.setdefault(r['user_id'], 0.0)
+                            scores[r['user_id']] += r['score'] or 0
+                    columns.append({'id': a['id'], 'title': a['title'],
+                                    'date': (a['due_at'] or a['created_at'] or '')[:10],
+                                    'class': a['class_name'], 'submitted': done, 'scores': scores})
+                rows = []
+                for st in students:
+                    cells, total, done_count = [], 0.0, 0
+                    for col in columns:
+                        key = (col['id'], st['id'])
+                        if key in override:
+                            cells.append({'score': override[key], 'overridden': True})
+                            total += override[key]; done_count += 1
+                        elif st['id'] in col['submitted']:
+                            value = col['scores'].get(st['id'])
+                            cells.append({'score': value, 'overridden': False})
+                            if value is not None:
+                                total += value; done_count += 1
+                        else:
+                            cells.append({'score': None, 'overridden': False})
+                    rows.append({'id': st['id'], 'name': mask_name(st['name']),
+                                 'fullName': st['name'], 'seat': st['seat'],
+                                 'cells': cells, 'done': done_count,
+                                 'missing': len(columns) - done_count,
+                                 'average': (total / done_count) if done_count else None})
+                return {'columns': [{'id': c['id'], 'title': c['title'], 'date': c['date']}
+                                    for c in columns],
+                        'students': rows,
+                        'summary': {'students': len(rows), 'assignments': len(columns)}}, headers
+        if method == 'POST' and path == '/api/score-grid/column':
+            self.teacher(user)
+            fields(body, ('classId', 'title', 'date'), ('classId', 'title'))
+            class_id = number(body['classId'], '班別', 1, 10 ** 18, True)
+            title = text(body['title'], '欄位名稱', 120, empty=False)
+            date = (body.get('date') or '')[:10]
+            with self.db() as db:
+                row = db.execute('SELECT teacher_id, name FROM classes WHERE id=?', (class_id,)).fetchone()
+                if row is None:
+                    fail(404, '找不到這個班別。')
+                if row['teacher_id'] != user['id'] and not self.is_owner(user, db):
+                    fail(403, '只有設立該班級的老師可以新增欄位。')
+                if date and not re.fullmatch(r'\d{4}-\d{2}-\d{2}', date):
+                    fail(400, '日期格式應為 YYYY-MM-DD。')
+                stamp = (date + 'T00:00:00Z') if date else utc_now()
+                aid = db.execute(
+                    'INSERT INTO assignments(teacher_id,class_id,class_name,title,description,'
+                    'due_at,created_at,allow_late,kind,duration_minutes,ai_grading) '
+                    'VALUES(?,?,?,?,?,?,?,1,\'homework\',0,1)',
+                    (user['id'], class_id, row['name'], title, '（成績總表新增的欄位）', stamp,
+                     utc_now())).lastrowid
+            return {'ok': True, 'column': {'id': aid, 'title': title, 'date': date}}, headers
+        if method == 'POST' and path == '/api/score-grid/student':
+            self.teacher(user)
+            fields(body, ('classId', 'name', 'seat'), ('classId', 'name'))
+            class_id = number(body['classId'], '班別', 1, 10 ** 18, True)
+            name = text(body['name'], '姓名', 60, empty=False)
+            # 前端送來的是字串（input.value），number() 只吃數字型別，這裡自己收斂
+            raw_seat = body.get('seat')
+            seat = None
+            if raw_seat not in (None, ''):
+                try:
+                    seat = int(str(raw_seat).strip())
+                except (TypeError, ValueError):
+                    fail(400, '座號必須是數字。')
+                if not 1 <= seat <= 999:
+                    fail(400, '座號必須介於 1 和 999。')
+            with self.db() as db:
+                row = db.execute('SELECT teacher_id, name FROM classes WHERE id=?', (class_id,)).fetchone()
+                if row is None:
+                    fail(404, '找不到這個班別。')
+                if row['teacher_id'] != user['id'] and not self.is_owner(user, db):
+                    fail(403, '只有設立該班級的老師可以新增學生。')
+                # 資料庫一律存遮蔽姓名（陳大文 → 陳X文）；同名不同座號視為不同人
+                display = mask_name(name)
+                # seat 在資料庫是 TEXT，要用字串比對（不然 7 與 '7' 對不上，重複就漏擋）
+                dup = db.execute('SELECT 1 FROM users u JOIN class_students cs ON cs.user_id=u.id '
+                                 'WHERE cs.class_id=? AND u.name=? '
+                                 "AND COALESCE(u.seat,'')=?",
+                                 (class_id, display, '' if seat is None else str(seat))).fetchone()
+                if dup:
+                    fail(409, f'「{row["name"]}」已經有座號 {seat if seat else "（未填）"} 的「{display}」。')
+                base = f's{class_id}{seat if seat else int(time.time()) % 100000}'
+                username, n = base, 1
+                while db.execute('SELECT 1 FROM users WHERE username=?', (username,)).fetchone():
+                    n += 1
+                    username = f'{base}{n}'
+                password = 'm' + secrets.token_hex(3)
+                uid = db.execute('INSERT INTO users(username,name,role,password,demo,seat,created_by) '
+                                 'VALUES(?,?,?,?,0,?,?)',
+                                 (username, display, 'student', password_hash(password), seat,
+                                  user['id'])).lastrowid
+                db.execute('INSERT OR IGNORE INTO class_students(class_id,user_id) VALUES(?,?)',
+                           (class_id, uid))
+            return {'student': {'id': uid, 'name': display, 'seat': seat,
+                                'username': username, 'password': password}}, headers
+        if method == 'POST' and path == '/api/score-grid/student/seat':
+            # 成績總表直接改學號（座號）：只動 users.seat，登入帳號不變。
+            self.teacher(user)
+            fields(body, ('classId', 'userId', 'seat'), ('classId', 'userId'))
+            class_id = number(body['classId'], '班別', 1, 10 ** 18, True)
+            uid = number(body['userId'], '學生', 1, 10 ** 18, True)
+            raw_seat = body.get('seat')
+            seat = None
+            if raw_seat not in (None, ''):
+                try:
+                    seat = int(str(raw_seat).strip())
+                except (TypeError, ValueError):
+                    fail(400, '學號必須是數字。')
+                if not 1 <= seat <= 999:
+                    fail(400, '學號必須介於 1 和 999。')
+            with self.db() as db:
+                row = db.execute('SELECT teacher_id, name FROM classes WHERE id=?',
+                                 (class_id,)).fetchone()
+                if row is None:
+                    fail(404, '找不到這個班別。')
+                if row['teacher_id'] != user['id'] and not self.is_owner(user, db):
+                    fail(403, '只有設立該班級的老師可以修改學號。')
+                st = db.execute('SELECT u.id, u.name, u.seat FROM users u '
+                                'JOIN class_students cs ON cs.user_id=u.id '
+                                'WHERE cs.class_id=? AND u.id=?',
+                                (class_id, uid)).fetchone()
+                if st is None:
+                    fail(404, '這個學生不在本班。')
+                new_seat = '' if seat is None else str(seat)
+                if str(st['seat'] if st['seat'] is not None else '') == new_seat:
+                    return {'ok': True, 'unchanged': True,
+                            'student': {'id': uid, 'name': mask_name(st['name']),
+                                        'seat': st['seat']}}, headers
+                # 同一班內學號不可重複（座號撞號會讓排序與點名對不上）
+                if seat is not None:
+                    clash = db.execute(
+                        'SELECT u.name FROM users u JOIN class_students cs ON cs.user_id=u.id '
+                        "WHERE cs.class_id=? AND u.id<>? AND COALESCE(u.seat,'')=?",
+                        (class_id, uid, new_seat)).fetchone()
+                    if clash:
+                        fail(409, f'學號 {seat} 已被「{mask_name(clash["name"])}」使用。')
+                db.execute('UPDATE users SET seat=? WHERE id=?', (seat, uid))
+            return {'ok': True, 'student': {'id': uid, 'name': mask_name(st['name']),
+                                            'seat': seat}}, headers
+        if method == 'POST' and path == '/api/score-grid/students':
+            self.teacher(user)
+            fields(body, ('classId', 'students'), ('classId', 'students'))
+            class_id = number(body['classId'], '班別', 1, 10 ** 18, True)
+            raw = body['students']
+            if not isinstance(raw, list) or not 1 <= len(raw) <= 100:
+                fail(400, '一次匯入 1 至 100 名學生。')
+            with self.db() as db:
+                row = db.execute('SELECT teacher_id, name FROM classes WHERE id=?', (class_id,)).fetchone()
+                if row is None:
+                    fail(404, '找不到這個班別。')
+                if row['teacher_id'] != user['id'] and not self.is_owner(user, db):
+                    fail(403, '只有設立該班級的老師可以匯入學生。')
+                existing = {(r['name'], str(r['seat']) if r['seat'] is not None else '')
+                            for r in db.execute(
+                    'SELECT u.name, u.seat FROM users u JOIN class_students cs ON cs.user_id=u.id '
+                    'WHERE cs.class_id=?', (class_id,))}
+                created, skipped = [], []
+                for item in raw:
+                    if not isinstance(item, dict):
+                        continue
+                    name = str(item.get('name') or '').strip()[:60]
+                    if not name:
+                        continue
+                    seat = None
+                    if item.get('seat') not in (None, ''):
+                        try:
+                            seat = int(str(item['seat']).strip())
+                        except (TypeError, ValueError):
+                            seat = None
+                        if seat is not None and not 1 <= seat <= 999:
+                            seat = None
+                    display = mask_name(name)
+                    if (display, '' if seat is None else str(seat)) in existing:
+                        skipped.append(display)
+                        continue
+                    base = f's{class_id}{seat if seat else int(time.time() * 1000) % 100000}'
+                    username, n = base, 1
+                    while db.execute('SELECT 1 FROM users WHERE username=?', (username,)).fetchone():
+                        n += 1
+                        username = f'{base}{n}'
+                    password = 'm' + secrets.token_hex(3)
+                    uid = db.execute('INSERT INTO users(username,name,role,password,demo,seat,created_by) '
+                                     'VALUES(?,?,?,?,0,?,?)',
+                                     (username, display, 'student', password_hash(password), seat,
+                                      user['id'])).lastrowid
+                    db.execute('INSERT OR IGNORE INTO class_students(class_id,user_id) VALUES(?,?)',
+                               (class_id, uid))
+                    existing.add((display, '' if seat is None else str(seat)))
+                    created.append({'id': uid, 'name': display, 'seat': seat,
+                                    'username': username, 'password': password})
+            return {'created': created, 'skipped': skipped,
+                    'summary': {'created': len(created), 'skipped': len(skipped)}}, headers
+        if method == 'POST' and path == '/api/score-grid/students/import':
+            # 用 Excel 名單匯入整班：第一列找「姓名／座號」表頭，找不到就當 A=座號、B=姓名
+            self.teacher(user)
+            fields(body, ('classId', 'file'), ('classId', 'file'))
+            class_id = number(body['classId'], '班別', 1, 10 ** 18, True)
+            raw, _mime = decode_data_url(body['file'], (
+                'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                'application/vnd.ms-excel.sheet.macroEnabled.12',
+                'application/vnd.ms-excel'))
+            if not raw:
+                fail(400, '請上傳 Excel（.xlsx）。')
+            try:
+                import openpyxl
+                wb = openpyxl.load_workbook(io.BytesIO(raw), data_only=True, read_only=True)
+            except Exception:
+                fail(400, '讀不到這個 Excel；請另存成 .xlsx 後再上傳。')
+            ws = wb.active
+            rows = [list(r) for r in ws.iter_rows(max_row=500, values_only=True)]
+            name_col, seat_col, start = None, None, 0
+            for i, row in enumerate(rows[:10]):
+                for j, cell in enumerate(row):
+                    cell_text = str(cell or '').strip()   # 不可叫 text：會蓋掉全域的 text() 驗證函式
+                    if name_col is None and '姓名' in cell_text:
+                        name_col, start = j, i + 1
+                    if seat_col is None and ('座號' in cell_text
+                                             or cell_text in ('號', '編號', '號碼')):
+                        seat_col, start = j, i + 1
+                if name_col is not None:
+                    break
+            if name_col is None:
+                # 沒有表頭：兩欄以上就當「座號, 姓名」，否則整欄都是姓名
+                name_col, seat_col, start = (1, 0, 0) if rows and len(rows[0]) > 1 else (0, None, 0)
+            students = []
+            for row in rows[start:]:
+                if name_col >= len(row):
+                    continue
+                name = str(row[name_col] or '').strip()[:60]
+                if not name or name in ('姓名', '學生姓名'):
+                    continue
+                seat = None
+                if seat_col is not None and seat_col < len(row):
+                    try:
+                        seat = int(float(str(row[seat_col]).strip()))
+                    except (TypeError, ValueError):
+                        seat = None
+                students.append({'name': name, 'seat': seat})
+            if not students:
+                fail(422, '這個 Excel 找不到學生姓名；請確認有「姓名」欄。')
+            if len(students) > 100:
+                students = students[:100]
+            return self.dispatch('POST', '/api/score-grid/students',
+                                 {'classId': class_id, 'students': students},
+                                 user, token_hash, ip)[0], headers
+        if method == 'GET' and path == '/api/score-grid/classes':
+            self.teacher(user)
+            with self.db() as db:
+                rows = db.execute('SELECT id, name FROM classes WHERE teacher_id=? ORDER BY name',
+                                  (user['id'],)).fetchall()
+            return {'classes': [{'id': r['id'], 'name': r['name']} for r in rows]}, headers
+        if method == 'GET' and path == '/api/score-grid/export':
+            self.teacher(user)
+            cid = class_id_param(body, query)
+            grid = self.dispatch('GET', '/api/score-grid',
+                                 {'classId': cid} if cid else {}, user, None, ip)[0]
+            try:
+                import openpyxl
+                from openpyxl.styles import Alignment, Font, PatternFill
+                from openpyxl.utils import get_column_letter
+            except ImportError:
+                fail(500, '伺服器缺少 openpyxl，無法匯出 Excel。')
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.title = '成績總表'
+            cols = grid.get('columns') or []
+            head = ['號', '姓名'] + [f"{c['date']} {c['title']}" for c in cols] + ['平均分', '未完成']
+            ws.append(head)
+            for cell in ws[1]:
+                cell.font = Font(bold=True)
+                cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+            for row in grid.get('students') or []:
+                line = [row.get('seat') or '', row.get('name') or '']
+                line += [('' if c['score'] is None else c['score']) for c in row['cells']]
+                line += ['' if row['average'] is None else round(row['average'], 1), row['missing']]
+                ws.append(line)
+                if any(c['overridden'] for c in row['cells']):
+                    for i, c in enumerate(row['cells']):
+                        if c['overridden']:
+                            ws.cell(row=ws.max_row, column=3 + i).fill = PatternFill('solid', fgColor='FDF6DC')
+            ws.column_dimensions['A'].width = 6
+            ws.column_dimensions['B'].width = 12
+            for i in range(len(cols)):
+                ws.column_dimensions[get_column_letter(3 + i)].width = 16
+            ws.freeze_panes = 'C2'
+            buf = io.BytesIO()
+            wb.save(buf)
+            name = ('成績總表-' + (grid['columns'][0]['date'] if cols else '') + '.xlsx').replace('/', '／')
+            return {'file': 'data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,'
+                            + base64.b64encode(buf.getvalue()).decode(),
+                    'filename': name}, headers
+        if method == 'POST' and path == '/api/score-grid/score':
+            self.teacher(user)
+            fields(body, ('assignmentId', 'userId', 'score'), ('assignmentId', 'userId'))
+            assignment_id = number(body['assignmentId'], '作業', 1, 10 ** 18, True)
+            user_id = number(body['userId'], '學生', 1, 10 ** 18, True)
+            raw = body.get('score')
+            with self.db() as db:
+                row = db.execute('SELECT a.class_id, c.teacher_id FROM assignments a '
+                                 'LEFT JOIN classes c ON c.id=a.class_id WHERE a.id=?',
+                                 (assignment_id,)).fetchone()
+                if row is None:
+                    fail(404, '找不到這份作業。')
+                if row['teacher_id'] != user['id'] and not self.is_owner(user, db):
+                    fail(403, '只有設立該班級的老師可以修改分數。')
+                db.execute("""CREATE TABLE IF NOT EXISTS score_overrides (
+                                assignment_id INTEGER NOT NULL, user_id INTEGER NOT NULL,
+                                score REAL NOT NULL, updated_by INTEGER, updated_at TEXT NOT NULL,
+                                PRIMARY KEY (assignment_id, user_id))""")
+                if raw is None or raw == '':
+                    db.execute('DELETE FROM score_overrides WHERE assignment_id=? AND user_id=?',
+                               (assignment_id, user_id))
+                    return {'ok': True, 'cleared': True}, headers
+                score = number(raw, '分數', 0, 1000, True)
+                db.execute('INSERT INTO score_overrides(assignment_id,user_id,score,updated_by,updated_at) '
+                           'VALUES(?,?,?,?,?) ON CONFLICT(assignment_id,user_id) DO UPDATE SET '
+                           'score=excluded.score, updated_by=excluded.updated_by, '
+                           'updated_at=excluded.updated_at',
+                           (assignment_id, user_id, score, user['id'], utc_now()))
+            return {'ok': True, 'score': score}, headers
+        # ---------- 卷面排版：直接輸出 LaTeX（Overleaf 用） ----------
+        return None
+
     def dispatch(self, method, path, body, user, token_hash, ip, query=''):
         headers = {}
         # 配額按「誰在呼叫」計：登入者用帳號，訪客用 IP（登入頁與同意前的呼叫）。
@@ -7940,393 +8334,9 @@ class Application:
                      data['endedAt'], sid))
             return {'session': data, **(result_extra or {})}, headers
 
-        # ---------- 成績總表（教師用，像 Excel 的網格） ----------
-        if method == 'GET' and path == '/api/score-grid':
-            self.teacher(user)
-            class_id = class_id_param(body, query)
-            with self.db() as db:
-                db.execute("""CREATE TABLE IF NOT EXISTS score_overrides (
-                                assignment_id INTEGER NOT NULL,
-                                user_id INTEGER NOT NULL,
-                                score REAL NOT NULL,
-                                updated_by INTEGER,
-                                updated_at TEXT NOT NULL,
-                                PRIMARY KEY (assignment_id, user_id))""")
-                # 權限：只有「設立這個班級的老師」看得到自己班的成績；管理員例外。
-                mine = [r['id'] for r in db.execute(
-                    'SELECT id FROM classes WHERE teacher_id=?', (user['id'],))]
-                if class_id is not None and not self.is_owner(user, db) and class_id not in mine:
-                    fail(403, '這不是你設立的班別；只有該班老師可以查看成績。')
-                scope = None if self.is_owner(user, db) else (mine if class_id is None else [class_id])
-                if scope is not None and not scope:
-                    return {'columns': [], 'students': [],
-                            'summary': {'students': 0, 'assignments': 0},
-                            'notice': '你還沒有設立班級。'}, headers
-                if class_id:
-                    students = [dict(r) for r in db.execute(
-                        'SELECT u.id, u.name, u.seat FROM users u '
-                        'JOIN class_students cs ON cs.user_id=u.id WHERE cs.class_id=? '
-                        'ORDER BY ' + SEAT_ORDER + ', u.id', (class_id,))]
-                    where, args = 'WHERE class_id=?', (class_id,)
-                elif scope is None:
-                    students = [dict(r) for r in db.execute(
-                        "SELECT id, name, seat FROM users WHERE role='student' "
-                        'ORDER BY ' + SEAT_ORDER_BARE + ', id')]
-                    where, args = '', ()
-                else:
-                    marks = ','.join('?' * len(scope))
-                    students = [dict(r) for r in db.execute(
-                        'SELECT DISTINCT u.id, u.name, u.seat FROM users u '
-                        'JOIN class_students cs ON cs.user_id=u.id '
-                        f'WHERE cs.class_id IN ({marks}) '
-                        f'ORDER BY {SEAT_ORDER}, u.id', tuple(scope))]
-                    where, args = f'WHERE class_id IN ({marks})', tuple(scope)
-                assignments = [dict(r) for r in db.execute(
-                    'SELECT id, title, due_at, created_at, class_name FROM assignments ' + where
-                    + ' ORDER BY COALESCE(due_at, created_at), id', args)]
-                override = {(r['assignment_id'], r['user_id']): r['score'] for r in db.execute(
-                    'SELECT assignment_id, user_id, score FROM score_overrides')}
-                uid_list = [s['id'] for s in students]
-                columns = []
-                for a in assignments:
-                    qids = [r['question_id'] for r in db.execute(
-                        'SELECT question_id FROM assignment_questions WHERE assignment_id=? '
-                        'ORDER BY position', (a['id'],))]
-                    done = {r['user_id']: r for r in db.execute(
-                        'SELECT user_id, submitted_at FROM assignment_recipients WHERE assignment_id=?',
-                        (a['id'],))}
-                    scores = {}
-                    if qids and uid_list:
-                        marks = ','.join('?' * len(qids))
-                        users = ','.join('?' * len(uid_list))
-                        rows = db.execute(
-                            f'SELECT user_id, question_id, score FROM ('
-                            f'  SELECT user_id, question_id, score, ROW_NUMBER() OVER ('
-                            f'    PARTITION BY user_id, question_id ORDER BY submitted_at DESC) rn'
-                            f'  FROM attempts WHERE question_id IN ({marks}) AND user_id IN ({users})'
-                            f') WHERE rn=1', (*qids, *uid_list)).fetchall()
-                        for r in rows:
-                            scores.setdefault(r['user_id'], 0.0)
-                            scores[r['user_id']] += r['score'] or 0
-                    columns.append({'id': a['id'], 'title': a['title'],
-                                    'date': (a['due_at'] or a['created_at'] or '')[:10],
-                                    'class': a['class_name'], 'submitted': done, 'scores': scores})
-                rows = []
-                for st in students:
-                    cells, total, done_count = [], 0.0, 0
-                    for col in columns:
-                        key = (col['id'], st['id'])
-                        if key in override:
-                            cells.append({'score': override[key], 'overridden': True})
-                            total += override[key]; done_count += 1
-                        elif st['id'] in col['submitted']:
-                            value = col['scores'].get(st['id'])
-                            cells.append({'score': value, 'overridden': False})
-                            if value is not None:
-                                total += value; done_count += 1
-                        else:
-                            cells.append({'score': None, 'overridden': False})
-                    rows.append({'id': st['id'], 'name': mask_name(st['name']),
-                                 'fullName': st['name'], 'seat': st['seat'],
-                                 'cells': cells, 'done': done_count,
-                                 'missing': len(columns) - done_count,
-                                 'average': (total / done_count) if done_count else None})
-                return {'columns': [{'id': c['id'], 'title': c['title'], 'date': c['date']}
-                                    for c in columns],
-                        'students': rows,
-                        'summary': {'students': len(rows), 'assignments': len(columns)}}, headers
-        if method == 'POST' and path == '/api/score-grid/column':
-            self.teacher(user)
-            fields(body, ('classId', 'title', 'date'), ('classId', 'title'))
-            class_id = number(body['classId'], '班別', 1, 10 ** 18, True)
-            title = text(body['title'], '欄位名稱', 120, empty=False)
-            date = (body.get('date') or '')[:10]
-            with self.db() as db:
-                row = db.execute('SELECT teacher_id, name FROM classes WHERE id=?', (class_id,)).fetchone()
-                if row is None:
-                    fail(404, '找不到這個班別。')
-                if row['teacher_id'] != user['id'] and not self.is_owner(user, db):
-                    fail(403, '只有設立該班級的老師可以新增欄位。')
-                if date and not re.fullmatch(r'\d{4}-\d{2}-\d{2}', date):
-                    fail(400, '日期格式應為 YYYY-MM-DD。')
-                stamp = (date + 'T00:00:00Z') if date else utc_now()
-                aid = db.execute(
-                    'INSERT INTO assignments(teacher_id,class_id,class_name,title,description,'
-                    'due_at,created_at,allow_late,kind,duration_minutes,ai_grading) '
-                    'VALUES(?,?,?,?,?,?,?,1,\'homework\',0,1)',
-                    (user['id'], class_id, row['name'], title, '（成績總表新增的欄位）', stamp,
-                     utc_now())).lastrowid
-            return {'ok': True, 'column': {'id': aid, 'title': title, 'date': date}}, headers
-        if method == 'POST' and path == '/api/score-grid/student':
-            self.teacher(user)
-            fields(body, ('classId', 'name', 'seat'), ('classId', 'name'))
-            class_id = number(body['classId'], '班別', 1, 10 ** 18, True)
-            name = text(body['name'], '姓名', 60, empty=False)
-            # 前端送來的是字串（input.value），number() 只吃數字型別，這裡自己收斂
-            raw_seat = body.get('seat')
-            seat = None
-            if raw_seat not in (None, ''):
-                try:
-                    seat = int(str(raw_seat).strip())
-                except (TypeError, ValueError):
-                    fail(400, '座號必須是數字。')
-                if not 1 <= seat <= 999:
-                    fail(400, '座號必須介於 1 和 999。')
-            with self.db() as db:
-                row = db.execute('SELECT teacher_id, name FROM classes WHERE id=?', (class_id,)).fetchone()
-                if row is None:
-                    fail(404, '找不到這個班別。')
-                if row['teacher_id'] != user['id'] and not self.is_owner(user, db):
-                    fail(403, '只有設立該班級的老師可以新增學生。')
-                # 資料庫一律存遮蔽姓名（陳大文 → 陳X文）；同名不同座號視為不同人
-                display = mask_name(name)
-                # seat 在資料庫是 TEXT，要用字串比對（不然 7 與 '7' 對不上，重複就漏擋）
-                dup = db.execute('SELECT 1 FROM users u JOIN class_students cs ON cs.user_id=u.id '
-                                 'WHERE cs.class_id=? AND u.name=? '
-                                 "AND COALESCE(u.seat,'')=?",
-                                 (class_id, display, '' if seat is None else str(seat))).fetchone()
-                if dup:
-                    fail(409, f'「{row["name"]}」已經有座號 {seat if seat else "（未填）"} 的「{display}」。')
-                base = f's{class_id}{seat if seat else int(time.time()) % 100000}'
-                username, n = base, 1
-                while db.execute('SELECT 1 FROM users WHERE username=?', (username,)).fetchone():
-                    n += 1
-                    username = f'{base}{n}'
-                password = 'm' + secrets.token_hex(3)
-                uid = db.execute('INSERT INTO users(username,name,role,password,demo,seat,created_by) '
-                                 'VALUES(?,?,?,?,0,?,?)',
-                                 (username, display, 'student', password_hash(password), seat,
-                                  user['id'])).lastrowid
-                db.execute('INSERT OR IGNORE INTO class_students(class_id,user_id) VALUES(?,?)',
-                           (class_id, uid))
-            return {'student': {'id': uid, 'name': display, 'seat': seat,
-                                'username': username, 'password': password}}, headers
-        if method == 'POST' and path == '/api/score-grid/student/seat':
-            # 成績總表直接改學號（座號）：只動 users.seat，登入帳號不變。
-            self.teacher(user)
-            fields(body, ('classId', 'userId', 'seat'), ('classId', 'userId'))
-            class_id = number(body['classId'], '班別', 1, 10 ** 18, True)
-            uid = number(body['userId'], '學生', 1, 10 ** 18, True)
-            raw_seat = body.get('seat')
-            seat = None
-            if raw_seat not in (None, ''):
-                try:
-                    seat = int(str(raw_seat).strip())
-                except (TypeError, ValueError):
-                    fail(400, '學號必須是數字。')
-                if not 1 <= seat <= 999:
-                    fail(400, '學號必須介於 1 和 999。')
-            with self.db() as db:
-                row = db.execute('SELECT teacher_id, name FROM classes WHERE id=?',
-                                 (class_id,)).fetchone()
-                if row is None:
-                    fail(404, '找不到這個班別。')
-                if row['teacher_id'] != user['id'] and not self.is_owner(user, db):
-                    fail(403, '只有設立該班級的老師可以修改學號。')
-                st = db.execute('SELECT u.id, u.name, u.seat FROM users u '
-                                'JOIN class_students cs ON cs.user_id=u.id '
-                                'WHERE cs.class_id=? AND u.id=?',
-                                (class_id, uid)).fetchone()
-                if st is None:
-                    fail(404, '這個學生不在本班。')
-                new_seat = '' if seat is None else str(seat)
-                if str(st['seat'] if st['seat'] is not None else '') == new_seat:
-                    return {'ok': True, 'unchanged': True,
-                            'student': {'id': uid, 'name': mask_name(st['name']),
-                                        'seat': st['seat']}}, headers
-                # 同一班內學號不可重複（座號撞號會讓排序與點名對不上）
-                if seat is not None:
-                    clash = db.execute(
-                        'SELECT u.name FROM users u JOIN class_students cs ON cs.user_id=u.id '
-                        "WHERE cs.class_id=? AND u.id<>? AND COALESCE(u.seat,'')=?",
-                        (class_id, uid, new_seat)).fetchone()
-                    if clash:
-                        fail(409, f'學號 {seat} 已被「{mask_name(clash["name"])}」使用。')
-                db.execute('UPDATE users SET seat=? WHERE id=?', (seat, uid))
-            return {'ok': True, 'student': {'id': uid, 'name': mask_name(st['name']),
-                                            'seat': seat}}, headers
-        if method == 'POST' and path == '/api/score-grid/students':
-            self.teacher(user)
-            fields(body, ('classId', 'students'), ('classId', 'students'))
-            class_id = number(body['classId'], '班別', 1, 10 ** 18, True)
-            raw = body['students']
-            if not isinstance(raw, list) or not 1 <= len(raw) <= 100:
-                fail(400, '一次匯入 1 至 100 名學生。')
-            with self.db() as db:
-                row = db.execute('SELECT teacher_id, name FROM classes WHERE id=?', (class_id,)).fetchone()
-                if row is None:
-                    fail(404, '找不到這個班別。')
-                if row['teacher_id'] != user['id'] and not self.is_owner(user, db):
-                    fail(403, '只有設立該班級的老師可以匯入學生。')
-                existing = {(r['name'], str(r['seat']) if r['seat'] is not None else '')
-                            for r in db.execute(
-                    'SELECT u.name, u.seat FROM users u JOIN class_students cs ON cs.user_id=u.id '
-                    'WHERE cs.class_id=?', (class_id,))}
-                created, skipped = [], []
-                for item in raw:
-                    if not isinstance(item, dict):
-                        continue
-                    name = str(item.get('name') or '').strip()[:60]
-                    if not name:
-                        continue
-                    seat = None
-                    if item.get('seat') not in (None, ''):
-                        try:
-                            seat = int(str(item['seat']).strip())
-                        except (TypeError, ValueError):
-                            seat = None
-                        if seat is not None and not 1 <= seat <= 999:
-                            seat = None
-                    display = mask_name(name)
-                    if (display, '' if seat is None else str(seat)) in existing:
-                        skipped.append(display)
-                        continue
-                    base = f's{class_id}{seat if seat else int(time.time() * 1000) % 100000}'
-                    username, n = base, 1
-                    while db.execute('SELECT 1 FROM users WHERE username=?', (username,)).fetchone():
-                        n += 1
-                        username = f'{base}{n}'
-                    password = 'm' + secrets.token_hex(3)
-                    uid = db.execute('INSERT INTO users(username,name,role,password,demo,seat,created_by) '
-                                     'VALUES(?,?,?,?,0,?,?)',
-                                     (username, display, 'student', password_hash(password), seat,
-                                      user['id'])).lastrowid
-                    db.execute('INSERT OR IGNORE INTO class_students(class_id,user_id) VALUES(?,?)',
-                               (class_id, uid))
-                    existing.add((display, '' if seat is None else str(seat)))
-                    created.append({'id': uid, 'name': display, 'seat': seat,
-                                    'username': username, 'password': password})
-            return {'created': created, 'skipped': skipped,
-                    'summary': {'created': len(created), 'skipped': len(skipped)}}, headers
-        if method == 'POST' and path == '/api/score-grid/students/import':
-            # 用 Excel 名單匯入整班：第一列找「姓名／座號」表頭，找不到就當 A=座號、B=姓名
-            self.teacher(user)
-            fields(body, ('classId', 'file'), ('classId', 'file'))
-            class_id = number(body['classId'], '班別', 1, 10 ** 18, True)
-            raw, _mime = decode_data_url(body['file'], (
-                'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-                'application/vnd.ms-excel.sheet.macroEnabled.12',
-                'application/vnd.ms-excel'))
-            if not raw:
-                fail(400, '請上傳 Excel（.xlsx）。')
-            try:
-                import openpyxl
-                wb = openpyxl.load_workbook(io.BytesIO(raw), data_only=True, read_only=True)
-            except Exception:
-                fail(400, '讀不到這個 Excel；請另存成 .xlsx 後再上傳。')
-            ws = wb.active
-            rows = [list(r) for r in ws.iter_rows(max_row=500, values_only=True)]
-            name_col, seat_col, start = None, None, 0
-            for i, row in enumerate(rows[:10]):
-                for j, cell in enumerate(row):
-                    cell_text = str(cell or '').strip()   # 不可叫 text：會蓋掉全域的 text() 驗證函式
-                    if name_col is None and '姓名' in cell_text:
-                        name_col, start = j, i + 1
-                    if seat_col is None and ('座號' in cell_text
-                                             or cell_text in ('號', '編號', '號碼')):
-                        seat_col, start = j, i + 1
-                if name_col is not None:
-                    break
-            if name_col is None:
-                # 沒有表頭：兩欄以上就當「座號, 姓名」，否則整欄都是姓名
-                name_col, seat_col, start = (1, 0, 0) if rows and len(rows[0]) > 1 else (0, None, 0)
-            students = []
-            for row in rows[start:]:
-                if name_col >= len(row):
-                    continue
-                name = str(row[name_col] or '').strip()[:60]
-                if not name or name in ('姓名', '學生姓名'):
-                    continue
-                seat = None
-                if seat_col is not None and seat_col < len(row):
-                    try:
-                        seat = int(float(str(row[seat_col]).strip()))
-                    except (TypeError, ValueError):
-                        seat = None
-                students.append({'name': name, 'seat': seat})
-            if not students:
-                fail(422, '這個 Excel 找不到學生姓名；請確認有「姓名」欄。')
-            if len(students) > 100:
-                students = students[:100]
-            return self.dispatch('POST', '/api/score-grid/students',
-                                 {'classId': class_id, 'students': students},
-                                 user, token_hash, ip)[0], headers
-        if method == 'GET' and path == '/api/score-grid/classes':
-            self.teacher(user)
-            with self.db() as db:
-                rows = db.execute('SELECT id, name FROM classes WHERE teacher_id=? ORDER BY name',
-                                  (user['id'],)).fetchall()
-            return {'classes': [{'id': r['id'], 'name': r['name']} for r in rows]}, headers
-        if method == 'GET' and path == '/api/score-grid/export':
-            self.teacher(user)
-            cid = class_id_param(body, query)
-            grid = self.dispatch('GET', '/api/score-grid',
-                                 {'classId': cid} if cid else {}, user, None, ip)[0]
-            try:
-                import openpyxl
-                from openpyxl.styles import Alignment, Font, PatternFill
-                from openpyxl.utils import get_column_letter
-            except ImportError:
-                fail(500, '伺服器缺少 openpyxl，無法匯出 Excel。')
-            wb = openpyxl.Workbook()
-            ws = wb.active
-            ws.title = '成績總表'
-            cols = grid.get('columns') or []
-            head = ['號', '姓名'] + [f"{c['date']} {c['title']}" for c in cols] + ['平均分', '未完成']
-            ws.append(head)
-            for cell in ws[1]:
-                cell.font = Font(bold=True)
-                cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
-            for row in grid.get('students') or []:
-                line = [row.get('seat') or '', row.get('name') or '']
-                line += [('' if c['score'] is None else c['score']) for c in row['cells']]
-                line += ['' if row['average'] is None else round(row['average'], 1), row['missing']]
-                ws.append(line)
-                if any(c['overridden'] for c in row['cells']):
-                    for i, c in enumerate(row['cells']):
-                        if c['overridden']:
-                            ws.cell(row=ws.max_row, column=3 + i).fill = PatternFill('solid', fgColor='FDF6DC')
-            ws.column_dimensions['A'].width = 6
-            ws.column_dimensions['B'].width = 12
-            for i in range(len(cols)):
-                ws.column_dimensions[get_column_letter(3 + i)].width = 16
-            ws.freeze_panes = 'C2'
-            buf = io.BytesIO()
-            wb.save(buf)
-            name = ('成績總表-' + (grid['columns'][0]['date'] if cols else '') + '.xlsx').replace('/', '／')
-            return {'file': 'data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,'
-                            + base64.b64encode(buf.getvalue()).decode(),
-                    'filename': name}, headers
-        if method == 'POST' and path == '/api/score-grid/score':
-            self.teacher(user)
-            fields(body, ('assignmentId', 'userId', 'score'), ('assignmentId', 'userId'))
-            assignment_id = number(body['assignmentId'], '作業', 1, 10 ** 18, True)
-            user_id = number(body['userId'], '學生', 1, 10 ** 18, True)
-            raw = body.get('score')
-            with self.db() as db:
-                row = db.execute('SELECT a.class_id, c.teacher_id FROM assignments a '
-                                 'LEFT JOIN classes c ON c.id=a.class_id WHERE a.id=?',
-                                 (assignment_id,)).fetchone()
-                if row is None:
-                    fail(404, '找不到這份作業。')
-                if row['teacher_id'] != user['id'] and not self.is_owner(user, db):
-                    fail(403, '只有設立該班級的老師可以修改分數。')
-                db.execute("""CREATE TABLE IF NOT EXISTS score_overrides (
-                                assignment_id INTEGER NOT NULL, user_id INTEGER NOT NULL,
-                                score REAL NOT NULL, updated_by INTEGER, updated_at TEXT NOT NULL,
-                                PRIMARY KEY (assignment_id, user_id))""")
-                if raw is None or raw == '':
-                    db.execute('DELETE FROM score_overrides WHERE assignment_id=? AND user_id=?',
-                               (assignment_id, user_id))
-                    return {'ok': True, 'cleared': True}, headers
-                score = number(raw, '分數', 0, 1000, True)
-                db.execute('INSERT INTO score_overrides(assignment_id,user_id,score,updated_by,updated_at) '
-                           'VALUES(?,?,?,?,?) ON CONFLICT(assignment_id,user_id) DO UPDATE SET '
-                           'score=excluded.score, updated_by=excluded.updated_by, '
-                           'updated_at=excluded.updated_at',
-                           (assignment_id, user_id, score, user['id'], utc_now()))
-            return {'ok': True, 'score': score}, headers
-        # ---------- 卷面排版：直接輸出 LaTeX（Overleaf 用） ----------
+        hit = self._dispatch_score_grid(method, path, body, user, token_hash, ip, query, headers)
+        if hit is not None:
+            return hit
         if method == 'POST' and path == '/api/papers/to-tex':
             self.teacher(user)
             fields(body, ('file', 'preamble', 'marksPosition', 'consentExternal', 'async',
