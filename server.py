@@ -6316,8 +6316,11 @@ class Application:
             db.execute('BEGIN IMMEDIATE')
             # 舊資料只有 questions.paper_id，補進對照表（INSERT OR IGNORE 可重複執行）。
             # 放在 BEGIN 之後：INSERT 會開隱式交易，提前跑會讓這裡的 BEGIN 失敗。
+            # 只回填「paper 仍然存在」的題目：刪卷 bug 曾留下指向已刪卷的孤立 questions.paper_id，
+            # 若不 JOIN papers 過濾，這些孤兒會在 foreign_keys=ON 下讓整個初始化失敗。
             db.execute('INSERT OR IGNORE INTO paper_questions(paper_id, question_id) '
-                       'SELECT paper_id, id FROM questions WHERE paper_id IS NOT NULL')
+                       'SELECT q.paper_id, q.id FROM questions q '
+                       'JOIN papers p ON p.id = q.paper_id WHERE q.paper_id IS NOT NULL')
             contest_columns = {r['name'] for r in db.execute('PRAGMA table_info(competitions)')}
             if contest_columns and 'location' not in contest_columns:
                 db.execute("ALTER TABLE competitions ADD COLUMN location TEXT NOT NULL DEFAULT ''")
@@ -6458,6 +6461,13 @@ class Application:
             return db.execute('PRAGMA freelist_count').fetchone()[0] / page_count
 
         def loop():
+            # 首輪延遲：initialize() 可能還在同一個後台執行緒做 schema 遷移，
+            # 立刻 VACUUM 會重建資料庫檔案、跟未提交的遷移衝突（FOREIGN KEY constraint failed）。
+            # 等一個完整檢查週期再量測，讓初始化穩定後才動手。
+            for _ in range(VACUUM_CHECK_SECONDS):
+                if self.stopping:
+                    return
+                time.sleep(1)
             while not self.stopping:
                 try:
                     with self.db() as db:
