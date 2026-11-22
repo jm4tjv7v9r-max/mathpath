@@ -144,19 +144,32 @@ function pdfPaperBlocksFromPlan(plan){
 }
 
 // 把塊依內容高度裝頁：不把同一題切到兩頁。
-function pdfPaginate(container, blocks){
-  container.innerHTML=blocks.map(b=>`<div class="pdfp-measure">${b}</div>`).join('');
-  const nodes=[...container.querySelectorAll('.pdfp-measure')];
-  const pages=[];
-  let cur=[], used=0;
-  nodes.forEach((node,i)=>{
-    const h=node.getBoundingClientRect().height;
-    if(cur.length&&used+h>PDF_CONTENT_H){
-      pages.push(cur);cur=[];used=0;
-    }
-    cur.push(blocks[i]);used+=h;
+// 測量必須用「跟實際渲染完全一樣的 DOM」：以前把每塊包進 .pdfp-measure
+// 再量 getBoundingClientRect().height，這個高度不含題目 div 的 margin-bottom
+// （.pdfp-q 有 10px），累加後低估，頁尾那題被塞進本頁，html2canvas 截固定
+// A4 高度時就把它的選項裁掉了（老師回報第 7 題只剩 A、B）。
+// 改用 offsetTop 差值：相鄰兩塊的 offsetTop 差自然含了中間的 margin。
+async function pdfPaginate(container, blocks){
+  container.style.height='auto';
+  container.innerHTML=blocks.join('');
+  await pdfWaitImages(container);          // 圖片沒載入時高度是 0，量出來會低估
+  // 一次渲染全部區塊，量每塊的真實視口座標。margin 折疊、行高、圖片高度全部
+  // 都已在這裡算進去。分頁時用「本組最後一塊底部 − 本組第一塊頂部」判斷高度，
+  // 就是這組單獨渲染時的實際佔用，而不需要猜 offsetTop（分到新頁後座標會失效）。
+  const rects=[...container.children].map(n=>{
+    const r=n.getBoundingClientRect();
+    const mb=parseFloat(getComputedStyle(n).marginBottom)||0;
+    return {top:r.top, bottom:r.bottom+mb};
   });
-  if(cur.length)pages.push(cur);
+  const room=PDF_CONTENT_H-2;
+  const pages=[];
+  let start=0;
+  for(let i=0;i<rects.length;i++){
+    if(i>start&&rects[i].bottom-rects[start].top>room){
+      pages.push(blocks.slice(start,i));start=i;
+    }
+  }
+  if(start<blocks.length)pages.push(blocks.slice(start));
   return pages;
 }
 
@@ -191,7 +204,7 @@ async function buildPaperPdf({title, meta, sections, plan, onStatus}){
     // 有後端排版計畫就照它排（跟 Word 一致）；沒有才用舊的簡化排版回退。
     const blocks=plan?pdfPaperBlocksFromPlan(plan):pdfPaperBlocks(title, meta, sections);
     if(onStatus)onStatus('排出試卷版面…');
-    const pages=pdfPaginate(container, blocks);
+    const pages=await pdfPaginate(container, blocks);
 
     const pdfDoc=await window.PDFLib.PDFDocument.create();
     const A4=[595.28,841.89];    // A4 的點（pt）尺寸
