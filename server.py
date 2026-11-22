@@ -7151,7 +7151,17 @@ class Application:
         if not self.initialized:
             payload = {'status': 'error' if self.init_error else 'starting'}
             if self.init_error:
-                payload['error'] = self.init_error
+                # 原始異常（如「FOREIGN KEY constraint failed」）對使用者沒意義；
+                # 翻譯成可操作的提示，管理員一眼知道要清理孤立數據或檢查 schema。
+                raw = str(self.init_error) or '未知錯誤'
+                if 'FOREIGN KEY' in raw:
+                    hint = ('資料庫有指向已刪除內容的孤立記錄（FOREIGN KEY 違規），'
+                            '請在管理介面執行「資料庫壓實」或聯絡維護者清理孤立數據。')
+                elif 'database is locked' in raw:
+                    hint = '資料庫被另一個程序鎖住，請稍後再試或重啟服務。'
+                else:
+                    hint = raw
+                payload['error'] = hint
             return payload, headers
         with self.db() as db:
             questions = db.execute('SELECT COUNT(*) FROM questions').fetchone()[0]
@@ -8758,6 +8768,9 @@ class Application:
                     # paper_questions 外鍵指向 papers(id)：先清掉這份卷的題目關聯，
                     # 否則有「已匯入題庫」的卷會因 FOREIGN KEY constraint 刪不掉。
                     db.execute('DELETE FROM paper_questions WHERE paper_id=?', (paper_id,))
+                    # 題目的 paper_id 也指向這份卷：不清掉會在 initialize() 回填時，
+                    # 因 foreign_keys=ON 而產生孤兒，造成整站初始化失敗（FOREIGN KEY constraint failed）。
+                    db.execute('UPDATE questions SET paper_id=NULL WHERE paper_id=?', (paper_id,))
                     db.execute('DELETE FROM papers WHERE id=?', (paper_id,))
                     return {'ok': True}, headers
                 # 這份卷匯入題庫的那些題目（「出作業」直接拿這個清單）
