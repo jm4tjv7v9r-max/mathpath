@@ -10424,6 +10424,111 @@ class Application:
             return {'saved': saved}, headers
         return None
 
+    def _dispatch_ai_config(self, method, path, body, user, ip, headers):
+        """AI 模型端點：讀取／儲存設定、連線測試、計費模式。
+
+        從 dispatch 抽出的內聚路由組；沒有命中回 None，讓 dispatch 繼續往下試。
+        """
+        if path == '/api/ai-config' and method in ('GET', 'POST'):
+            self.teacher(user)
+            expected = bool(os.environ.get('MATH_ADMIN_TOKEN', '').strip())
+            if method == 'GET':
+                saved = self.saved_ai_config()
+                env = env_ai_config()
+                return {'active': self.ai.public(), 'canEdit': self.can_manage_ai(ip),
+                        'tokenRequired': expected, 'invalidSaved': bool(getattr(self.ai, 'invalid_saved', False)),
+                        'env': {'baseUrl': env['base_url'], 'model': env['model'],
+                                'visionModel': env['vision_model'], 'drawModel': env['draw_model'],
+                                'reasoningModel': env['reasoning_model'],
+                                'keySet': bool(env['api_key']),
+                                'thinking': env['thinking']},
+                        'saved': None if not saved else {'baseUrl': saved['base_url'], 'model': saved['model'],
+                                                         'visionModel': saved['vision_model'],
+                                                         'drawModel': saved['draw_model'],
+                                                         'reasoningModel': saved['reasoning_model'],
+                                                         'keySet': bool(saved['api_key']),
+                                                         'thinking': saved['thinking']}}, headers
+            fields(body, ('baseUrl', 'model', 'visionModel', 'drawModel', 'reasoningModel',
+                          'apiKey', 'clearKey', 'thinking',
+                          'adminToken'), ())
+            self.require_ai_admin(ip, body.get('adminToken'))
+            for key in ('clearKey', 'thinking'):
+                if key in body and type(body[key]) is not bool:
+                    fail(400, f'{key} 必須是布林值。')
+            if not ({'baseUrl', 'model', 'apiKey'} & set(body)):
+                fail(400, '請提供端點與模型；若要取消 AI，請明確送出空的端點。')
+            existing = self.saved_ai_config() or {}
+            base_url = text(body.get('baseUrl', ''), '端點位址', 500, empty=True)
+            model = text(body.get('model', ''), '文字模型', 200, empty=True)
+            vision_model = text(body.get('visionModel', ''), '視覺模型', 200, empty=True)
+            draw_model = text(body.get('drawModel', ''), '繪圖模型', 200, empty=True)
+            reasoning_model = text(body.get('reasoningModel', ''), '推理模型', 200, empty=True)
+            if 'apiKey' in body:
+                api_key = text(body['apiKey'], 'API 金鑰', 8192, empty=True, strip=False)
+            elif body.get('clearKey'):
+                api_key = ''
+            else:
+                api_key = existing.get('api_key', '')
+            thinking = body['thinking'] if 'thinking' in body else existing.get('thinking', False)
+            try:
+                validate_ai_config({'base_url': base_url, 'model': model,
+                                    'api_key': api_key, 'vision_model': vision_model,
+                                    'draw_model': draw_model, 'thinking': thinking,
+                                    'reasoning_model': reasoning_model})
+            except ValueError as exc:
+                fail(400, str(exc))
+            if base_url and model:
+                pairs = (('ai_base_url', base_url), ('ai_model', model),
+                         ('ai_vision_model', vision_model), ('ai_draw_model', draw_model),
+                         ('ai_reasoning_model', reasoning_model),
+                         ('ai_api_key', api_key),
+                         ('ai_thinking', 'on' if thinking else 'off'))
+            else:
+                # 清空端點即代表取消 AI，一併移除已儲存的金鑰。
+                pairs = tuple()
+            with self.db() as db:
+                db.execute('BEGIN IMMEDIATE')
+                db.execute("DELETE FROM meta WHERE key LIKE 'ai\\_%' ESCAPE '\\'")
+                for key, value in pairs:
+                    db.execute('INSERT INTO meta(key,value) VALUES(?,?)', (key, value))
+            self.reload_ai()
+            return {'active': self.ai.public(), 'saved': None if not pairs else
+                    {'baseUrl': base_url, 'model': model, 'visionModel': vision_model,
+                     'drawModel': draw_model, 'reasoningModel': reasoning_model,
+                     'keySet': bool(api_key), 'thinking': thinking}}, headers
+        if method == 'POST' and path == '/api/ai-config/test':
+            self.teacher(user)
+            fields(body, ('baseUrl', 'model', 'visionModel', 'apiKey', 'vision', 'thinking', 'adminToken'),
+                   ('baseUrl', 'model'))
+            self.require_ai_admin(ip, body.get('adminToken'))
+            for key in ('vision', 'thinking'):
+                if key in body and type(body[key]) is not bool:
+                    fail(400, f'{key} 必須是布林值。')
+            existing = self.saved_ai_config() or {}
+            api_key = (text(body['apiKey'], 'API 金鑰', 8192, empty=True, strip=False)
+                       if 'apiKey' in body else existing.get('api_key', ''))
+            tester = AIClient()
+            try:
+                tester.configure({'base_url': body['baseUrl'], 'model': body['model'],
+                                  'api_key': api_key,
+                                  'vision_model': text(body.get('visionModel', ''), '視覺模型', 200, empty=True),
+                                  'thinking': body.get('thinking', existing.get('thinking', False))})
+            except ValueError as exc:
+                fail(400, str(exc))
+            tester.probe(vision=bool(body.get('vision')))
+            return {'ok': True, 'mode': tester.mode, 'model': tester.model,
+                    'testedVision': bool(body.get('vision'))}, headers
+        if method == 'POST' and path == '/api/ai-config/economy':
+            # 計費模式只是成本偏好、不含任何憑證，因此任何教師都能切換，不需要管理員權杖。
+            # 這樣在 Render 等雲端環境即使沒設 MATH_ADMIN_TOKEN，教師仍能自行調整。
+            self.teacher(user)
+            fields(body, ('economy',), ('economy',))
+            if type(body['economy']) is not bool:
+                fail(400, 'economy 必須是布林值。')
+            self.set_economy(body['economy'])
+            return {'active': self.ai.public(), 'economy': not self.ai.thinking}, headers
+        return None
+
     def dispatch(self, method, path, body, user, token_hash, ip, query=''):
         headers = {}
         # 配額按「誰在呼叫」計：登入者用帳號，訪客用 IP（登入頁與同意前的呼叫）。
@@ -10718,104 +10823,9 @@ class Application:
                 result = self.dataadmin.reset_students(db, confirm)
             result['vacuum'] = self.dataadmin.vacuum()
             return result, headers
-        if path == '/api/ai-config' and method in ('GET', 'POST'):
-            self.teacher(user)
-            expected = bool(os.environ.get('MATH_ADMIN_TOKEN', '').strip())
-            if method == 'GET':
-                saved = self.saved_ai_config()
-                env = env_ai_config()
-                return {'active': self.ai.public(), 'canEdit': self.can_manage_ai(ip),
-                        'tokenRequired': expected, 'invalidSaved': bool(getattr(self.ai, 'invalid_saved', False)),
-                        'env': {'baseUrl': env['base_url'], 'model': env['model'],
-                                'visionModel': env['vision_model'], 'drawModel': env['draw_model'],
-                                'reasoningModel': env['reasoning_model'],
-                                'keySet': bool(env['api_key']),
-                                'thinking': env['thinking']},
-                        'saved': None if not saved else {'baseUrl': saved['base_url'], 'model': saved['model'],
-                                                         'visionModel': saved['vision_model'],
-                                                         'drawModel': saved['draw_model'],
-                                                         'reasoningModel': saved['reasoning_model'],
-                                                         'keySet': bool(saved['api_key']),
-                                                         'thinking': saved['thinking']}}, headers
-            fields(body, ('baseUrl', 'model', 'visionModel', 'drawModel', 'reasoningModel',
-                          'apiKey', 'clearKey', 'thinking',
-                          'adminToken'), ())
-            self.require_ai_admin(ip, body.get('adminToken'))
-            for key in ('clearKey', 'thinking'):
-                if key in body and type(body[key]) is not bool:
-                    fail(400, f'{key} 必須是布林值。')
-            if not ({'baseUrl', 'model', 'apiKey'} & set(body)):
-                fail(400, '請提供端點與模型；若要取消 AI，請明確送出空的端點。')
-            existing = self.saved_ai_config() or {}
-            base_url = text(body.get('baseUrl', ''), '端點位址', 500, empty=True)
-            model = text(body.get('model', ''), '文字模型', 200, empty=True)
-            vision_model = text(body.get('visionModel', ''), '視覺模型', 200, empty=True)
-            draw_model = text(body.get('drawModel', ''), '繪圖模型', 200, empty=True)
-            reasoning_model = text(body.get('reasoningModel', ''), '推理模型', 200, empty=True)
-            if 'apiKey' in body:
-                api_key = text(body['apiKey'], 'API 金鑰', 8192, empty=True, strip=False)
-            elif body.get('clearKey'):
-                api_key = ''
-            else:
-                api_key = existing.get('api_key', '')
-            thinking = body['thinking'] if 'thinking' in body else existing.get('thinking', False)
-            try:
-                validate_ai_config({'base_url': base_url, 'model': model,
-                                    'api_key': api_key, 'vision_model': vision_model,
-                                    'draw_model': draw_model, 'thinking': thinking,
-                                    'reasoning_model': reasoning_model})
-            except ValueError as exc:
-                fail(400, str(exc))
-            if base_url and model:
-                pairs = (('ai_base_url', base_url), ('ai_model', model),
-                         ('ai_vision_model', vision_model), ('ai_draw_model', draw_model),
-                         ('ai_reasoning_model', reasoning_model),
-                         ('ai_api_key', api_key),
-                         ('ai_thinking', 'on' if thinking else 'off'))
-            else:
-                # 清空端點即代表取消 AI，一併移除已儲存的金鑰。
-                pairs = tuple()
-            with self.db() as db:
-                db.execute('BEGIN IMMEDIATE')
-                db.execute("DELETE FROM meta WHERE key LIKE 'ai\\_%' ESCAPE '\\'")
-                for key, value in pairs:
-                    db.execute('INSERT INTO meta(key,value) VALUES(?,?)', (key, value))
-            self.reload_ai()
-            return {'active': self.ai.public(), 'saved': None if not pairs else
-                    {'baseUrl': base_url, 'model': model, 'visionModel': vision_model,
-                     'drawModel': draw_model, 'reasoningModel': reasoning_model,
-                     'keySet': bool(api_key), 'thinking': thinking}}, headers
-        if method == 'POST' and path == '/api/ai-config/test':
-            self.teacher(user)
-            fields(body, ('baseUrl', 'model', 'visionModel', 'apiKey', 'vision', 'thinking', 'adminToken'),
-                   ('baseUrl', 'model'))
-            self.require_ai_admin(ip, body.get('adminToken'))
-            for key in ('vision', 'thinking'):
-                if key in body and type(body[key]) is not bool:
-                    fail(400, f'{key} 必須是布林值。')
-            existing = self.saved_ai_config() or {}
-            api_key = (text(body['apiKey'], 'API 金鑰', 8192, empty=True, strip=False)
-                       if 'apiKey' in body else existing.get('api_key', ''))
-            tester = AIClient()
-            try:
-                tester.configure({'base_url': body['baseUrl'], 'model': body['model'],
-                                  'api_key': api_key,
-                                  'vision_model': text(body.get('visionModel', ''), '視覺模型', 200, empty=True),
-                                  'thinking': body.get('thinking', existing.get('thinking', False))})
-            except ValueError as exc:
-                fail(400, str(exc))
-            tester.probe(vision=bool(body.get('vision')))
-            return {'ok': True, 'mode': tester.mode, 'model': tester.model,
-                    'testedVision': bool(body.get('vision'))}, headers
-        if method == 'POST' and path == '/api/ai-config/economy':
-            # 計費模式只是成本偏好、不含任何憑證，因此任何教師都能切換，不需要管理員權杖。
-            # 這樣在 Render 等雲端環境即使沒設 MATH_ADMIN_TOKEN，教師仍能自行調整。
-            self.teacher(user)
-            fields(body, ('economy',), ('economy',))
-            if type(body['economy']) is not bool:
-                fail(400, 'economy 必須是布林值。')
-            self.set_economy(body['economy'])
-            return {'active': self.ai.public(), 'economy': not self.ai.thinking}, headers
+        hit = self._dispatch_ai_config(method, path, body, user, ip, headers)
+        if hit is not None:
+            return hit
         if method == 'GET' and path == '/api/ai-grading/stats':
             # AI 批改品質：老師最想知道「AI 準不準、哪裡不準」。
             # 只用「教師改過分」的案例算調整方向——沒改分的題目不代表 AI 一定對，
