@@ -9973,6 +9973,224 @@ class Application:
             return hit
         return None
 
+    def _dispatch_drafts(self, method, path, body, user, query, headers):
+        """紙本批改草稿：清單／開啟／二次配對／卷面預覽／方向／逐份確認／刪除。
+
+        從 dispatch 抽出的內聚路由組；沒有命中回 None，讓 dispatch 繼續往下試。
+        """
+        if method == 'GET' and path == '/api/paper-grades/drafts':
+            self.teacher(user)
+            with self.db() as db:
+                ensure_paper_drafts(db)
+                rows = db.execute(
+                    'SELECT id,title,class_id,pages,sheets,created_at,status FROM paper_drafts '
+                    'WHERE teacher_id=? ORDER BY id DESC LIMIT 20', (user['id'],)).fetchall()
+                names = {r['id']: r['name'] for r in db.execute('SELECT id,name FROM classes')}
+                # 這份草稿已經批了誰、幾分：續批時要標出來，不用重新猜
+                graded = {}
+                for g in db.execute('SELECT id, draft_id, student_id, score, confirmed_at '
+                                    'FROM paper_grades WHERE draft_id IS NOT NULL'):
+                    graded.setdefault(g['draft_id'], []).append(
+                        {'gradeId': g['id'], 'studentId': g['student_id'],
+                         'score': g['score'], 'confirmed': bool(g['confirmed_at'])})
+            drafts = []
+            for row in rows:
+                sheets = json.loads(row['sheets'])
+                mine = graded.get(row['id'], [])
+                drafts.append({'id': row['id'], 'title': row['title'] or '',
+                               'classId': row['class_id'],
+                               'className': names.get(row['class_id']) or '',
+                               'pages': row['pages'], 'papers': len(sheets),
+                               'matched': sum(1 for x in sheets if x.get('studentId')),
+                               'unmatched': sum(1 for x in sheets if not x.get('studentId')),
+                               'status': row['status'] or 'pending',
+                               'gradedCount': len(mine),
+                               'graded': mine,
+                               'createdAt': row['created_at']})
+            return {'drafts': drafts}, headers
+        if method == 'GET' and re.fullmatch(r'/api/paper-grades/drafts/([1-9]\d{0,17})', path):
+            self.teacher(user)
+            draft_id = int(path.rsplit('/', 1)[-1])
+            with self.db() as db:
+                ensure_paper_drafts(db)
+                row = db.execute('SELECT * FROM paper_drafts WHERE id=?', (draft_id,)).fetchone()
+                if row is None:
+                    fail(404, '找不到這份草稿（可能已批改或超過七天）。')
+                if row['teacher_id'] != user['id'] and not self.is_owner(user, db):
+                    fail(403, '只有建立這份草稿的老師可以開啟。')
+                mine = [{'gradeId': g['id'], 'studentId': g['student_id'],
+                         'score': g['score'], 'confirmed': bool(g['confirmed_at'])}
+                        for g in db.execute(
+                            'SELECT id, student_id, score, confirmed_at FROM paper_grades '
+                            'WHERE draft_id=?', (draft_id,))]
+            return {'draft': {'id': row['id'], 'title': row['title'] or '',
+                              'classId': row['class_id'], 'pages': row['pages'],
+                              'sheets': json.loads(row['sheets']),
+                              'roster': json.loads(row['roster']),
+                              'rotation': row['rotation'],
+                              'rotations': json.loads(row['rotations']) if row['rotations'] else None,
+                              'status': row['status'] or 'pending',
+                              'graded': mine,
+                              'createdAt': row['created_at']}}, headers
+        draft_rematch = re.fullmatch(r'/api/paper-grades/drafts/([1-9]\d{0,17})/rematch', path)
+        if method == 'POST' and draft_rematch:
+            # 二次檢視配對：舊草稿／掃描時認不出人的卷，重新用「尚未配對名單」反查。
+            # 不重掃 PDF 的 AI，只重渲染頁面；已經確認（鎖住）的卷一律不動。
+            self.teacher(user)
+            fields(body, ('consentExternal',), ())
+            if 'consentExternal' in body and type(body['consentExternal']) is not bool:
+                fail(400, '外部上傳同意必須是布林值。')
+            self.ai.consent(body.get('consentExternal'))
+            draft_id = int(draft_rematch.group(1))
+            with self.db() as db:
+                ensure_paper_drafts(db)
+                row = db.execute('SELECT id,teacher_id,pdf,pages,sheets,roster,rotation,rotations '
+                                 'FROM paper_drafts WHERE id=?', (draft_id,)).fetchone()
+                if row is None:
+                    fail(404, '找不到這份草稿（可能已批改或超過七天）。')
+                if row['teacher_id'] != user['id'] and not self.is_owner(user, db):
+                    fail(403, '只有建立這份草稿的老師可以重新配對。')
+            try:
+                sheets = json.loads(row['sheets'])
+                students = json.loads(row['roster'])
+                rots = json.loads(row['rotations']) if row['rotations'] else None
+            except (TypeError, ValueError):
+                fail(400, '這份草稿的資料不完整，請重新掃描。')
+            pages = pdf_page_images(row['pdf'], max_pages=PAPER_SCAN_MAX_PAGES,
+                                    rotation=row['rotation'], rotations=rots)
+            if not pages:
+                fail(422, 'PDF 沒有可讀的頁面。')
+            sheets, second_stats = paper_second_match(self, sheets, students, pages)
+            with self.db() as db:
+                db.execute('UPDATE paper_drafts SET sheets=?, updated_at=? WHERE id=?',
+                           (json.dumps(sheets, ensure_ascii=False), time.time(), draft_id))
+            return {'sheets': sheets, 'secondMatch': second_stats,
+                    'summary': {'papers': len(sheets),
+                                'matched': sum(1 for x in sheets if x.get('studentId')),
+                                'unmatched': sum(1 for x in sheets if not x.get('studentId'))}}, headers
+        draft_pages = re.fullmatch(r'/api/paper-grades/drafts/([1-9]\d{0,17})/pages', path)
+        if method == 'GET' and draft_pages:
+            # 配對表上先看卷面：確認 AI 切的頁對不對，再決定這份卷指派給誰。
+            self.teacher(user)
+            draft_id = int(draft_pages.group(1))
+            raw_q = dict(parse_qsl(query or ''))
+            nums = []
+            for part in str(raw_q.get('nums') or '').split(','):
+                part = part.strip()
+                if part.isdigit():
+                    n = int(part)
+                    if 1 <= n <= PAPER_SCAN_MAX_PAGES:
+                        nums.append(n)
+            if not nums:
+                fail(400, '請指定要看哪幾頁。')
+            with self.db() as db:
+                ensure_paper_drafts(db)
+                row = db.execute('SELECT id, teacher_id, pdf, pages, rotation, rotations '
+                                 'FROM paper_drafts WHERE id=?', (draft_id,)).fetchone()
+                if row is None:
+                    fail(404, '找不到這份草稿（可能已批改或超過七天）。')
+                if row['teacher_id'] != user['id'] and not self.is_owner(user, db):
+                    fail(403, '只有建立這份草稿的老師可以查看卷面。')
+            # 舊草稿沒存逐頁方向：只對要看的這幾頁問 AI 並寫回，免得看到倒過來的卷
+            rots = paper_ensure_rotations(self, row, nums[:10])
+            imgs = pdf_page_images(row['pdf'], max_pages=PAPER_SCAN_MAX_PAGES, only=nums[:10],
+                                   rotations=rots)
+            return {'pages': imgs, 'pageNums': nums[:10]}, headers
+        draft_rotation = re.fullmatch(r'/api/paper-grades/drafts/([1-9]\d{0,17})/rotation', path)
+        if method == 'POST' and draft_rotation:
+            # AI 判錯方向時老師自己改。帶 pages 就只轉那幾頁（某一份卷），
+            # 不帶就是整份草稿一起轉。
+            self.teacher(user)
+            fields(body, ('rotation', 'pages'), ('rotation',))
+            rot = body['rotation']
+            if rot not in (0, 90, 180, 270):
+                fail(400, '方向只能是 0、90、180 或 270。')
+            only_pages = []
+            raw_pages = body.get('pages')
+            if raw_pages not in (None, []):
+                if not isinstance(raw_pages, list):
+                    fail(400, '頁碼格式不正確。')
+                for n in raw_pages:
+                    if isinstance(n, int) and not isinstance(n, bool) and 1 <= n <= PAPER_SCAN_MAX_PAGES:
+                        only_pages.append(n)
+                if not only_pages:
+                    fail(400, '頁碼格式不正確。')
+                only_pages = only_pages[:10]
+            draft_id = int(draft_rotation.group(1))
+            with self.db() as db:
+                ensure_paper_drafts(db)
+                row = db.execute('SELECT teacher_id, pages, rotations FROM paper_drafts WHERE id=?',
+                                 (draft_id,)).fetchone()
+                if row is None:
+                    fail(404, '找不到這份草稿（可能已批改或超過七天）。')
+                if row['teacher_id'] != user['id'] and not self.is_owner(user, db):
+                    fail(403, '只有建立這份草稿的老師可以改方向。')
+                total = max(0, int(row['pages'] or 0))
+                try:
+                    rotations = json.loads(row['rotations']) if row['rotations'] else []
+                except (TypeError, ValueError):
+                    rotations = []
+                if not isinstance(rotations, list) or len(rotations) < total:
+                    rotations = (rotations or []) + [0] * total
+                    rotations = rotations[:total]
+                if only_pages:
+                    for n in only_pages:
+                        if 1 <= n <= total:
+                            rotations[n - 1] = rot
+                else:
+                    rotations = [rot] * total
+                # 單一 rotation 欄位保留給舊版前端：只在這幾頁都同一個角度時才有意義
+                summary = rotations[0] if rotations and len(set(rotations)) == 1 else None
+                db.execute('UPDATE paper_drafts SET rotation=?, rotations=?, updated_at=? WHERE id=?',
+                           (summary, json.dumps(rotations), time.time(), draft_id))
+            return {'rotation': rot, 'rotations': rotations}, headers
+        draft_confirm = re.fullmatch(r'/api/paper-grades/drafts/([1-9]\d{0,17})/confirm', path)
+        if method == 'POST' and draft_confirm:
+            # 老師逐份確認「這份卷確實是這位學生」之後就鎖住，避免誤改；
+            # 要改再按一次「更改」解鎖。
+            self.teacher(user)
+            fields(body, ('index', 'confirmed', 'all'), ('confirmed',))
+            confirmed = body['confirmed']
+            if type(confirmed) is not bool:
+                fail(400, '確認狀態必須是布林值。')
+            do_all = bool(body.get('all'))
+            index = None
+            if not do_all:
+                index = number(body['index'], '卷序號', 0, 999, integer=True)
+            draft_id = int(draft_confirm.group(1))
+            with self.db() as db:
+                ensure_paper_drafts(db)
+                row = db.execute('SELECT teacher_id, sheets FROM paper_drafts WHERE id=?',
+                                 (draft_id,)).fetchone()
+                if row is None:
+                    fail(404, '找不到這份草稿（可能已批改或超過七天）。')
+                if row['teacher_id'] != user['id'] and not self.is_owner(user, db):
+                    fail(403, '只有建立這份草稿的老師可以確認配對。')
+                sheets = json.loads(row['sheets'])
+                if do_all:
+                    for sh in sheets:
+                        sh['confirmed'] = confirmed
+                else:
+                    if not 0 <= index < len(sheets):
+                        fail(400, '卷序號超出範圍。')
+                    sheets[index]['confirmed'] = confirmed
+                db.execute('UPDATE paper_drafts SET sheets=?, updated_at=? WHERE id=?',
+                           (json.dumps(sheets, ensure_ascii=False), time.time(), draft_id))
+            return {'sheets': sheets}, headers
+        if method == 'DELETE' and re.fullmatch(r'/api/paper-grades/drafts/([1-9]\d{0,17})', path):
+            self.teacher(user)
+            draft_id = int(path.rsplit('/', 1)[-1])
+            with self.db() as db:
+                ensure_paper_drafts(db)
+                row = db.execute('SELECT teacher_id FROM paper_drafts WHERE id=?', (draft_id,)).fetchone()
+                if row is None:
+                    return {'ok': True}, headers
+                if row['teacher_id'] != user['id'] and not self.is_owner(user, db):
+                    fail(403, '只有建立這份草稿的老師可以刪除。')
+                db.execute('DELETE FROM paper_drafts WHERE id=?', (draft_id,))
+            return {'ok': True}, headers
+        return None
+
     def dispatch(self, method, path, body, user, token_hash, ip, query=''):
         headers = {}
         # 配額按「誰在呼叫」計：登入者用帳號，訪客用 IP（登入頁與同意前的呼叫）。
@@ -10213,217 +10431,9 @@ class Application:
         hit = self._dispatch_paper_grades_batch(method, path, body, user, token_hash, ip, headers)
         if hit is not None:
             return hit
-        if method == 'GET' and path == '/api/paper-grades/drafts':
-            self.teacher(user)
-            with self.db() as db:
-                ensure_paper_drafts(db)
-                rows = db.execute(
-                    'SELECT id,title,class_id,pages,sheets,created_at,status FROM paper_drafts '
-                    'WHERE teacher_id=? ORDER BY id DESC LIMIT 20', (user['id'],)).fetchall()
-                names = {r['id']: r['name'] for r in db.execute('SELECT id,name FROM classes')}
-                # 這份草稿已經批了誰、幾分：續批時要標出來，不用重新猜
-                graded = {}
-                for g in db.execute('SELECT id, draft_id, student_id, score, confirmed_at '
-                                    'FROM paper_grades WHERE draft_id IS NOT NULL'):
-                    graded.setdefault(g['draft_id'], []).append(
-                        {'gradeId': g['id'], 'studentId': g['student_id'],
-                         'score': g['score'], 'confirmed': bool(g['confirmed_at'])})
-            drafts = []
-            for row in rows:
-                sheets = json.loads(row['sheets'])
-                mine = graded.get(row['id'], [])
-                drafts.append({'id': row['id'], 'title': row['title'] or '',
-                               'classId': row['class_id'],
-                               'className': names.get(row['class_id']) or '',
-                               'pages': row['pages'], 'papers': len(sheets),
-                               'matched': sum(1 for x in sheets if x.get('studentId')),
-                               'unmatched': sum(1 for x in sheets if not x.get('studentId')),
-                               'status': row['status'] or 'pending',
-                               'gradedCount': len(mine),
-                               'graded': mine,
-                               'createdAt': row['created_at']})
-            return {'drafts': drafts}, headers
-        if method == 'GET' and re.fullmatch(r'/api/paper-grades/drafts/([1-9]\d{0,17})', path):
-            self.teacher(user)
-            draft_id = int(path.rsplit('/', 1)[-1])
-            with self.db() as db:
-                ensure_paper_drafts(db)
-                row = db.execute('SELECT * FROM paper_drafts WHERE id=?', (draft_id,)).fetchone()
-                if row is None:
-                    fail(404, '找不到這份草稿（可能已批改或超過七天）。')
-                if row['teacher_id'] != user['id'] and not self.is_owner(user, db):
-                    fail(403, '只有建立這份草稿的老師可以開啟。')
-                mine = [{'gradeId': g['id'], 'studentId': g['student_id'],
-                         'score': g['score'], 'confirmed': bool(g['confirmed_at'])}
-                        for g in db.execute(
-                            'SELECT id, student_id, score, confirmed_at FROM paper_grades '
-                            'WHERE draft_id=?', (draft_id,))]
-            return {'draft': {'id': row['id'], 'title': row['title'] or '',
-                              'classId': row['class_id'], 'pages': row['pages'],
-                              'sheets': json.loads(row['sheets']),
-                              'roster': json.loads(row['roster']),
-                              'rotation': row['rotation'],
-                              'rotations': json.loads(row['rotations']) if row['rotations'] else None,
-                              'status': row['status'] or 'pending',
-                              'graded': mine,
-                              'createdAt': row['created_at']}}, headers
-        draft_rematch = re.fullmatch(r'/api/paper-grades/drafts/([1-9]\d{0,17})/rematch', path)
-        if method == 'POST' and draft_rematch:
-            # 二次檢視配對：舊草稿／掃描時認不出人的卷，重新用「尚未配對名單」反查。
-            # 不重掃 PDF 的 AI，只重渲染頁面；已經確認（鎖住）的卷一律不動。
-            self.teacher(user)
-            fields(body, ('consentExternal',), ())
-            if 'consentExternal' in body and type(body['consentExternal']) is not bool:
-                fail(400, '外部上傳同意必須是布林值。')
-            self.ai.consent(body.get('consentExternal'))
-            draft_id = int(draft_rematch.group(1))
-            with self.db() as db:
-                ensure_paper_drafts(db)
-                row = db.execute('SELECT id,teacher_id,pdf,pages,sheets,roster,rotation,rotations '
-                                 'FROM paper_drafts WHERE id=?', (draft_id,)).fetchone()
-                if row is None:
-                    fail(404, '找不到這份草稿（可能已批改或超過七天）。')
-                if row['teacher_id'] != user['id'] and not self.is_owner(user, db):
-                    fail(403, '只有建立這份草稿的老師可以重新配對。')
-            try:
-                sheets = json.loads(row['sheets'])
-                students = json.loads(row['roster'])
-                rots = json.loads(row['rotations']) if row['rotations'] else None
-            except (TypeError, ValueError):
-                fail(400, '這份草稿的資料不完整，請重新掃描。')
-            pages = pdf_page_images(row['pdf'], max_pages=PAPER_SCAN_MAX_PAGES,
-                                    rotation=row['rotation'], rotations=rots)
-            if not pages:
-                fail(422, 'PDF 沒有可讀的頁面。')
-            sheets, second_stats = paper_second_match(self, sheets, students, pages)
-            with self.db() as db:
-                db.execute('UPDATE paper_drafts SET sheets=?, updated_at=? WHERE id=?',
-                           (json.dumps(sheets, ensure_ascii=False), time.time(), draft_id))
-            return {'sheets': sheets, 'secondMatch': second_stats,
-                    'summary': {'papers': len(sheets),
-                                'matched': sum(1 for x in sheets if x.get('studentId')),
-                                'unmatched': sum(1 for x in sheets if not x.get('studentId'))}}, headers
-        draft_pages = re.fullmatch(r'/api/paper-grades/drafts/([1-9]\d{0,17})/pages', path)
-        if method == 'GET' and draft_pages:
-            # 配對表上先看卷面：確認 AI 切的頁對不對，再決定這份卷指派給誰。
-            self.teacher(user)
-            draft_id = int(draft_pages.group(1))
-            raw_q = dict(parse_qsl(query or ''))
-            nums = []
-            for part in str(raw_q.get('nums') or '').split(','):
-                part = part.strip()
-                if part.isdigit():
-                    n = int(part)
-                    if 1 <= n <= PAPER_SCAN_MAX_PAGES:
-                        nums.append(n)
-            if not nums:
-                fail(400, '請指定要看哪幾頁。')
-            with self.db() as db:
-                ensure_paper_drafts(db)
-                row = db.execute('SELECT id, teacher_id, pdf, pages, rotation, rotations '
-                                 'FROM paper_drafts WHERE id=?', (draft_id,)).fetchone()
-                if row is None:
-                    fail(404, '找不到這份草稿（可能已批改或超過七天）。')
-                if row['teacher_id'] != user['id'] and not self.is_owner(user, db):
-                    fail(403, '只有建立這份草稿的老師可以查看卷面。')
-            # 舊草稿沒存逐頁方向：只對要看的這幾頁問 AI 並寫回，免得看到倒過來的卷
-            rots = paper_ensure_rotations(self, row, nums[:10])
-            imgs = pdf_page_images(row['pdf'], max_pages=PAPER_SCAN_MAX_PAGES, only=nums[:10],
-                                   rotations=rots)
-            return {'pages': imgs, 'pageNums': nums[:10]}, headers
-        draft_rotation = re.fullmatch(r'/api/paper-grades/drafts/([1-9]\d{0,17})/rotation', path)
-        if method == 'POST' and draft_rotation:
-            # AI 判錯方向時老師自己改。帶 pages 就只轉那幾頁（某一份卷），
-            # 不帶就是整份草稿一起轉。
-            self.teacher(user)
-            fields(body, ('rotation', 'pages'), ('rotation',))
-            rot = body['rotation']
-            if rot not in (0, 90, 180, 270):
-                fail(400, '方向只能是 0、90、180 或 270。')
-            only_pages = []
-            raw_pages = body.get('pages')
-            if raw_pages not in (None, []):
-                if not isinstance(raw_pages, list):
-                    fail(400, '頁碼格式不正確。')
-                for n in raw_pages:
-                    if isinstance(n, int) and not isinstance(n, bool) and 1 <= n <= PAPER_SCAN_MAX_PAGES:
-                        only_pages.append(n)
-                if not only_pages:
-                    fail(400, '頁碼格式不正確。')
-                only_pages = only_pages[:10]
-            draft_id = int(draft_rotation.group(1))
-            with self.db() as db:
-                ensure_paper_drafts(db)
-                row = db.execute('SELECT teacher_id, pages, rotations FROM paper_drafts WHERE id=?',
-                                 (draft_id,)).fetchone()
-                if row is None:
-                    fail(404, '找不到這份草稿（可能已批改或超過七天）。')
-                if row['teacher_id'] != user['id'] and not self.is_owner(user, db):
-                    fail(403, '只有建立這份草稿的老師可以改方向。')
-                total = max(0, int(row['pages'] or 0))
-                try:
-                    rotations = json.loads(row['rotations']) if row['rotations'] else []
-                except (TypeError, ValueError):
-                    rotations = []
-                if not isinstance(rotations, list) or len(rotations) < total:
-                    rotations = (rotations or []) + [0] * total
-                    rotations = rotations[:total]
-                if only_pages:
-                    for n in only_pages:
-                        if 1 <= n <= total:
-                            rotations[n - 1] = rot
-                else:
-                    rotations = [rot] * total
-                # 單一 rotation 欄位保留給舊版前端：只在這幾頁都同一個角度時才有意義
-                summary = rotations[0] if rotations and len(set(rotations)) == 1 else None
-                db.execute('UPDATE paper_drafts SET rotation=?, rotations=?, updated_at=? WHERE id=?',
-                           (summary, json.dumps(rotations), time.time(), draft_id))
-            return {'rotation': rot, 'rotations': rotations}, headers
-        draft_confirm = re.fullmatch(r'/api/paper-grades/drafts/([1-9]\d{0,17})/confirm', path)
-        if method == 'POST' and draft_confirm:
-            # 老師逐份確認「這份卷確實是這位學生」之後就鎖住，避免誤改；
-            # 要改再按一次「更改」解鎖。
-            self.teacher(user)
-            fields(body, ('index', 'confirmed', 'all'), ('confirmed',))
-            confirmed = body['confirmed']
-            if type(confirmed) is not bool:
-                fail(400, '確認狀態必須是布林值。')
-            do_all = bool(body.get('all'))
-            index = None
-            if not do_all:
-                index = number(body['index'], '卷序號', 0, 999, integer=True)
-            draft_id = int(draft_confirm.group(1))
-            with self.db() as db:
-                ensure_paper_drafts(db)
-                row = db.execute('SELECT teacher_id, sheets FROM paper_drafts WHERE id=?',
-                                 (draft_id,)).fetchone()
-                if row is None:
-                    fail(404, '找不到這份草稿（可能已批改或超過七天）。')
-                if row['teacher_id'] != user['id'] and not self.is_owner(user, db):
-                    fail(403, '只有建立這份草稿的老師可以確認配對。')
-                sheets = json.loads(row['sheets'])
-                if do_all:
-                    for sh in sheets:
-                        sh['confirmed'] = confirmed
-                else:
-                    if not 0 <= index < len(sheets):
-                        fail(400, '卷序號超出範圍。')
-                    sheets[index]['confirmed'] = confirmed
-                db.execute('UPDATE paper_drafts SET sheets=?, updated_at=? WHERE id=?',
-                           (json.dumps(sheets, ensure_ascii=False), time.time(), draft_id))
-            return {'sheets': sheets}, headers
-        if method == 'DELETE' and re.fullmatch(r'/api/paper-grades/drafts/([1-9]\d{0,17})', path):
-            self.teacher(user)
-            draft_id = int(path.rsplit('/', 1)[-1])
-            with self.db() as db:
-                ensure_paper_drafts(db)
-                row = db.execute('SELECT teacher_id FROM paper_drafts WHERE id=?', (draft_id,)).fetchone()
-                if row is None:
-                    return {'ok': True}, headers
-                if row['teacher_id'] != user['id'] and not self.is_owner(user, db):
-                    fail(403, '只有建立這份草稿的老師可以刪除。')
-                db.execute('DELETE FROM paper_drafts WHERE id=?', (draft_id,))
-            return {'ok': True}, headers
+        hit = self._dispatch_drafts(method, path, body, user, query, headers)
+        if hit is not None:
+            return hit
         if method == 'GET' and path == '/api/paper-grades':
             # 紙本批改紀錄：教師看自己建的；管理員看全部。
             self.teacher(user)
