@@ -517,7 +517,10 @@ class Homework:
         return result
 
     def recommendations(self, db, q):
-        candidates = [self.app.question_row(r) for r in db.execute('SELECT * FROM questions WHERE id<>? ORDER BY id', (q['id'],))]
+        # 只讀「有沒有圖」的布林值，不讀整張圖的 BLOB（候選題可能很多，全部讀圖很重）。
+        candidates = [self.app.question_row(r) for r in db.execute(
+            'SELECT id, payload, (figure IS NOT NULL) AS has_figure, '
+            'figure_key, created_at FROM questions WHERE id<>? ORDER BY id', (q['id'],))]
         candidates = [v for v in candidates if self.recommendable(v) and v['topic'] == q['topic']]
         similar = sorted((v for v in candidates if v['level'] == q['level']),
                          key=lambda v: (-len(set(q.get('tags', [])) & set(v.get('tags', []))), v['id']))[:3]

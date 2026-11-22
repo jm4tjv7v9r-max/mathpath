@@ -10033,7 +10033,9 @@ class Application:
             with self.db() as db:
                 q = self.get_question(db, qid)
                 if method == 'GET' and action == 'recommendations':
-                    inventory = [self.question_row(r) for r in db.execute('SELECT * FROM questions WHERE id<>? ORDER BY id', (qid,))]
+                    inventory = [self.question_row(r) for r in db.execute(
+                        'SELECT id, payload, (figure IS NOT NULL) AS has_figure, '
+                        'figure_key, created_at FROM questions WHERE id<>? ORDER BY id', (qid,))]
                     same = [v for v in inventory if v['topic'] == q['topic']]
                     similar = sorted([v for v in same if v['level'] == q['level']],
                                      key=lambda v: (-len(set(q['tags']) & set(v['tags'])), v['id']))[:3]
