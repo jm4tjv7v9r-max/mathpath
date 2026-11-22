@@ -152,7 +152,7 @@ def query_allowed(path, query):
     """
     # 前端靜態資源（app.js / styles.css / styles-enhanced.css）允許帶版本查詢參數，
     # 供 cache-busting（?v=...）強制瀏覽器拉取新版；其餘仍須在白名單內。
-    if path in ('/app.js', '/styles.css', '/styles-enhanced.css'):
+    if path in ('/app.js', '/app-core.js', '/styles.css', '/styles-enhanced.css'):
         return True
     return not query or path in QUERY_PATHS or bool(
         re.fullmatch(r'/api/paper-grades/drafts/[1-9]\d{0,17}/pages', path))
@@ -11522,7 +11522,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.respond(200, payload, headers)
                 return
             static = {'/': ('index.html', 'text/html; charset=utf-8'), '/index.html': ('index.html', 'text/html; charset=utf-8'),
-                      '/app.js': ('app.js', 'text/javascript; charset=utf-8'), '/styles.css': ('styles.css', 'text/css; charset=utf-8'),
+                      '/app.js': ('app.js', 'text/javascript; charset=utf-8'), '/app-core.js': ('app-core.js', 'text/javascript; charset=utf-8'),
+                      '/styles.css': ('styles.css', 'text/css; charset=utf-8'),
                       '/styles-enhanced.css': ('styles-enhanced.css', 'text/css; charset=utf-8')}
             # 前端第三方資源（KaTeX 數學排版）：只放行 vendor/ 底下的已知副檔名，
             # 並確保解析後仍在 vendor 目錄內，不公開原始碼或資料目錄。
