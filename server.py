@@ -6953,7 +6953,12 @@ class Application:
     @staticmethod
     def question_row(row):
         keys = row.keys()
-        has_figure = row['figure'] is not None or ('figure_key' in keys and row['figure_key'] is not None)
+        # 有 has_figure 這個計算欄位時直接用（列表查詢不讀整張圖的 BLOB，只讀布林值）；
+        # 沒有才退回檢查 figure／figure_key 欄位。
+        if 'has_figure' in keys:
+            has_figure = bool(row['has_figure'])
+        else:
+            has_figure = row['figure'] is not None or ('figure_key' in keys and row['figure_key'] is not None)
         # 入題庫時間（舊資料庫補欄前建立的題目沒有，前端顯示為未記錄）
         created_at = row['created_at'] if 'created_at' in keys else None
         return {'id': row['id'], **json.loads(row['payload']), 'figure': has_figure,
@@ -9950,7 +9955,11 @@ class Application:
             with self.db() as db:
                 # 題庫題目先抓好，同時當作作答題目的快取——自主練習的作答指的就是
                 # 這裡的題目，不必再逐筆查一次。
-                question_rows = db.execute('SELECT * FROM questions ORDER BY id').fetchall()
+                # 只讀「有沒有圖」的布林值，不讀整張圖的 BLOB（figure 可達數 MB，
+                # 全部題目一起讀會讓 /api/state 很重）；要圖時才走 /api/questions/{id}/figure。
+                question_rows = db.execute(
+                    'SELECT id, payload, (figure IS NOT NULL) AS has_figure, '
+                    'figure_key, created_at FROM questions ORDER BY id').fetchall()
                 qcache = {('bank', r['id']): self.question_row(r) for r in question_rows}
                 # 學生只看到「有答案且已核驗」的題目；qcache 保留全部，
                 # 否則舊作答紀錄會查不到對應題目而爆掉。
