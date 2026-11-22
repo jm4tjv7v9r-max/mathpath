@@ -6318,6 +6318,12 @@ class Application:
             # 放在 BEGIN 之後：INSERT 會開隱式交易，提前跑會讓這裡的 BEGIN 失敗。
             # 只回填「paper 仍然存在」的題目：刪卷 bug 曾留下指向已刪卷的孤立 questions.paper_id，
             # 若不 JOIN papers 過濾，這些孤兒會在 foreign_keys=ON 下讓整個初始化失敗。
+            # 自愈：先把歷史殘留的孤兒清掉（paper_questions 指向已刪卷的、questions.paper_id
+            # 指向不存在卷的），之後重啟才不會再被同一批髒資料卡住。
+            db.execute("UPDATE questions SET paper_id=NULL WHERE paper_id IS NOT NULL "
+                       "AND paper_id NOT IN (SELECT id FROM papers)")
+            db.execute("DELETE FROM paper_questions WHERE paper_id NOT IN (SELECT id FROM papers)")
+            db.execute("DELETE FROM paper_questions WHERE question_id NOT IN (SELECT id FROM questions)")
             db.execute('INSERT OR IGNORE INTO paper_questions(paper_id, question_id) '
                        'SELECT q.paper_id, q.id FROM questions q '
                        'JOIN papers p ON p.id = q.paper_id WHERE q.paper_id IS NOT NULL')
