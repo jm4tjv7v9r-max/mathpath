@@ -1606,7 +1606,8 @@ def layout_plan(tpl, sections: list[Section], title: str | None = None,
     tail_idx = [i for i in range(last_body + 1, len(blocks)) if blocks[i].role in ('other', 'rule')]
 
     head_paras = [paragraphs[i] for i in head_idx]
-    head = [p.text or '' for p in head_paras]
+    # 卷頭若有 Word 方程式也要用 omml 取（.text 會把方程式吃掉）。
+    head = [(omml.omml_latex_of_paragraph(p).strip() or p.text or '') for p in head_paras]
     if title and head:
         target = _title_index(head_paras)
         if target is not None:
@@ -1712,8 +1713,14 @@ def layout_plan(tpl, sections: list[Section], title: str | None = None,
             'answerRule': answer_rule,
             'sections': out_sections,
             'score': paper_score_summary(sections),
-            'closing': [paragraphs[i].text for i in tail_idx
-                        if (paragraphs[i].text or '').strip()]}
+            # 卷尾段落要用 omml 取出含方程式的完整文字：python-docx 的 .text
+            # 只給一般 run，會把 Word 方程式（證明 $x^2$…）整段吃掉，
+            # 讓重新匯出的 LaTeX 出現「證明 ，並求 的值」這種數學式消失的漏洞。
+            'closing': [(omml.omml_latex_of_paragraph(paragraphs[i]).strip()
+                         or paragraphs[i].text.strip())
+                        for i in tail_idx
+                        if (omml.omml_latex_of_paragraph(paragraphs[i]).strip()
+                            or paragraphs[i].text.strip())]}
 
 
 def render_sections(template_path: str, sections: list[Section], out_path: str,

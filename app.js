@@ -408,6 +408,15 @@ function supportsWebp(){if(webpSupported===null){try{const probe=document.create
 function imageDataUrl(canvas){return supportsWebp()?canvas.toDataURL('image/webp',0.8):canvas.toDataURL('image/png');}
 // 題目圖形要用 PNG：Word（python-docx）不認得 WebP，手繪圖存成 WebP 會在匯出 Word 時消失。
 function figurePngDataUrl(canvas){return canvas.toDataURL('image/png');}
+// 手繪圖輸出：在另一張空白畫布重畫一次，只留圖形本身。
+// 直接對編輯用畫布 toDataURL 會把對齊用的格仔和選取框一起存進去。
+function figureSketchDataUrl(canvas,strokes){
+  if(!canvas)return '';
+  const out=document.createElement('canvas');
+  out.width=canvas.width;out.height=canvas.height;
+  paintFigureCanvas(out,strokes||[],null,false);
+  return figurePngDataUrl(out);
+}
 function canvasImage(){const c=$('#hand-canvas'),out=document.createElement('canvas');out.width=c.width;out.height=c.height;const ctx=out.getContext('2d');ctx.fillStyle='#fff';ctx.fillRect(0,0,out.width,out.height);ctx.drawImage(c,0,0);return imageDataUrl(out);}
 // 書寫區大小：題目長、步驟多就需要更高的畫布。學生自己選，選擇會記在瀏覽器裡。
 // 改變大小只換畫布尺寸，筆跡用原本的座標保留（縮小只是暫時看不到，放大就回來）。
@@ -608,8 +617,8 @@ function renderFigureStudio(){
     const apply=$('#fig-sketch-apply');
     if(apply)apply.onclick=()=>{
       if(!figStudio.sketch.strokes.length)return toast('畫布是空的，先在方格上畫出圖形。');
-      // 固定用 PNG：WebP 圖形存進題庫後，匯出 Word 時 python-docx 畫不出來會直接消失。
-      const data=figurePngDataUrl(sketchCanvas);
+      // 固定用 PNG，且重畫到乾淨畫布：不要把手繪用的格仔存進題目圖。
+      const data=figureSketchDataUrl(sketchCanvas,figStudio.sketch.strokes);
       if(!data)return toast('手繪圖形無法轉成圖片，請再試一次。');
       // 手繪圖沒有規格可比對，清掉自動檢查的結果，避免顯示過期的結論。
       figStudio.figure=data;figStudio.check=null;figStudio.spec=null;
@@ -947,7 +956,7 @@ function aiDraftModal(draft,kind,qid){
 async function fileData(file,allowed,maxMB){if(!file)throw new Error('請先選擇檔案。');const type=file.type||'';const ok=allowed.includes(type)||allowed.some(a=>a[0]==='.'&&new RegExp('\\'+a+'$','i').test(file.name||''));if(!ok)throw new Error('不支援此檔案類型，請選擇 PDF、Word (.docx)、PNG、JPG 或 WebP。');const limit=maxMB||(type==='application/pdf'?20:10);if(file.size>limit*1024*1024)throw new Error(`檔案不可超過 ${limit} MB。`);return await new Promise((resolve,reject)=>{const r=new FileReader();r.onload=()=>resolve(r.result);r.onerror=()=>reject(new Error('檔案讀取失敗。'));r.readAsDataURL(file);});}
 // 題目圖形：優先用教師上傳／貼上的圖片（課本截圖、GeoGebra 匯出等），
 // 沒有圖片才用方格畫布的手繪圖。
-function figureDataUrl(){if(figImage)return figImage;const c=$('#figure-canvas');return c?figurePngDataUrl(c):'';}
+function figureDataUrl(){if(figImage)return figImage;const c=$('#figure-canvas');return c?figureSketchDataUrl(c,figSketch&&figSketch.strokes):'';}
 // ── 學生相片作答：上傳前先在瀏覽器縮圖並轉 WebP ──
 // 手機原檔動輒 3～4 MB，直接送上網盤會讓學生在弱網上等很久，也讓空間需求暴增約 20 倍；
 // 縮到長邊 1600px 後通常只剩 100～200 KB，批改看得清楚、上傳快、備份也小。
@@ -1289,14 +1298,17 @@ function figureSelectionPath(ctx,item){
   return true;
 }
 
-function paintFigureCanvas(canvas,strokes,selected){
+function paintFigureCanvas(canvas,strokes,selected,grid=true){
   if(!canvas)return;
   const ctx=canvas.getContext('2d');
   ctx.fillStyle='#fff';ctx.fillRect(0,0,canvas.width,canvas.height);
-  ctx.setLineDash([]);
-  ctx.strokeStyle=FIGURE_GRID;ctx.lineWidth=1;
-  for(let x=30;x<canvas.width;x+=30){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,canvas.height);ctx.stroke();}
-  for(let y=30;y<canvas.height;y+=30){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(canvas.width,y);ctx.stroke();}
+  // 格仔只是畫圖時的對齊輔助；輸出成題目圖形時不能一起存進去。
+  if(grid){
+    ctx.setLineDash([]);
+    ctx.strokeStyle=FIGURE_GRID;ctx.lineWidth=1;
+    for(let x=30;x<canvas.width;x+=30){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,canvas.height);ctx.stroke();}
+    for(let y=30;y<canvas.height;y+=30){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(canvas.width,y);ctx.stroke();}
+  }
   ctx.lineCap='round';ctx.lineJoin='round';ctx.strokeStyle=FIGURE_INK;
   for(const item of strokes){
     const pts=(item&&item.points)||[];
@@ -1341,7 +1353,7 @@ function paintFigureCanvas(canvas,strokes,selected){
   ctx.setLineDash([]);
   // 選取中的圖形畫一個虛線框，讓教師知道拖曳會移動哪一項；
   // 縮放或旋轉過的外框也跟著傾斜／放大，才看得出目前的實際範圍。
-  if(selected&&strokes.indexOf(selected)>=0){
+  if(grid&&selected&&strokes.indexOf(selected)>=0){
     if(figureSelectionPath(ctx,selected)){
       ctx.setLineDash([6,5]);ctx.lineWidth=2;ctx.strokeStyle=FIGURE_PICK;
       ctx.fillStyle='rgba(35,124,92,.08)';

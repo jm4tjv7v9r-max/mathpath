@@ -1615,6 +1615,30 @@ class TexMatchesTheTemplateTests(unittest.TestCase):
         return paper_format.layout_plan(self.template(), sections,
                                         '第一段 初三級 數學科 大測')
 
+    def test_closing_keeps_word_equations_in_latex(self):
+        """卷尾「證明 $…$，並求 $…$ 的值」的 Word 方程式要出現在 LaTeX。
+
+        以前 closing 用 paragraph.text 抽取，只拿到一般文字 run，方程式那幾段
+        全被吃掉，匯出的 .tex 就變成「證明 ，並求 的值」。
+        """
+        d = self.template()
+        p = d.add_paragraph()
+        p.add_run('(1)\t證明 ')
+        p._p.append(omml.latex_to_omml(r'x^2+y^2=z^2'))
+        p.add_run(' ，並求 ')
+        p._p.append(omml.latex_to_omml(r'\frac{a}{b}'))
+        p.add_run(' 的值；')
+        buf = io.BytesIO()
+        d.save(buf)
+        sections = [paper_format.Section(title='一、選擇題', questions=[
+            paper_format.Question(stem='下列何者正確？', marks=4)])]
+        plan = paper_format.layout_plan(Document(io.BytesIO(buf.getvalue())), sections)
+        tex = latex_export.to_tex_plan(plan)
+        self.assertIn(r'$x^{2}+y^{2}=z^{2}$', tex, '卷尾第一條方程式要出現')
+        self.assertIn(r'$\frac{a}{b}$', tex, '卷尾分數方程式要出現')
+        self.assertIn('證明', tex)
+        self.assertIn('的值', tex)
+
     def test_head_keeps_the_template_lines_and_sizes(self):
         tex = latex_export.to_tex_plan(self.plan())
         self.assertIn('培華中學 2025/2026 年度', tex, '範本的校名／年度那一行不能不見')
