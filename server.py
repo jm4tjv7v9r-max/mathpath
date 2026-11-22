@@ -10328,6 +10328,102 @@ class Application:
                                 'sections': paper_format.sections_to_dict(sections)}}, headers
         return None
 
+    def _dispatch_auth(self, method, path, body, user, token_hash, ip, headers):
+        """登入與公開資料：session／login／比賽列表與寫入。
+
+        從 dispatch 抽出的內聚路由組；沒有命中回 None，讓 dispatch 繼續往下試。
+        """
+        if method == 'GET' and path == '/api/session':
+            payload = self.user_public(user) if user else None
+            if payload:
+                # 前端靠 isOwner 決定要不要顯示「新增教師」與資料管理。
+                payload['isOwner'] = self.is_owner(user)
+            return {'user': payload, 'notice': self.notice(user)}, headers
+        if method == 'POST' and path == '/api/login':
+            fields(body, ('username', 'password', 'remember'), ('username', 'password'))
+            remember = body.get('remember', False)
+            if type(remember) is not bool:
+                fail(400, 'remember 必須是布林值。')
+            seconds = SESSION_SECONDS_LONG if remember else SESSION_SECONDS
+            username = text(body['username'], '帳戶名稱', 64)
+            pw = text(body['password'], '密碼', 256, strip=False)
+            self.rate_login(ip, username)
+            with self.db() as db:
+                db.execute('BEGIN IMMEDIATE')
+                row = db.execute('SELECT * FROM users WHERE username=?', (username,)).fetchone()
+                ok = password_matches(pw, row['password'] if row else self.dummy_hash)
+                if not row or not ok:
+                    fail(401, '帳戶名稱或密碼錯誤。')
+                # 停用後仍然驗密碼，只是不發 session——避免「換個密碼就能登入」的誤會。
+                if row['disabled']:
+                    fail(403, '這個帳號已停用，請聯絡教師或管理員。')
+                token = secrets.token_urlsafe(32)
+                if token_hash:
+                    db.execute('DELETE FROM sessions WHERE token_hash=?', (token_hash,))
+                db.execute('DELETE FROM sessions WHERE expires<=?', (time.time(),))
+                db.execute('INSERT INTO sessions VALUES(?,?,?)',
+                           (hashlib.sha256(token.encode()).hexdigest(), row['id'], time.time() + seconds))
+                # 登入紀錄：管理員可查教師、教師可查學生（只留最近 500 筆）
+                db.execute('INSERT INTO login_events(user_id,role,at,ip) VALUES(?,?,?,?)',
+                           (row['id'], row['role'], utc_now(), str(ip or '')[:64]))
+                db.execute('DELETE FROM login_events WHERE user_id=? AND id NOT IN '
+                           '(SELECT id FROM login_events WHERE user_id=? ORDER BY id DESC LIMIT 500)',
+                           (row['id'], row['id']))
+                # 每日首次登入的 +10 金幣（同一天重複登入不會再發）。
+                daily_coin = grant_daily_coins(db, row['id']) if row['role'] == 'student' else False
+            headers['Set-Cookie'] = self.cookie(token, seconds=seconds)
+            # 與 /api/session 一致：前端靠 isOwner 決定要不要顯示管理員功能。
+            login_user = self.user_public(row)
+            login_user['isOwner'] = self.is_owner(row)
+            # dailyCoins：今天第一次登入時為 True，前端可以提示「今日登入 +10 金幣」。
+            return {'user': login_user, 'notice': self.notice(row),
+                    'dailyCoins': daily_coin}, headers
+        # ── 公開端點：不需要登入 ──────────────────────────────────
+        if method == 'GET' and path == '/api/contests':
+            # 數學比賽清單：公開資料（不含個人資料），訪客也看得到（頂欄「比賽」對訪客也顯示）。
+            with self.db() as db:
+                rows = db.execute('SELECT * FROM competitions ORDER BY id DESC').fetchall()
+            updated = max((r['found_at'] for r in rows), default=None)
+            return {'contests': [contest_public(r) for r in rows],
+                    'updatedAt': updated}, headers
+
+        if method == 'POST' and path == '/api/contests/ingest':
+            # 每週排程（自動搜尋）用這個寫入；靠 MATH_INGEST_TOKEN 認證，
+            # 不是靠登入 session——排程是外部程式，不會有 Cookie。
+            expected = os.environ.get('MATH_INGEST_TOKEN', '').strip()
+            if not expected:
+                fail(403, '未設定 MATH_INGEST_TOKEN，暫不接受外部寫入。')
+            if not hmac.compare_digest(str(body.get('token') or ''), expected):
+                fail(403, '寫入權杖不正確。')
+            items = body.get('items')
+            if not isinstance(items, list) or not 1 <= len(items) <= 50:
+                fail(400, '一次最多寫入 50 筆比賽。')
+            saved = 0
+            with self.db() as db:
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    title = text(item.get('title') or '', '比賽名稱', 200)
+                    url = text(item.get('url') or '', '連結', 400, empty=True)
+                    db.execute(
+                        'INSERT INTO competitions(title,organizer,region,audience,deadline,event_date,'
+                        'url,summary,location,source,found_at) VALUES(?,?,?,?,?,?,?,?,?,?,?) '
+                        'ON CONFLICT(title,url) DO UPDATE SET organizer=excluded.organizer,'
+                        'region=excluded.region,audience=excluded.audience,deadline=excluded.deadline,'
+                        'event_date=excluded.event_date,summary=excluded.summary,'
+                        'location=excluded.location,source=excluded.source,found_at=excluded.found_at',
+                        (title, text(item.get('organizer') or '', '主辦', 120, empty=True),
+                         contest_region(item.get('region')),
+                         text(item.get('audience') or '', '參賽對象', 120, empty=True),
+                         item.get('deadline') or None, item.get('eventDate') or None, url,
+                         text(item.get('summary') or '', '說明', 600, empty=True),
+                         text(item.get('location') or '', '地點', 200, empty=True),
+                         text(item.get('source') or '每週自動搜尋', '來源', 200, empty=True),
+                         utc_now()))
+                    saved += 1
+            return {'saved': saved}, headers
+        return None
+
     def dispatch(self, method, path, body, user, token_hash, ip, query=''):
         headers = {}
         # 配額按「誰在呼叫」計：登入者用帳號，訪客用 IP（登入頁與同意前的呼叫）。
@@ -10480,95 +10576,9 @@ class Application:
             if self.init_error:
                 fail(503, f'伺服器初始化失敗：{self.init_error}')
             fail(503, '伺服器正在初始化，請稍候再試。')
-        if method == 'GET' and path == '/api/session':
-            payload = self.user_public(user) if user else None
-            if payload:
-                # 前端靠 isOwner 決定要不要顯示「新增教師」與資料管理。
-                payload['isOwner'] = self.is_owner(user)
-            return {'user': payload, 'notice': self.notice(user)}, headers
-        if method == 'POST' and path == '/api/login':
-            fields(body, ('username', 'password', 'remember'), ('username', 'password'))
-            remember = body.get('remember', False)
-            if type(remember) is not bool:
-                fail(400, 'remember 必須是布林值。')
-            seconds = SESSION_SECONDS_LONG if remember else SESSION_SECONDS
-            username = text(body['username'], '帳戶名稱', 64)
-            pw = text(body['password'], '密碼', 256, strip=False)
-            self.rate_login(ip, username)
-            with self.db() as db:
-                db.execute('BEGIN IMMEDIATE')
-                row = db.execute('SELECT * FROM users WHERE username=?', (username,)).fetchone()
-                ok = password_matches(pw, row['password'] if row else self.dummy_hash)
-                if not row or not ok:
-                    fail(401, '帳戶名稱或密碼錯誤。')
-                # 停用後仍然驗密碼，只是不發 session——避免「換個密碼就能登入」的誤會。
-                if row['disabled']:
-                    fail(403, '這個帳號已停用，請聯絡教師或管理員。')
-                token = secrets.token_urlsafe(32)
-                if token_hash:
-                    db.execute('DELETE FROM sessions WHERE token_hash=?', (token_hash,))
-                db.execute('DELETE FROM sessions WHERE expires<=?', (time.time(),))
-                db.execute('INSERT INTO sessions VALUES(?,?,?)',
-                           (hashlib.sha256(token.encode()).hexdigest(), row['id'], time.time() + seconds))
-                # 登入紀錄：管理員可查教師、教師可查學生（只留最近 500 筆）
-                db.execute('INSERT INTO login_events(user_id,role,at,ip) VALUES(?,?,?,?)',
-                           (row['id'], row['role'], utc_now(), str(ip or '')[:64]))
-                db.execute('DELETE FROM login_events WHERE user_id=? AND id NOT IN '
-                           '(SELECT id FROM login_events WHERE user_id=? ORDER BY id DESC LIMIT 500)',
-                           (row['id'], row['id']))
-                # 每日首次登入的 +10 金幣（同一天重複登入不會再發）。
-                daily_coin = grant_daily_coins(db, row['id']) if row['role'] == 'student' else False
-            headers['Set-Cookie'] = self.cookie(token, seconds=seconds)
-            # 與 /api/session 一致：前端靠 isOwner 決定要不要顯示管理員功能。
-            login_user = self.user_public(row)
-            login_user['isOwner'] = self.is_owner(row)
-            # dailyCoins：今天第一次登入時為 True，前端可以提示「今日登入 +10 金幣」。
-            return {'user': login_user, 'notice': self.notice(row),
-                    'dailyCoins': daily_coin}, headers
-        # ── 公開端點：不需要登入 ──────────────────────────────────
-        if method == 'GET' and path == '/api/contests':
-            # 數學比賽清單：公開資料（不含個人資料），訪客也看得到（頂欄「比賽」對訪客也顯示）。
-            with self.db() as db:
-                rows = db.execute('SELECT * FROM competitions ORDER BY id DESC').fetchall()
-            updated = max((r['found_at'] for r in rows), default=None)
-            return {'contests': [contest_public(r) for r in rows],
-                    'updatedAt': updated}, headers
-
-        if method == 'POST' and path == '/api/contests/ingest':
-            # 每週排程（自動搜尋）用這個寫入；靠 MATH_INGEST_TOKEN 認證，
-            # 不是靠登入 session——排程是外部程式，不會有 Cookie。
-            expected = os.environ.get('MATH_INGEST_TOKEN', '').strip()
-            if not expected:
-                fail(403, '未設定 MATH_INGEST_TOKEN，暫不接受外部寫入。')
-            if not hmac.compare_digest(str(body.get('token') or ''), expected):
-                fail(403, '寫入權杖不正確。')
-            items = body.get('items')
-            if not isinstance(items, list) or not 1 <= len(items) <= 50:
-                fail(400, '一次最多寫入 50 筆比賽。')
-            saved = 0
-            with self.db() as db:
-                for item in items:
-                    if not isinstance(item, dict):
-                        continue
-                    title = text(item.get('title') or '', '比賽名稱', 200)
-                    url = text(item.get('url') or '', '連結', 400, empty=True)
-                    db.execute(
-                        'INSERT INTO competitions(title,organizer,region,audience,deadline,event_date,'
-                        'url,summary,location,source,found_at) VALUES(?,?,?,?,?,?,?,?,?,?,?) '
-                        'ON CONFLICT(title,url) DO UPDATE SET organizer=excluded.organizer,'
-                        'region=excluded.region,audience=excluded.audience,deadline=excluded.deadline,'
-                        'event_date=excluded.event_date,summary=excluded.summary,'
-                        'location=excluded.location,source=excluded.source,found_at=excluded.found_at',
-                        (title, text(item.get('organizer') or '', '主辦', 120, empty=True),
-                         contest_region(item.get('region')),
-                         text(item.get('audience') or '', '參賽對象', 120, empty=True),
-                         item.get('deadline') or None, item.get('eventDate') or None, url,
-                         text(item.get('summary') or '', '說明', 600, empty=True),
-                         text(item.get('location') or '', '地點', 200, empty=True),
-                         text(item.get('source') or '每週自動搜尋', '來源', 200, empty=True),
-                         utc_now()))
-                    saved += 1
-            return {'saved': saved}, headers
+        hit = self._dispatch_auth(method, path, body, user, token_hash, ip, headers)
+        if hit is not None:
+            return hit
 
         if user is None:
             fail(401, '請先登入。')
