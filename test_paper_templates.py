@@ -1684,11 +1684,13 @@ class TexMatchesTheTemplateTests(unittest.TestCase):
         return paper_format.layout_plan(self.template(), sections,
                                         '第一段 初三級 數學科 大測')
 
-    def test_closing_keeps_word_equations_in_latex(self):
-        """卷尾「證明 $…$，並求 $…$ 的值」的 Word 方程式要出現在 LaTeX。
+    def test_template_bonus_question_is_not_copied_into_latex(self):
+        """範本卷尾的附加題（證明／求極限那些）不能跑進新卷的 .tex。
 
-        以前 closing 用 paragraph.text 抽取，只拿到一般文字 run，方程式那幾段
-        全被吃掉，匯出的 .tex 就變成「證明 ，並求 的值」。
+        範本裡最後一題之後、沒有題號的「(1) 證明…，並求…」會被歸成 other。
+        Word 那份早用 _is_closing_marker 擋掉，但 LaTeX 的 layout_plan 以前
+        把所有 other 都當卷尾複製，結果新卷最後冒出範本的附加題（老師回報過）。
+        同時要確認真正的卷尾標記「— 試卷完 —」仍留著。
         """
         d = self.template()
         p = d.add_paragraph()
@@ -1697,16 +1699,37 @@ class TexMatchesTheTemplateTests(unittest.TestCase):
         p.add_run(' ，並求 ')
         p._p.append(omml.latex_to_omml(r'\frac{a}{b}'))
         p.add_run(' 的值；')
+        d.add_paragraph('— 試卷完 —')
+        buf = io.BytesIO()
+        d.save(buf)
+        sections = [paper_format.Section(title='一、選擇題', questions=[
+            paper_format.Question(stem='下列何者正確？', marks=4)])]
+        plan = paper_format.layout_plan(Document(io.BytesIO(buf.getvalue())), sections)
+        self.assertEqual(plan['closing'], ['— 試卷完 —'], '只留真正的卷尾標記')
+        tex = latex_export.to_tex_plan(plan)
+        self.assertNotIn('x^{2}+y^{2}=z^{2}', tex, '範本附加題的數學式不能出現')
+        self.assertNotIn('證明', tex, '範本附加題的文字不能出現')
+        self.assertIn('試卷完', tex, '真正的卷尾標記要保留')
+
+    def test_closing_keeps_word_equations_in_latex(self):
+        """真正的卷尾標記若含 Word 方程式，omml 要能把數學式一起帶過來。
+
+        注意：這裡測的是「卷尾標記本身」（含『完』字，會通過 _is_closing_marker），
+        不是範本附加題——後者根本不該進 closing，見上一個測試。
+        """
+        d = self.template()
+        p = d.add_paragraph()
+        p.add_run('— 試卷完（')
+        p._p.append(omml.latex_to_omml(r'\checkmark'))
+        p.add_run('）—')
         buf = io.BytesIO()
         d.save(buf)
         sections = [paper_format.Section(title='一、選擇題', questions=[
             paper_format.Question(stem='下列何者正確？', marks=4)])]
         plan = paper_format.layout_plan(Document(io.BytesIO(buf.getvalue())), sections)
         tex = latex_export.to_tex_plan(plan)
-        self.assertIn(r'$x^{2}+y^{2}=z^{2}$', tex, '卷尾第一條方程式要出現')
-        self.assertIn(r'$\frac{a}{b}$', tex, '卷尾分數方程式要出現')
-        self.assertIn('證明', tex)
-        self.assertIn('的值', tex)
+        self.assertIn('checkmark', tex, '卷尾標記內的方程式要出現（omml 取出，tex_of 去反斜線）')
+        self.assertIn('試卷完', tex)
 
     def test_head_keeps_the_template_lines_and_sizes(self):
         tex = latex_export.to_tex_plan(self.plan())

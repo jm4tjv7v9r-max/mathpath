@@ -1630,7 +1630,12 @@ def layout_plan(tpl, sections: list[Section], title: str | None = None,
     head_idx = [i for i in range(first_section) if blocks[i].role in ('other', 'rule', 'blank')]
     last_body = max((i for i, b in enumerate(blocks) if b.role in ('question', 'answer_line')),
                     default=-1)
-    tail_idx = [i for i in range(last_body + 1, len(blocks)) if blocks[i].role in ('other', 'rule')]
+    # 與 Word 的 _render_into 同一道關卡：只複製「— 試卷完 —」這類短標記。
+    # 範本裡沒題號的「附加題：證明…」會被歸成 other，若一律收進 closing，
+    # LaTeX 卷尾就會冒出範本原本的附加題（Word 那份早就靠 _is_closing_marker 擋住）。
+    tail_idx = [i for i in range(last_body + 1, len(blocks))
+                if blocks[i].role == 'rule' or (blocks[i].role == 'other'
+                                                and _is_closing_marker(blocks[i].text))]
 
     head_paras = [paragraphs[i] for i in head_idx]
     # 卷頭若有 Word 方程式也要用 omml 取（.text 會把方程式吃掉）。
