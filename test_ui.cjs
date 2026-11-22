@@ -57,7 +57,7 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
     // 否則腳本 404、app 起不來，登入按鈕永遠不會出現。
     const staticFiles=['/app.js','/app-core.js','/app-data.js','/app-ui.js','/app-classroom.js',
                        '/app-papers.js','/app-scoregrid.js','/app-admin.js','/app-coins.js',
-                       '/app-layout.js','/styles.css','/styles-enhanced.css'];
+                       '/app-layout.js','/app-pdf.js','/styles.css','/styles-enhanced.css'];
     if(staticFiles.includes(url.pathname))return route.fulfill({contentType:url.pathname.endsWith('js')?'application/javascript':'text/css',body:fs.readFileSync(path.join(__dirname,url.pathname.slice(1)),'utf8')});
     if(url.pathname.startsWith('/vendor/katex/')){const rel=url.pathname.slice(1);const mime=rel.endsWith('.js')?'application/javascript':rel.endsWith('.css')?'text/css':rel.endsWith('.woff2')?'font/woff2':'application/octet-stream';return route.fulfill({contentType:mime,body:fs.readFileSync(path.join(__dirname,rel))});}
     if(url.pathname.startsWith('/vendor/katex/')){const rel=url.pathname.slice(1);const mime=rel.endsWith('.js')?'application/javascript':rel.endsWith('.css')?'text/css':rel.endsWith('.woff2')?'font/woff2':'application/octet-stream';return route.fulfill({contentType:mime,body:fs.readFileSync(path.join(__dirname,rel))});}

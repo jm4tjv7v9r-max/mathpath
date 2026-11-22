@@ -154,7 +154,7 @@ def query_allowed(path, query):
     # 供 cache-busting（?v=...）強制瀏覽器拉取新版；其餘仍須在白名單內。
     if path in ('/app.js', '/app-core.js', '/app-data.js', '/app-ui.js', '/app-classroom.js',
                 '/app-papers.js', '/app-scoregrid.js', '/app-admin.js',
-                '/app-coins.js', '/app-layout.js',
+                '/app-coins.js', '/app-layout.js', '/app-pdf.js',
                 '/styles.css', '/styles-enhanced.css'):
         return True
     return not query or path in QUERY_PATHS or bool(
@@ -11562,6 +11562,7 @@ class Handler(BaseHTTPRequestHandler):
                       '/app-admin.js': ('app-admin.js', 'text/javascript; charset=utf-8'),
                       '/app-coins.js': ('app-coins.js', 'text/javascript; charset=utf-8'),
                       '/app-layout.js': ('app-layout.js', 'text/javascript; charset=utf-8'),
+                      '/app-pdf.js': ('app-pdf.js', 'text/javascript; charset=utf-8'),
                       '/styles.css': ('styles.css', 'text/css; charset=utf-8'),
                       '/styles-enhanced.css': ('styles-enhanced.css', 'text/css; charset=utf-8')}
             # 前端第三方資源（KaTeX 數學排版）：只放行 vendor/ 底下的已知副檔名，

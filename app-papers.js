@@ -113,6 +113,7 @@ function paperCardHtml(p,newId){
     <div class="paper-actions">
       <button class="primary" data-paper-assign="${p.id}" ${!p.importedCount?'disabled title="這份試卷還沒匯入題庫；先按下方「一鍵匯入題庫」才能出作業"':''}>出作業</button>
       ${p.templateId?`<button class="secondary" data-paper-docx="${p.id}" title="用原範本重新下載 Word">Word</button>`:''}
+      <button class="secondary" data-paper-pdf="${p.id}" title="下載 PDF">PDF</button>
       <button class="secondary" data-paper-tex="${p.id}" title="下載 LaTeX（.tex）">.tex</button>
       <button class="text-button" data-paper-del="${p.id}" style="color:#b8453b">刪除</button>
     </div>
@@ -200,6 +201,19 @@ async function papersPage(){
     try{
       const res=await api('/api/papers/'+b.dataset.paperDocx+'/to-docx',{});
       const a=document.createElement('a');a.href=res.docx;a.download=res.filename;a.click();
+    }catch(e){toast(e.message);}
+    b.disabled=false;b.textContent=old;
+  });
+  $$('[data-paper-pdf]').forEach(b=>b.onclick=async()=>{
+    const old=b.textContent;b.disabled=true;b.textContent='產生中…';
+    try{
+      const res=await api('/api/papers/'+b.dataset.paperPdf);
+      const p=res.paper||{};
+      await downloadPaperPdf({
+        title:p.title||'', meta:{grade:p.grade,term:p.term}, sections:p.sections||[],
+        filename:(p.title||'試卷').replace(/[\\/:*?"<>|]/g,'_')+'.pdf',
+        onStatus:t=>{b.textContent=t;}
+      });
     }catch(e){toast(e.message);}
     b.disabled=false;b.textContent=old;
   });
@@ -873,6 +887,7 @@ async function generatePaperModal(){
         ${warn.length?`<div class="inline-error">${esc(warn.join('；'))}</div>`:''}
         <div class="gen-done-actions">
           <button class="primary" id="gen-dl-docx">${icon('file')}下載 Word</button>
+          <button class="secondary" id="gen-dl-pdf">下載 PDF</button>
           <button class="secondary" id="gen-dl-tex">下載 LaTeX（.tex）</button>
           <button class="text-button" id="gen-done-close">關閉</button>
         </div>
@@ -888,6 +903,16 @@ async function generatePaperModal(){
       if(h2){h2.tabIndex=-1;h2.focus();}   // 內容換過後焦點會掉到 body，ESC 就關不掉視窗
       $('#gen-dl-docx').onclick=()=>{
         const a=document.createElement('a');a.href=docx;a.download=fname;a.click();
+      };
+      $('#gen-dl-pdf').onclick=async ev=>{
+        const b=ev.currentTarget, old2=b.textContent;
+        b.disabled=true;b.textContent='排版中…';
+        await downloadPaperPdf({
+          title:p.title||'', meta:base||{}, sections:chosen,
+          filename:fname.replace(/\.docx$/i,'.pdf'),
+          onStatus:t=>{b.textContent=t;}
+        });
+        b.disabled=false;b.textContent=old2;
       };
       $('#gen-dl-tex').onclick=async ev=>{
         const b=ev.currentTarget, old2=b.textContent;

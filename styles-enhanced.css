@@ -826,3 +826,38 @@ html[data-theme="night"] .gen-warn{
 html[data-theme="night"] .gen-qfig img{
   background: #fff;
 }
+
+/* ── 一鍵下載 PDF：A4 列印版（不跟隨 --fs 字級設定，維持固定版位） ── */
+#pdf-export-stage{
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: -10000;
+  width: 794px;
+  padding: 48px;
+  box-sizing: border-box;
+  background: #fff;
+  color: #000;
+  font-family: "PingFang TC","Microsoft JhengHei","Noto Sans CJK TC",serif;
+  font-size: 15px;
+  line-height: 1.65;
+  pointer-events: none;
+}
+#pdf-export-stage *{box-sizing: border-box;}
+#pdf-export-stage .pdfp-title{font-size: 24px;font-weight: 700;text-align: center;margin: 0 0 8px;}
+#pdf-export-stage .pdfp-sub{font-size: 15px;text-align: center;margin: 0 0 6px;}
+#pdf-export-stage .pdfp-info{font-size: 14px;text-align: center;margin: 0 0 8px;}
+#pdf-export-stage .pdfp-rule{border-bottom: 1px solid #333;margin: 6px 0 18px;}
+#pdf-export-stage .pdfp-sec{font-size: 17px;font-weight: 700;margin: 16px 0 8px;}
+#pdf-export-stage .pdfp-q{display: flex;align-items: flex-start;gap: 6px;margin: 0 0 10px;page-break-inside: avoid;}
+#pdf-export-stage .pdfp-num{flex: 0 0 30px;font-weight: 600;}
+#pdf-export-stage .pdfp-qbody{flex: 1;min-width: 0;}
+#pdf-export-stage .pdfq-stem{margin: 0 0 4px;}
+#pdf-export-stage .pdfq-opts{margin: 2px 0 2px 22px;}
+#pdf-export-stage .pdfq-fig{margin: 6px 0 6px 22px;}
+#pdf-export-stage .pdfq-fig img{display: block;max-width: 100%;height: auto;}
+#pdf-export-stage .pdfq-lines{margin: 8px 0 4px 22px;}
+#pdf-export-stage .pdfq-lines span{display: block;border-bottom: 1px solid #bbb;height: 24px;}
+#pdf-export-stage .pdfp-end{text-align: center;margin-top: 22px;font-size: 14px;}
+#pdf-export-stage .pdfp-measure{margin: 0;}
+#pdf-export-stage .katex{font-size: 1em;}
