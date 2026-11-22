@@ -10839,6 +10839,46 @@ class Application:
                     'coins': summary}, headers
         return None
 
+    def _dispatch_admin(self, method, path, body, user, headers):
+        """管理員工具：健康資訊、網盤、備份上傳、整理資料庫、學年重置。
+
+        從 dispatch 抽出的內聚路由組；沒有命中回 None，讓 dispatch 繼續往下試。
+        """
+        if path == '/api/admin/health' and method == 'GET':
+            # 完整健康資訊（網盤 bucket／endpoint、模型名稱、AI 錯誤細節）。
+            # 原本掛在公開的 /api/health，等於未登入就能做基礎設施偵察。
+            self.require_owner(user)
+            return {'status': 'ok', 'initialized': self.initialized,
+                    'storage': self.storage.public(), 'ai': self.ai.public(),
+                    'metrics': self.ai.metrics.snapshot()}, headers
+        if path == '/api/admin/storage' and method == 'GET':
+            self.require_owner(user)
+            with self.db() as db:
+                return self.dataadmin.stats(db), headers
+        if path == '/api/admin/backup/upload' and method == 'POST':
+            # 手動把「資料庫快照＋題庫歸檔」上傳到網盤（排程備份用同一個方法）。
+            self.require_owner(user)
+            fields(body, (), ())
+            result = self.dataadmin.backup_to_storage('manual')
+            with self.db() as db:
+                result['status'] = self.dataadmin.backup_status(db)
+            return result, headers
+        if path == '/api/admin/vacuum' and method == 'POST':
+            self.require_owner(user)
+            fields(body, (), ())
+            return self.dataadmin.vacuum(), headers
+        if path == '/api/admin/reset/students' and method == 'POST':
+            # 學年重置：清空學生資料與帳號，題庫與教師帳號一律保留。只有管理員能執行。
+            self.require_owner(user)
+            fields(body, ('confirm',), ('confirm',))
+            confirm = text(body['confirm'], '確認字串', 40, strip=False, empty=True)
+            with self.db() as db:
+                db.execute('BEGIN IMMEDIATE')
+                result = self.dataadmin.reset_students(db, confirm)
+            result['vacuum'] = self.dataadmin.vacuum()
+            return result, headers
+        return None
+
     def dispatch(self, method, path, body, user, token_hash, ip, query=''):
         headers = {}
         # 配額按「誰在呼叫」計：登入者用帳號，訪客用 IP（登入頁與同意前的呼叫）。
@@ -10968,39 +11008,9 @@ class Application:
         hit = self._dispatch_users(method, path, body, user, headers)
         if hit is not None:
             return hit
-        if path == '/api/admin/health' and method == 'GET':
-            # 完整健康資訊（網盤 bucket／endpoint、模型名稱、AI 錯誤細節）。
-            # 原本掛在公開的 /api/health，等於未登入就能做基礎設施偵察。
-            self.require_owner(user)
-            return {'status': 'ok', 'initialized': self.initialized,
-                    'storage': self.storage.public(), 'ai': self.ai.public(),
-                    'metrics': self.ai.metrics.snapshot()}, headers
-        if path == '/api/admin/storage' and method == 'GET':
-            self.require_owner(user)
-            with self.db() as db:
-                return self.dataadmin.stats(db), headers
-        if path == '/api/admin/backup/upload' and method == 'POST':
-            # 手動把「資料庫快照＋題庫歸檔」上傳到網盤（排程備份用同一個方法）。
-            self.require_owner(user)
-            fields(body, (), ())
-            result = self.dataadmin.backup_to_storage('manual')
-            with self.db() as db:
-                result['status'] = self.dataadmin.backup_status(db)
-            return result, headers
-        if path == '/api/admin/vacuum' and method == 'POST':
-            self.require_owner(user)
-            fields(body, (), ())
-            return self.dataadmin.vacuum(), headers
-        if path == '/api/admin/reset/students' and method == 'POST':
-            # 學年重置：清空學生資料與帳號，題庫與教師帳號一律保留。只有管理員能執行。
-            self.require_owner(user)
-            fields(body, ('confirm',), ('confirm',))
-            confirm = text(body['confirm'], '確認字串', 40, strip=False, empty=True)
-            with self.db() as db:
-                db.execute('BEGIN IMMEDIATE')
-                result = self.dataadmin.reset_students(db, confirm)
-            result['vacuum'] = self.dataadmin.vacuum()
-            return result, headers
+        hit = self._dispatch_admin(method, path, body, user, headers)
+        if hit is not None:
+            return hit
         hit = self._dispatch_ai_config(method, path, body, user, ip, headers)
         if hit is not None:
             return hit
