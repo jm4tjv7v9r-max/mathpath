@@ -10765,6 +10765,80 @@ class Application:
                                              if kind == 'docx' else 0)}}, headers
         return None
 
+    def _dispatch_coins(self, method, path, body, user, headers):
+        """金幣：學生查自己的、教師查全班、教師獎勵。
+
+        從 dispatch 抽出的內聚路由組；沒有命中回 None，讓 dispatch 繼續往下試。
+        """
+        if path == '/api/coins' and method == 'GET':
+            # 學生查自己的金幣與最近紀錄。教師沒有金幣（要看學生請用 /api/coins/students）。
+            if user['role'] != 'student':
+                fail(403, '金幣只發給學生帳號；教師請到「金幣」頁查看學生。')
+            with self.db() as db:
+                summary = coin_summary(db, user['id'])
+                events = [{'amount': r['amount'], 'kind': r['kind'], 'reason': r['reason'],
+                           'day': r['day'], 'createdAt': r['created_at']}
+                          for r in db.execute('SELECT * FROM coin_events WHERE user_id=? '
+                                              'ORDER BY id DESC LIMIT 30', (user['id'],))]
+            return {'coins': summary, 'events': events}, headers
+        if path == '/api/coins/students' and method == 'GET':
+            # 教師查全班學生的金幣。一次算完，不逐個學生查（一班 40 人就是 40 次查詢）。
+            self.teacher(user)
+            with self.db() as db:
+                students = [dict(r) for r in db.execute(
+                    "SELECT id,name,username,seat,grade,disabled FROM users WHERE role='student' "
+                    "ORDER BY CASE WHEN seat IS NULL OR trim(seat)='' THEN 1 ELSE 0 END, "
+                    "CAST(seat AS INTEGER), seat, name, id")]
+                scores = {r['user_id']: r['total'] for r in db.execute(
+                    "SELECT user_id, COALESCE(SUM(score),0) AS total FROM attempts "
+                    "WHERE status='graded' AND (assignment_id IS NULL OR teacher_reviewed=1) "
+                    "GROUP BY user_id")}
+                extras = {}
+                for r in db.execute("SELECT user_id, kind, COALESCE(SUM(amount),0) AS total "
+                                    "FROM coin_events GROUP BY user_id, kind"):
+                    extras.setdefault(r['user_id'], {})[r['kind']] = int(r['total'])
+                # 班別：金幣頁要能按班別找學生（一個學年幾百人，捲動找太慢）。
+                classes_of = {}
+                for r in db.execute('SELECT cs.user_id, c.name FROM class_students cs '
+                                    'JOIN classes c ON c.id=cs.class_id ORDER BY c.name, c.id'):
+                    classes_of.setdefault(r['user_id'], []).append(r['name'])
+                classes = [{'id': r['id'], 'name': r['name'], 'studentCount': r['n']}
+                           for r in db.execute('SELECT c.id, c.name, count(cs.user_id) AS n '
+                                               'FROM classes c LEFT JOIN class_students cs '
+                                               'ON cs.class_id=c.id GROUP BY c.id '
+                                               'ORDER BY c.name, c.id')]
+            rows = []
+            for st in students:
+                score = int(math.floor(scores.get(st['id'], 0) or 0))
+                got = extras.get(st['id'], {})
+                daily, manual = got.get('daily', 0), got.get('manual', 0)
+                rows.append({**st, 'scoreCoins': score, 'dailyCoins': daily,
+                             'manualCoins': manual, 'coins': score + daily + manual,
+                             'classNames': classes_of.get(st['id'], [])})
+            return {'students': rows, 'dailyBonus': COIN_DAILY_BONUS,
+                    'grants': list(COIN_GRANTS), 'classes': classes}, headers
+        if path == '/api/coins/grant' and method == 'POST':
+            # 教師額外獎勵金幣：介面上就是 10／20／50 三個按鈕，後端也只收這三個數字。
+            # 獎勵是「加分」不是改資料，所以任何教師都可以給任何學生（不限制建立者）。
+            self.teacher(user)
+            fields(body, ('userId', 'amount'), ('userId', 'amount'))
+            uid = number(body['userId'], '學生編號', 1, 2 ** 63 - 1, True)
+            amount = number(body['amount'], '金幣數量', 1, 1000, True)
+            if amount not in COIN_GRANTS:
+                fail(400, f'金幣獎勵只能是 {"／".join(str(v) for v in COIN_GRANTS)} 枚。')
+            with self.db() as db:
+                target = db.execute('SELECT id,name,role FROM users WHERE id=?', (uid,)).fetchone()
+                if target is None or target['role'] != 'student':
+                    fail(404, '找不到這位學生。')
+                db.execute('BEGIN IMMEDIATE')
+                db.execute("INSERT INTO coin_events(user_id,amount,kind,reason,day,created_by,created_at) "
+                           "VALUES(?,?,'manual',?,?,?,?)",
+                           (uid, amount, f'{user["name"]} 獎勵', coin_day(), user['id'], utc_now()))
+                summary = coin_summary(db, uid)
+            return {'student': {'id': target['id'], 'name': target['name']},
+                    'coins': summary}, headers
+        return None
+
     def dispatch(self, method, path, body, user, token_hash, ip, query=''):
         headers = {}
         # 配額按「誰在呼叫」計：登入者用帳號，訪客用 IP（登入頁與同意前的呼叫）。
@@ -10888,73 +10962,9 @@ class Application:
                            (hashlib.sha256(token.encode()).hexdigest(), user['id'], time.time() + SESSION_SECONDS))
             headers['Set-Cookie'] = self.cookie(token)
             return {'user': self.user_public(user), 'notice': '密碼已更新，其他登入工作階段已失效。'}, headers
-        if path == '/api/coins' and method == 'GET':
-            # 學生查自己的金幣與最近紀錄。教師沒有金幣（要看學生請用 /api/coins/students）。
-            if user['role'] != 'student':
-                fail(403, '金幣只發給學生帳號；教師請到「金幣」頁查看學生。')
-            with self.db() as db:
-                summary = coin_summary(db, user['id'])
-                events = [{'amount': r['amount'], 'kind': r['kind'], 'reason': r['reason'],
-                           'day': r['day'], 'createdAt': r['created_at']}
-                          for r in db.execute('SELECT * FROM coin_events WHERE user_id=? '
-                                              'ORDER BY id DESC LIMIT 30', (user['id'],))]
-            return {'coins': summary, 'events': events}, headers
-        if path == '/api/coins/students' and method == 'GET':
-            # 教師查全班學生的金幣。一次算完，不逐個學生查（一班 40 人就是 40 次查詢）。
-            self.teacher(user)
-            with self.db() as db:
-                students = [dict(r) for r in db.execute(
-                    "SELECT id,name,username,seat,grade,disabled FROM users WHERE role='student' "
-                    "ORDER BY CASE WHEN seat IS NULL OR trim(seat)='' THEN 1 ELSE 0 END, "
-                    "CAST(seat AS INTEGER), seat, name, id")]
-                scores = {r['user_id']: r['total'] for r in db.execute(
-                    "SELECT user_id, COALESCE(SUM(score),0) AS total FROM attempts "
-                    "WHERE status='graded' AND (assignment_id IS NULL OR teacher_reviewed=1) "
-                    "GROUP BY user_id")}
-                extras = {}
-                for r in db.execute("SELECT user_id, kind, COALESCE(SUM(amount),0) AS total "
-                                    "FROM coin_events GROUP BY user_id, kind"):
-                    extras.setdefault(r['user_id'], {})[r['kind']] = int(r['total'])
-                # 班別：金幣頁要能按班別找學生（一個學年幾百人，捲動找太慢）。
-                classes_of = {}
-                for r in db.execute('SELECT cs.user_id, c.name FROM class_students cs '
-                                    'JOIN classes c ON c.id=cs.class_id ORDER BY c.name, c.id'):
-                    classes_of.setdefault(r['user_id'], []).append(r['name'])
-                classes = [{'id': r['id'], 'name': r['name'], 'studentCount': r['n']}
-                           for r in db.execute('SELECT c.id, c.name, count(cs.user_id) AS n '
-                                               'FROM classes c LEFT JOIN class_students cs '
-                                               'ON cs.class_id=c.id GROUP BY c.id '
-                                               'ORDER BY c.name, c.id')]
-            rows = []
-            for st in students:
-                score = int(math.floor(scores.get(st['id'], 0) or 0))
-                got = extras.get(st['id'], {})
-                daily, manual = got.get('daily', 0), got.get('manual', 0)
-                rows.append({**st, 'scoreCoins': score, 'dailyCoins': daily,
-                             'manualCoins': manual, 'coins': score + daily + manual,
-                             'classNames': classes_of.get(st['id'], [])})
-            return {'students': rows, 'dailyBonus': COIN_DAILY_BONUS,
-                    'grants': list(COIN_GRANTS), 'classes': classes}, headers
-        if path == '/api/coins/grant' and method == 'POST':
-            # 教師額外獎勵金幣：介面上就是 10／20／50 三個按鈕，後端也只收這三個數字。
-            # 獎勵是「加分」不是改資料，所以任何教師都可以給任何學生（不限制建立者）。
-            self.teacher(user)
-            fields(body, ('userId', 'amount'), ('userId', 'amount'))
-            uid = number(body['userId'], '學生編號', 1, 2 ** 63 - 1, True)
-            amount = number(body['amount'], '金幣數量', 1, 1000, True)
-            if amount not in COIN_GRANTS:
-                fail(400, f'金幣獎勵只能是 {"／".join(str(v) for v in COIN_GRANTS)} 枚。')
-            with self.db() as db:
-                target = db.execute('SELECT id,name,role FROM users WHERE id=?', (uid,)).fetchone()
-                if target is None or target['role'] != 'student':
-                    fail(404, '找不到這位學生。')
-                db.execute('BEGIN IMMEDIATE')
-                db.execute("INSERT INTO coin_events(user_id,amount,kind,reason,day,created_by,created_at) "
-                           "VALUES(?,?,'manual',?,?,?,?)",
-                           (uid, amount, f'{user["name"]} 獎勵', coin_day(), user['id'], utc_now()))
-                summary = coin_summary(db, uid)
-            return {'student': {'id': target['id'], 'name': target['name']},
-                    'coins': summary}, headers
+        hit = self._dispatch_coins(method, path, body, user, headers)
+        if hit is not None:
+            return hit
         hit = self._dispatch_users(method, path, body, user, headers)
         if hit is not None:
             return hit
