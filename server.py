@@ -166,6 +166,12 @@ RESTORE_UPLOADS = ('/api/admin/restore/db', '/api/admin/restore/questions',
 AI_REVIEW_LIMIT_DEFAULT = 200
 # 自動備份：每幾秒檢查一次「是否該備份了」（免費方案會被休眠，所以是檢查逾期而非固定時刻）。
 BACKUP_CHECK_SECONDS = 300
+# 自動壓實：SQLite 刪資料後檔案不會縮小（空閒頁越積越大，本站曾漲到 118MB／實數據僅 0.3MB）。
+# 背景定期量測空閒頁比例，超過 VACUUM_FREE_RATIO 就 VACUUM 一次；兩次之間至少隔 VACUUM_MIN_GAP_HOURS 小時。
+VACUUM_CHECK_SECONDS = 3600
+VACUUM_FREE_RATIO = 0.5          # 空閒頁超過 50% 才壓（避免頻繁 VACUUM 鎖住 DB）
+VACUUM_MIN_GAP_HOURS = 6         # 兩次自動壓實至少隔 6 小時
+VACUUM_MIN_SAVING_BYTES = 8 * 1024 * 1024   # 至少能省 8MB 才值得動手
 # ── AI 生成變式題：同一道參考題每次都要產生不同的題目 ──
 # 生成時不沿用批改用的 temperature=0（那會讓相同提示得到完全相同的題目）。
 DRAFT_TEMPERATURE = 0.8
@@ -6097,6 +6103,7 @@ class Application:
         self.init_error = None
         self.stopping = False
         self.backup_thread = None
+        self.vacuum_thread = None
 
     @contextmanager
     def db(self):
@@ -6381,6 +6388,7 @@ class Application:
         self.reload_ai()
         self.initialized = True
         self.start_backup_scheduler()
+        self.start_vacuum_scheduler()
 
     def backup_interval_hours(self):
         """自動備份間隔（小時）；0 表示關閉。用 MATH_BACKUP_HOURS 設定。"""
@@ -6433,6 +6441,55 @@ class Application:
 
         self.backup_thread = threading.Thread(target=loop, name='mathpath-backup', daemon=True)
         self.backup_thread.start()
+        return True
+
+    def start_vacuum_scheduler(self):
+        """背景定期量測空閒頁比例，超過閾值就 VACUUM 一次，把檔案還給系統。
+
+        SQLite 刪資料後檔案不會自己縮小（本站曾漲到 118MB／實數據僅 0.3MB）。
+        VACUUM 會短暫鎖住資料庫，所以只在「空閒頁夠多、離上次夠久」才做，失敗不影響網站。
+        """
+        def free_ratio(db):
+            page_count = db.execute('PRAGMA page_count').fetchone()[0]
+            if page_count <= 0:
+                return 0.0
+            return db.execute('PRAGMA freelist_count').fetchone()[0] / page_count
+
+        def loop():
+            while not self.stopping:
+                try:
+                    with self.db() as db:
+                        ratio = free_ratio(db)
+                        row = db.execute("SELECT value FROM meta WHERE key='last_auto_vacuum'").fetchone()
+                    last = row['value'] if row else ''
+                    long_enough = True
+                    if last:
+                        try:
+                            gap = datetime.now(timezone.utc) - datetime.fromisoformat(last)
+                            long_enough = gap.total_seconds() >= VACUUM_MIN_GAP_HOURS * 3600
+                        except ValueError:
+                            pass
+                    before = os.path.getsize(self.db_path) if os.path.exists(self.db_path) else 0
+                    if (ratio >= VACUUM_FREE_RATIO and long_enough
+                            and before >= VACUUM_MIN_SAVING_BYTES):
+                        result = self.dataadmin.vacuum()
+                        with self.db() as db:
+                            db.execute("INSERT OR REPLACE INTO meta(key,value) "
+                                       "VALUES('last_auto_vacuum',?)",
+                                       (datetime.now(timezone.utc).isoformat(),))
+                        print(f"[vacuum] 自動壓實：空閒頁 {ratio:.0%}，"
+                              f"{result['beforeBytes'] // 1024}KB → "
+                              f"{result['afterBytes'] // 1024}KB"
+                              f"（省 {result['savedBytes'] // 1024}KB）", flush=True)
+                except Exception as exc:                  # 壓實失敗不可影響網站
+                    ai_log(f'自動壓實失敗：{exc}')
+                for _ in range(VACUUM_CHECK_SECONDS):
+                    if self.stopping:
+                        return
+                    time.sleep(1)
+
+        self.vacuum_thread = threading.Thread(target=loop, name='mathpath-vacuum', daemon=True)
+        self.vacuum_thread.start()
         return True
 
     def stop_backup_scheduler(self):
