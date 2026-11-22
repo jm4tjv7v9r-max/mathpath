@@ -10604,6 +10604,89 @@ class Application:
                                 'username': r['username'], 'role': r['role']} for r in rows]}, headers
         return None
 
+    def _dispatch_state(self, method, path, body, user, headers):
+        """初始狀態：題庫、作答、待批數、統計、金幣與通知。
+
+        從 dispatch 抽出的內聚路由組；沒有命中回 None，讓 dispatch 繼續往下試。
+        """
+        if method == 'GET' and path == '/api/state':
+            with self.db() as db:
+                # 題庫題目先抓好，同時當作作答題目的快取——自主練習的作答指的就是
+                # 這裡的題目，不必再逐筆查一次。
+                # 只讀「有沒有圖」的布林值，不讀整張圖的 BLOB（figure 可達數 MB，
+                # 全部題目一起讀會讓 /api/state 很重）；要圖時才走 /api/questions/{id}/figure。
+                question_rows = db.execute(
+                    'SELECT id, payload, (figure IS NOT NULL) AS has_figure, '
+                    'figure_key, created_at FROM questions ORDER BY id').fetchall()
+                qcache = {('bank', r['id']): self.question_row(r) for r in question_rows}
+                # 學生只看到「有答案且已核驗」的題目；qcache 保留全部，
+                # 否則舊作答紀錄會查不到對應題目而爆掉。
+                questions = [self.question_public(qcache[('bank', r['id'])], user)
+                             for r in question_rows
+                             if user['role'] == 'teacher'
+                             or question_ready(qcache[('bank', r['id'])])]
+                if user['role'] == 'teacher':
+                    rows = db.execute('SELECT a.* FROM attempts a WHERE (a.assignment_id IS NULL AND a.mock_id IS NULL) OR EXISTS '
+                                      '(SELECT 1 FROM assignments h WHERE h.id=a.assignment_id AND h.teacher_id=?) '
+                                      'ORDER BY a.id DESC', (user['id'],)).fetchall()
+                else:
+                    rows = db.execute('SELECT * FROM attempts WHERE user_id=? ORDER BY id DESC', (user['id'],)).fetchall()
+                # 待批數量先算：它要涵蓋「全部」作答，不能只算下面被裁掉的那一批。
+                pending_reviews = 0
+                if user['role'] == 'teacher':
+                    seen = set()
+                    for r in rows:            # rows 已按 id DESC，第一次遇到就是最新
+                        if r['assignment_id'] is None:
+                            continue
+                        key = (r['assignment_id'], r['user_id'], r['question_id'])
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        if r['status'] == 'pending' or (r['ai_score'] is not None
+                                                        and not r['teacher_reviewed']):
+                            pending_reviews += 1
+                # 教師的作答清單只送前 200 筆：一個班 5 份作業就已經 620 筆、832 KB，
+                # 整學期下來會拖慢每一次載入。待批的排前面（老師真正要處理的），
+                # 其餘按新到舊；批閱頁另有 /api/reviews 可分頁取更多。
+                attempts_truncated = False
+                if user['role'] == 'teacher' and len(rows) > TEACHER_ATTEMPT_CAP:
+                    def _review_rank(r):
+                        needs = (r['status'] == 'pending' or
+                                 (r['ai_score'] is not None and not r['teacher_reviewed']))
+                        return (0 if needs else 1, -r['id'])
+                    rows = sorted(rows, key=_review_rank)[:TEACHER_ATTEMPT_CAP]
+                    attempts_truncated = True
+                # 同一題常被整班重複作答、同一位學生也有多筆作答，兩者都做快取，
+                # 免得載入一次頁面就變成上百次查詢（作答累積後整個網站都會變慢）。
+                attempts = [self.attempt_public(db, r, user, qcache,
+                                                lite=user['role'] == 'teacher') for r in rows]
+                if user['role'] == 'teacher':
+                    students = {}
+                    for attempt, row in zip(attempts, rows):
+                        sid = row['user_id']
+                        if sid not in students:
+                            students[sid] = dict(db.execute('SELECT id,name,username,seat FROM users WHERE id=?',
+                                                            (sid,)).fetchone())
+                        attempt['student'] = students[sid]
+                own = [r for r in rows if r['user_id'] == user['id']]
+                # 紙本累計要在連線還開著時算（下面 return 時 with 已結束）。
+                paper = self.paper_stats(db, user['id']) if user['role'] == 'student' else {}
+                # 學生的金幣（側欄徽章、金幣頁都用同一份數字）。
+                coins = coin_summary(db, user['id']) if user['role'] == 'student' else None
+                account_owner = self.owner_id(db)
+            payload_user = self.user_public(user)
+            # 管理員＝最早建立的教師帳號；前端用它決定要不要顯示「新增教師」與資料管理。
+            payload_user['isOwner'] = user['role'] == 'teacher' and user['id'] == account_owner
+            stats = self.stats(own)
+            stats.update(paper)
+            return {'user': payload_user, 'questions': questions, 'attempts': attempts,
+                    'pendingReviews': pending_reviews,
+                    'attemptsTruncated': attempts_truncated,
+                    'stats': stats, 'ai': self.ai.public(), 'topics': TOPICS, 'grades': GRADES,
+                    'topicTree': TOPIC_TREE, 'coins': coins,
+                    'notice': self.notice(user), 'minutesNotice': '分鐘數僅按同日相鄰提交間隔估算，不是正式學習計時。'}, headers
+        return None
+
     def dispatch(self, method, path, body, user, token_hash, ip, query=''):
         headers = {}
         # 配額按「誰在呼叫」計：登入者用帳號，訪客用 IP（登入頁與同意前的呼叫）。
@@ -10910,82 +10993,9 @@ class Application:
             return hit
 
 
-        if method == 'GET' and path == '/api/state':
-            with self.db() as db:
-                # 題庫題目先抓好，同時當作作答題目的快取——自主練習的作答指的就是
-                # 這裡的題目，不必再逐筆查一次。
-                # 只讀「有沒有圖」的布林值，不讀整張圖的 BLOB（figure 可達數 MB，
-                # 全部題目一起讀會讓 /api/state 很重）；要圖時才走 /api/questions/{id}/figure。
-                question_rows = db.execute(
-                    'SELECT id, payload, (figure IS NOT NULL) AS has_figure, '
-                    'figure_key, created_at FROM questions ORDER BY id').fetchall()
-                qcache = {('bank', r['id']): self.question_row(r) for r in question_rows}
-                # 學生只看到「有答案且已核驗」的題目；qcache 保留全部，
-                # 否則舊作答紀錄會查不到對應題目而爆掉。
-                questions = [self.question_public(qcache[('bank', r['id'])], user)
-                             for r in question_rows
-                             if user['role'] == 'teacher'
-                             or question_ready(qcache[('bank', r['id'])])]
-                if user['role'] == 'teacher':
-                    rows = db.execute('SELECT a.* FROM attempts a WHERE (a.assignment_id IS NULL AND a.mock_id IS NULL) OR EXISTS '
-                                      '(SELECT 1 FROM assignments h WHERE h.id=a.assignment_id AND h.teacher_id=?) '
-                                      'ORDER BY a.id DESC', (user['id'],)).fetchall()
-                else:
-                    rows = db.execute('SELECT * FROM attempts WHERE user_id=? ORDER BY id DESC', (user['id'],)).fetchall()
-                # 待批數量先算：它要涵蓋「全部」作答，不能只算下面被裁掉的那一批。
-                pending_reviews = 0
-                if user['role'] == 'teacher':
-                    seen = set()
-                    for r in rows:            # rows 已按 id DESC，第一次遇到就是最新
-                        if r['assignment_id'] is None:
-                            continue
-                        key = (r['assignment_id'], r['user_id'], r['question_id'])
-                        if key in seen:
-                            continue
-                        seen.add(key)
-                        if r['status'] == 'pending' or (r['ai_score'] is not None
-                                                        and not r['teacher_reviewed']):
-                            pending_reviews += 1
-                # 教師的作答清單只送前 200 筆：一個班 5 份作業就已經 620 筆、832 KB，
-                # 整學期下來會拖慢每一次載入。待批的排前面（老師真正要處理的），
-                # 其餘按新到舊；批閱頁另有 /api/reviews 可分頁取更多。
-                attempts_truncated = False
-                if user['role'] == 'teacher' and len(rows) > TEACHER_ATTEMPT_CAP:
-                    def _review_rank(r):
-                        needs = (r['status'] == 'pending' or
-                                 (r['ai_score'] is not None and not r['teacher_reviewed']))
-                        return (0 if needs else 1, -r['id'])
-                    rows = sorted(rows, key=_review_rank)[:TEACHER_ATTEMPT_CAP]
-                    attempts_truncated = True
-                # 同一題常被整班重複作答、同一位學生也有多筆作答，兩者都做快取，
-                # 免得載入一次頁面就變成上百次查詢（作答累積後整個網站都會變慢）。
-                attempts = [self.attempt_public(db, r, user, qcache,
-                                                lite=user['role'] == 'teacher') for r in rows]
-                if user['role'] == 'teacher':
-                    students = {}
-                    for attempt, row in zip(attempts, rows):
-                        sid = row['user_id']
-                        if sid not in students:
-                            students[sid] = dict(db.execute('SELECT id,name,username,seat FROM users WHERE id=?',
-                                                            (sid,)).fetchone())
-                        attempt['student'] = students[sid]
-                own = [r for r in rows if r['user_id'] == user['id']]
-                # 紙本累計要在連線還開著時算（下面 return 時 with 已結束）。
-                paper = self.paper_stats(db, user['id']) if user['role'] == 'student' else {}
-                # 學生的金幣（側欄徽章、金幣頁都用同一份數字）。
-                coins = coin_summary(db, user['id']) if user['role'] == 'student' else None
-                account_owner = self.owner_id(db)
-            payload_user = self.user_public(user)
-            # 管理員＝最早建立的教師帳號；前端用它決定要不要顯示「新增教師」與資料管理。
-            payload_user['isOwner'] = user['role'] == 'teacher' and user['id'] == account_owner
-            stats = self.stats(own)
-            stats.update(paper)
-            return {'user': payload_user, 'questions': questions, 'attempts': attempts,
-                    'pendingReviews': pending_reviews,
-                    'attemptsTruncated': attempts_truncated,
-                    'stats': stats, 'ai': self.ai.public(), 'topics': TOPICS, 'grades': GRADES,
-                    'topicTree': TOPIC_TREE, 'coins': coins,
-                    'notice': self.notice(user), 'minutesNotice': '分鐘數僅按同日相鄰提交間隔估算，不是正式學習計時。'}, headers
+        hit = self._dispatch_state(method, path, body, user, headers)
+        if hit is not None:
+            return hit
         hit = self._dispatch_questions(method, path, body, user, headers)
         if hit is not None:
             return hit
