@@ -38,6 +38,7 @@ import unicodedata
 from urllib.parse import parse_qsl, urlsplit
 from urllib.request import Request, build_opener, HTTPRedirectHandler, ProxyHandler
 from urllib.error import URLError, HTTPError
+import gzip
 import zlib
 
 from docx import Document
@@ -10953,7 +10954,14 @@ class Handler(BaseHTTPRequestHandler):
                 return
         self.send_response(200)
         self.send_header('Content-Type', mime)
-        self.send_header('Content-Length', str(len(data)))
+        body = data
+        # 文字類資源壓縮傳輸（app.js / styles.css 等可省 70% 以上頻寬；圖片已壓過，跳過）。
+        if mime.startswith('text/') or mime in ('application/javascript', 'application/json'):
+            accept = self.headers.get('Accept-Encoding') or ''
+            if 'gzip' in accept:
+                body = gzip.compress(data)
+                self.send_header('Content-Encoding', 'gzip')
+        self.send_header('Content-Length', str(len(body)))
         self.send_header('ETag', etag)
         self.send_header('Cache-Control', cache)
         self._send_security_headers()
@@ -10961,7 +10969,7 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.close_connection = True
         if self.command != 'HEAD':
-            self.wfile.write(data)
+            self.wfile.write(body)
 
     def receive_upload(self, target, max_bytes):
         """把請求主體串流寫入暫存檔（歸檔可能數百 MB，不能整份讀進記憶體）。"""
