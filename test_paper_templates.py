@@ -1518,6 +1518,32 @@ class PaperLayoutTests(unittest.TestCase):
                                                   {'grade': '高一（普通班）'}, '備用'),
                          '某某中學 數學測驗')
 
+    def test_primary_grade_fills_template_title(self):
+        """出卷選「小六」時，範本標題的「高一級」要換成「小六級」。"""
+        tpl = '培華中學 2026 年度第一段高一級(普通班)數學科大測一'
+        meta = {'grade': '小六', 'term': '第一段', 'kind': '大測', 'subject': '數學'}
+        self.assertEqual(paper_format._fill_title(tpl, meta, '備用'),
+                         '培華中學 2026 年度第一段小六級數學科大測一')
+
+    def test_primary_grade_syncs_header_class_line(self):
+        """標題是「小六級」時，卷頭資料行「高三＿＿班」要同步成「小六＿＿班」。"""
+        doc = Document()
+        doc.add_paragraph('培華中學 2026 年度第一段高一級(普通班)數學科大測一')
+        doc.add_paragraph('高三＿＿班 姓名：＿＿＿ 學號：＿＿＿')
+        doc.add_paragraph('一、解答題（每題 8 分，共 8 分）')
+        doc.add_paragraph('1.\t求 $x$。')
+        buf = io.BytesIO()
+        doc.save(buf)
+        sections = [paper_format.Section(title='一、解答題', questions=[
+            paper_format.Question(stem='求 $x$。', marks=8)])]
+        raw, _ = paper_format.render_with_sections(
+            buf.getvalue(), sections,
+            '培華中學 2026 年度第一段小六級數學科大測三')
+        texts = [p.text for p in Document(io.BytesIO(raw)).paragraphs]
+        self.assertTrue(any('小六' in t and '班' in t for t in texts),
+                        '卷頭資料行的年級要從高三同步成小六')
+        self.assertFalse(any('高三' in t for t in texts), '卷面不應殘留舊年級高三')
+
 
 class SourceAndBlueprintTests(unittest.TestCase):
     """卷面出處與雙向細目表：外部來源要標在題幹，細目表要能重複查閱。"""

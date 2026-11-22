@@ -697,7 +697,7 @@ async function generatePaperModal(){
               <p class="gen-qstem">${mathText(q.stem)}</p>
               ${(q.options||[]).length?`<p class="gen-qopts">${q.options.map(o=>mathText(o)).join('　')}</p>`:''}
               ${q.figure
-                ? `<div class="gen-qfig"><img src="${q.figure}" alt="第 ${n} 題圖形"><button type="button" class="text-button" data-figure="${si}-${qi}">${icon('practice')}改圖</button></div>`
+                ? `<div class="gen-qfig"><img src="${q.figure}" alt="第 ${n} 題圖形"><button type="button" class="text-button" data-figure="${si}-${qi}">${icon('practice')}改圖</button><button type="button" class="text-button danger-text" data-figure-remove="${si}-${qi}" aria-label="移除第 ${n} 題圖形">${icon('trash')}刪圖</button></div>`
                 : (q.needsFigure?`<div class="gen-qfig empty">
                     <span class="small-text">${q.figBusy?'AI 正在依題目畫圖…':'這題是平面幾何，還沒有圖'}</span>
                     <button type="button" class="secondary" data-figure="${si}-${qi}" ${q.figBusy?'disabled':''}>${icon('spark')}${q.figBusy?'畫圖中…':'AI 畫圖'}</button>
@@ -735,6 +735,7 @@ async function generatePaperModal(){
     $$('[data-add]',box).forEach(el=>el.onclick=()=>addQuestion(Number(el.dataset.add),el));
     $$('[data-del]',box).forEach(el=>el.onclick=()=>deleteQuestion(el.dataset.del,el));
     $$('[data-figure]',box).forEach(el=>el.onclick=()=>openFigureForQuestion(el.dataset.figure));
+    $$('[data-figure-remove]',box).forEach(el=>el.onclick=()=>removeFigureForQuestion(el.dataset.figureRemove));
     $('#gen-back').onclick=()=>{$('#gen-preview-step').hidden=true;$('#gen-form-step').hidden=false;};
     $('#gen-confirm').onclick=confirmGenerate;
     syncTotals();
@@ -775,6 +776,16 @@ async function generatePaperModal(){
         renderPlan();
         toast(figure?'已更新這題的圖形':'已移除這題的圖形');
       }});
+  };
+  // 直接刪掉這一題的圖形（不用進工作室），删掉後若原本是需要圖的幾何題，
+  // 就回到「還沒有圖」的提示，老師可再按 AI 畫圖補回來。
+  const removeFigureForQuestion=key=>{
+    const [si,qi]=String(key).split('-').map(Number);
+    const q=plan[si]&&plan[si].questions[qi];
+    if(!q||!q.figure)return;
+    q.figure='';q.figureCx=0;q.figTried=false;
+    renderPlan();
+    toast('已移除這題的圖形');
   };
   // 確認頁一出來就自動為平面幾何題畫圖；一次最多 4 張（每張都是一次模型呼叫）
   const autoDrawGeometry=async ()=>{

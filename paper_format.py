@@ -635,7 +635,10 @@ def _title_index(head) -> int | None:
 
 # ── 卷頭標題：只換「這份卷的資料」，其餘照範本 ───────────────────────────
 TITLE_TERM_RE = re.compile(r'第[一二三四]段')
-TITLE_GRADE_RE = re.compile(r'[高初中][一二三]')
+# 出卷年級還包含「小六」（GEN_GRADES 有小六），舊寫法只認「高／初／中＋一二三」，
+# 結果標題寫「小六級」時從標題反推出來的 grade 是 None，卷頭資料行「高三班」
+# 就不會被同步，一份卷出現兩個年級。小學年級一併收進來。
+TITLE_GRADE_RE = re.compile(r'(?:小[一二三四五六]|[高初中][一二三])')
 TITLE_CLASS_RE = re.compile(r'(級?)\s*([（(])([^）)]*)([）)])')
 TITLE_KIND_RE = re.compile(r'(大測[一二三四]?|小測|考試|練習)')
 TITLE_SUBJECT_RE = re.compile(r'(數學|幾何)')
