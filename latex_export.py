@@ -499,19 +499,37 @@ FIGURE_DIR = 'figures'
 
 
 def figure_bytes_of(fig) -> bytes | None:
-    """一張題目圖 → 原始 bytes（blob 或 data URL 都吃）。"""
+    """一張題目圖 → PNG bytes（blob 或 data URL 都吃）。
+
+    打包的檔名是 .png，WebP 要先用 Pillow 轉 PNG，否則 Overleaf 編譯會壞圖。
+    """
     if not isinstance(fig, dict):
         return None
     blob = fig.get('blob')
     if isinstance(blob, (bytes, bytearray)) and blob:
-        return bytes(blob)
-    data = fig.get('data')
-    if isinstance(data, str) and data.startswith('data:') and ',' in data:
+        raw = bytes(blob)
+    else:
+        data = fig.get('data')
+        raw = None
+        if isinstance(data, str) and data.startswith('data:') and ',' in data:
+            try:
+                raw = base64.b64decode(data.split(',', 1)[1], validate=True)
+            except (ValueError, TypeError):
+                return None
+    if raw is None:
+        return None
+    if raw[:4] == b'RIFF' and raw[8:12] == b'WEBP':
         try:
-            return base64.b64decode(data.split(',', 1)[1], validate=True)
-        except (ValueError, TypeError):
-            return None
-    return None
+            from PIL import Image
+            img = Image.open(io.BytesIO(raw)).convert('RGBA')
+            bg = Image.new('RGBA', img.size, (255, 255, 255, 255))
+            bg.alpha_composite(img)
+            buf = io.BytesIO()
+            bg.convert('RGB').save(buf, 'PNG')
+            return buf.getvalue()
+        except Exception:
+            return raw
+    return raw
 
 
 def figure_tex(fig: dict, index: int) -> str:

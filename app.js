@@ -406,6 +406,8 @@ function drawCanvas(){const c=$('#hand-canvas');if(!c)return;const ctx=c.getCont
 let webpSupported=null;
 function supportsWebp(){if(webpSupported===null){try{const probe=document.createElement('canvas');probe.width=probe.height=1;webpSupported=probe.toDataURL('image/webp').startsWith('data:image/webp');}catch{webpSupported=false;}}return webpSupported;}
 function imageDataUrl(canvas){return supportsWebp()?canvas.toDataURL('image/webp',0.8):canvas.toDataURL('image/png');}
+// 題目圖形要用 PNG：Word（python-docx）不認得 WebP，手繪圖存成 WebP 會在匯出 Word 時消失。
+function figurePngDataUrl(canvas){return canvas.toDataURL('image/png');}
 function canvasImage(){const c=$('#hand-canvas'),out=document.createElement('canvas');out.width=c.width;out.height=c.height;const ctx=out.getContext('2d');ctx.fillStyle='#fff';ctx.fillRect(0,0,out.width,out.height);ctx.drawImage(c,0,0);return imageDataUrl(out);}
 // 書寫區大小：題目長、步驟多就需要更高的畫布。學生自己選，選擇會記在瀏覽器裡。
 // 改變大小只換畫布尺寸，筆跡用原本的座標保留（縮小只是暫時看不到，放大就回來）。
@@ -475,7 +477,8 @@ function svgToDataUrl(svg,scale=2){
       ctx.fillStyle='#fff';ctx.fillRect(0,0,c.width,c.height);
       ctx.drawImage(img,0,0,c.width,c.height);
       URL.revokeObjectURL(url);
-      resolve(imageDataUrl(c));
+      // 題目圖形一律存 PNG：WebP 進不了 Word（python-docx 不支援）。
+      resolve(figurePngDataUrl(c));
     };
     img.src=url;
   });
@@ -572,7 +575,7 @@ function renderFigureStudio(){
   <div class="fig-question">${mathText(ctx.content||'')}</div>
   <div class="fig-preview">${figure?`<img src="${figure}" alt="題目圖形">`:`<span class="fig-empty">尚未有圖形</span>`}</div>
   <div class="fig-draw-panel"${figStudio.drawing?'':' hidden'}>
-    ${figureToolbarHtml('fig-studio','AI 畫得不對時，可以直接在方格上自己畫：拖曳畫直線／虛線／圓，選「點名稱」再點畫布放置，選「選擇」可拖曳移動、並用「縮放／旋轉」調整大小與角度')}
+    ${figureToolbarHtml('fig-studio','AI 畫得不對時，可以直接在方格上自己畫：拖曳畫直線／虛線／圓／矩形／正方形／平行四邊形／菱形／正多邊形，端點靠近會自動連接；選「點名稱」再點畫布放置，選「選擇」可拖曳移動、並用「縮放／旋轉」調整大小與角度')}
     <div class="canvas-wrap figure-canvas-wrap"><canvas id="fig-studio-canvas" width="900" height="420" tabindex="0" aria-label="手繪題目圖形畫布"></canvas></div>
     <div class="submit-row"><span class="small-text">按「套用手繪圖形」才會取代目前的圖</span><div class="row-actions"><button class="primary" id="fig-sketch-apply">${icon('check')}套用手繪圖形</button></div></div>
   </div>
@@ -605,7 +608,8 @@ function renderFigureStudio(){
     const apply=$('#fig-sketch-apply');
     if(apply)apply.onclick=()=>{
       if(!figStudio.sketch.strokes.length)return toast('畫布是空的，先在方格上畫出圖形。');
-      const data=imageDataUrl(sketchCanvas);
+      // 固定用 PNG：WebP 圖形存進題庫後，匯出 Word 時 python-docx 畫不出來會直接消失。
+      const data=figurePngDataUrl(sketchCanvas);
       if(!data)return toast('手繪圖形無法轉成圖片，請再試一次。');
       // 手繪圖沒有規格可比對，清掉自動檢查的結果，避免顯示過期的結論。
       figStudio.figure=data;figStudio.check=null;figStudio.spec=null;
@@ -943,7 +947,7 @@ function aiDraftModal(draft,kind,qid){
 async function fileData(file,allowed,maxMB){if(!file)throw new Error('請先選擇檔案。');const type=file.type||'';const ok=allowed.includes(type)||allowed.some(a=>a[0]==='.'&&new RegExp('\\'+a+'$','i').test(file.name||''));if(!ok)throw new Error('不支援此檔案類型，請選擇 PDF、Word (.docx)、PNG、JPG 或 WebP。');const limit=maxMB||(type==='application/pdf'?20:10);if(file.size>limit*1024*1024)throw new Error(`檔案不可超過 ${limit} MB。`);return await new Promise((resolve,reject)=>{const r=new FileReader();r.onload=()=>resolve(r.result);r.onerror=()=>reject(new Error('檔案讀取失敗。'));r.readAsDataURL(file);});}
 // 題目圖形：優先用教師上傳／貼上的圖片（課本截圖、GeoGebra 匯出等），
 // 沒有圖片才用方格畫布的手繪圖。
-function figureDataUrl(){if(figImage)return figImage;const c=$('#figure-canvas');return c?imageDataUrl(c):'';}
+function figureDataUrl(){if(figImage)return figImage;const c=$('#figure-canvas');return c?figurePngDataUrl(c):'';}
 // ── 學生相片作答：上傳前先在瀏覽器縮圖並轉 WebP ──
 // 手機原檔動輒 3～4 MB，直接送上網盤會讓學生在弱網上等很久，也讓空間需求暴增約 20 倍；
 // 縮到長邊 1600px 後通常只剩 100～200 KB，批改看得清楚、上傳快、備份也小。
@@ -1092,6 +1096,72 @@ const FIGURE_GRID='#e2ece6';
 const FIGURE_PICK='#237c5c';
 const FIGURE_HIT=26;
 const FIGURE_LABEL_SIZE=26;
+// 端點自動連接：畫線／多邊形時，終點靠近既有端點這個距離內就吸過去。
+const FIGURE_SNAP=14;
+// 工具代號 → 圖形種類（畫法都是「拖曳決定外接框」，共用 points 結構）。
+const FIGURE_SHAPE_TOOLS={rectangle:'rectangle',square:'square',parallelogram:'parallelogram',
+                          rhombus:'rhombus',polygon:'polygon'};
+
+// 由外接框兩點算出圖形的實際頂點。橡皮、命中、選取框、自動連接都靠它，
+// 所以每一種圖形只要在這裡定義一次頂點，其他地方不必逐個改。
+function figureShapeVertices(shape,a,b,sides){
+  const x0=Math.min(a.x,b.x),x1=Math.max(a.x,b.x),y0=Math.min(a.y,b.y),y1=Math.max(a.y,b.y);
+  const cx=(x0+x1)/2,cy=(y0+y1)/2;
+  if(shape==='square'){
+    // 以起點為角、往拖曳方向畫正方形，邊長取水平／垂直較大者。
+    const s=Math.max(x1-x0,y1-y0),sx=b.x>=a.x?1:-1,sy=b.y>=a.y?1:-1;
+    const bx=a.x+sx*s,by=a.y+sy*s;
+    return [{x:a.x,y:a.y},{x:bx,y:a.y},{x:bx,y:by},{x:a.x,y:by}];
+  }
+  if(shape==='rectangle')return [{x:x0,y:y0},{x:x1,y:y0},{x:x1,y:y1},{x:x0,y:y1}];
+  if(shape==='parallelogram'){
+    // 上邊向右錯開約 1/3 寬，形成平行四邊形；拖曳方向相反時也一致。
+    const skew=(x1-x0)*0.35;
+    return [{x:x0+skew,y:y0},{x:x1+skew,y:y0},{x:x1,y:y1},{x:x0,y:y1}];
+  }
+  if(shape==='rhombus')return [{x:cx,y:y0},{x:x1,y:cy},{x:cx,y:y1},{x:x0,y:cy}];
+  if(shape==='polygon'){
+    const n=Math.max(3,Math.min(12,Math.round(Number(sides)||6)));
+    const r=Math.min(x1-x0,y1-y0)/2,out=[];
+    for(let i=0;i<n;i++){
+      const ang=-Math.PI/2+i*2*Math.PI/n;
+      out.push({x:cx+r*Math.cos(ang),y:cy+r*Math.sin(ang)});
+    }
+    return out;
+  }
+  return [{x:x0,y:y0},{x:x1,y:y1}];
+}
+
+// 一項圖形所有「可以拿來連接的端點」：線兩端、多邊形頂點、圓的上下左右、
+// 標籤位置、自由筆首尾。縮放／旋轉過的項目要換算回畫面座標再比對。
+function figureAllVertices(item){
+  const pts=(item&&item.points)||[];
+  if(!pts.length)return [];
+  if(item.type==='shape'){
+    const raw=figureShapeVertices(item.shape,pts[0],pts[1]||pts[0],item.sides);
+    return raw.map(p=>figureItemToWorld(item,p));
+  }
+  if(item.type==='circle'){
+    const c=pts[0],e=pts[1]||pts[0],r=Math.hypot(e.x-c.x,e.y-c.y);
+    return [{x:c.x-r,y:c.y},{x:c.x+r,y:c.y},{x:c.x,y:c.y-r},{x:c.x,y:c.y+r}]
+      .map(p=>figureItemToWorld(item,p));
+  }
+  if(item.type==='label')return [figureItemToWorld(item,pts[0])];
+  if(item.type==='line')return [figureItemToWorld(item,pts[0]),figureItemToWorld(item,pts[1]||pts[0])];
+  return [figureItemToWorld(item,pts[0]),figureItemToWorld(item,pts[pts.length-1])];
+}
+// 把指標吸到附近既有端點；exclude 是正在畫、還沒定案的那一項。
+function snapFigurePoint(pt,strokes,exclude){
+  let best=null,bestDist=FIGURE_SNAP;
+  for(const item of strokes||[]){
+    if(item===exclude)continue;
+    for(const q of figureAllVertices(item)){
+      const d=Math.hypot(q.x-pt.x,q.y-pt.y);
+      if(d<bestDist){bestDist=d;best=q;}
+    }
+  }
+  return best?{x:best.x,y:best.y}:pt;
+}
 
 function figureLabelFont(size){return `600 ${size||FIGURE_LABEL_SIZE}px system-ui, -apple-system, "Noto Sans TC", sans-serif`;}
 // 點名稱的粗略寬高：只用來做命中判定與選取框，不必與實際字型完全一致。
@@ -1113,8 +1183,10 @@ function figureItemBounds(item){
     return {x0:c.x-r-8,y0:c.y-r-8,x1:c.x+r+8,y1:c.y+r+8};
   }
   if(item.type==='label')return figureLabelBox(item);
+  // 多邊形類用實際頂點算外框（平行四邊形的斜邊會超出兩點外接框）。
+  const verts=item.type==='shape'?figureShapeVertices(item.shape,pts[0],pts[1]||pts[0],item.sides):pts;
   let x0=Infinity,y0=Infinity,x1=-Infinity,y1=-Infinity;
-  for(const p of pts){x0=Math.min(x0,p.x);y0=Math.min(y0,p.y);x1=Math.max(x1,p.x);y1=Math.max(y1,p.y);}
+  for(const p of verts){x0=Math.min(x0,p.x);y0=Math.min(y0,p.y);x1=Math.max(x1,p.x);y1=Math.max(y1,p.y);}
   return {x0:x0-8,y0:y0-8,x1:x1+8,y1:y1+8};
 }
 
@@ -1141,6 +1213,17 @@ function figureItemHit(item,pts){
   if(item.type==='label'){
     const box=figureLabelBox(item);
     return !!box&&pts.some(p=>p.x>=box.x0&&p.x<=box.x1&&p.y>=box.y0&&p.y<=box.y1);
+  }
+  if(item.type==='shape'){
+    // 多邊形：任一條邊夠近就算命中（跟直線、圓周一致，點圖形輪廓來選它）。
+    const v=figureShapeVertices(item.shape,own[0],own[1]||own[0],item.sides);
+    if(v.length<3)return false;
+    return pts.some(p=>{
+      for(let i=0;i<v.length;i++){
+        if(pointSegmentDistance(p,v[i],v[(i+1)%v.length])<FIGURE_HIT)return true;
+      }
+      return false;
+    });
   }
   return own.some(q=>pts.some(p=>Math.hypot(p.x-q.x,p.y-q.y)<FIGURE_HIT));
 }
@@ -1241,6 +1324,12 @@ function paintFigureCanvas(canvas,strokes,selected){
       }else if(item.type==='line'){
         const a=pts[0],b=pts[1];if(!a||!b)return;
         ctx.beginPath();ctx.moveTo(a.x,a.y);ctx.lineTo(b.x,b.y);ctx.stroke();
+      }else if(item.type==='shape'){
+        const v=figureShapeVertices(item.shape,pts[0],pts[1]||pts[0],item.sides);
+        if(v.length<3)return;
+        ctx.beginPath();ctx.moveTo(v[0].x,v[0].y);
+        for(const p of v.slice(1))ctx.lineTo(p.x,p.y);
+        ctx.closePath();ctx.stroke();
       }else{
         if(pts.length<2)return;
         ctx.beginPath();ctx.moveTo(pts[0].x,pts[0].y);
@@ -1301,9 +1390,15 @@ function wireFigureCanvas(canvas,state,onChange){
     }
     if(tool==='eraser'){state.drawing={type:'eraser',points:[pt]};}
     else{
-      const item=tool==='line'?{type:'line',dashed:false,points:[pt,pt]}
-        :tool==='dashed'?{type:'line',dashed:true,points:[pt,pt]}
+      // 直線／多邊形起點也吸附既有端點，方便首尾相接到同一個頂點。
+      const connectable=tool==='line'||tool==='dashed'||!!FIGURE_SHAPE_TOOLS[tool];
+      const start=connectable?snapFigurePoint(pt,state.strokes,null):pt;
+      const shape=FIGURE_SHAPE_TOOLS[tool];
+      const item=tool==='line'?{type:'line',dashed:false,points:[start,start]}
+        :tool==='dashed'?{type:'line',dashed:true,points:[start,start]}
         :tool==='circle'?{type:'circle',points:[pt,pt]}
+        :shape?{type:'shape',shape:shape,points:[start,start],
+                sides:shape==='polygon'?((state.polygonSides&&state.polygonSides())||6):undefined}
         :{type:'pen',points:[pt]};
       state.strokes.push(item);
       state.drawing=item;
@@ -1325,7 +1420,11 @@ function wireFigureCanvas(canvas,state,onChange){
       paint();return;
     }
     const d=state.drawing;if(!d)return;
-    if(d.type==='line'||d.type==='circle')d.points[1]=pt;else d.points.push(pt);
+    if(d.type==='line'||d.type==='circle'||d.type==='shape'){
+      // 拖曳終點靠近既有端點就吸附過去（排除自己，避免吸到自己的起點）。
+      const snap=d.type==='circle'?pt:snapFigurePoint(pt,state.strokes,d);
+      d.points[1]=snap;
+    }else d.points.push(pt);
     paint();
   };
   canvas.onpointerup=canvas.onpointercancel=()=>{
@@ -1341,6 +1440,10 @@ function wireFigureCanvas(canvas,state,onChange){
     }else if(d.type==='circle'){
       const c=d.points[0],edge=d.points[1];
       if(Math.hypot(edge.x-c.x,edge.y-c.y)<6)state.strokes=state.strokes.filter(x=>x!==d);
+    }else if(d.type==='shape'){
+      const a=d.points[0],b=d.points[1];
+      // 太小就看不出是圖形，當作誤觸丟掉。
+      if(Math.max(Math.abs(b.x-a.x),Math.abs(b.y-a.y))<8)state.strokes=state.strokes.filter(x=>x!==d);
     }else if(d.points.length<2){
       state.strokes=state.strokes.filter(x=>x!==d);
     }
@@ -1373,6 +1476,11 @@ function figureToolbarHtml(scope,hint){
     <button type="button" class="icon-btn" data-tool="line" aria-label="直線">${icon('line')}</button>
     <button type="button" class="icon-btn" data-tool="dashed" aria-label="虛線">${icon('dashed')}</button>
     <button type="button" class="icon-btn" data-tool="circle" aria-label="圓">${icon('circle')}</button>
+    <button type="button" class="icon-btn" data-tool="rectangle" aria-label="矩形">${icon('rectangle')}</button>
+    <button type="button" class="icon-btn" data-tool="square" aria-label="正方形">${icon('square')}</button>
+    <button type="button" class="icon-btn" data-tool="parallelogram" aria-label="平行四邊形">${icon('parallelogram')}</button>
+    <button type="button" class="icon-btn" data-tool="rhombus" aria-label="菱形">${icon('rhombus')}</button>
+    <button type="button" class="icon-btn" data-tool="polygon" aria-label="正多邊形">${icon('polygon')}</button>
     <button type="button" class="icon-btn" data-tool="label" aria-label="加入點名稱">${icon('label')}</button>
     <button type="button" class="icon-btn" data-tool="select" aria-label="選擇並移動">${icon('select')}</button>
     <span style="height:20px;border-right:1px solid var(--border);margin:0 4px"></span>
@@ -1380,8 +1488,9 @@ function figureToolbarHtml(scope,hint){
     <button type="button" class="icon-btn" id="${scope}-undo" aria-label="撤銷">${icon('undo')}</button>
     <button type="button" class="icon-btn" id="${scope}-clear" aria-label="清除">${icon('trash')}</button>
     <span class="label-name-field" id="${scope}-label-field">點名稱<input id="${scope}-label-text" maxlength="4" value="A" aria-label="點名稱">字級<input id="${scope}-label-size" type="range" min="16" max="48" step="2" value="26" aria-label="字母大小"><span class="label-size-value" id="${scope}-label-size-value">26</span></span>
+    <span class="polygon-sides-field" id="${scope}-polygon-field" title="選「正多邊形」後決定的邊數">邊數<input id="${scope}-polygon-sides" type="number" min="3" max="12" step="1" value="6" aria-label="正多邊形邊數"></span>
     <span class="item-transform-field" id="${scope}-transform-field" title="先用「選擇」點一下圖形，再拖這裡調整">縮放<input id="${scope}-item-scale" type="range" min="40" max="250" step="5" value="100" aria-label="所選圖形縮放" disabled><span class="label-size-value" id="${scope}-item-scale-value">—</span>旋轉<input id="${scope}-item-rotate" type="range" min="-180" max="180" step="5" value="0" aria-label="所選圖形旋轉" disabled><span class="label-size-value" id="${scope}-item-rotate-value">—</span></span>
-  </div><span class="small-text">${esc(hint||'拖曳畫直線／虛線／圓；選「點名稱」再點畫布放置；選「選擇」可拖曳移動、用「縮放／旋轉」調整大小與角度，按 Delete 刪除')}</span></div>`;
+  </div><span class="small-text">${esc(hint||'拖曳畫直線／虛線／圓／矩形／正方形／平行四邊形／菱形／正多邊形（邊數可調）；端點靠近會自動連接；選「點名稱」點畫布放置；選「選擇」可拖曳移動、用「縮放／旋轉」調整大小與角度，按 Delete 刪除')}</span></div>`;
 }
 
 // 接上工具列：切換工具、點名稱與字級、撤銷與清除。
@@ -1396,6 +1505,8 @@ function wireFigureTools(scope,canvas,state,onChange){
   const scaleValue=$('#'+scope+'-item-scale-value');
   const rotateInput=$('#'+scope+'-item-rotate');
   const rotateValue=$('#'+scope+'-item-rotate-value');
+  const sidesInput=$('#'+scope+'-polygon-sides');
+  state.polygonSides=()=>Math.max(3,Math.min(12,Math.round(Number(sidesInput&&sidesInput.value)||6)));
   const tools2=wireFigureCanvas(canvas,state,onChange);
   const repaint=()=>{if(tools2)tools2.repaint();};
   const selectedLabel=()=>state.selected&&state.selected.type==='label'?state.selected:null;

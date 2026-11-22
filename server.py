@@ -3916,8 +3916,27 @@ CN_NUMBERS = '一二三四五六七八九十'
 QTYPE_SECTION_ORDER = ('選擇題', '填空題', '解答題', '證明題')
 
 
-def sections_from_bank_questions(questions) -> list:
-    """題庫題目 → 試卷分部：按題型分節，選項補回「A.」前綴。"""
+def question_figure_blob(app, row):
+    """從題庫題目的 row 讀出題目圖形 bytes（R2 或資料庫都吃）；沒有圖回 None。
+
+    題目列表回傳的 figure 只是布林值，組卷排版得來這裡拿真正的二進位。
+    """
+    try:
+        keys = row.keys()
+        figure_key = row['figure_key'] if 'figure_key' in keys else None
+        if figure_key is not None:
+            data, _mime = app.storage.get(figure_key)
+        else:
+            data = row['figure'] if 'figure' in keys else None
+        if isinstance(data, (bytes, bytearray)) and data:
+            return bytes(data)
+    except Exception:
+        return None
+    return None
+
+
+def sections_from_bank_questions(questions, figures_by_id=None) -> list:
+    """題庫題目 → 試卷分部：按題型分節，選項補回「A.」前綴，並帶回題目圖形。"""
     groups = {}
     for q in questions:
         groups.setdefault(q.get('qtype') or '解答題', []).append(q)
@@ -3930,9 +3949,11 @@ def sections_from_bank_questions(questions) -> list:
         for q in items:
             options = [f'{"ABCDEFGHIJ"[i]}. {opt}'
                        for i, opt in enumerate(q.get('options') or [])]
+            figs = (figures_by_id or {}).get(q.get('id')) or []
             rows.append(paper_format.Question(
                 stem=(q.get('content') or q.get('title') or '').strip(),
-                marks=q.get('points'), options=options, lines=[]))
+                marks=q.get('points'), options=options, lines=[],
+                figures=[{'blob': blob} for blob in figs]))
         sections.append(paper_format.Section(
             title=f'{CN_NUMBERS[len(sections)]}、{qtype}', questions=rows))
     return sections
@@ -8224,7 +8245,14 @@ class Application:
                 if any(row is None for row in rows):
                     fail(404, '有題目已被刪除，請重新選。')
                 questions = [self.question_row(row) for row in rows]
-                sections = sections_from_bank_questions(questions)
+                # 題目圖形：題目列表只回布林值，組卷要另外把真正的圖片讀出來，
+                # 否則手繪／上傳的圖形不會出現在下載的 Word／LaTeX 裡。
+                figures_by_id = {}
+                for row in rows:
+                    blob = question_figure_blob(self, row)
+                    if blob:
+                        figures_by_id[row['id']] = [blob]
+                sections = sections_from_bank_questions(questions, figures_by_id)
                 if not sections:
                     fail(422, '選的題目沒有內容。')
                 tpl = None

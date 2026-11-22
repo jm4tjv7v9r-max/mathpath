@@ -904,6 +904,26 @@ class PaperLibraryTests(unittest.TestCase):
         detail = self.call('GET', f"/api/papers/{out['paper']['id']}")['paper']
         self.assertEqual(detail['questionIds'], [q['id'] for q in questions])
 
+    def test_build_paper_from_bank_questions_keeps_question_figures(self):
+        """題庫題目的手繪／上傳附圖要一起進 Word 和 LaTeX，不能只帶文字。"""
+        fig_url = 'data:image/png;base64,' + base64.b64encode(PaperFigureTests.PNG).decode()
+        questions = self.call('POST', '/api/questions/import', {'questions': [
+            {'title': '看圖求x', 'content': '如圖，求 $x$。', 'topic': '幾何',
+             'level': 1, 'points': 5, 'answer': '1', 'qtype': '解答題',
+             'grade': '中三', 'figure': fig_url}]})['questions']
+        template = self.call('POST', '/api/paper-templates',
+                             {'name': '範本',
+                              'file': data_url(make_docx(TEMPLATE))})['template']
+        out = self.call('POST', '/api/papers/from-questions', {
+            'questionIds': [questions[0]['id']], 'title': '附圖卷',
+            'templateId': template['id']})
+        # Word：真的把圖放進去（inline_shapes）。
+        raw = base64.b64decode(out['docx'].split(',', 1)[1])
+        doc = Document(io.BytesIO(raw))
+        self.assertEqual(len(doc.inline_shapes), 1, '題庫題目的圖要出現在 Word')
+        self.assertIn(r'\includegraphics', out['tex'], 'LaTeX 也要引用題目圖')
+        self.assertTrue(out.get('texZip'), 'LaTeX 要打包圖檔')
+
     def test_build_paper_without_template_gives_tex_only(self):
         questions = self.make_questions()
         out = self.call('POST', '/api/papers/from-questions', {
@@ -1087,6 +1107,34 @@ class PaperFigureTests(unittest.TestCase):
             paper_format.Question(stem='有圖', marks=5, figures=[{'blob': emf}])])]
         data = paper_format.sections_to_dict(sections)
         self.assertEqual(data[0]['questions'][0]['figures'], [])
+
+    def test_webp_figure_is_converted_to_png_for_word(self):
+        """手繪／AI 早期存的 WebP 進不了 Word，排版前要先轉 PNG，不能整張消失。"""
+        try:
+            from PIL import Image
+        except ImportError:
+            self.skipTest('沒有 Pillow，略過 WebP 轉換測試')
+        buf = io.BytesIO()
+        Image.new('RGB', (30, 20), (200, 60, 60)).save(buf, 'WEBP')
+        webp = buf.getvalue()
+        self.assertEqual(webp[:4], b'RIFF')
+        # figure_bytes 要回 PNG，且 python-docx 真的畫得出來
+        png = paper_format.figure_bytes({'blob': webp})
+        self.assertEqual(png[:8], b'\x89PNG\r\n\x1a\n')
+        doc = self.render([paper_format.Section(title='一、解答題', questions=[
+            paper_format.Question(stem='如圖', marks=5, figures=[{'blob': png}])])])
+        self.assertEqual(len(doc.inline_shapes), 1, '轉過的圖要能放進 Word')
+
+    def test_webp_figure_data_url_is_also_converted(self):
+        """data URL 形式的 WebP（題庫存檔常見）同樣要轉成 PNG。"""
+        try:
+            from PIL import Image
+        except ImportError:
+            self.skipTest('沒有 Pillow，略過 WebP 轉換測試')
+        buf = io.BytesIO()
+        Image.new('RGB', (30, 20), (60, 200, 60)).save(buf, 'WEBP')
+        url = 'data:image/webp;base64,' + base64.b64encode(buf.getvalue()).decode()
+        self.assertEqual(paper_format.figure_bytes({'data': url})[:8], b'\x89PNG\r\n\x1a\n')
 
 
 class PaperLayoutTests(unittest.TestCase):

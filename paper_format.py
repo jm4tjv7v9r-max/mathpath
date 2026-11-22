@@ -1115,20 +1115,45 @@ def figure_data_url(fig) -> str | None:
     return 'data:%s;base64,%s' % (mime, base64.b64encode(raw).decode())
 
 
+def webp_to_png(blob: bytes) -> bytes | None:
+    """WebP → PNG；python-docx 認不得 WebP，直接塞會在 add_picture 時被略過。"""
+    try:
+        from PIL import Image
+        img = Image.open(io.BytesIO(blob)).convert('RGBA')
+        # PNG 不支援 CMYK，統一轉 RGBA 後再flatten 到白底，避免透明圖在 Word 變黑。
+        bg = Image.new('RGBA', img.size, (255, 255, 255, 255))
+        bg.alpha_composite(img)
+        buf = io.BytesIO()
+        bg.convert('RGB').save(buf, 'PNG')
+        return buf.getvalue()
+    except Exception:
+        return None
+
+
 def figure_bytes(fig) -> bytes | None:
-    """題目圖 → bytes（排版用）：不管是 blob 還是 data URL 都吃。"""
+    """題目圖 → bytes（排版用）：不管是 blob 還是 data URL 都吃。
+
+    WebP 轉成 PNG：python-docx 不支援 WebP，手繪／AI 圖早期存成 WebP 時
+    過去會在 add_picture  silently 失敗，讓圖形從 Word 裡消失。
+    """
     if not isinstance(fig, dict):
         return None
     blob = fig.get('blob')
     if isinstance(blob, (bytes, bytearray)):
-        return bytes(blob)
-    data = fig.get('data')
-    if isinstance(data, str) and data.startswith('data:') and ',' in data:
-        try:
-            return base64.b64decode(data.split(',', 1)[1], validate=True)
-        except (ValueError, binascii.Error):
-            return None
-    return None
+        raw = bytes(blob)
+    else:
+        data = fig.get('data')
+        raw = None
+        if isinstance(data, str) and data.startswith('data:') and ',' in data:
+            try:
+                raw = base64.b64decode(data.split(',', 1)[1], validate=True)
+            except (ValueError, binascii.Error):
+                return None
+    if raw is None:
+        return None
+    if _sniff_image(raw) == 'image/webp':
+        return webp_to_png(raw) or raw
+    return raw
 
 
 def sections_to_dict(sections: list[Section]) -> list[dict]:

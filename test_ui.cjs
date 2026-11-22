@@ -53,7 +53,12 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   await page.route('https://mathpath.test/**',async route=>{
     const url=new URL(route.request().url());let data;
     if(url.pathname==='/'){return route.fulfill({contentType:'text/html',body:fs.readFileSync(path.join(__dirname,'index.html'),'utf8')});}
-    if(['/app.js','/styles.css'].includes(url.pathname))return route.fulfill({contentType:url.pathname.endsWith('js')?'application/javascript':'text/css',body:fs.readFileSync(path.join(__dirname,url.pathname.slice(1)),'utf8')});
+    // 前端已模組化：index.html 會依序載入 app-*.js，全部都要從本地檔案供應，
+    // 否則腳本 404、app 起不來，登入按鈕永遠不會出現。
+    const staticFiles=['/app.js','/app-core.js','/app-data.js','/app-ui.js','/app-classroom.js',
+                       '/app-papers.js','/app-scoregrid.js','/app-admin.js','/app-coins.js',
+                       '/app-layout.js','/styles.css','/styles-enhanced.css'];
+    if(staticFiles.includes(url.pathname))return route.fulfill({contentType:url.pathname.endsWith('js')?'application/javascript':'text/css',body:fs.readFileSync(path.join(__dirname,url.pathname.slice(1)),'utf8')});
     if(url.pathname.startsWith('/vendor/katex/')){const rel=url.pathname.slice(1);const mime=rel.endsWith('.js')?'application/javascript':rel.endsWith('.css')?'text/css':rel.endsWith('.woff2')?'font/woff2':'application/octet-stream';return route.fulfill({contentType:mime,body:fs.readFileSync(path.join(__dirname,rel))});}
     if(url.pathname.startsWith('/vendor/katex/')){const rel=url.pathname.slice(1);const mime=rel.endsWith('.js')?'application/javascript':rel.endsWith('.css')?'text/css':rel.endsWith('.woff2')?'font/woff2':'application/octet-stream';return route.fulfill({contentType:mime,body:fs.readFileSync(path.join(__dirname,rel))});}
     if(url.pathname==='/api/attempts/9/image')return route.fulfill({contentType:'image/png',body:HANDWRITING});
@@ -740,6 +745,45 @@ const PAPER_PNG=pngFrom(400,300,(x,y)=>(x>=200&&x<280&&y>=150&&y<210)?[220,40,40
   await page.mouse.move(fbox.x+70,fbox.y+40);await page.mouse.down();await page.mouse.move(fbox.x+200,fbox.y+150,{steps:8});await page.mouse.up();
   await page.mouse.move(fbox.x+200,fbox.y+150);await page.mouse.down();await page.mouse.move(fbox.x+70,fbox.y+150,{steps:8});await page.mouse.up();
   assert.match(await page.locator('#fig-status').innerText(),/已繪製圖形/,'畫圖後應提示已繪製');
+
+  // 新的圖形工具：工具列要有矩形／正方形／平行四邊形／菱形／正多邊形與邊數欄位
+  for(const shape of ['rectangle','square','parallelogram','rhombus','polygon']){
+    assert.equal(await page.locator(`#fig-toolbar [data-tool=${shape}]`).count(),1,`工具列要有 ${shape} 按鈕`);
+  }
+  assert.equal(await page.locator('#fig-toolbar #fig-polygon-sides').inputValue(),'6','正多邊形預設 6 邊');
+  // 畫一個矩形：要存成 shape 項目，四個頂點照外接框算出
+  await page.locator('#fig-toolbar [data-tool=rectangle]').click();
+  await page.mouse.move(fbox.x+300,fbox.y+40);await page.mouse.down();await page.mouse.move(fbox.x+420,fbox.y+120,{steps:6});await page.mouse.up();
+  const rectItem=await page.evaluate(()=>{
+    const it=figSketch.strokes.filter(s=>s.type==='shape').pop();
+    if(!it)return null;
+    return {shape:it.shape,verts:figureShapeVertices(it.shape,it.points[0],it.points[1],it.sides)};
+  });
+  assert.ok(rectItem&&rectItem.shape==='rectangle','拖曳應產生矩形圖形');
+  assert.equal(rectItem.verts.length,4,'矩形要四個頂點');
+  // 改邊數畫正多邊形：邊數要照輸入值
+  await page.locator('#fig-polygon-sides').fill('5');
+  await page.locator('#fig-toolbar [data-tool=polygon]').click();
+  await page.mouse.move(fbox.x+450,fbox.y+40);await page.mouse.down();await page.mouse.move(fbox.x+540,fbox.y+130,{steps:6});await page.mouse.up();
+  const polyN=await page.evaluate(()=>{
+    const it=figSketch.strokes.filter(s=>s.type==='shape'&&s.shape==='polygon').pop();
+    return it?figureShapeVertices(it.shape,it.points[0],it.points[1],it.sides).length:0;
+  });
+  assert.equal(polyN,5,'正多邊形邊數要照輸入（5 邊形）');
+
+  // 端點自動連接：第二條線的終點靠近第一條線的端點時要吸附過去
+  await page.locator('#fig-toolbar [data-tool=line]').click();
+  await page.mouse.move(fbox.x+40,fbox.y+210);await page.mouse.down();await page.mouse.move(fbox.x+140,fbox.y+210,{steps:6});await page.mouse.up();
+  await page.mouse.move(fbox.x+200,fbox.y+260);await page.mouse.down();
+  await page.mouse.move(fbox.x+142,fbox.y+212,{steps:8});await page.mouse.up();
+  const snapped=await page.evaluate(()=>{
+    const lines=figSketch.strokes.filter(s=>s.type==='line');
+    if(lines.length<2)return null;
+    const a=lines[lines.length-2].points[1], b=lines[lines.length-1].points[1];
+    return Math.hypot(a.x-b.x,a.y-b.y);
+  });
+  assert.ok(snapped!==null&&snapped<0.001,'靠近既有端點時第二條線要自動吸附連接');
+
   await page.screenshot({path:path.join(__dirname,'..','MathPath-手動輸入題目.png'),fullPage:true});
   await page.locator('#manual-add').click();
   await page.locator('.draft-card').first().waitFor();

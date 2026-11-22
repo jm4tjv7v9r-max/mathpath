@@ -7,3 +7,5 @@ python-docx>=1.1,<2
 lxml>=4.9
 # 教師匯入行事曆要讀 .xlsx
 openpyxl>=3.1,<4
+# 題目附圖可能是 WebP；Word（python-docx）不支援，匯出前需轉成 PNG。
+Pillow>=10,<12
