@@ -586,10 +586,14 @@ html[data-theme=night] .modal.gen-modal .gen-preview-foot{
    顏色只用在左側色條與年級標籤，內文維持原本的閱讀對比。 */
 .paper-grid{
   display: grid;
-  /* min(100%, 330px)：容器比 330px 還窄時（手機、側欄收窄）卡片不會撐破版面 */
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, 330px), 1fr));
+  /* 老師要求一行只放兩份卷：auto-fill 在寬螢幕會塞到四份，卡片太擠、
+     按鈕和雙向細目表都被壓窄。改成固定兩欄，窄螢幕再降成單欄。 */
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 14px;
   align-items: start;
+}
+@media (max-width: 767px){
+  .paper-grid{ grid-template-columns: 1fr; }
 }
 /* 卡片內的雙向細目表：欄位多（知識點／易／中／難／小計），卡片窄時改成可橫向捲動，
    不硬擠成一行一行、也不讓「2 題／9 分」被折成四行。 */
@@ -852,12 +856,22 @@ html[data-theme="night"] .gen-qfig img{
 #pdf-export-stage .pdfp-q{display: flex;align-items: flex-start;gap: 6px;margin: 0 0 10px;page-break-inside: avoid;}
 #pdf-export-stage .pdfp-num{flex: 0 0 30px;font-weight: 600;}
 #pdf-export-stage .pdfp-qbody{flex: 1;min-width: 0;}
-#pdf-export-stage .pdfq-stem{margin: 0 0 4px;}
+#pdf-export-stage .pdfq-stem{margin: 0 0 4px;overflow: hidden;}
+#pdf-export-stage .pdfq-stem.with-trail{display: flex;align-items: baseline;gap: 8px;}
+#pdf-export-stage .pdfq-stem.with-trail .pdfq-marks-trail{float: none;margin-left: auto;flex-shrink: 0;}
 #pdf-export-stage .pdfq-opts{margin: 2px 0 2px 22px;}
 #pdf-export-stage .pdfq-fig{margin: 6px 0 6px 22px;}
 #pdf-export-stage .pdfq-fig img{display: block;max-width: 100%;height: auto;}
 #pdf-export-stage .pdfq-lines{margin: 8px 0 4px 22px;}
-#pdf-export-stage .pdfq-lines span{display: block;border-bottom: 1px solid #bbb;height: 24px;}
+#pdf-export-stage .pdfq-lines span{display: block;height: 24px;}
+#pdf-export-stage .pdfq-lines span.pdfq-line-rule{border-bottom: 1px solid #333;}
+#pdf-export-stage .pdfq-extra{margin: 2px 0 2px 22px;}
+#pdf-export-stage .pdfq-marks-lead{font-weight: 400;}
+#pdf-export-stage .pdfq-marks-trail{float: right;font-weight: 400;}
+/* plan 模式：卷頭逐段照範本（含置中／靠左／字級／粗體） */
+#pdf-export-stage .pdfp-head{text-align: center;margin: 0 0 4px;line-height: 1.5;}
+#pdf-export-stage .pdfp-left{text-align: left;}
+#pdf-export-stage .pdfp-right{text-align: right;}
 #pdf-export-stage .pdfp-end{text-align: center;margin-top: 22px;font-size: 14px;}
 #pdf-export-stage .pdfp-measure{margin: 0;}
 #pdf-export-stage .katex{font-size: 1em;}

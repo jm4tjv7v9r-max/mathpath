@@ -3751,6 +3751,67 @@ def paper_public(row, detail: bool = False) -> dict:
     return data
 
 
+def paper_pdf_plan(sections, title, template_data):
+    """把 Word 那份排版計畫（layout_plan）轉成前端 PDF 能吃的 JSON。
+
+    Word / LaTeX / PDF 三條匯出都吃同一份 layout_plan：卷頭（換過標題、
+    同步過年級）、分部標題、逐題配分位置、題號、卷尾全部照範本判斷。
+    之前 PDF 在瀏覽器另做一套簡化 HTML，才會跟 Word 長得不一樣。
+    plan 裡的圖形是 blob，這裡轉成 data URL 才可 JSON 序列化。
+    範本壞掉時回 None，讓呼叫端降級到舊的 sections 排版。
+    """
+    try:
+        from docx import Document as _Document
+        plan = paper_format.layout_plan(_Document(io.BytesIO(template_data)),
+                                        sections, title)
+    except SystemExit:
+        return None
+    except Exception as exc:
+        ai_log(f'PDF 排版計畫失敗：{exc}')
+        return None
+
+    def fig_json(figs):
+        out = []
+        for fig in figs or []:
+            if not isinstance(fig, dict):
+                continue
+            url = paper_format.figure_data_url(fig)
+            if not url:
+                continue
+            out.append({'data': url,
+                        'cx': int(fig.get('cx') or 0),
+                        'cy': int(fig.get('cy') or 0)})
+        return out
+
+    head = []
+    for item in plan.get('head') or []:
+        if isinstance(item, dict):
+            head.append({k: item.get(k) for k in ('text', 'rule', 'size', 'bold', 'align')
+                         if item.get(k) is not None})
+        else:
+            head.append({'text': str(item)})
+    sections_out = []
+    for sec in plan.get('sections') or []:
+        questions = []
+        for q in sec.get('questions') or []:
+            questions.append({
+                'number': q.get('number'), 'stem': q.get('stem'),
+                'marks': q.get('marks'), 'options': list(q.get('options') or []),
+                'lines': list(q.get('lines') or []),
+                'figures': fig_json(q.get('figures')),
+                'answerLines': q.get('answerLines'),
+            })
+        sections_out.append({
+            'heading': sec.get('heading'), 'marksPos': sec.get('marksPos'),
+            'headingSize': sec.get('headingSize'), 'headingBold': sec.get('headingBold'),
+            'questions': questions,
+        })
+    return {'head': head, 'page': plan.get('page'),
+            'answerRule': bool(plan.get('answerRule')),
+            'sections': sections_out,
+            'closing': [str(x) for x in (plan.get('closing') or []) if str(x).strip()]}
+
+
 def paper_figures_valid(raw):
     """題目附圖（data URL）：最多 3 張、每張 2 MB，只收 python-docx 畫得出來的格式。
 
@@ -8354,6 +8415,30 @@ class Application:
             return {'docx': 'data:' + DOCX_MIME + ';base64,'
                             + base64.b64encode(output).decode(),
                     'filename': filename, 'stats': report}, headers
+
+        match = re.fullmatch(r'/api/papers/([1-9]\d{0,17})/pdf-plan', path)
+        if match and method == 'POST':
+            # 給前端 PDF 用：回傳跟 Word/LaTeX 同一份 layout_plan 的 JSON，
+            # 讓 PDF 的卷頭、題號、配分位置、卷尾都照範本，不再另做簡化版面。
+            self.teacher(user)
+            paper_id = int(match[1])
+            with self.db() as db:
+                row = db.execute('SELECT * FROM papers WHERE id=?', (paper_id,)).fetchone()
+                if row is None:
+                    fail(404, '找不到這份試卷。')
+                if row['owner_id'] != user['id'] and not self.is_owner(user, db):
+                    fail(403, '只有建立者或管理員可以下載這份試卷。')
+                template_id = row['template_id'] if 'template_id' in row.keys() else None
+                tpl = None
+                if template_id:
+                    tpl = db.execute('SELECT * FROM paper_templates WHERE id=?',
+                                     (template_id,)).fetchone()
+            sections = paper_format.sections_from_dict(json.loads(row['sections'] or '[]'))
+            if not sections:
+                fail(422, '這份試卷沒有題目。')
+            plan = paper_pdf_plan(sections, row['title'], tpl['data']) if tpl is not None else None
+            # plan 為 null 時前端會回退到舊的 sections 簡化排版（例如舊卷沒記範本）。
+            return {'plan': plan, 'title': row['title']}, headers
 
         match = re.fullmatch(r'/api/papers/([1-9]\d{0,17})/to-tex', path)
         if match and method == 'POST':

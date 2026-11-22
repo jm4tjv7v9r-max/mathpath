@@ -39,28 +39,49 @@ async function ensurePdfExportLibs(onStatus){
 }
 
 // 把一題的 stem／選項／圖形／作答線轉成 HTML（數學走 KaTeX）。
-function pdfQuestionHtml(q){
+// opts: {planMode, marksPos, answerLines, answerRule, number}
+//   planMode=true 表示吃後端 layout_plan 的題目：題號／配分位置都照範本，
+//   不再於此重編。舊模式（planMode=false）仍自己算，供沒有範本的舊卷回退。
+function pdfQuestionHtml(q, opts){
+  const o=opts||{};
   const stem=mathText(q.stem||'');
-  const marks=(q.marks!==null&&q.marks!==undefined)?`（${q.marks} 分）`:'';
-  let html=`<div class="pdfq-stem">${marks}${stem}</div>`;
-  // 順序跟 Word 一致：題幹 → 附圖 → 選項 → 作答線
+  let marksHtml='';
+  if(q.marks!==null&&q.marks!==undefined){
+    const m=`（${q.marks} 分）`;
+    const pos=o.marksPos||'leading';
+    if(pos==='trailing')marksHtml=`<span class="pdfq-marks-trail">${m}</span>`;
+    else if(pos!=='none')marksHtml=`<span class="pdfq-marks-lead">${m}　</span>`;
+  }
+  // 順序跟 Word 一致：題幹 → 附圖 → 選項 → 作答線；配分照 marksPos 放前或後。
+  let html;
+  if(o.planMode&&o.marksPos==='trailing'){
+    html=`<div class="pdfq-stem with-trail">${stem}${marksHtml}</div>`;
+  }else{
+    html=`<div class="pdfq-stem">${marksHtml}${stem}</div>`;
+  }
   (q.figures||[]).forEach(fig=>{
     const src=fig.data||fig.blob||'';
     if(typeof src!=='string'||!src)return;
     const w=fig.cx?Math.max(120,Math.min(520,Math.round(fig.cx/360000*37.8))):340;
     html+=`<div class="pdfq-fig"><img src="${src}" style="max-width:${w}px"></div>`;
   });
-  const opts=q.options||[];
-  if(opts.length){
+  // q.lines：題目後面接著的補充行（Word 照範本複製）
+  (q.lines||[]).forEach(line=>{html+=`<div class="pdfq-extra">${mathText(line)}</div>`;});
+  const opts2=q.options||[];
+  if(opts2.length){
     // 選項一律打橫：一行最多 4 個，太長自動換行（跟 LaTeX 一致）
-    const perLine=opts.some(o=>String(o).length>18)?2:4;
-    for(let i=0;i<opts.length;i+=perLine){
-      html+=`<div class="pdfq-opts">${opts.slice(i,i+perLine).map(o=>mathText(o)).join('　　')}</div>`;
+    const perLine=opts2.some(x=>String(x).length>18)?2:4;
+    for(let i=0;i<opts2.length;i+=perLine){
+      html+=`<div class="pdfq-opts">${opts2.slice(i,i+perLine).map(x=>mathText(x)).join('　　')}</div>`;
     }
   }
-  if(!opts.length){
-    // 解答題留兩行作答線（跟 Word 的 answer_line 概念一致）
-    html+='<div class="pdfq-lines"><span></span><span></span></div>';
+  if(!opts2.length){
+    // 解答題的作答空間：plan 模式照範本的 answerLines 行數，舊模式固定兩行。
+    const lines=o.planMode?(Number(q.answerLines)||0):2;
+    if(lines){
+      const rule=o.answerRule?' pdfq-line-rule':'';
+      html+=`<div class="pdfq-lines">${'<span class="'+rule.trim()+'"></span>'.repeat(lines)}</div>`;
+    }
   }
   return html;
 }
@@ -86,6 +107,39 @@ function pdfPaperBlocks(title, meta, sections){
     });
   });
   blocks.push('<div class="pdfp-end">— 試卷完 —</div>');
+  return blocks;
+}
+
+// 用後端 layout_plan 排版：卷頭逐段照範本（含換過的標題、橫線）、
+// 分部標題照範本措辭、題號用 plan 的 number、配分位置照 marksPos、
+// 卷尾照 closing。這樣 PDF 跟「下載 Word」「下載 .tex」是同一份卷。
+function pdfPaperBlocksFromPlan(plan){
+  const blocks=[];
+  const alignClass=a=>a==='left'?' pdfp-left':(a==='right'?' pdfp-right':'');
+  (plan.head||[]).forEach(item=>{
+    const text=item.text||'';
+    if(text.trim()){
+      const size=item.size?`font-size:${item.size}pt;`:'';
+      const bold=item.bold?'font-weight:700;':'';
+      blocks.push(`<div class="pdfp-head${alignClass(item.align)}" style="${size}${bold}">${mathText(text)}</div>`);
+    }
+    if(item.rule)blocks.push('<div class="pdfp-rule"></div>');
+  });
+  (plan.sections||[]).forEach(sec=>{
+    if(sec.heading){
+      const sz=sec.headingSize?`font-size:${sec.headingSize}pt;`:'';
+      const bd=sec.headingBold===false?'font-weight:400;':'';
+      blocks.push(`<div class="pdfp-sec" style="${sz}${bd}">${mathText(sec.heading)}</div>`);
+    }
+    (sec.questions||[]).forEach(q=>{
+      const body=pdfQuestionHtml(q,{planMode:true, marksPos:sec.marksPos,
+        answerRule:plan.answerRule});
+      blocks.push(`<div class="pdfp-q"><span class="pdfp-num">${q.number||''}.</span><div class="pdfp-qbody">${body}</div></div>`);
+    });
+  });
+  (plan.closing||[]).forEach(text=>{
+    blocks.push(`<div class="pdfp-end">${mathText(text)}</div>`);
+  });
   return blocks;
 }
 
@@ -126,7 +180,7 @@ function dataUrlToBytes(url){
 /**
  * 建立 PDF（Uint8Array）。title/meta/sections 由呼叫端傳（生成完成頁或我的試卷）。
  */
-async function buildPaperPdf({title, meta, sections, onStatus}){
+async function buildPaperPdf({title, meta, sections, plan, onStatus}){
   await ensurePdfExportLibs(onStatus);
   if(document.fonts&&document.fonts.ready)await document.fonts.ready;
 
@@ -134,7 +188,8 @@ async function buildPaperPdf({title, meta, sections, onStatus}){
   container.id='pdf-export-stage';
   document.body.appendChild(container);
   try{
-    const blocks=pdfPaperBlocks(title, meta, sections);
+    // 有後端排版計畫就照它排（跟 Word 一致）；沒有才用舊的簡化排版回退。
+    const blocks=plan?pdfPaperBlocksFromPlan(plan):pdfPaperBlocks(title, meta, sections);
     if(onStatus)onStatus('排出試卷版面…');
     const pages=pdfPaginate(container, blocks);
 
@@ -162,9 +217,9 @@ async function buildPaperPdf({title, meta, sections, onStatus}){
   }
 }
 
-async function downloadPaperPdf({title, meta, sections, filename, onStatus}){
+async function downloadPaperPdf({title, meta, sections, plan, filename, onStatus}){
   try{
-    const bytes=await buildPaperPdf({title, meta, sections, onStatus});
+    const bytes=await buildPaperPdf({title, meta, sections, plan, onStatus});
     const blob=new Blob([bytes],{type:'application/pdf'});
     const url=URL.createObjectURL(blob);
     const a=document.createElement('a');

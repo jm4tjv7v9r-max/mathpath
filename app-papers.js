@@ -146,7 +146,7 @@ async function papersPage(){
     $('#main').innerHTML=`<div class="fade-in">${head}<section class="panel"><div class="inline-error">${esc(e.message)}</div></section></div>`;return;}
   if(!viewMatches(target))return;
   const f=data.facets||{};
-  // 一頁 8 份（3 欄 × 3 排剛好一屏），其餘分頁
+  // 一頁 8 份（一行兩份 × 4 排），其餘分頁
   const totalPages=Math.max(1,Math.ceil(data.papers.length/PAPER_PER_PAGE));
   if(paperPage>totalPages)paperPage=totalPages;
   if(paperPage<1)paperPage=1;
@@ -207,10 +207,15 @@ async function papersPage(){
   $$('[data-paper-pdf]').forEach(b=>b.onclick=async()=>{
     const old=b.textContent;b.disabled=true;b.textContent='產生中…';
     try{
-      const res=await api('/api/papers/'+b.dataset.paperPdf);
-      const p=res.paper||{};
+      // 先拿跟 Word 同一份 layout_plan，PDF 的卷頭／題號／配分／卷尾才一致。
+      const [detail,pr]=await Promise.all([
+        api('/api/papers/'+b.dataset.paperPdf),
+        api('/api/papers/'+b.dataset.paperPdf+'/pdf-plan',{})
+      ]);
+      const p=detail.paper||{};
       await downloadPaperPdf({
         title:p.title||'', meta:{grade:p.grade,term:p.term}, sections:p.sections||[],
+        plan:pr.plan||null,
         filename:(p.title||'試卷').replace(/[\\/:*?"<>|]/g,'_')+'.pdf',
         onStatus:t=>{b.textContent=t;}
       });
@@ -907,11 +912,16 @@ async function generatePaperModal(){
       $('#gen-dl-pdf').onclick=async ev=>{
         const b=ev.currentTarget, old2=b.textContent;
         b.disabled=true;b.textContent='排版中…';
-        await downloadPaperPdf({
-          title:p.title||'', meta:base||{}, sections:chosen,
-          filename:fname.replace(/\.docx$/i,'.pdf'),
-          onStatus:t=>{b.textContent=t;}
-        });
+        try{
+          // 跟 Word/LaTeX 一樣用存檔時記住的範本排一份 plan 出來，PDF 才會是同一份卷。
+          const pr=await api('/api/papers/'+pid+'/pdf-plan',{});
+          await downloadPaperPdf({
+            title:p.title||'', meta:base||{}, sections:chosen,
+            plan:pr.plan||null,
+            filename:fname.replace(/\.docx$/i,'.pdf'),
+            onStatus:t=>{b.textContent=t;}
+          });
+        }catch(err){toast(err.message);}
         b.disabled=false;b.textContent=old2;
       };
       $('#gen-dl-tex').onclick=async ev=>{

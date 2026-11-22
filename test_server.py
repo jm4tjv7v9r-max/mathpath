@@ -3053,6 +3053,27 @@ class PaperGenerateTests(unittest.TestCase):
         self.assertEqual(kept[0]['source'], '2024 港澳盃 第 5 題')
         self.assertEqual(kept[0]['topic'], '一元二次方程')
 
+    def test_pdf_plan_endpoint_returns_word_plan(self):
+        """/api/papers/{id}/pdf-plan 要回傳跟 Word 同源的排版計畫，供 PDF 用。"""
+        self.app.ai.call = lambda *a, **k: {'sections': [
+            {'title': '一、選擇題', 'qtype': '選擇題', 'questions': [
+                {'stem': f'題{i}', 'options': ['A', 'B', 'C', 'D'], 'marks': 10,
+                 'difficulty': '易' if i < 7 else ('中' if i < 9 else '難'),
+                 'topic': '一元二次方程', 'answer': 'A', 'steps': []}
+                for i in range(10)]},
+            {'title': '二、解答題', 'qtype': '解答題', 'questions': [
+                {'stem': f'解題{i}', 'options': [], 'marks': 0,
+                 'difficulty': '易', 'topic': '一元二次方程', 'answer': '', 'steps': []}
+                for i in range(1)]}]}
+        out = self.call('POST', '/api/papers/generate', self.payload())
+        pid = out['paper']['id']
+        result = self.call('POST', f'/api/papers/{pid}/pdf-plan')
+        plan = result['plan']
+        self.assertIsNotNone(plan, '有範本的卷一定要回傳 plan')
+        self.assertTrue(plan['head'], '卷頭要照範本')
+        nums = [q['number'] for sec in plan['sections'] for q in sec['questions']]
+        self.assertEqual(nums, list(range(1, len(nums) + 1)), '題號要照 Word 連號')
+
     def test_generated_paper_keeps_a_blueprint_for_later_review(self):
         """雙向細目表要跟著試卷存起來，之後在「我的試卷」可重複查閱。"""
         self.app.ai.call = lambda *a, **k: {'sections': [

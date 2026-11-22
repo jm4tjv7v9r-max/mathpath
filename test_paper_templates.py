@@ -1819,6 +1819,59 @@ class TexCompilesTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, 'xelatex 編不過：' + '；'.join(errors[:3]))
 
 
+class PdfPlanTests(unittest.TestCase):
+    """PDF 與 Word 同源：pdf_plan 要吐出跟 layout_plan 一樣的卷頭／分部／題號／卷尾。"""
+
+    def _template(self):
+        doc = Document()
+        doc.add_paragraph('小六數學 大測（第一段）')
+        doc.add_paragraph('限時 40 分鐘')
+        doc.add_paragraph('一、計算題')
+        doc.add_paragraph('1.　解方程（4 分）')
+        doc.add_paragraph('2.　計算（6 分）')
+        doc.add_paragraph('— 試卷完 —')
+        buf = io.BytesIO()
+        doc.save(buf)
+        return buf.getvalue()
+
+    def _sections(self):
+        return paper_format.sections_from_dict([
+            {'title': '一、計算題', 'questions': [
+                {'stem': '求$x^2$的值', 'marks': 4, 'options': [], 'lines': [], 'figures': []},
+                {'stem': '求$1/2+1/3$', 'marks': 6, 'options': [], 'lines': [], 'figures': []},
+            ]},
+        ])
+
+    def test_pdf_plan_matches_word_plan(self):
+        tpl = self._template()
+        sections = self._sections()
+        word = paper_format.layout_plan(Document(io.BytesIO(tpl)), sections, '小六大測（第一段）')
+        pdf = server.paper_pdf_plan(sections, '小六大測（第一段）', tpl)
+        # 題號、配分位置、卷尾、卷頭文字都要跟 Word 那份一致
+        self.assertEqual([q['number'] for q in pdf['sections'][0]['questions']],
+                         [q['number'] for q in word['sections'][0]['questions']])
+        self.assertEqual(pdf['sections'][0]['marksPos'], word['sections'][0]['marksPos'])
+        self.assertEqual(pdf['closing'], word['closing'])
+        def head_text(item):
+            return (item.get('text') if isinstance(item, dict) else str(item)).strip()
+        self.assertEqual([h['text'] for h in pdf['head'] if h.get('text', '').strip()],
+                         [t for t in (head_text(x) for x in word['head']) if t])
+
+    def test_pdf_plan_is_json_serializable(self):
+        pdf = server.paper_pdf_plan(self._sections(), '小六大測（第一段）', self._template())
+        blob = json.dumps(pdf, ensure_ascii=False)
+        self.assertIn('小六數學', blob)
+        self.assertIn('試卷完', blob)
+
+    def test_pdf_plan_uses_template_heading_not_section_title(self):
+        # Word 用範本的大題標題措辞；PDF 也必須照它，不是照存入的 sec.title。
+        pdf = server.paper_pdf_plan(self._sections(), '小六大測（第一段）', self._template())
+        self.assertIn('計算題', pdf['sections'][0]['heading'])
+
+    def test_pdf_plan_returns_none_for_broken_template(self):
+        self.assertIsNone(server.paper_pdf_plan(self._sections(), 'x', b'not a docx'))
+
+
 class QueryPathTests(unittest.TestCase):
     """查詢參數白名單：測試直接呼叫 dispatch，繞過了 HTTP 層，所以要在這裡單獨守。"""
 
