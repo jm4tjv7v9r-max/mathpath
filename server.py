@@ -6624,6 +6624,33 @@ class Application:
             db.execute('CREATE INDEX IF NOT EXISTS attempts_assignment ON attempts(assignment_id)')
             db.execute('CREATE INDEX IF NOT EXISTS attempts_mock ON attempts(mock_id)')
             db.execute('CREATE INDEX IF NOT EXISTS users_role ON users(role)')
+            # 「我的試卷」是 WHERE owner_id=? ORDER BY id DESC；沒有索引時每次都要全表掃描。
+            db.execute('CREATE INDEX IF NOT EXISTS papers_owner ON papers(owner_id, id DESC)')
+            # 題庫清單／推薦要按知識點與難度篩選，但題目本體存在 payload JSON 裡，
+            # SQL 沒法直接建索引。用生成列抽出最常用的兩個欄位（payload 一改就自動重算，
+            # 不必改所有寫入點），再建複合索引。舊版 SQLite 不支援生成列時安靜跳過，
+            # 推薦功能會退回全表掃描，不影響正確性。
+            # 生成列是 hidden column，PRAGMA table_info 看不到，要用 table_xinfo 才判斷得出
+            # 「已經加過」，否則每次啟動都會重複 ALTER 並報 duplicate column name。
+            try:
+                qcols = {r[1] for r in db.execute('PRAGMA table_xinfo(questions)')}
+            except sqlite3.Error:
+                qcols = {r[1] for r in db.execute('PRAGMA table_info(questions)')}
+            try:
+                if 'topic_idx' not in qcols:
+                    db.execute(
+                        "ALTER TABLE questions ADD COLUMN topic_idx TEXT GENERATED ALWAYS AS "
+                        "(json_extract(CASE WHEN json_valid(payload) THEN payload ELSE '{}' END,"
+                        "'$.topic')) VIRTUAL")
+                if 'level_idx' not in qcols:
+                    db.execute(
+                        "ALTER TABLE questions ADD COLUMN level_idx INTEGER GENERATED ALWAYS AS "
+                        "(json_extract(CASE WHEN json_valid(payload) THEN payload ELSE '{}' END,"
+                        "'$.level')) VIRTUAL")
+                db.execute('CREATE INDEX IF NOT EXISTS questions_topic_level '
+                           'ON questions(topic_idx, level_idx)')
+            except sqlite3.Error as exc:
+                ai_log(f'題庫索引建立失敗（推薦改用全表掃描）：{exc}')
             # 一次性回填：舊版題目 payload 沒有 qtype／subtopic（欄位是後來才加的），
             # 依題面規則補回，讓題型與章節篩選在既有題庫也能運作。只做一次，不覆蓋教師已填的值。
             if not db.execute('SELECT 1 FROM meta WHERE key=?', ('qtype_backfilled',)).fetchone():
@@ -9813,10 +9840,24 @@ class Application:
             with self.db() as db:
                 q = self.get_question(db, qid)
                 if method == 'GET' and action == 'recommendations':
-                    inventory = [self.question_row(r) for r in db.execute(
-                        'SELECT id, payload, (figure IS NOT NULL) AS has_figure, '
-                        'figure_key, created_at FROM questions WHERE id<>? ORDER BY id', (qid,))]
-                    same = [v for v in inventory if v['topic'] == q['topic']]
+                    # 只取同知識點的題目：走 initialize() 建的 topic/level 生成列索引，
+                    # 題庫再大也不用每次開題都全表掃描。舊資料庫沒有生成列時退回全表。
+                    cols = ('id, payload, (figure IS NOT NULL) AS has_figure, '
+                            'figure_key, created_at')
+                    try:
+                        rows = db.execute(
+                            'SELECT ' + cols + ' FROM questions WHERE id<>? AND topic_idx=? '
+                            'ORDER BY level_idx, id', (qid, q['topic'])).fetchall()
+                    except sqlite3.Error:
+                        rows = []
+                        for r in db.execute('SELECT ' + cols + ' FROM questions WHERE id<>? '
+                                            'ORDER BY id', (qid,)):
+                            try:
+                                if json.loads(r['payload']).get('topic') == q['topic']:
+                                    rows.append(r)
+                            except (ValueError, TypeError):
+                                continue
+                    same = [self.question_row(r) for r in rows]
                     similar = sorted([v for v in same if v['level'] == q['level']],
                                      key=lambda v: (-len(set(q['tags']) & set(v['tags'])), v['id']))[:3]
                     advanced = sorted([v for v in same if v['level'] > q['level']], key=lambda v: (v['level'], v['id']))[:3]
@@ -11385,6 +11426,9 @@ class Handler(BaseHTTPRequestHandler):
 
     # 靜態資源：內容雜湊當 ETag，並在記憶體快取，檔案沒變就不重讀。
     _asset_cache = {}
+    # gzip 後的位元組按 ETag 快取：app.js 近 400 KB，每次請求都重壓會白白吃 CPU。
+    # 檔案一變 ETag 就變，舊條目自然不再命中，容量上限避免無限長大。
+    _gzip_cache = {}
     _asset_lock = threading.Lock()
 
     # 每個回應都帶的安全標頭。CSP 先用 Report-Only：index.html 目前有一段
@@ -11457,6 +11501,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_response(304)
                 self.send_header('ETag', etag)
                 self.send_header('Cache-Control', cache)
+                # 同一個 ETag 有 gzip／原文兩種表示，快取要按編碼分開存。
+                self.send_header('Vary', 'Accept-Encoding')
                 self._send_security_headers()
                 self.send_header('Connection', 'close')
                 self.end_headers()
@@ -11466,14 +11512,23 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('Content-Type', mime)
         body = data
         # 文字類資源壓縮傳輸（app.js / styles.css 等可省 70% 以上頻寬；圖片已壓過，跳過）。
+        # 壓縮結果按 ETag 快取，重複請求不必再壓一次。
         if mime.startswith('text/') or mime in ('application/javascript', 'application/json'):
             accept = self.headers.get('Accept-Encoding') or ''
             if 'gzip' in accept:
-                body = gzip.compress(data)
+                with Handler._asset_lock:
+                    body = Handler._gzip_cache.get(etag)
+                if body is None:
+                    body = gzip.compress(data)
+                    with Handler._asset_lock:
+                        if len(Handler._gzip_cache) > 64:
+                            Handler._gzip_cache.clear()
+                        Handler._gzip_cache[etag] = body
                 self.send_header('Content-Encoding', 'gzip')
         self.send_header('Content-Length', str(len(body)))
         self.send_header('ETag', etag)
         self.send_header('Cache-Control', cache)
+        self.send_header('Vary', 'Accept-Encoding')
         self._send_security_headers()
         self.send_header('Connection', 'close')
         self.end_headers()
