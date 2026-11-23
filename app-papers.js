@@ -411,6 +411,11 @@ async function aiQualityModal(){
     :'<p class="field-hint">還沒有教師改分的紀錄，所以看不出個別知識點的偏差。</p>'}
     <button class="secondary wide" style="margin-top:14px" data-page="homework">前往作業與成績 ${icon('arrow')}</button>`,true);
 }
+// 現在所屬學年的起始年：8 月開始算新學年（2026-08 → 2026/2027 → 回 2026）。
+function guessSchoolYear(){
+  const d=new Date(), y=d.getFullYear();
+  return String(d.getMonth()+1>=8?y:y-1);
+}
 // 一鍵生成試卷：選範本 → 填範圍與配分 → AI 出題（伺服器會逐項核對）→ 排版存檔
 async function generatePaperModal(){
   let tpls=[];
@@ -445,6 +450,7 @@ async function generatePaperModal(){
       <div id="gen-ranges">${rangeRow()}</div>
       <button type="button" class="text-button" id="gen-add-range">＋ 增加範圍</button></div>
     <div class="gen-grid">
+      <div class="form-field"><label class="field-label" for="gen-year">學年</label><input id="gen-year" type="number" min="2000" max="2099" value="${guessSchoolYear()}" placeholder="例如 2026"></div>
       <div class="form-field"><label class="field-label" for="gen-duration">時間（分鐘）</label><input id="gen-duration" type="number" min="10" max="300" value="40"></div>
       <div class="form-field"><label class="field-label" for="gen-grade">年級</label><select id="gen-grade">${GEN_GRADES.map(g=>`<option>${g}</option>`).join('')}</select></div>
       <div class="form-field"><label class="field-label" for="gen-kind">類型</label><select id="gen-kind">${['練習','小測','大測','大測一','大測二','大測三','大測四','考試'].map(k=>`<option ${k==='大測'?'selected':''}>${k}</option>`).join('')}</select></div>
@@ -626,7 +632,9 @@ async function generatePaperModal(){
     if(difficulty.易+difficulty.中+difficulty.難!==10){
       err.textContent=`難度比例（易：中：難）相加要等於 10，現在是 ${difficulty.易+difficulty.中+difficulty.難}。`;return null;}
     const source=(document.querySelector('input[name=gen-source]:checked')||{}).value||'bank';
-    return {templateId:tplId,ranges:list,duration:Number($('#gen-duration').value)||40,
+    return {templateId:tplId,ranges:list,
+            year:Number($('#gen-year').value)||guessSchoolYear(),
+            duration:Number($('#gen-duration').value)||40,
             grade:$('#gen-grade').value,examKind:$('#gen-kind').value,term:$('#gen-term').value,
             subject:$('#gen-subject').value,region:$('#gen-region').value,
             reference:refs.map(r=>`【${r.name}】\n${r.text}`).join('\n\n').slice(0,6000),

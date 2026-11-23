@@ -645,6 +645,34 @@ TITLE_SUBJECT_RE = re.compile(r'(數學|幾何)')
 # 卷頭「（限時 40 分鐘，本題目卷共兩版…）」：只換「限時 X 分鐘」的數字。
 # 老師在一鍵生成 STEP1 填的「時間（分鐘）」要反映在卷面上，不能沿用範本的舊值。
 LIMIT_MINUTES_RE = re.compile(r'(限時\s*)[\d.]+\s*(分鐘|min)')
+# 學年：起始年＋翌年，例如 2026 對應「2026 年度」或「2026／2027 學年」。
+# 只認四位年份與常見分隔符，避免動到題號、分數等數字。
+# 範圍寫法優先（含可選的「學年／年度」字樣），其次才是單年＋年度字樣；
+# 兩者合成一條 regex 一次替換，否則範圍換完後單年 regex 會再把翌年改回起始年。
+SCHOOL_YEAR_RE = re.compile(
+    r'(20\d{2})(\s*[／/\-–~～]\s*)(20\d{2})(\s*(?:學年|年度|年))?'
+    r'|(20\d{2})(\s*)(學年|年度|年)')
+
+
+def _fill_school_year(text: str, year) -> str:
+    """把卷頭／標題裡的學年換成指定起始年，保留原本寫法（年度／學年、分隔符）。
+
+     year 是四位起始年（2026 代表 2026/2027 學年）。範圍寫法兩個年份一起換，
+     「2026 年度」這種單年寫法只換前面那一位。沒給 year 就原樣保留。
+    """
+    try:
+        y = int(year)
+    except (TypeError, ValueError):
+        return text
+    if y < 1900 or y > 2199:
+        return text
+
+    def _repl(m):
+        if m.group(1):                       # 範圍：2026／2027 [學年]
+            return f'{y}{m.group(2)}{y + 1}{m.group(4) or ""}'
+        return f'{y}{m.group(6)}{m.group(7)}'  # 單年：2026 年度
+
+    return SCHOOL_YEAR_RE.sub(_repl, text or '')
 
 
 def _set_limit_minutes(text: str, minutes) -> str:
@@ -717,6 +745,10 @@ def _fill_title(template_text: str, meta: dict | None, fallback: str) -> str:
     if subject and TITLE_SUBJECT_RE.search(out):
         out = TITLE_SUBJECT_RE.sub(subject, out, count=1)
 
+    # 學年：起始年（2026 代表 2026/2027）。沒給就照範本原文保留。
+    if meta.get('year'):
+        out = _fill_school_year(out, meta['year'])
+
     return out.strip() or fallback
 
 
@@ -748,8 +780,8 @@ def _replace_runs(p, fn):
     return changed
 
 
-def _head_substitutes(text: str, term, grade, duration) -> str:
-    """把卷頭單一 run 文字裡的學段／年級／限時換掉（供 _replace_runs 逐 run 用）。"""
+def _head_substitutes(text: str, term, grade, duration, year=None) -> str:
+    """把卷頭單一 run 文字裡的學段／年級／限時／學年換掉（供 _replace_runs 逐 run 用）。"""
     new = text
     if term:
         new = TITLE_TERM_RE.sub(term.group(0), new, count=1)
@@ -757,10 +789,12 @@ def _head_substitutes(text: str, term, grade, duration) -> str:
         new = TITLE_GRADE_RE.sub(grade.group(0), new, count=1)
     if duration is not None:
         new = _set_limit_minutes(new, duration)
+    if year:
+        new = _fill_school_year(new, year)
     return new
 
 
-def _sync_head(head, target: int, title_text: str, duration=None):
+def _sync_head(head, target: int, title_text: str, duration=None, year=None):
     """卷頭其他行也跟著換學段／年級／限時。
 
     範本第一行常常是「培華中學 2025/2026 學年 第一段測驗」，卷名那行換成第二段之後，
@@ -773,7 +807,7 @@ def _sync_head(head, target: int, title_text: str, duration=None):
     """
     term = TITLE_TERM_RE.search(title_text or '')
     grade = TITLE_GRADE_RE.search(title_text or '')
-    if not term and not grade and duration is None:
+    if not term and not grade and duration is None and not year:
         return
     for i, p in enumerate(head):
         if i == target:
@@ -781,11 +815,11 @@ def _sync_head(head, target: int, title_text: str, duration=None):
         old = p.text or ''
         if not old.strip():
             continue
-        new = _head_substitutes(old, term, grade, duration)
+        new = _head_substitutes(old, term, grade, duration, year)
         if new != old:
             # 先逐 run 只改文字（保留底線與 tab 分欄）；跨 run 的字眼改不到，
             # 才退而求其次整行重寫。
-            if not _replace_runs(p, lambda t: _head_substitutes(t, term, grade, duration)):
+            if not _replace_runs(p, lambda t: _head_substitutes(t, term, grade, duration, year)):
                 _fill(p, [new])
 
 
@@ -1447,7 +1481,8 @@ def _render_into(tpl, sections: list[Section], title: str | None = None,
                 line = _fill_title(tpl_line, use_meta, title)
             _fill(cloned_head[target], [line], math_as_text)
             _sync_head(cloned_head, target, line,
-                       duration=(use_meta or {}).get('duration'))
+                       duration=(use_meta or {}).get('duration'),
+                       year=(use_meta or {}).get('year'))
 
     # 選項欄數全卷只用一個：每題各自算的話，長選項那題會變成 2 欄，
     # 選項字母就跟第一題對不齊（老師一眼就看到）。
@@ -1656,6 +1691,7 @@ def layout_plan(tpl, sections: list[Section], title: str | None = None,
             term = TITLE_TERM_RE.search(line)
             grade = TITLE_GRADE_RE.search(line)
             duration = (use_meta or {}).get('duration')
+            year = (use_meta or {}).get('year')
             for i, text in enumerate(head):
                 if i == target or not text.strip():
                     continue
@@ -1666,6 +1702,8 @@ def layout_plan(tpl, sections: list[Section], title: str | None = None,
                     new = TITLE_GRADE_RE.sub(grade.group(0), new, count=1)
                 if duration is not None:
                     new = _set_limit_minutes(new, duration)
+                if year:
+                    new = _fill_school_year(new, year)
                 head[i] = new
 
     template_headings = [b.text for b in blocks if b.role == 'section']

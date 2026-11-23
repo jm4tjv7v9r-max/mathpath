@@ -2461,7 +2461,11 @@ def paper_generation_spec(body):
             difficulty[key] = number(raw_difficulty.get(key, 0), f'難度「{key}」', 0, 10, True)
         if sum(difficulty.values()) != 10:
             fail(400, f'難度比例（易：中：難）相加要等於 10，現在是 {sum(difficulty.values())}。')
+    # 學年：四位起始年（2026 代表 2026/2027 學年）。空值就用現在的學年。
+    raw_year = body.get('year')
+    school_year = number(raw_year, '學年', 2000, 2099, True) if raw_year not in (None, '') else guess_school_year()
     spec = {'ranges': ranges, 'totalPoints': total, 'qtypes': qtypes,
+            'year': school_year,
             'duration': number(body.get('duration', 40), '測考時間（分鐘）', 10, 300, True),
             'grade': text(body.get('grade') or '', '年級', 20, empty=True),
             'examKind': text(body.get('examKind') or '大測', '類型', 20),
@@ -3885,7 +3889,19 @@ def paper_public(row, detail: bool = False) -> dict:
     return data
 
 
-def paper_pdf_plan(sections, title, template_data):
+def paper_year_meta(row) -> dict:
+    """從試卷列取出學年 meta，供重新下載 Word／LaTeX／PDF 時替換卷頭年度。"""
+    raw = row['year'] if 'year' in row.keys() else None
+    try:
+        y = int(str(raw).strip()[:4])
+        if 1900 <= y <= 2199:
+            return {'year': y}
+    except (TypeError, ValueError):
+        pass
+    return {}
+
+
+def paper_pdf_plan(sections, title, template_data, meta=None):
     """把 Word 那份排版計畫（layout_plan）轉成前端 PDF 能吃的 JSON。
 
     Word / LaTeX / PDF 三條匯出都吃同一份 layout_plan：卷頭（換過標題、
@@ -3897,7 +3913,7 @@ def paper_pdf_plan(sections, title, template_data):
     try:
         from docx import Document as _Document
         plan = paper_format.layout_plan(_Document(io.BytesIO(template_data)),
-                                        sections, title)
+                                        sections, title, meta=meta)
     except SystemExit:
         return None
     except Exception as exc:
@@ -4025,6 +4041,13 @@ def paper_sections_valid(raw):
     if not sections:
         fail(400, '這份試卷沒有可保存的題目（題號後面沒有文字）。')
     return sections
+
+
+def guess_school_year() -> int:
+    """現在所屬學年的起始年：8 月起算新學年（2026-08 → 2026/2027 → 2026）"""
+    now = datetime.now(timezone.utc)
+    # 伺服器用 UTC；港澳夏令時間與 UTC 同為 +8 以內，8 月交界差幾小時不影響學年判斷。
+    return now.year if now.month >= 8 else now.year - 1
 
 
 def paper_year(value) -> str:
@@ -8392,7 +8415,7 @@ class Application:
             # 跟 STEP1 填的「時間（分鐘）」對不上。
             meta = {'grade': spec['grade'], 'term': spec['term'],
                     'kind': spec['examKind'], 'subject': spec['subject'],
-                    'duration': spec['duration']}
+                    'duration': spec['duration'], 'year': spec['year']}
             try:
                 output, report = paper_format.render_with_sections(
                     tpl['data'], sections, title, meta=meta)
@@ -8407,7 +8430,7 @@ class Application:
                 cur = db.execute(
                     'INSERT INTO papers(owner_id,title,year,grade,term,sections,'
                     'template_id,blueprint,question_count,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)',
-                    (user['id'], title, '', spec['grade'], spec['term'],
+                    (user['id'], title, str(spec['year']), spec['grade'], spec['term'],
                      json.dumps(paper_format.sections_to_dict(sections), ensure_ascii=False),
                      template_id,
                      json.dumps(blueprint, ensure_ascii=False),
@@ -8478,7 +8501,8 @@ class Application:
                       'texZip': latex_export.tex_zip_payload(tex, figs_out, tex_name)}
             if tpl is not None:
                 try:
-                    output, _ = paper_format.render_with_sections(tpl['data'], sections, title)
+                    output, _ = paper_format.render_with_sections(
+                        tpl['data'], sections, title, meta=paper_year_meta(row))
                 except SystemExit as exc:
                     fail(409, str(exc) or '這個範本裡找不到題目段落，請換一個範本。')
                 except Exception as exc:
@@ -8538,8 +8562,8 @@ class Application:
             if not sections:
                 fail(422, '這份試卷沒有題目。')
             try:
-                output, report = paper_format.render_with_sections(tpl['data'], sections,
-                                                                   row['title'])
+                output, report = paper_format.render_with_sections(
+                    tpl['data'], sections, row['title'], meta=paper_year_meta(row))
             except SystemExit as exc:
                 fail(409, str(exc) or '這個範本裡找不到題目段落，請換一個範本重排。')
             except Exception as exc:
@@ -8570,7 +8594,8 @@ class Application:
             sections = paper_format.sections_from_dict(json.loads(row['sections'] or '[]'))
             if not sections:
                 fail(422, '這份試卷沒有題目。')
-            plan = paper_pdf_plan(sections, row['title'], tpl['data']) if tpl is not None else None
+            plan = (paper_pdf_plan(sections, row['title'], tpl['data'],
+                                   meta=paper_year_meta(row)) if tpl is not None else None)
             # plan 為 null 時前端會回退到舊的 sections 簡化排版（例如舊卷沒記範本）。
             return {'plan': plan, 'title': row['title']}, headers
 
@@ -8598,7 +8623,8 @@ class Application:
             if tpl is not None:
                 try:
                     plan = paper_format.layout_plan(
-                        Document(io.BytesIO(tpl['data'])), sections, row['title'])
+                        Document(io.BytesIO(tpl['data'])), sections, row['title'],
+                        meta=paper_year_meta(row))
                 except SystemExit:
                     plan = None      # 範本壞了／找不到題目段落：退回通用版面，不要整份匯不出
             figs_out: list = []

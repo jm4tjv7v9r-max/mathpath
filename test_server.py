@@ -3135,6 +3135,36 @@ class PaperGenerateTests(unittest.TestCase):
         nums = [q['number'] for sec in plan['sections'] for q in sec['questions']]
         self.assertEqual(nums, list(range(1, len(nums) + 1)), '題號要照 Word 連號')
 
+    def test_generate_saves_school_year(self):
+        """一鍵生成要把學年存進試卷，重新下載 PDF/Word 也能拿到同一份學年。"""
+        self.app.ai.call = lambda *a, **k: {'sections': [
+            {'title': '一、選擇題', 'qtype': '選擇題', 'questions': [
+                {'stem': f'題{i}', 'options': ['A', 'B', 'C', 'D'], 'marks': 10,
+                 'difficulty': '易' if i < 7 else ('中' if i < 9 else '難'),
+                 'topic': '一元二次方程', 'answer': 'A', 'steps': []}
+                for i in range(10)]}]}
+        out = self.call('POST', '/api/papers/generate', self.payload(
+            year=2027, source='ai', difficulty={'易': 7, '中': 2, '難': 1},
+            qtypes=[{'type': '選擇題', 'optionCount': 4}]))
+        self.assertEqual(out['spec']['year'], 2027)
+        self.assertEqual(out['paper']['year'], '2027', '學年要存進試卷')
+        pid = out['paper']['id']
+        plan = self.call('POST', f'/api/papers/{pid}/pdf-plan')['plan']
+        self.assertIsNotNone(plan, '帶學年的卷仍要能重排 PDF')
+
+    def test_generate_defaults_school_year_when_omitted(self):
+        """沒填學年要用現在的學年，不要存空值。"""
+        self.app.ai.call = lambda *a, **k: {'sections': [
+            {'title': '一、選擇題', 'qtype': '選擇題', 'questions': [
+                {'stem': f'題{i}', 'options': ['A', 'B', 'C', 'D'], 'marks': 10,
+                 'difficulty': '易', 'topic': '一元二次方程', 'answer': 'A', 'steps': []}
+                for i in range(10)]}]}
+        out = self.call('POST', '/api/papers/generate', self.payload(
+            source='ai', difficulty={'易': 10, '中': 0, '難': 0},
+            qtypes=[{'type': '選擇題', 'optionCount': 4}]))
+        self.assertEqual(out['spec']['year'], server.guess_school_year())
+        self.assertTrue(out['paper']['year'].isdigit())
+
     def test_generated_paper_keeps_a_blueprint_for_later_review(self):
         """雙向細目表要跟著試卷存起來，之後在「我的試卷」可重複查閱。"""
         self.app.ai.call = lambda *a, **k: {'sections': [

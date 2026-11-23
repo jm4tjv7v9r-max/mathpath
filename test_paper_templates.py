@@ -1819,6 +1819,64 @@ class TexCompilesTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, 'xelatex 編不過：' + '；'.join(errors[:3]))
 
 
+class SchoolYearTests(unittest.TestCase):
+    """學年（四位起始年）要貫徹 Word／LaTeX／PDF 卷頭；沒給就照範本原文保留。"""
+
+    def test_fill_school_year_single_and_range(self):
+        yf = paper_format._fill_school_year
+        self.assertEqual(yf('培華中學 2026 年度數學科大測', 2027),
+                         '培華中學 2027 年度數學科大測')
+        self.assertEqual(yf('某某中學 2026／2027 學年 第一段測驗', 2027),
+                         '某某中學 2027／2028 學年 第一段測驗')
+        self.assertEqual(yf('某某中學 2026/2027 學年', 2027), '某某中學 2027/2028 學年')
+
+    def test_fill_school_year_leaves_unrelated_numbers(self):
+        # 2026 沒接「年度／學年」字樣就不算學年，保留原樣（不誤傷題號、分數）
+        self.assertEqual(paper_format._fill_school_year('第 1 題 5 分 2026', 2027),
+                         '第 1 題 5 分 2026')
+        self.assertEqual(paper_format._fill_school_year('培華中學 2026 年度', None),
+                         '培華中學 2026 年度')
+
+    def test_year_updates_word_and_pdf_plan_head(self):
+        doc = Document()
+        doc.add_paragraph('培華中學 2026 年度第一段高一級(普通班)數學科大測一')
+        doc.add_paragraph('某某中學 2026／2027 學年  第一段測驗')
+        doc.add_paragraph('一、計算題')
+        doc.add_paragraph('1.　計算 1+1（4 分）')
+        buf = io.BytesIO()
+        doc.save(buf)
+        tpl = buf.getvalue()
+        secs = paper_format.sections_from_dict([{'title': '一、計算題', 'questions': [
+            {'stem': '計算 1+1', 'marks': 4, 'options': [], 'lines': [], 'figures': []}]}])
+        meta = {'grade': '高三', 'term': '第二段', 'kind': '大測', 'subject': '數學',
+                'duration': 40, 'year': 2027}
+
+        out, _ = paper_format.render_with_sections(tpl, secs, '高三數學大測（第二段）', meta=meta)
+        word_head = [p.text for p in Document(io.BytesIO(out)).paragraphs[:2]]
+        self.assertIn('2027 年度', word_head[0])
+        self.assertIn('2027／2028 學年', word_head[1])
+
+        plan = paper_format.layout_plan(Document(io.BytesIO(tpl)), secs,
+                                        '高三數學大測（第二段）', meta=meta)
+        plan_head = [h.get('text') if isinstance(h, dict) else str(h) for h in plan['head']]
+        self.assertIn('2027 年度', plan_head[0])
+        self.assertIn('2027／2028 學年', plan_head[1])
+
+    def test_no_year_keeps_template_year(self):
+        doc = Document()
+        doc.add_paragraph('培華中學 2026 年度第一段高一級數學科大測一')
+        doc.add_paragraph('一、計算題')
+        doc.add_paragraph('1.　計算（4 分）')
+        buf = io.BytesIO()
+        doc.save(buf)
+        secs = paper_format.sections_from_dict([{'title': '一、計算題', 'questions': [
+            {'stem': '計算', 'marks': 4, 'options': [], 'lines': [], 'figures': []}]}])
+        plan = paper_format.layout_plan(Document(io.BytesIO(buf.getvalue())), secs,
+                                        '高三數學大測（第二段）')
+        head0 = plan['head'][0]
+        self.assertIn('2026 年度', head0.get('text') if isinstance(head0, dict) else str(head0))
+
+
 class PdfPlanTests(unittest.TestCase):
     """PDF 與 Word 同源：pdf_plan 要吐出跟 layout_plan 一樣的卷頭／分部／題號／卷尾。"""
 
