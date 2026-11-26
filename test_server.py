@@ -2534,6 +2534,34 @@ class APITests(unittest.TestCase):
             self.assertTrue(entries)
             self.assertEqual(entries[0]['monthScore'], 10.0, '排行榜不能把重複練習累加')
 
+    def test_score_reset_clears_scores_but_keeps_records(self):
+        """清零分數：排行榜、金幣、統計歸零，作答紀錄保留，可回溯。"""
+        sid = self.student_id()
+        now = server.utc_now()
+        with self.app.db() as db:
+            db.execute(
+                'INSERT INTO attempts(user_id,question_id,answer_text,score,max_score,'
+                'status,feedback,submitted_at,method,ai_steps) VALUES(?,?,?,?,?,?,?,?,?,?)',
+                (sid, 1, 'x', 6, 6, 'graded', 'ok', now, 'ai-practice', '[]'))
+            self.assertEqual(server.score_coins(db, sid), 6)
+
+        self.request('POST', '/api/admin/score-reset', {'confirm': 'RESET'},
+                     cookie=self.teacher, expect=200)
+
+        with self.app.db() as db:
+            self.assertEqual(server.score_coins(db, sid), 0, '分數金幣要清零')
+            board = server.leaderboard_payload(db, now[:7])
+            self.assertEqual([x for items in board['score'].values() for x in items
+                              if x['id'] == sid], [], '排行榜要清零')
+            kept = db.execute('SELECT COUNT(*) FROM attempts WHERE user_id=?', (sid,)).fetchone()[0]
+            self.assertEqual(kept, 1, '作答紀錄要保留')
+            rows = db.execute('SELECT * FROM attempts WHERE user_id=?', (sid,)).fetchall()
+            self.assertEqual(server.Application.stats(rows, server.score_reset_at(db))['score'], 0)
+
+    def test_score_reset_requires_reset_confirmation(self):
+        self.request('POST', '/api/admin/score-reset', {'confirm': 'yes'},
+                     cookie=self.teacher, expect=400)
+
 
 class AIFailureTests(unittest.TestCase):
     """AI 連線／回應異常時的診斷訊息與救援行為。"""

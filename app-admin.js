@@ -109,6 +109,15 @@ function dataAdminHtml(){
     <div class="form-field" style="max-width:280px"><label class="field-label" for="reset-confirm">輸入 RESET 以確認</label><input id="reset-confirm" maxlength="20" placeholder="RESET" autocomplete="off"></div>
     <p class="error-text" id="reset-error"></p>
     <button class="danger" id="admin-reset">${icon('trash')}執行學年重置</button>
+  </div>
+  <div class="danger-zone" style="margin-top:16px">
+    <h3>${icon('trash')}清零分數與金幣（刷分事件後使用）</h3>
+    <p>會清零：<strong>排行榜得分、分數換來的金幣、學習統計（做題數與正確率）</strong>。</p>
+    <p>一律保留：<strong>作答紀錄與手寫圖、每日登入金幣、教師獎勵金幣、題庫</strong>。</p>
+    <p class="field-hint">清零後學生要重新做題才會有分數；之前的作答紀錄仍看得到，方便回溯。</p>
+    <div class="form-field" style="max-width:280px"><label class="field-label" for="score-reset-confirm">輸入 RESET 以確認</label><input id="score-reset-confirm" maxlength="20" placeholder="RESET" autocomplete="off"></div>
+    <p class="error-text" id="score-reset-error"></p>
+    <button class="danger" id="admin-score-reset">${icon('trash')}清零分數</button>
   </div></section>`;
 }
 // AI 呼叫的健康狀況：失敗率與平均耗時，讓管理員不必翻 Render Logs。
@@ -144,6 +153,16 @@ function bindDataAdmin(){
   $$('[data-admin-download]').forEach(b=>b.onclick=()=>{const a=document.createElement('a');a.href=b.dataset.adminDownload;a.rel='noopener';document.body.appendChild(a);a.click();a.remove();toast('已開始下載，請查看瀏覽器的下載項目。');});
   if($('#admin-refresh'))$('#admin-refresh').onclick=()=>loadAdminStats(true);
   if($('#admin-vacuum'))$('#admin-vacuum').onclick=async()=>{const b=$('#admin-vacuum'),original=b.innerHTML;b.disabled=true;b.innerHTML=icon('clock')+'壓實中…';try{const r=await api('/api/admin/vacuum',{});toast(`已壓實：${formatBytes(r.beforeBytes)} → ${formatBytes(r.afterBytes)}，回收 ${formatBytes(r.savedBytes)}。`);await loadAdminStats();}catch(e){toast(e.message);}finally{b.disabled=false;b.innerHTML=original;}};
+  if($('#admin-score-reset'))$('#admin-score-reset').onclick=async()=>{
+    const typed=$('#score-reset-confirm').value.trim();
+    if(typed.toUpperCase()!=='RESET'){$('#score-reset-error').textContent='請先輸入 RESET 才能清零。';return;}
+    if(await askCancel('確定把所有學生的分數與分數金幣歸零嗎？作答紀錄會保留，但清零後分數無法還原。'))return;
+    const b=$('#admin-score-reset');b.disabled=true;$('#score-reset-error').textContent='';
+    try{await api('/api/admin/score-reset',{confirm:typed});
+      toast('分數與金幣已清零；學生重新做題後才會有分數。');
+      $('#score-reset-confirm').value='';await refresh();settingsPage();}
+    catch(e){$('#score-reset-error').textContent=e.message;b.disabled=false;}
+  };
   if($('#admin-reset'))$('#admin-reset').onclick=async()=>{
     const typed=$('#reset-confirm').value.trim();
     if(typed.toUpperCase()!=='RESET'){$('#reset-error').textContent='請先輸入 RESET 才能執行學年重置。';return;}

@@ -6232,7 +6232,17 @@ def paper_grade_all(app, pages, title, deadline, key=None, second_grade=False):
 # 之前排行榜、金幣、學習統計都是 SUM(所有已評作答)，學生反覆做同一道簡單題
 # 就能把分數刷到幾百分（例如 6 分題做 97 次 = 585 分），不是真實學習成果。
 # 窗口函數：每個（學生, 題目）取最高分；同分取最早一次，分數才不會因重做而搬家。
-BEST_ATTEMPT_SELECT = """
+def score_reset_at(db):
+    """分數清零時間點（ISO）。之前的作答不再計分，但作答紀錄保留。"""
+    row = db.execute("SELECT value FROM meta WHERE key='score_reset_at'").fetchone()
+    return row['value'] if row and row['value'] else None
+
+
+def best_attempt_select(reset_at=None):
+    """同一題只取最高分那一次；有清零時間點時，只計該時間之後的作答。"""
+    # 用嚴格大於：清零與舊作答可能落在同一秒，用 >= 會把舊分數留下來。
+    extra = ' AND submitted_at > ?' if reset_at else ''
+    return """
 SELECT user_id, question_id, score, max_score, submitted_at
 FROM (
     SELECT user_id, question_id, COALESCE(score, 0) AS score, max_score, submitted_at,
@@ -6241,7 +6251,7 @@ FROM (
                ORDER BY COALESCE(score, 0) DESC, submitted_at ASC
            ) AS rn
     FROM attempts
-    WHERE status='graded' AND (assignment_id IS NULL OR teacher_reviewed=1)
+    WHERE status='graded' AND (assignment_id IS NULL OR teacher_reviewed=1)""" + extra + """
 )
 WHERE rn=1
 """
@@ -6267,9 +6277,11 @@ def leaderboard_payload(db, month):
     students = {r['id']: r for r in db.execute(
         "SELECT id,name,seat,grade FROM users WHERE role='student'")}
     buckets = {}
-    # 同一題只算一次（最高分），重複做同一題不會再加分。
-    for a in db.execute('SELECT user_id, question_id, score, submitted_at FROM ('
-                        + BEST_ATTEMPT_SELECT + ')'):
+    # 同一題只算一次（最高分）；清零時間點之前的作答不計分。
+    reset_at = score_reset_at(db)
+    board_sql = ('SELECT user_id, question_id, score, submitted_at FROM ('
+                 + best_attempt_select(reset_at) + ')')
+    for a in db.execute(board_sql, (reset_at,) if reset_at else ()):
         uid, day = a['user_id'], (a['submitted_at'] or '')[:10]
         if uid not in students or not day:
             continue
@@ -6331,10 +6343,12 @@ def score_coins(db, user_id):
     分數可能有小數（例如 3.5），金幣只發整數，所以整批加總後向下取整：
     總分 12.5 → 12 枚，不會出現半枚金幣。
     """
-    # 與排行榜同口徑：同一題只算一次最高分，重複刷同一題不再多發金幣。
-    row = db.execute(
-        'SELECT COALESCE(SUM(score),0) AS total FROM (' + BEST_ATTEMPT_SELECT
-        + ') WHERE user_id=?', (user_id,)).fetchone()
+    # 與排行榜同口徑：同一題只算一次最高分；清零時間點之前的作答不計分。
+    reset_at = score_reset_at(db)
+    sql = ('SELECT COALESCE(SUM(score),0) AS total FROM ('
+           + best_attempt_select(reset_at) + ') WHERE user_id=?')
+    params = (reset_at, user_id) if reset_at else (user_id,)
+    row = db.execute(sql, params).fetchone()
     return int(math.floor(row['total'] or 0))
 
 
@@ -7409,9 +7423,12 @@ class Application:
                 'paperLastAt': row['last_at'] if count else None}
 
     @staticmethod
-    def stats(rows):
+    def stats(rows, reset_at=None):
         # 教師佈置的作業要等教師批閱後才計入學生的練習統計，避免批閱前就洩漏分數。
         rows = [a for a in rows if a['assignment_id'] is None or a['teacher_reviewed']]
+        # 清零時間點（含）之前的作答不計入統計（紀錄仍保留在作答紀錄裡）。
+        if reset_at:
+            rows = [a for a in rows if (a['submitted_at'] or '') > reset_at]
         # 同一題只計最高分一次：重複做同一題不再把「做題數」與「得分」往上堆。
         best = {}
         for a in rows:
@@ -11133,10 +11150,11 @@ class Application:
                 # 學生的金幣（側欄徽章、金幣頁都用同一份數字）。
                 coins = coin_summary(db, user['id']) if user['role'] == 'student' else None
                 account_owner = self.owner_id(db)
+                score_reset = score_reset_at(db)
             payload_user = self.user_public(user)
             # 管理員＝最早建立的教師帳號；前端用它決定要不要顯示「新增教師」與資料管理。
             payload_user['isOwner'] = user['role'] == 'teacher' and user['id'] == account_owner
-            stats = self.stats(own)
+            stats = self.stats(own, score_reset)
             stats.update(paper)
             return {'user': payload_user, 'questions': questions, 'attempts': attempts,
                     'pendingReviews': pending_reviews,
@@ -11336,6 +11354,19 @@ class Application:
                 result = self.dataadmin.reset_students(db, confirm)
             result['vacuum'] = self.dataadmin.vacuum()
             return result, headers
+        if path == '/api/admin/score-reset' and method == 'POST':
+            # 清零分數與「分數換來的金幣」：記下一個時間點，之前的作答不再計分。
+            # 作答紀錄、每日登入與教師獎勵金幣一律保留（可回溯，不刪資料）。
+            self.require_owner(user)
+            fields(body, ('confirm',), ('confirm',))
+            confirm = text(body['confirm'], '確認字串', 40, strip=False, empty=True)
+            if confirm != 'RESET':
+                fail(400, '請輸入 RESET 確認清零。')
+            at = utc_now()
+            with self.db() as db:
+                db.execute('BEGIN IMMEDIATE')
+                db.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('score_reset_at',?)", (at,))
+            return {'ok': True, 'resetAt': at}, headers
         return None
 
     def dispatch(self, method, path, body, user, token_hash, ip, query=''):
