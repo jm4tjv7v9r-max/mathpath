@@ -11430,6 +11430,32 @@ class Handler(BaseHTTPRequestHandler):
     # 檔案一變 ETag 就變，舊條目自然不再命中，容量上限避免無限長大。
     _gzip_cache = {}
     _asset_lock = threading.Lock()
+    # 靜態資源版本＝內容哈希前 8 位。index.html 回應時自動把 ?v= 換成這個值：
+    # 檔案一改哈希就變，瀏覽器自然重新下載；沒改就吃長快取，第二次打開零請求。
+    _asset_versions = {}
+    ASSET_REF_RE = re.compile(r'(?P<attr>href|src)="/(?P<name>[A-Za-z0-9_.-]+)\?v=[^"]*"')
+
+    @classmethod
+    def asset_version(cls, name, static_dir):
+        with cls._asset_lock:
+            hit = cls._asset_versions.get(name)
+        if hit:
+            return hit
+        try:
+            digest = hashlib.sha256((static_dir / name).read_bytes()).hexdigest()[:8]
+        except OSError:
+            return ''
+        with cls._asset_lock:
+            cls._asset_versions[name] = digest
+        return digest
+
+    def inject_asset_versions(self, data, static_dir):
+        """把 index.html 裡的 ?v=舊版本 換成目前內容哈希；檔案一改就自動失效快取。"""
+        def repl(m):
+            name = m.group('name')
+            ver = Handler.asset_version(name, static_dir)
+            return m.group(0) if not ver else '%s="/%s?v=%s"' % (m.group('attr'), name, ver)
+        return Handler.ASSET_REF_RE.sub(repl, data.decode('utf-8')).encode('utf-8')
 
     # 每個回應都帶的安全標頭。CSP 先用 Report-Only：index.html 目前有一段
     # 字級防閃爍的 inline script，直接 enforce 會把它擋掉（字級偏好失效）。
@@ -11486,14 +11512,18 @@ class Handler(BaseHTTPRequestHandler):
             Handler._asset_cache[key] = (st.st_mtime_ns, st.st_size, data, etag)
         return data, etag
 
-    def respond_asset(self, data, mime, etag):
-        """靜態資源：允許瀏覽器快取，但每次用 ETag 驗證，沒變就回 304（無 body）。
+    def respond_asset(self, data, mime, etag, version=None):
+        """靜態資源：URL 帶目前內容哈希就長快取，否則每次用 ETag 驗證（304）。
 
-        這裡刻意用 no-cache 而不是長效 max-age：檔名沒有內容雜湊，長快取會讓
-        部署後使用者繼續跑舊版前端。304 已足以把 323 KB 的重下載降到幾百 bytes，
-        又保證一部署就生效。等檔名改成 app.<hash>.js 之後再換 immutable。
+        index.html 會把 ?v= 自動換成內容哈希（見 inject_asset_versions），所以
+        正常情況下每個 .js／.css 都是 immutable：第二次打開完全不必再請求。
+        沒帶或帶錯版本時退回 no-cache，保證部署後一定拿到新版。
         """
-        cache = 'no-cache, must-revalidate'
+        content_hash = etag.strip('"')[:8]
+        if version and version == content_hash:
+            cache = 'public, max-age=31536000, immutable'
+        else:
+            cache = 'no-cache, must-revalidate'
         incoming = self.headers.get('If-None-Match') or ''
         if incoming:
             tags = [tag.strip() for tag in incoming.split(',')]
@@ -11743,6 +11773,8 @@ class Handler(BaseHTTPRequestHandler):
                     or not query_allowed(parsed.path, parsed.query)):
                 fail(400, '請使用本站的有效相對路徑，不支援查詢參數。')
             path = parsed.path
+            # 靜態資源的 ?v= 版本參數（內容哈希）；用來決定能不能長快取。
+            asset_version_param = dict(parse_qsl(parsed.query)).get('v')
             body = {}
             if self.command != 'GET':
                 self.same_origin()
@@ -11882,7 +11914,7 @@ class Handler(BaseHTTPRequestHandler):
                 if resolved.stat().st_size > 5 * 1024 * 1024:
                     fail(413, '靜態檔案過大。')
                 data, etag = self.read_asset(resolved)
-                self.respond_asset(data, vendor_mime[ext], etag)
+                self.respond_asset(data, vendor_mime[ext], etag, version=asset_version_param)
                 return
             if self.command != 'GET' or path not in static:
                 fail(404, '找不到此資源。')
@@ -11893,7 +11925,14 @@ class Handler(BaseHTTPRequestHandler):
             if target.stat().st_size > 5 * 1024 * 1024:
                 fail(413, '靜態檔案過大。')
             data, etag = self.read_asset(target)
-            self.respond_asset(data, mime, etag)
+            version = asset_version_param
+            if mime.startswith('text/html'):
+                # index.html 引用的 ?v= 要換成「目前內容哈希」。注入後內容與檔案不同，
+                # ETag 必須按注入後的內容重算，否則 304 會讓瀏覽器沿用舊引用。
+                data = self.inject_asset_versions(data, app.static_dir)
+                etag = '"%s"' % hashlib.sha256(data).hexdigest()[:32]
+                version = None          # 入口頁一律重新驗證，確保部署後拿到新引用
+            self.respond_asset(data, mime, etag, version=version)
         except APIError as exc:
             self.respond(exc.status, {'error': exc.message})
         except (ValueError, TypeError, OverflowError, RecursionError):

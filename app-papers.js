@@ -1,4 +1,20 @@
 'use strict';
+// PDF 模組（app-pdf.js）不在首屏載入：只有真的要下載 PDF 時才抓。
+// 首屏少一個請求；載入後全域函式就跟原本一樣可用（第二次點直接命中）。
+async function ensurePdfModule(){
+  if(typeof window.downloadPaperPdf==='function')return;
+  await new Promise((resolve,reject)=>{
+    const el=document.createElement('script');
+    el.src='/app-pdf.js';
+    el.async=true;
+    el.onload=()=>resolve();
+    el.onerror=()=>reject(new Error('PDF 模組載入失敗，請重新整理再試。'));
+    document.head.appendChild(el);
+  });
+  if(typeof window.downloadPaperPdf!=='function'){
+    throw new Error('PDF 模組載入失敗，請重新整理再試。');
+  }
+}
 // 紙本功課：獨立呈現，不混進做題數／正確率，也不進排行榜。
 function paperJourneyHtml(st){
   const n=(st&&st.paperCount)||0;
@@ -213,6 +229,7 @@ async function papersPage(){
         api('/api/papers/'+b.dataset.paperPdf+'/pdf-plan',{})
       ]);
       const p=detail.paper||{};
+      await ensurePdfModule();
       await downloadPaperPdf({
         title:p.title||'', meta:{grade:p.grade,term:p.term}, sections:p.sections||[],
         plan:pr.plan||null,
@@ -923,6 +940,7 @@ async function generatePaperModal(){
         try{
           // 跟 Word/LaTeX 一樣用存檔時記住的範本排一份 plan 出來，PDF 才會是同一份卷。
           const pr=await api('/api/papers/'+pid+'/pdf-plan',{});
+          await ensurePdfModule();
           await downloadPaperPdf({
             title:p.title||'', meta:base||{}, sections:chosen,
             plan:pr.plan||null,
