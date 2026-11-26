@@ -1951,11 +1951,13 @@ function editQuestionModal(id){
   const hasFigure=!!q.figure;
   let picked=null;      // 新選的圖形 dataURL；null＝沒動過
   let removed=false;    // 有沒有按過「移除圖形」
+  // 圖形一律在「題目圖形工作室」處理（AI 生成、核對、手繪、函數圖、上傳／貼上都在那裡），
+  // 編輯視窗只留一個入口，避免兩層各有一個「插入圖片」按鈕讓人不知道用哪個。
   const figureHtml=`<div class="form-field"><label class="field-label">題目圖形（可選）</label>
     <div class="fig-source-row">
-      <label class="secondary fig-upload" for="editq-fig-upload">${icon('image')}${hasFigure?'換一張圖形':'加入圖形'}<input id="editq-fig-upload" type="file" accept="image/png,image/jpeg,image/webp,image/heic,image/heif,.heic,.heif" hidden></label>
+      <button type="button" class="secondary" id="editq-fig-open">${icon('image')}${hasFigure?'更換圖形':'加入圖形'}</button>
       <button type="button" class="secondary" id="editq-fig-remove">移除圖形</button>
-      <span class="small-text">不動它的話，原本的圖形會保留。</span>
+      <span class="small-text">AI 生成、核對、手繪、函數圖、貼上或上傳圖片都在同一個工作室</span>
     </div>
     <div id="editq-fig-preview" class="fig-image-preview"></div>
     <p class="field-hint" id="editq-fig-status"></p></div>`;
@@ -1972,15 +1974,19 @@ function editQuestionModal(id){
     const btn=$('#editq-fig-remove');if(btn)btn.disabled=!(picked||(!removed&&hasFigure));
   };
   paintFigure();
-  const input=$('#editq-fig-upload');
-  if(input)input.onchange=async e=>{
-    const f=await normalizeHeicFile(e.target.files[0]);
-    if(!f)return;
-    if(!/^image\/(png|jpeg|webp)$/.test(f.type))return toast('請選擇 PNG、JPG、WebP 或 HEIC 圖片。');
-    if(f.size>4*1024*1024)return toast('圖片不可超過 4 MB，請先裁剪或壓縮。');
-    try{picked=await fitFigureImage(f);removed=false;paintFigure();}
-    catch(err){toast(err.message);}
-  };
+  const openFig=$('#editq-fig-open');
+  if(openFig)openFig.onclick=()=>openFigureStudio({
+    title:q.title,content:q.content,topic:q.topic,subtopic:q.subtopic,qtype:q.qtype,
+    figure:picked||(!removed&&hasFigure?q.figure:''),
+    // 疊在編輯視窗上面；套用後只更新這裡的預覽，等按「儲存修改」才寫回題庫。
+    root:modalRootAbove(),
+    apply:async figure=>{
+      picked=figure||null;
+      removed=!figure;
+      paintFigure();
+      closeModal();
+    }
+  });
   const rm=$('#editq-fig-remove');
   if(rm)rm.onclick=()=>{picked=null;removed=true;paintFigure();};
   wireQuestionForm('editq',state,{
