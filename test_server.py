@@ -2474,6 +2474,41 @@ class APITests(unittest.TestCase):
                          {'kind': 'similar', 'avoid': ['x'] * 21}, cookie=self.teacher, expect=400)
             ai.assert_not_called()
 
+    def test_attempt_summary_and_repeat_warning(self):
+        """題目編號、做題彙總，以及「同一題 1 小時內第 5 次起」的警告。"""
+        state = self.request('GET', '/api/state', cookie=self.student, expect=200)[1]
+        self.assertRegex(state['questions'][0]['code'], r'^Q\d{6}$')
+
+        warnings = []
+        for i in range(5):
+            body = self.request('POST', '/api/attempts',
+                                {'questionId': 1, 'answerText': '答案%d' % i},
+                                cookie=self.student, expect=200)[1]
+            warnings.append(body.get('repeatWarning'))
+        self.assertIsNone(warnings[3], '第 4 次不該警告')
+        self.assertEqual(warnings[4]['count'], 5, '第 5 次要警告')
+        self.assertEqual(warnings[4]['limit'], 5)
+
+        summary = self.request('GET', '/api/attempts/summary',
+                               cookie=self.student, expect=200)[1]
+        item = next(x for x in summary['items'] if x['questionId'] == 1)
+        self.assertEqual(item['code'], 'Q%06d' % 1)
+        self.assertEqual(item['attempts'], 5)
+        self.assertTrue(item['repeatWarning'])
+        self.assertGreaterEqual(item['hourCount'], 5)
+
+        detail = self.request('GET', '/api/attempts/summary/1',
+                              cookie=self.student, expect=200)[1]
+        self.assertEqual(len(detail['items']), 5)
+
+        # 教師可查指定學生；學生查別人要被擋。
+        sid = self.student_id()
+        teacher_view = self.request('GET', '/api/attempts/summary?userId=%d' % sid,
+                                    cookie=self.teacher, expect=200)[1]
+        self.assertEqual(teacher_view['total'], 1)
+        self.request('GET', '/api/attempts/summary?userId=%d' % (sid + 1),
+                     cookie=self.student, expect=403)
+
 
 class AIFailureTests(unittest.TestCase):
     """AI 連線／回應異常時的診斷訊息與救援行為。"""

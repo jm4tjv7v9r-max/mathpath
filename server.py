@@ -158,7 +158,9 @@ def query_allowed(path, query):
                 '/styles.css', '/styles-enhanced.css'):
         return True
     return not query or path in QUERY_PATHS or bool(
-        re.fullmatch(r'/api/paper-grades/drafts/[1-9]\d{0,17}/pages', path))
+        re.fullmatch(r'/api/paper-grades/drafts/[1-9]\d{0,17}/pages', path)
+        # 做題彙總（可按 userId／limit／offset 篩選）與單題明細。
+        or re.fullmatch(r'/api/attempts/summary(?:/[1-9]\d{0,17})?', path))
 # 需要串流下載的教師端點（不經過一般 JSON 回應）。
 ADMIN_DOWNLOADS = ('/api/admin/backup/db', '/api/admin/archive/questions',
                    '/api/admin/archive/students')
@@ -454,6 +456,17 @@ def number(value, field, low, high, integer=False):
     if not low <= value <= high or not math.isfinite(value) or (integer and type(value) is not int):
         fail(400, f'{field}必須介乎 {low} 至 {high}。')
     return value
+
+
+def query_int(params, key, field, low, high, default=None):
+    """查詢參數一律是字串；先轉整數再交給 number 驗證，避免把 '2' 當成非數字。"""
+    if key not in params:
+        return default
+    try:
+        value = int(str(params[key]).strip())
+    except (TypeError, ValueError):
+        fail(400, f'{field}必須是整數。')
+    return number(value, field, low, high, True)
 
 
 def fields(body, allowed, required=()):
@@ -3847,6 +3860,17 @@ def utc_now():
     return datetime.now(timezone.utc).isoformat(timespec='seconds').replace('+00:00', 'Z')
 
 
+# 同一題在 1 小時內做滿 5 次就提醒（學生看到提示、教師在做題紀錄看到標記）。
+REPEAT_WINDOW_MINUTES = 60
+REPEAT_LIMIT = 5
+
+
+def repeat_cutoff_iso(minutes=REPEAT_WINDOW_MINUTES):
+    """重複做題的統計起點；與 utc_now() 同一格式，字串比較即時間比較。"""
+    return (datetime.now(timezone.utc) - timedelta(minutes=minutes)).isoformat(
+        timespec='seconds').replace('+00:00', 'Z')
+
+
 DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
 # 一份 Word 卷通常 30–200 KB；留到 8 MB 是給大量圖片的卷。
 MAX_DOCX = 8 * 1024 * 1024
@@ -7236,6 +7260,9 @@ class Application:
     @staticmethod
     def question_public(q, user):
         q = dict(q)
+        # 全站唯一的題目編號（Q000123）：題庫、做題頁、批閱頁、做題紀錄都用同一組，
+        # 老師和學生可以直接用這個編號互相指認。
+        q['code'] = 'Q%06d' % q['id']
         has_figure = bool(q.pop('figure', False))
         if user['role'] != 'teacher':
             q.pop('answer', None)
@@ -9189,11 +9216,84 @@ class Application:
             return hit
         return None
 
-    def _dispatch_attempts(self, method, path, body, user, headers):
+    def _dispatch_attempts(self, method, path, body, user, headers, query=''):
         """作答紀錄（attempts）：提交作答／AI 批註／教師批註／詳情／覆核／分數異動紀錄。
 
         從 dispatch 抽出的內聚路由組；沒有命中回 None，讓 dispatch 繼續往下試。
         """
+        # 做題彙總：按題 GROUP BY，回每題做過幾次、最後得分、最近時間與 1 小時內次數。
+        # 學生只能看自己；教師可指定 userId 看學生。前端「做題紀錄」的按題檢視用它。
+        if method == 'GET' and path == '/api/attempts/summary':
+            params = dict(parse_qsl(query or ''))
+            target_id = user['id']
+            if 'userId' in params:
+                target_id = query_int(params, 'userId', '學生編號', 1, 2**63 - 1)
+                if target_id != user['id'] and user['role'] != 'teacher':
+                    fail(403, '只能查看自己的做題紀錄。')
+            limit = query_int(params, 'limit', '筆數', 1, 200, default=50)
+            offset = query_int(params, 'offset', '位移', 0, 10**9, default=0)
+            cutoff = repeat_cutoff_iso()
+            with self.db() as db:
+                rows = db.execute(
+                    'SELECT question_id, COUNT(*) AS attempts, MAX(submitted_at) AS last_at, '
+                    'MAX(score) AS best_score, MAX(max_score) AS max_score, '
+                    'SUM(CASE WHEN score IS NOT NULL AND score < max_score THEN 1 ELSE 0 END) AS wrong_count, '
+                    'SUM(skipped) AS skipped_count, '
+                    'SUM(CASE WHEN submitted_at>=? THEN 1 ELSE 0 END) AS hour_count '
+                    'FROM attempts WHERE user_id=? GROUP BY question_id '
+                    'ORDER BY last_at DESC LIMIT ? OFFSET ?',
+                    (cutoff, target_id, limit, offset)).fetchall()
+                total = db.execute('SELECT COUNT(DISTINCT question_id) FROM attempts WHERE user_id=?',
+                                   (target_id,)).fetchone()[0]
+                qmap = {}
+                ids = [r['question_id'] for r in rows]
+                if ids:
+                    marks = ','.join('?' * len(ids))
+                    for qr in db.execute('SELECT id, payload, (figure IS NOT NULL) AS has_figure, '
+                                         'figure_key FROM questions WHERE id IN (' + marks + ')', ids):
+                        qmap[qr['id']] = self.question_row(qr)
+            items = []
+            for r in rows:
+                q = qmap.get(r['question_id']) or {}
+                hour_count = r['hour_count'] or 0
+                items.append({
+                    'questionId': r['question_id'],
+                    'code': 'Q%06d' % r['question_id'],
+                    'title': q.get('title', ''),
+                    'topic': q.get('topic', ''),
+                    'attempts': r['attempts'],
+                    'lastAt': r['last_at'],
+                    'bestScore': r['best_score'],
+                    'maxScore': r['max_score'],
+                    'wrongCount': r['wrong_count'] or 0,
+                    'skippedCount': r['skipped_count'] or 0,
+                    'hourCount': hour_count,
+                    'repeatWarning': hour_count >= REPEAT_LIMIT,
+                })
+            return {'items': items, 'total': total, 'limit': limit,
+                    'offset': offset, 'repeatLimit': REPEAT_LIMIT,
+                    'windowMinutes': REPEAT_WINDOW_MINUTES}, headers
+
+        match = re.fullmatch(r'/api/attempts/summary/([1-9]\d{0,17})', path)
+        if method == 'GET' and match:
+            # 單題明細：這題每一次作答的時間與得分，供「按題彙總」點開查看。
+            qid = int(match[1])
+            params = dict(parse_qsl(query or ''))
+            target_id = user['id']
+            if 'userId' in params:
+                target_id = query_int(params, 'userId', '學生編號', 1, 2**63 - 1)
+                if target_id != user['id'] and user['role'] != 'teacher':
+                    fail(403, '只能查看自己的做題紀錄。')
+            with self.db() as db:
+                rows = db.execute(
+                    'SELECT id, score, max_score, status, submitted_at, skipped, teacher_reviewed '
+                    'FROM attempts WHERE user_id=? AND question_id=? ORDER BY submitted_at DESC',
+                    (target_id, qid)).fetchall()
+            return {'items': [{'id': r['id'], 'score': r['score'], 'maxScore': r['max_score'],
+                               'status': r['status'], 'submittedAt': r['submitted_at'],
+                               'skipped': bool(r['skipped']),
+                               'teacherReviewed': bool(r['teacher_reviewed'])} for r in rows]}, headers
+
         if method == 'POST' and path == '/api/attempts':
             fields(body, ('questionId', 'answerText', 'image', 'consentExternal', 'assignmentId', 'mockId', 'skipped'),
                    ('questionId',))
@@ -9266,12 +9366,17 @@ class Application:
                 image_key = self.storage.put('attempts', image, mime)
                 image = None
             # 先接收保存，再呼叫模型：等待 AI 期間跨過截止／正式提交都不會丟掉原作答。
+            prior_in_window = 0
             with self.db() as db:
                 db.execute('BEGIN IMMEDIATE')
                 if assignment_id is not None:
                     self.homework.assert_open(db, assignment_id, user, qid)
                 if mock_id is not None:
                     self.mock.assert_open(db, mock_id, user, qid)
+                # 重複做題：算「這次之前」同一題在 1 小時內的次數（含作業、模擬測驗、自主練習）。
+                prior_in_window = db.execute(
+                    'SELECT COUNT(*) FROM attempts WHERE user_id=? AND question_id=? '
+                    'AND submitted_at>=?', (user['id'], qid, repeat_cutoff_iso())).fetchone()[0]
                 cur = db.execute('INSERT INTO attempts(user_id,question_id,answer_text,image,image_mime,image_key,'
                                  'score,max_score,status,feedback,submitted_at,method,assignment_id,mock_id,suggestion,'
                                  'skipped) '
@@ -9360,7 +9465,18 @@ class Application:
             if status == 'graded' and not self.withheld_from_student(row, user):
                 solution = {'answer': q.get('answer', ''), 'steps': q.get('steps', []),
                             'analysis': q.get('analysis', ''), 'rubric': q.get('rubric', [])}
-            return {'attempt': attempt, 'solution': solution}, headers
+            # 這次是 1 小時內的第 N 次；N 達門檻就回警告，前端提示學生、教師端也會標記。
+            repeat_count = prior_in_window + 1
+            repeat_warning = None
+            if repeat_count >= REPEAT_LIMIT:
+                repeat_warning = {
+                    'count': repeat_count, 'limit': REPEAT_LIMIT,
+                    'windowMinutes': REPEAT_WINDOW_MINUTES, 'questionId': qid,
+                    'message': (f'這題在 {REPEAT_WINDOW_MINUTES} 分鐘內已做第 {repeat_count} 次，'
+                                '建議先弄懂思路再練，效果更好。'),
+                }
+            return {'attempt': attempt, 'solution': solution,
+                    'repeatWarning': repeat_warning}, headers
         match = re.fullmatch(r'/api/attempts/([1-9]\d{0,17})/ai-annotation', path)
         if method == 'POST' and match:
             self.teacher(user)
@@ -9829,7 +9945,7 @@ class Application:
                                 'unmatched': sum(1 for x in sheets if not x['studentId'])}}, headers
         return None
 
-    def _dispatch_questions(self, method, path, body, user, headers):
+    def _dispatch_questions(self, method, path, body, user, headers, query=''):
         """題庫題目：推薦／生成、AI 答案／出題／繪圖、拆題匯入、圖形、LaTeX、批次、核驗、解題、匯入、修改、評分標準。
 
         從 dispatch 抽出的內聚路由組；沒有命中回 None，讓 dispatch 繼續往下試。
@@ -10285,7 +10401,7 @@ class Application:
                 fail(404, '找不到這道題目。')
             self.ai.consent(body.get('consentExternal'))
             return ai_rubric_draft(self, self.question_row(row)), headers
-        hit = self._dispatch_attempts(method, path, body, user, headers)
+        hit = self._dispatch_attempts(method, path, body, user, headers, query)
         if hit is not None:
             return hit
         return None
@@ -11343,7 +11459,7 @@ class Application:
         hit = self._dispatch_state(method, path, body, user, headers)
         if hit is not None:
             return hit
-        hit = self._dispatch_questions(method, path, body, user, headers)
+        hit = self._dispatch_questions(method, path, body, user, headers, query)
         if hit is not None:
             return hit
         fail(404, '找不到此 API 或不支援此操作。')

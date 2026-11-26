@@ -2,6 +2,8 @@
 const $ = (s, root = document) => root.querySelector(s);
 const $$ = (s, root = document) => [...root.querySelectorAll(s)];
 const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+// 題目全站唯一編號：後端 question_public 會帶 code；沒有時（例如作答紀錄只給 id）用同一規則補上。
+const qCode = id => 'Q' + String(id ?? '').padStart(6, '0');
 
 // ── 數學式子排版（KaTeX）──
 // 題目／答案等文字可用 $...$ 寫行內數學、$$...$$ 寫獨立區塊數學，例如 $x^2-5x+6=0$。

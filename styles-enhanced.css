@@ -875,3 +875,10 @@ html[data-theme="night"] .gen-qfig img{
 #pdf-export-stage .pdfp-end{text-align: center;margin-top: 22px;font-size: 14px;}
 #pdf-export-stage .pdfp-measure{margin: 0;}
 #pdf-export-stage .katex{font-size: 1em;}
+/* 題目全站唯一編號（Q000123）：等寬字，放在題目資訊列或標題旁 */
+.q-code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:calc(12px*var(--fs));color:var(--muted-2);letter-spacing:.03em;white-space:nowrap}
+.q-code-badge{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.03em}
+.summary-student-pick{margin:0 0 14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.summary-detail{margin-top:10px;padding-top:10px;border-top:1px dashed var(--border)}
+.summary-detail-row{display:flex;gap:12px;justify-content:space-between;padding:6px 0;font-size:calc(13px*var(--fs));color:var(--muted)}
+.repeat-warning{margin-top:10px;padding:12px 14px;border:1px solid #e6c98f;background:#fdf6e7;border-radius:8px;color:#8a6420;font-size:calc(14px*var(--fs))}
