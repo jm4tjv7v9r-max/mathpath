@@ -550,7 +550,8 @@ class APITests(unittest.TestCase):
         self.assertEqual(attempt['steps'], [])
         self.assertIn('未批改推導步驟', attempt['feedback'])
         self.assertFalse(attempt['teacherReviewed'])
-        wrong = self.submit('x=2')
+        # 用另一道題答錯來驗證正確率（同一題重做只取最高分，不能用來拉低正確率）。
+        wrong = self.submit('zzz', questionId=2)
         self.assertEqual(wrong['score'], 0)
         self.assertEqual(wrong['status'], 'graded')
         _, state, _ = self.request('GET', '/api/state', cookie=self.student, expect=200)
@@ -2508,6 +2509,30 @@ class APITests(unittest.TestCase):
         self.assertEqual(teacher_view['total'], 1)
         self.request('GET', '/api/attempts/summary?userId=%d' % (sid + 1),
                      cookie=self.student, expect=403)
+
+    def test_repeated_attempts_count_once(self):
+        """同一題重複做只計最高分一次：排行榜、金幣、學習統計都不會因刷題虛高。"""
+        sid = self.student_id()
+        now = server.utc_now()
+        with self.app.db() as db:
+            for _ in range(5):
+                db.execute(
+                    'INSERT INTO attempts(user_id,question_id,answer_text,score,max_score,'
+                    'status,feedback,submitted_at,method,ai_steps) VALUES(?,?,?,?,?,?,?,?,?,?)',
+                    (sid, 1, 'x', 6, 6, 'graded', 'ok', now, 'ai-practice', '[]'))
+            db.execute(
+                'INSERT INTO attempts(user_id,question_id,answer_text,score,max_score,'
+                'status,feedback,submitted_at,method,ai_steps) VALUES(?,?,?,?,?,?,?,?,?,?)',
+                (sid, 2, 'x', 4, 4, 'graded', 'ok', now, 'ai-practice', '[]'))
+            rows = db.execute('SELECT * FROM attempts WHERE user_id=?', (sid,)).fetchall()
+            stats = server.Application.stats(rows)
+            self.assertEqual(stats['completed'], 2, '做題數要按不同題目計')
+            self.assertEqual(stats['score'], 10, '同一題做 5 次只算一次 6 分')
+            self.assertEqual(server.score_coins(db, sid), 10, '金幣也要去重')
+            board = server.leaderboard_payload(db, now[:7])
+            entries = [x for items in board['score'].values() for x in items if x['id'] == sid]
+            self.assertTrue(entries)
+            self.assertEqual(entries[0]['monthScore'], 10.0, '排行榜不能把重複練習累加')
 
 
 class AIFailureTests(unittest.TestCase):
@@ -4532,22 +4557,23 @@ class DataAdminTests(unittest.TestCase):
                      {'username': 'lbad', 'name': '壞年級', 'password': 'LeaderPass12', 'grade': '中七'},
                      cookie=self.teacher, expect=400)
         with self.app.db() as db:
-            qid = db.execute('SELECT id FROM questions LIMIT 1').fetchone()['id']
+            # 同一題只計最高分一次，所以不同月份要用不同題目，才測得到「按月累加」。
+            qids = [r['id'] for r in db.execute('SELECT id FROM questions ORDER BY id LIMIT 3')]
 
-            def add(uid, score, day):
+            def add(uid, score, day, qid):
                 db.execute("INSERT INTO attempts(user_id,question_id,answer_text,max_score,status,feedback,"
                            "submitted_at,method,score) VALUES(?,?,?,?,?,?,?,?,?)",
                            (uid, qid, 'x', 10, 'graded', '', day + 'T10:00:00Z', 'rule', score))
 
             # 本月（2026-10）：中三甲 30 分、中三乙 12 分、中二甲 50 分
-            add(students['l3a']['id'], 30, '2026-10-05')
-            add(students['l3b']['id'], 12, '2026-10-06')
-            add(students['l2a']['id'], 50, '2026-10-07')
+            add(students['l3a']['id'], 30, '2026-10-05', qids[0])
+            add(students['l3b']['id'], 12, '2026-10-06', qids[0])
+            add(students['l2a']['id'], 50, '2026-10-07', qids[0])
             # 上月（2026-09）：中三甲 10 分、中三乙 12 分 → 進步比例 3.0 vs 1.0
-            add(students['l3a']['id'], 10, '2026-09-10')
-            add(students['l3b']['id'], 12, '2026-09-11')
+            add(students['l3a']['id'], 10, '2026-09-10', qids[1])
+            add(students['l3b']['id'], 12, '2026-09-11', qids[1])
             # 上學年（2026-03）：只計入累積，不計入開學至今
-            add(students['l3a']['id'], 7, '2026-03-01')
+            add(students['l3a']['id'], 7, '2026-03-01', qids[2])
 
         _, board, _ = self.request('GET', '/api/leaderboard/2026-10', cookie=self.teacher, expect=200)
         self.assertEqual(board['month'], '2026-10')

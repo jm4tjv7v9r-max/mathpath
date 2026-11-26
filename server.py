@@ -6228,6 +6228,25 @@ def paper_grade_all(app, pages, title, deadline, key=None, second_grade=False):
             'score': summary['score'], 'secondGrade': second}
 
 
+# 同一題只取最高分那一次：重複練習不再重複計分。
+# 之前排行榜、金幣、學習統計都是 SUM(所有已評作答)，學生反覆做同一道簡單題
+# 就能把分數刷到幾百分（例如 6 分題做 97 次 = 585 分），不是真實學習成果。
+# 窗口函數：每個（學生, 題目）取最高分；同分取最早一次，分數才不會因重做而搬家。
+BEST_ATTEMPT_SELECT = """
+SELECT user_id, question_id, score, max_score, submitted_at
+FROM (
+    SELECT user_id, question_id, COALESCE(score, 0) AS score, max_score, submitted_at,
+           ROW_NUMBER() OVER (
+               PARTITION BY user_id, question_id
+               ORDER BY COALESCE(score, 0) DESC, submitted_at ASC
+           ) AS rn
+    FROM attempts
+    WHERE status='graded' AND (assignment_id IS NULL OR teacher_reviewed=1)
+)
+WHERE rn=1
+"""
+
+
 def leaderboard_payload(db, month):
     """每月每級前 10：得分榜與進步榜。
 
@@ -6248,10 +6267,9 @@ def leaderboard_payload(db, month):
     students = {r['id']: r for r in db.execute(
         "SELECT id,name,seat,grade FROM users WHERE role='student'")}
     buckets = {}
-    for a in db.execute("SELECT user_id,score,submitted_at,assignment_id,teacher_reviewed "
-                        "FROM attempts WHERE status='graded'"):
-        if a['assignment_id'] is not None and not a['teacher_reviewed']:
-            continue
+    # 同一題只算一次（最高分），重複做同一題不會再加分。
+    for a in db.execute('SELECT user_id, question_id, score, submitted_at FROM ('
+                        + BEST_ATTEMPT_SELECT + ')'):
         uid, day = a['user_id'], (a['submitted_at'] or '')[:10]
         if uid not in students or not day:
             continue
@@ -6313,10 +6331,10 @@ def score_coins(db, user_id):
     分數可能有小數（例如 3.5），金幣只發整數，所以整批加總後向下取整：
     總分 12.5 → 12 枚，不會出現半枚金幣。
     """
+    # 與排行榜同口徑：同一題只算一次最高分，重複刷同一題不再多發金幣。
     row = db.execute(
-        "SELECT COALESCE(SUM(score),0) AS total FROM attempts "
-        "WHERE user_id=? AND status='graded' "
-        "AND (assignment_id IS NULL OR teacher_reviewed=1)", (user_id,)).fetchone()
+        'SELECT COALESCE(SUM(score),0) AS total FROM (' + BEST_ATTEMPT_SELECT
+        + ') WHERE user_id=?', (user_id,)).fetchone()
     return int(math.floor(row['total'] or 0))
 
 
@@ -7394,7 +7412,15 @@ class Application:
     def stats(rows):
         # 教師佈置的作業要等教師批閱後才計入學生的練習統計，避免批閱前就洩漏分數。
         rows = [a for a in rows if a['assignment_id'] is None or a['teacher_reviewed']]
-        graded = [a for a in rows if a['status'] == 'graded']
+        # 同一題只計最高分一次：重複做同一題不再把「做題數」與「得分」往上堆。
+        best = {}
+        for a in rows:
+            if a['status'] != 'graded':
+                continue
+            cur = best.get(a['question_id'])
+            if cur is None or (a['score'] or 0) > (cur['score'] or 0):
+                best[a['question_id']] = a
+        graded = list(best.values())
         total = sum(a['max_score'] for a in graded)
         dates = {datetime.fromisoformat(a['submitted_at'].replace('Z', '+00:00')).date() for a in rows}
         day = datetime.now(timezone.utc).date()
