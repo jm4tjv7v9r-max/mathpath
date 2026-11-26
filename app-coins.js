@@ -49,9 +49,9 @@ async function teacherCoinsPage(){
       <td>${esc(s.name)}${s.username===s.name?'':` <span class="small-text">${esc(s.username)}</span>`}${s.disabled?' <span class="role-badge off">已停用</span>':''}</td>
       <td>${classChips(s)}</td>
       <td>${esc(s.grade||'—')}</td>
-      <td>${s.scoreCoins}</td><td>${s.dailyCoins}</td><td data-coin-manual>${s.manualCoins}</td>
+      <td>${s.scoreCoins}</td><td>${s.dailyCoins}</td><td data-coin-manual title="獎勵 ${s.manualCoins}、調整 ${s.adjustCoins||0}">${s.manualCoins+(s.adjustCoins||0)}</td>
       <td><strong data-coin-total>${s.coins}</strong></td>
-      <td class="coin-actions">${grants.map(g=>`<button class="text-button" data-coin-grant="${s.id}" data-coin-amount="${g}" data-coin-name="${esc(s.name)}">+${g}</button>`).join('')}</td>
+      <td class="coin-actions">${grants.map(g=>`<button class="text-button" data-coin-grant="${s.id}" data-coin-amount="${g}" data-coin-name="${esc(s.name)}">+${g}</button>`).join('')}<button class="text-button" data-coin-adjust="${s.id}" data-coin-name="${esc(s.name)}">調整</button></td>
     </tr>`;
   // 篩選：關鍵字（姓名／學號／座號／班別）＋ 班別下拉。
   // 一個學年幾百人，捲動找學生太慢；姓名是遮蔽過的，查詢字串也要遮蔽一次才比得上。
@@ -71,12 +71,38 @@ async function teacherCoinsPage(){
     const count=$('#coin-count');
     if(count)count.textContent=`顯示 ${list.length} / ${students.length} 位`;
     if(!list.length)return '<p class="small-text" style="padding:14px 0">沒有符合條件的學生。</p>';
-    return `<div class="table-scroll"><table class="results-table coin-table"><thead><tr><th>座號</th><th>學生</th><th>班別</th><th>年級</th><th>得分</th><th>每日</th><th>獎勵</th><th class="coin-sortable" data-coin-sort title="按一下依總計排序">總計${sortArrow()}</th><th>加金幣</th></tr></thead><tbody>${list.map(rowHtml).join('')}</tbody></table></div>`;
+    return `<div class="table-scroll"><table class="results-table coin-table"><thead><tr><th>座號</th><th>學生</th><th>班別</th><th>年級</th><th>得分</th><th>每日</th><th>獎勵／調整</th><th class="coin-sortable" data-coin-sort title="按一下依總計排序">總計${sortArrow()}</th><th>加金幣</th></tr></thead><tbody>${list.map(rowHtml).join('')}</tbody></table></div>`;
   };
   $('#main').innerHTML=`<div class="fade-in">${heading('COINS','金幣','學生每得 1 分 = 1 枚金幣，每天第一次登入 +10；你可以再獎勵 10、20 或 50 枚。')}
     <section class="panel panel-pad"><div class="roster-filter"><label class="search-field">${icon('search')}<input id="coin-search" placeholder="搜尋姓名、學號、座號或班別…" aria-label="搜尋學生"></label><select id="coin-class" aria-label="班別"><option value="">全部班別</option><option value="__none">未分班</option>${classes.map(c=>`<option value="${c.id}">${esc(c.name)}（${c.studentCount}）</option>`).join('')}</select><span class="small-text" id="coin-count"></span></div>
     <div id="coin-body">${listHtml('','')}</div>
     <p class="field-hint" style="margin-top:12px">「得分」是已批閱的分數換來的（作業要老師批閱過才算）；「每日」是每天第一次登入的 +10；「獎勵」是老師額外給的。</p></section></div>`;
+  // 逐位學生手動加減分：正數加分、負數扣分；只影響金幣總計，不動做題得分與排行榜。
+  const openAdjust=(uid,name)=>{
+    modal(`<h2>調整 ${esc(name)} 的分數</h2>
+      <p class="modal-intro">輸入正數加分、負數扣分（例如 -20）。會直接計入「總計」，不影響做題得分與排行榜。</p>
+      <form id="coin-adjust-form">
+        <div class="form-field"><label class="field-label" for="coin-adjust-amount">調整值</label>
+          <input id="coin-adjust-amount" type="number" min="-1000" max="1000" step="1" required placeholder="例如：5 或 -10"></div>
+        <div class="form-field"><label class="field-label" for="coin-adjust-reason">原因（可選）</label>
+          <input id="coin-adjust-reason" maxlength="100" placeholder="例如：課堂表現"></div>
+        <p class="error-text" id="coin-adjust-error"></p>
+        <button class="primary wide" type="submit">確認調整</button>
+      </form>`);
+    $('#coin-adjust-form').onsubmit=async e=>{
+      e.preventDefault();
+      const amount=Number($('#coin-adjust-amount').value);
+      if(!Number.isInteger(amount)||amount===0){$('#coin-adjust-error').textContent='請輸入非零整數。';return;}
+      const btn=e.target.querySelector('button[type="submit"]');btn.disabled=true;
+      try{
+        const r=await api('/api/coins/adjust',{userId:uid,amount,reason:$('#coin-adjust-reason').value.trim()});
+        const st=students.find(x=>x.id===uid);
+        if(st){st.manualCoins=r.coins.manualCoins;st.adjustCoins=r.coins.adjustCoins;st.coins=r.coins.total;}
+        closeModal();repaint();
+        toast(`已調整 ${r.student.name} ${amount>0?'+':''}${amount}（總計 ${r.coins.total}）。`);
+      }catch(err){$('#coin-adjust-error').textContent=err.message;btn.disabled=false;}
+    };
+  };
   const bind=()=>{$$('[data-coin-grant]').forEach(b=>{
     b.onclick=async()=>{
       const uid=Number(b.dataset.coinGrant),amount=Number(b.dataset.coinAmount);
@@ -99,7 +125,9 @@ async function teacherCoinsPage(){
       }catch(err){toast(err.message);}
       finally{b.disabled=false;}
     };
-  });};
+  });
+    $$('[data-coin-adjust]').forEach(b=>b.onclick=()=>openAdjust(Number(b.dataset.coinAdjust),b.dataset.coinName));
+  };
   const repaint=()=>{
     $('#coin-body').innerHTML=listHtml($('#coin-search')?$('#coin-search').value:'',
                                        $('#coin-class')?$('#coin-class').value:'');

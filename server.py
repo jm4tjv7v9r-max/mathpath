@@ -6355,7 +6355,8 @@ def score_coins(db, user_id):
 def coin_summary(db, user_id):
     """某位學生的金幣總覽：分數金幣 ＋ 每日登入 ＋ 教師獎勵。"""
     score = score_coins(db, user_id)
-    sums = {'daily': 0, 'manual': 0}
+    # adjust：教師逐位學生手動加減的分數（可正可負），與固定獎勵分開記帳。
+    sums = {'daily': 0, 'manual': 0, 'adjust': 0}
     for r in db.execute("SELECT kind, COALESCE(SUM(amount),0) AS total FROM coin_events "
                         "WHERE user_id=? GROUP BY kind", (user_id,)):
         sums[r['kind']] = int(r['total'])
@@ -6363,7 +6364,8 @@ def coin_summary(db, user_id):
     claimed = db.execute("SELECT 1 FROM coin_events WHERE user_id=? AND kind='daily' AND day=?",
                          (user_id, day)).fetchone() is not None
     return {'scoreCoins': score, 'dailyCoins': sums['daily'], 'manualCoins': sums['manual'],
-            'total': score + sums['daily'] + sums['manual'],
+            'adjustCoins': sums['adjust'],
+            'total': score + sums['daily'] + sums['manual'] + sums['adjust'],
             'dailyBonus': COIN_DAILY_BONUS, 'todayClaimed': claimed, 'day': day}
 
 
@@ -6541,7 +6543,7 @@ class Application:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     user_id INTEGER NOT NULL REFERENCES users(id),
                     amount INTEGER NOT NULL,
-                    kind TEXT NOT NULL CHECK(kind IN ('daily','manual')),
+                    kind TEXT NOT NULL CHECK(kind IN ('daily','manual','adjust')),
                     reason TEXT NOT NULL DEFAULT '',
                     day TEXT NOT NULL DEFAULT '',
                     created_by INTEGER,
@@ -6551,6 +6553,32 @@ class Application:
                 CREATE UNIQUE INDEX IF NOT EXISTS coin_events_daily
                     ON coin_events(user_id, day) WHERE kind='daily';
             ''')
+            # 金幣帳本新增「教師逐位調整」（kind='adjust'）：舊表的 CHECK 只允許
+            # daily/manual，SQLite 不能直接改 CHECK，只能重建表再把資料搬過去。
+            coin_sql = db.execute("SELECT sql FROM sqlite_master WHERE type='table' "
+                                  "AND name='coin_events'").fetchone()
+            if coin_sql and "'adjust'" not in (coin_sql['sql'] or ''):
+                db.execute('ALTER TABLE coin_events RENAME TO coin_events_old')
+                db.execute('''CREATE TABLE coin_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL REFERENCES users(id),
+                    amount INTEGER NOT NULL,
+                    kind TEXT NOT NULL CHECK(kind IN ('daily','manual','adjust')),
+                    reason TEXT NOT NULL DEFAULT '',
+                    day TEXT NOT NULL DEFAULT '',
+                    created_by INTEGER,
+                    created_at TEXT NOT NULL)''')
+                db.execute('INSERT INTO coin_events(id,user_id,amount,kind,reason,day,created_by,created_at) '
+                           'SELECT id,user_id,amount,kind,reason,day,created_by,created_at '
+                           'FROM coin_events_old WHERE user_id IN (SELECT id FROM users)')
+                db.execute('DROP TABLE coin_events_old')
+                db.execute('CREATE INDEX IF NOT EXISTS coin_events_user '
+                           'ON coin_events(user_id, id DESC)')
+                db.execute("CREATE UNIQUE INDEX IF NOT EXISTS coin_events_daily "
+                           "ON coin_events(user_id, day) WHERE kind='daily'")
+                # 上面的 ALTER/CREATE/INSERT 會開啟隱式交易；先提交，
+                # 否則後面的 BEGIN IMMEDIATE 會報「transaction within a transaction」。
+                db.commit()
             # 題目圖形：固定 SQL 增量加欄，不重建舊表、不刪除既有題目資料。
             question_columns = {r['name'] for r in db.execute('PRAGMA table_info(questions)')}
             for name, sql in (('figure', 'ALTER TABLE questions ADD COLUMN figure BLOB'),
@@ -11266,10 +11294,12 @@ class Application:
                     "SELECT id,name,username,seat,grade,disabled FROM users WHERE role='student' "
                     "ORDER BY CASE WHEN seat IS NULL OR trim(seat)='' THEN 1 ELSE 0 END, "
                     "CAST(seat AS INTEGER), seat, name, id")]
+                # 與排行榜／score_coins 同一口徑：同一題只算最高分，且只算清零時間點之後。
+                reset_at = score_reset_at(db)
+                score_sql = ('SELECT user_id, COALESCE(SUM(score),0) AS total FROM ('
+                             + best_attempt_select(reset_at) + ') GROUP BY user_id')
                 scores = {r['user_id']: r['total'] for r in db.execute(
-                    "SELECT user_id, COALESCE(SUM(score),0) AS total FROM attempts "
-                    "WHERE status='graded' AND (assignment_id IS NULL OR teacher_reviewed=1) "
-                    "GROUP BY user_id")}
+                    score_sql, (reset_at,) if reset_at else ())}
                 extras = {}
                 for r in db.execute("SELECT user_id, kind, COALESCE(SUM(amount),0) AS total "
                                     "FROM coin_events GROUP BY user_id, kind"):
@@ -11289,8 +11319,10 @@ class Application:
                 score = int(math.floor(scores.get(st['id'], 0) or 0))
                 got = extras.get(st['id'], {})
                 daily, manual = got.get('daily', 0), got.get('manual', 0)
+                adjust = got.get('adjust', 0)
                 rows.append({**st, 'scoreCoins': score, 'dailyCoins': daily,
-                             'manualCoins': manual, 'coins': score + daily + manual,
+                             'manualCoins': manual, 'adjustCoins': adjust,
+                             'coins': score + daily + manual + adjust,
                              'classNames': classes_of.get(st['id'], [])})
             return {'students': rows, 'dailyBonus': COIN_DAILY_BONUS,
                     'grants': list(COIN_GRANTS), 'classes': classes}, headers
@@ -11311,6 +11343,28 @@ class Application:
                 db.execute("INSERT INTO coin_events(user_id,amount,kind,reason,day,created_by,created_at) "
                            "VALUES(?,?,'manual',?,?,?,?)",
                            (uid, amount, f'{user["name"]} 獎勵', coin_day(), user['id'], utc_now()))
+                summary = coin_summary(db, uid)
+            return {'student': {'id': target['id'], 'name': target['name']},
+                    'coins': summary}, headers
+        if path == '/api/coins/adjust' and method == 'POST':
+            # 逐位學生手動加減分（可正可負）：課堂表現獎勵，或抵銷刷分。
+            # 只影響金幣與總計，不改動做題得分與排行榜。
+            self.teacher(user)
+            fields(body, ('userId', 'amount', 'reason'), ('userId', 'amount'))
+            uid = number(body['userId'], '學生編號', 1, 2 ** 63 - 1, True)
+            amount = number(body['amount'], '調整分數', -1000, 1000, True)
+            if amount == 0:
+                fail(400, '調整值不能是 0。')
+            reason = text(body.get('reason', ''), '原因', 100, empty=True)
+            with self.db() as db:
+                target = db.execute('SELECT id,name,role FROM users WHERE id=?', (uid,)).fetchone()
+                if target is None or target['role'] != 'student':
+                    fail(404, '找不到這位學生。')
+                db.execute('BEGIN IMMEDIATE')
+                db.execute("INSERT INTO coin_events(user_id,amount,kind,reason,day,created_by,created_at) "
+                           "VALUES(?,?,'adjust',?,?,?,?)",
+                           (uid, amount, (reason or f'{user["name"]} 調整')[:100],
+                            coin_day(), user['id'], utc_now()))
                 summary = coin_summary(db, uid)
             return {'student': {'id': target['id'], 'name': target['name']},
                     'coins': summary}, headers

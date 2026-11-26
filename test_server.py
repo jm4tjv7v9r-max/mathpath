@@ -2562,6 +2562,35 @@ class APITests(unittest.TestCase):
         self.request('POST', '/api/admin/score-reset', {'confirm': 'yes'},
                      cookie=self.teacher, expect=400)
 
+    def test_coins_students_respects_reset_and_manual_adjustment(self):
+        """金幣管理頁的「得分」也要吃清零；教師可逐位加減分。"""
+        sid = self.student_id()
+        now = server.utc_now()
+        with self.app.db() as db:
+            db.execute(
+                'INSERT INTO attempts(user_id,question_id,answer_text,score,max_score,'
+                'status,feedback,submitted_at,method,ai_steps) VALUES(?,?,?,?,?,?,?,?,?,?)',
+                (sid, 1, 'x', 6, 6, 'graded', 'ok', now, 'ai-practice', '[]'))
+
+        def coins_of():
+            rows = self.request('GET', '/api/coins/students',
+                                cookie=self.teacher, expect=200)[1]['students']
+            return next(s for s in rows if s['id'] == sid)
+
+        self.assertEqual(coins_of()['scoreCoins'], 6)
+        self.request('POST', '/api/admin/score-reset', {'confirm': 'RESET'},
+                     cookie=self.teacher, expect=200)
+        self.assertEqual(coins_of()['scoreCoins'], 0, '清零後金幣管理頁的得分也要歸零')
+
+        self.request('POST', '/api/coins/adjust', {'userId': sid, 'amount': -3},
+                     cookie=self.teacher, expect=200)
+        r = self.request('POST', '/api/coins/adjust', {'userId': sid, 'amount': 5},
+                         cookie=self.teacher, expect=200)[1]
+        self.assertEqual(r['coins']['adjustCoins'], 2, '正負調整要累加')
+        self.assertEqual(coins_of()['adjustCoins'], 2)
+        self.request('POST', '/api/coins/adjust', {'userId': sid, 'amount': 0},
+                     cookie=self.teacher, expect=400)
+
 
 class AIFailureTests(unittest.TestCase):
     """AI 連線／回應異常時的診斷訊息與救援行為。"""
