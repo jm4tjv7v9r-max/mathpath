@@ -533,6 +533,7 @@ function openFigureStudio(ctx){
   figStudio={ctx,figure:ctx.figure||'',original:ctx.figure||'',check:null,busy:'',manual:false,
              spec:null,issues:[],specIssues:[],rounds:0,history:[],
              drawing:false,sketch:newSketch(),sketchTools:null,
+             plotting:false,plot:{},
              // 從「確認題目」打開時疊在第二層，關掉圖形視窗要回到卷的預覽
              root:ctx.root||'#modal-root'};
   renderFigureStudio();
@@ -588,6 +589,23 @@ function renderFigureStudio(){
     <div class="canvas-wrap figure-canvas-wrap"><canvas id="fig-studio-canvas" width="900" height="420" tabindex="0" aria-label="手繪題目圖形畫布"></canvas></div>
     <div class="submit-row"><span class="small-text">按「套用手繪圖形」才會取代目前的圖</span><div class="row-actions"><button class="primary" id="fig-sketch-apply">${icon('check')}套用手繪圖形</button></div></div>
   </div>
+  <div class="fig-draw-panel" id="fig-plot-panel"${figStudio.plotting?'':' hidden'}>
+    <div class="form-grid">
+      <div class="form-field"><label class="field-label" for="plot-expr">函數（y =）</label>
+        <input id="plot-expr" placeholder="例如：x^2-3x+2、sin(x)、1/x" value="${esc(figStudio.plot.expr||'')}"></div>
+      <div class="form-field"><label class="field-label">x 範圍</label>
+        <div style="display:flex;gap:8px"><input id="plot-xmin" type="number" step="any" value="${esc(figStudio.plot.xmin??-10)}" aria-label="x 最小值"><input id="plot-xmax" type="number" step="any" value="${esc(figStudio.plot.xmax??10)}" aria-label="x 最大值"></div></div>
+      <div class="form-field"><label class="field-label">y 範圍（留空自動）</label>
+        <div style="display:flex;gap:8px"><input id="plot-ymin" type="number" step="any" value="${esc(figStudio.plot.ymin??'')}" aria-label="y 最小值"><input id="plot-ymax" type="number" step="any" value="${esc(figStudio.plot.ymax??'')}" aria-label="y 最大值"></div></div>
+    </div>
+    <p class="field-hint">支援 + - * / ^、括號、隱式乘法（2x、2(x+1)）；函數 sin cos tan sqrt abs ln log exp；多條曲線用分號分隔，例如 x^2-3x+2; 2x+1。</p>
+    <div class="canvas-wrap"><canvas id="plot-canvas" width="900" height="520" aria-label="函數圖預覽"></canvas></div>
+    <p class="field-hint" id="plot-status"></p>
+    <div class="submit-row"><span class="small-text">先按「繪製」預覽，滿意再插入</span><div class="row-actions">
+      <button class="secondary" id="plot-draw">${icon('practice')}繪製</button>
+      <button class="primary" id="plot-apply" ${figStudio.plot.url?'':'disabled'}>${icon('check')}插入圖形</button>
+    </div></div>
+  </div>
   ${checkHtml}
   ${readHtml}
   ${historyHtml}
@@ -597,6 +615,7 @@ function renderFigureStudio(){
     <button class="secondary" id="fig-check" ${canCheck&&!busy?'':'disabled'} title="${S.ai.vision?'':'尚未設定視覺模型，無法自動核對'}">${icon('search')}${busy==='check'?'核對中…':'核對題目與圖形'}</button>
     ${needFix?`<button class="secondary" id="fig-fix" ${busy?'disabled':''}>${icon('spark')}依核對結果重畫</button>`:''}
     <button type="button" class="secondary" id="fig-sketch-btn">${icon('practice')}${figStudio.drawing?'收起手繪畫布':'手繪圖形'}</button>
+    <button type="button" class="secondary" id="fig-plot-btn">${icon('practice')}${figStudio.plotting?'收起函數圖':'函數圖'}</button>
     <button type="button" class="secondary" id="fig-manual-btn">${icon('image')}手動插入圖片</button><input type="file" id="fig-manual" accept="image/png,image/jpeg,image/webp,image/heic,image/heif,.heic,.heif" hidden>
     ${figure?`<button class="secondary" id="fig-clear">移除圖形</button>`:''}
   </div>
@@ -608,6 +627,43 @@ function renderFigureStudio(){
   $('#fig-check').onclick=checkFigureInStudio;
   const fix=$('#fig-fix');if(fix)fix.onclick=()=>drawFigureInStudio(true);
   const clr=$('#fig-clear');if(clr)clr.onclick=()=>{figStudio.figure='';figStudio.check=null;figStudio.spec=null;figStudio.issues=[];figStudio.specIssues=[];figStudio.rounds=0;figStudio.history=[];renderFigureStudio();};
+  // 函數圖：輸入式子即時畫成座標圖，插入後跟手動上傳的圖片走同一條路。
+  const plotBtn=$('#fig-plot-btn');
+  if(plotBtn)plotBtn.onclick=()=>{figStudio.plotting=!figStudio.plotting;renderFigureStudio();};
+  if(figStudio.plotting){
+    const canvas=$('#plot-canvas');
+    const drawPlot=()=>{
+      const expr=$('#plot-expr').value.trim();
+      const xmin=Number($('#plot-xmin').value), xmax=Number($('#plot-xmax').value);
+      const yminRaw=$('#plot-ymin').value.trim(), ymaxRaw=$('#plot-ymax').value.trim();
+      const status=$('#plot-status');
+      try{
+        plotGraph(canvas, expr, {xmin, xmax,
+          ymin: yminRaw===''?null:Number(yminRaw), ymax: ymaxRaw===''?null:Number(ymaxRaw)});
+        figStudio.plot={expr, xmin, xmax, ymin:yminRaw, ymax:ymaxRaw, url:canvas.toDataURL('image/png')};
+        status.textContent='已繪製，可按「插入圖形」。';
+        $('#plot-apply').disabled=false;
+      }catch(err){
+        figStudio.plot={...figStudio.plot, url:''};
+        status.textContent=err.message;
+        $('#plot-apply').disabled=true;
+      }
+    };
+    $('#plot-draw').onclick=drawPlot;
+    $('#plot-apply').onclick=()=>{
+      if(!figStudio.plot.url)return;
+      figStudio.plotting=false;
+      setManualFigure(figStudio.plot.url);
+    };
+    if(figStudio.plot.expr){
+      try{
+        plotGraph(canvas, figStudio.plot.expr, {xmin:Number(figStudio.plot.xmin), xmax:Number(figStudio.plot.xmax),
+          ymin:figStudio.plot.ymin===''?null:Number(figStudio.plot.ymin),
+          ymax:figStudio.plot.ymax===''?null:Number(figStudio.plot.ymax)});
+        $('#plot-apply').disabled=false;
+      }catch(_){}
+    }
+  }
   // 手繪畫布：AI 畫得不對、或題目圖形本來就得自己畫時，教師可以直接在方格上畫。
   const sketchBtn=$('#fig-sketch-btn');
   if(sketchBtn)sketchBtn.onclick=()=>{figStudio.drawing=!figStudio.drawing;renderFigureStudio();};
