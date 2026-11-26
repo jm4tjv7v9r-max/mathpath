@@ -1,6 +1,6 @@
 'use strict';
 let S={user:null,questions:preview,attempts:[],stats:{completed:0,accuracy:0,streak:0,minutes:0},ai:{configured:false,mode:'off'},notice:''};
-let page='bank', topic='全部題目', subtopic='', search='', grade='', level='', qtype='', currentPage=1, viewMode='list', sortBy='', currentQuestion=null, recommendations=null, answerMode='hand', lastResult=null, lastSolution=null;
+let page='bank', topic='全部題目', subtopic='', search='', grade='', level='', qtype='', currentPage=1, viewMode=(()=>{try{const v=localStorage.getItem('mathpath_view_mode');return v==='list'||v==='grid'?v:'grid';}catch(_){return 'grid';}})(), sortBy='', currentQuestion=null, recommendations=null, answerMode='hand', lastResult=null, lastSolution=null;
 let importStage=1, drafts=[], importMethod='', paperFile=null, paperName='', paperText='', figImage=null, figSketch=null, figCanvasTools=null, historyFilter='all',historyFilterTouched=false;
 // 題目圖形工作室的狀態；關閉視窗時要一起清掉（見 closeModal）。
 let figStudio=null;
@@ -3192,7 +3192,7 @@ if(b.dataset.assignmentQ){
   const go=openAssignmentQuestion(qid);
   if(done)Promise.resolve(go).then(()=>{clearAnswerState();clearCurrentDraft();renderAnswerArea();toast('已清除先前的作答，可以重新寫一次。');});
   return go;
-}if(b.dataset.nextQuestion)return openAssignmentQuestion(Number(b.dataset.nextQuestion));if(b.dataset.prevQuestion)return openAssignmentQuestion(Number(b.dataset.prevQuestion));if(b.dataset.qid)return openQuestion(b.dataset.qid);if(b.dataset.topic){topic=b.dataset.topic;subtopic='';currentPage=1;return bank();}if(b.dataset.subtopic){subtopic=b.dataset.subtopic;currentPage=1;return bank();}if(b.dataset.pagination){currentPage=Number(b.dataset.pagination);return renderList();}if(b.dataset.view){viewMode=b.dataset.view;return bank();}if(b.dataset.save){const id=Number(b.dataset.save);if(bookmarks.has(id))bookmarks.delete(id);else bookmarks.add(id);saveBookmarks();b.classList.toggle('saved',bookmarks.has(id));b.setAttribute('aria-pressed',String(bookmarks.has(id)));toast(bookmarks.has(id)?'已收藏題目（本瀏覽器）':'已取消收藏');if(page==='bank'&&topic==='我的收藏')renderList();return;}if(b.dataset.answerMode){
+}if(b.dataset.nextQuestion)return openAssignmentQuestion(Number(b.dataset.nextQuestion));if(b.dataset.prevQuestion)return openAssignmentQuestion(Number(b.dataset.prevQuestion));if(b.dataset.qid)return openQuestion(b.dataset.qid);if(b.dataset.topic){topic=b.dataset.topic;subtopic='';currentPage=1;return bank();}if(b.dataset.subtopic){subtopic=b.dataset.subtopic;currentPage=1;return bank();}if(b.dataset.pagination){currentPage=Number(b.dataset.pagination);return renderList();}if(b.dataset.view){viewMode=b.dataset.view;try{localStorage.setItem('mathpath_view_mode',viewMode);}catch(_){}return bank();}if(b.dataset.save){const id=Number(b.dataset.save);if(bookmarks.has(id))bookmarks.delete(id);else bookmarks.add(id);saveBookmarks();b.classList.toggle('saved',bookmarks.has(id));b.setAttribute('aria-pressed',String(bookmarks.has(id)));toast(bookmarks.has(id)?'已收藏題目（本瀏覽器）':'已取消收藏');if(page==='bank'&&topic==='我的收藏')renderList();return;}if(b.dataset.answerMode){
   if(busy)return toast('正在保存作答，請等待完成。');
   const next=b.dataset.answerMode;
   if(next!==answerMode&&hasProcessContent(answerMode)){
